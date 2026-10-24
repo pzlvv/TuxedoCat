@@ -14,7 +14,8 @@ import { createChecker, runTests } from './helpers/harness';
  *   两个对话在跑时其中一个完成也要提醒）；
  * - running → running、waiting → running、idle → waiting 等迁移不算「任务结束」；
  * - 新出现 / 消失的会话不产生事件（启动恢复、切换工作区、关闭对话不是任务结束）；
- * - 「子对话完成」不提醒：子代理会话（parentSessionId 非空）的完成、以及父会话
+ * - 「子对话完成」不提醒：非 user 创建的会话（creator 为 agent 形态——本地子代理 /
+ *   Agent 工具派发的跨工作区对话，specs/025 FR-003）的完成、以及父会话
  *   「仅因子代理在跑而忙」的落回 idle 都不是任务结束；转等待用户不受抑制。
  * - 完成进确认窗口：`completedSessions` 是完成候选（空闲挂起项提交 / 排队压缩等
  *   队列续跑发生在 idle 推送之后，差分无从预知），放行判定 `shouldFireCompletion`
@@ -105,12 +106,12 @@ runTests('trayAttention', async () => {
   check('子代理会话自身的完成不提醒（子对话完成不打扰）', (() => {
     const first = diffSessionEndEvents(new Map(), [
       st('parent', 'running', { queryRunning: true }),
-      st('sub', 'running', { parentSessionId: 'parent', queryRunning: true }),
+      st('sub', 'running', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' }, queryRunning: true }),
     ]);
     // 子代理跑完、主对话继续跑：只有子代理会话落 idle
     const second = diffSessionEndEvents(first.next, [
       st('parent', 'running', { queryRunning: true }),
-      st('sub', 'idle', { parentSessionId: 'parent' }),
+      st('sub', 'idle', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' } }),
     ]);
     return second.completedSessions.length === 0 && !second.anyNowWaiting;
   })());
@@ -119,11 +120,11 @@ runTests('trayAttention', async () => {
     // 父会话自身无任何工作，只有 subAgentRunning=true（子代理在跑 → 非 idle）
     const first = diffSessionEndEvents(new Map(), [
       st('parent', 'running', { subAgentRunning: true }),
-      st('sub', 'running', { parentSessionId: 'parent', queryRunning: true }),
+      st('sub', 'running', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' }, queryRunning: true }),
     ]);
     const second = diffSessionEndEvents(first.next, [
       st('parent', 'idle'),
-      st('sub', 'idle', { parentSessionId: 'parent' }),
+      st('sub', 'idle', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' } }),
     ]);
     return second.completedSessions.length === 0 && !second.anyNowWaiting;
   })());
@@ -131,12 +132,12 @@ runTests('trayAttention', async () => {
   check('父会话自身有工作时完成仍提醒（子代理抑制只针对子对话完成）', (() => {
     // 父会话 query 在跑（普通 Agent 模式）：自身完成要提醒
     const first = diffSessionEndEvents(new Map(), [
-      st('parent', 'running', { queryRunning: true, subAgentRunning: true }),
-      st('sub', 'idle', { parentSessionId: 'parent' }),
+      st('parent', 'running', { queryRunning: true, subAgentRunning: true, creator: { kind: 'user' } }),
+      st('sub', 'idle', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' } }),
     ]);
     const second = diffSessionEndEvents(first.next, [
-      st('parent', 'idle'),
-      st('sub', 'idle', { parentSessionId: 'parent' }),
+      st('parent', 'idle', { creator: { kind: 'user' } }),
+      st('sub', 'idle', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' } }),
     ]);
     return second.completedSessions.length === 1 && !second.anyNowWaiting;
   })());
@@ -144,36 +145,43 @@ runTests('trayAttention', async () => {
   check('子代理转等待用户照常提醒（不受子对话抑制）', (() => {
     const first = diffSessionEndEvents(new Map(), [
       st('parent', 'running', { queryRunning: true }),
-      st('sub', 'running', { parentSessionId: 'parent', queryRunning: true }),
+      st('sub', 'running', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' }, queryRunning: true }),
     ]);
     const second = diffSessionEndEvents(first.next, [
       st('parent', 'running', { queryRunning: true }),
-      st('sub', 'waiting', { parentSessionId: 'parent', waiting: true }),
+      st('sub', 'waiting', { parentSessionId: 'parent', creator: { kind: 'agent', workspaceId: null, sessionId: 'parent' }, waiting: true }),
     ]);
     return second.anyNowWaiting && second.completedSessions.length === 0;
   })());
 
-  // specs/024 FR-002：跨工作区子代理的 parentSessionId 指向 ph_ 容器，同一套判定命中
-  check('跨工作区子代理（容器容器 id）完成静默；发起方仅因子代理忙时落回 idle 同样静默', (() => {
+  // specs/025 FR-003：Agent 工具派发的跨工作区对话是顶层普通会话（无 parentSessionId），
+  // 完成静默按 creator 的 agent 形态判定
+  check('跨工作区对话（顶层、creator 为 agent 形态）完成静默；发起方仅因子代理忙时落回 idle 同样静默', (() => {
     const first = diffSessionEndEvents(new Map(), [
       st('origin', 'running', { subAgentRunning: true }),
-      st('sub_remote', 'running', { parentSessionId: 'ph_origin' }),
+      st('sub_remote', 'running', { creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } }),
     ]);
     const second = diffSessionEndEvents(first.next, [
-      st('origin', 'idle'),
-      st('sub_remote', 'idle', { parentSessionId: 'ph_origin' }),
+      st('origin', 'idle', { creator: { kind: 'user' } }),
+      st('sub_remote', 'idle', { creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } }),
     ]);
     return second.completedSessions.length === 0 && !second.anyNowWaiting;
   })());
 
   check('跨工作区子代理转等待用户照常提醒（specs/024 FR-002）', (() => {
     const first = diffSessionEndEvents(new Map(), [
-      st('sub_remote', 'running', { parentSessionId: 'ph_origin' }),
+      st('sub_remote', 'running', { creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } }),
     ]);
     const second = diffSessionEndEvents(first.next, [
-      st('sub_remote', 'waiting', { parentSessionId: 'ph_origin', waiting: true }),
+      st('sub_remote', 'waiting', { creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' }, waiting: true }),
     ]);
     return second.anyNowWaiting && second.completedSessions.length === 0;
+  })());
+
+  check('creator 为 user 的会话完成照常提醒（specs/025 FR-003）', (() => {
+    const first = diffSessionEndEvents(new Map(), [st('a', 'running', { creator: { kind: 'user' } })]);
+    const second = diffSessionEndEvents(first.next, [st('a', 'idle', { creator: { kind: 'user' } })]);
+    return second.completedSessions.length === 1 && !second.anyNowWaiting;
   })());
 
   check('确认窗口放行判定：仍空闲 / 等用户为真，又跑起来或已消失为假', (() => {

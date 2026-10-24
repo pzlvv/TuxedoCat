@@ -6,8 +6,9 @@ last_reviewed: 2026-10-23
 # 规格：跨工作区多 Agent 通信
 
 本规格界定 Electron 多工作区宿主上的跨工作区代理：工作区代理身份（`机器名 + 工作区路径`）、
-`Agent` 工具的 `target` 入参、跨工作区子代理会话与占位父对话、双向跳转、跨工作区中止，
-以及输入框的 `@` 工作区补全与 reminder 注入。VS Code 宿主与 TUI 不提供本能力。
+`Agent` 工具的 `target` 入参、跨工作区子代理会话（顶层普通对话，创建者归属经 `creator`）、
+双向跳转、跨工作区中止，以及输入框的 `@` 工作区补全与 reminder 注入。VS Code 宿主与
+TUI 不提供本能力。
 
 交叉引用：多工作区模型见 [docs/hosts/electron-multi-workspace.md 第 2 节](../hosts/electron-multi-workspace.md#2-术语与事实来源)；
 事件与载荷见 [docs/architecture/events.md 第 2 节](../architecture/events.md#2-事件词汇表)；
@@ -25,13 +26,13 @@ last_reviewed: 2026-10-23
 - 场景 2：跨机器代理（SSH 远程工作区）
   - **AC-5**（FR-001）：GIVEN 打开 SSH 远程工作区且目标主机为 `192.168.1.10`、目录为 `/srv/app` WHEN 打开 `@` 候选 THEN 该项身份为 `192.168.1.10:/srv/app`。
   - **AC-6**（FR-002）：GIVEN 本机会话 WHEN `target` 指向已打开的远程工作区 THEN 远程 Core 创建子代理对话并开始执行 prompt。
-- 场景 3：占位父对话与跳转
-  - **AC-7**（FR-003）：GIVEN 跨工作区子代理对话已创建 WHEN 读取其元数据 THEN `role` 等于 `agentRole`、`title` 等于 `description`、`project` 等于目标工作区路径、`parentSessionId` 指向占位对话。
-  - **AC-8**（FR-004）：GIVEN 目标工作区侧栏 WHEN 渲染对话树 THEN 跨工作区子代理嵌套在占位父节点下，占位节点不提供重命名 / 删除 / 智能命名入口。
-  - **AC-9**（FR-004）：GIVEN 占位对话 WHEN 用户点击打开 THEN 聊天区显示占位页，不加载任何消息、不建立会话运行时。
-  - **AC-10**（FR-004）：GIVEN 占位对话与子代理对话 WHEN 应用重启后重新打开目标工作区 THEN 两者仍在列表中且父子关系不变。
-  - **AC-11**（FR-005）：GIVEN 占位页 WHEN 点击跳转链接 THEN 活动标签切到发起方工作区并打开发起方对话。
-  - **AC-12**（FR-005）：GIVEN 发起方对话中的 `Agent` 工具卡片 WHEN 点击会话 id 链接 THEN 活动标签切到目标工作区并打开该子代理对话。
+- 场景 3：跨工作区对话（顶层普通会话）
+  - **AC-7**（FR-003）：GIVEN 跨工作区对话已创建 WHEN 读取其元数据 THEN `role` 等于 `agentRole`、`title` 等于 `description`、`project` 等于目标工作区路径、`creator` 为 agent 形态（发起方工作区身份与会话 id），且无 `parentSessionId`。
+  - **AC-8**（FR-003）：GIVEN 目标工作区侧栏 WHEN 渲染对话树 THEN 跨工作区对话是顶层普通行，重命名 / 删除 / 智能命名入口与普通对话一致，无占位节点。
+  - **AC-9**（FR-003）：GIVEN 跨工作区对话 WHEN 用户点击打开 THEN 显示正常对话视图（渲染消息、建立会话运行时），不出现占位页。
+  - **AC-10**（FR-003）：GIVEN 应用重启后重新打开目标工作区 WHEN 列表加载 THEN 该对话仍在列表中（顶层）且消息完整。
+  - **AC-11**（FR-005）：GIVEN 打开目标工作区的跨工作区对话 WHEN 点击「返回发起方」 THEN 按 `creator` 携带的发起方身份与会话 id 跳转（切工作区 + 开对话）。
+  - **AC-12**（FR-005）：GIVEN 发起方对话中的 `Agent` 工具卡片 WHEN 点击会话 id 链接 THEN 活动标签切到目标工作区并打开该对话。
   - **AC-13**（FR-005）：GIVEN 发起方工作区已关闭 WHEN 点击指向它的跳转链接 THEN 链接不可用并显示原因，不自动打开该工作区。
 - 场景 4：跨工作区中止
   - **AC-14**（FR-006）：GIVEN 跨工作区子代理正在运行且发起方前台空闲 WHEN 在发起方点击 abort THEN 目标工作区该子代理停止，发起方 `subAgentRunning` 归假。
@@ -74,38 +75,42 @@ last_reviewed: 2026-10-23
 - 空字符串：入参校验失败，不静默当缺省。
 - 成功结果文本包含子代理会话 id 与目标身份；工具入参的 `target` 供 UI 渲染跳转。
 
-### FR-003：跨工作区子代理会话
+### FR-003：跨工作区子代理会话（顶层普通对话）
 
-- 目标工作区创建的对话是子代理会话：`role` = `agentRole`、`title` = `description`
-  （缺省 `Agent: <role>`）、`parentSessionId` = 占位对话、`project` = 目标工作区路径，
-  并在 `meta.json` 写 `crossWorkspaceOrigin`（发起方工作区身份 / 会话 id / 标题）。
+- 目标工作区创建的对话是**顶层普通对话**（specs/025 FR-001）：侧栏顶层行、有消息文件、
+  打开即正常对话视图（渲染消息、建立会话运行时）、行内操作与普通对话一致。`role` =
+  `agentRole`、`title` = `description`（缺省 `Agent: <role>`）、`project` = 目标工作区
+  路径；不写 `parentSessionId`（无占位父对话）。
+- 归属由 `creator` 承载（specs/025 FR-002）：agent 形态，携带发起方工作区身份
+  （`workspaceId`）与发起方会话 id（`sessionId`），创建时一次写进 `meta.json`。
 - prompt 作为该会话的第一条用户消息，子代理消费循环在目标工作区 Core 内运行；
-  `Reply` 与 Reminder 重试沿用既有子代理语义。
+  `Reply` 与 Reminder 重试沿用既有子代理语义（specs/025 FR-007）——Reminder 以
+  **silent 消息**注入（模型可见、落盘，UI 消息流与回放不展示）。
 - `Reply` 经 `CoreEvent.crossWorkspaceAgentReplyRequested` → 宿主 → `UiEvent.agentReplyReceived`
-  回投发起方会话，作为 agent 消息出现；From 头展示目标工作区身份。
-- 会话级配置**经容器继承发起方**（specs/024 FR-004）：发起方 Core 把本会话的生效值
-  （agent mode / thinking effort / 提示词预设 / 模型 provider 成对 / 联网搜索 / MCP
-  启用名单）随 `crossWorkspaceAgentRequested` 携带，目标 Core 按角色继承规则应用——
-  Master 全量继承，非 Master 角色固定 normal 预设 / 不联网 / MCP 恒空、其余仍继承
-  （与本地子代理 specs/020 FR-003 同口径）；继承值落进子代理 meta 的 context（重启重开
-  UI 仍显示）。MCP 按**名单**继承：名单里的 server 在目标 Core 的定义集合中没有同名项
-  时不建立连接（MCP 定义是机器本地资源，不跨机器拷贝）。
+  回投发起方会话，作为 agent 消息出现；From 头展示目标工作区身份。回传路由的创建方
+  定位读 `creator`。
+- 会话级配置**全量继承发起方**（specs/025 FR-005）：发起方 Core 把本会话的生效值
+  （agent mode / thinking effort / 模型 provider 成对 / 联网搜索 / MCP
+  启用名单）随 `crossWorkspaceAgentRequested` 携带，目标 Core 全量应用、**不按角色
+  裁剪**（角色仅决定工具白名单）；继承值创建时一次确定并落进 meta 的 context（重启
+  重开 UI 仍显示）。MCP 按**名单**继承：名单里的 server 在目标 Core 的定义集合中
+  没有同名项时不建立连接（MCP 定义是机器本地资源，不跨机器拷贝）。
+- 例外：**提示词模式不继承、恒 normal**（specs/025 FR-005）——minimal / mixed 的
+  首轮按 minimal 预设把工具清单裁成 Bash / Edit，`Reply` 是子代理生命周期设施，
+  被裁掉后子代理无法主动回传；目标侧选项菜单的提示词模式不提供切换入口，联网 /
+  MCP 不受影响。
+- SystemPrompt 由目标 Core 按固定模板组装（specs/025 FR-006）：内容包含创建方工作区
+  身份与会话 id、以及「结束前须调用 `Reply` 回传结果」的说明；身份取派发载荷的
+  `origin` 字段，不经模型工具入参。
+- 非 user 创建的会话安静运行（specs/025 FR-003）：完成不亮未读绿灯、不触发托盘与
+  提示音；转等待用户照常提醒；输入框禁用（specs/025 FR-004）。
 - 沿用「子代理内禁止再调 `Agent`」的既有规则：跨工作区子代理不能继续派生。
-
-### FR-004：占位父对话
-
-- 占位父对话由子代理 meta 的 `crossWorkspaceOrigin` 在列表读取时派生（Rust 与 TS 两侧
-  同口径），不落独立文件；子对话删除后派生条目自然消失。
-- 占位对话不是真实会话：没有消息文件、不建立会话运行时、不参与空闲回收与压缩。
-- 打开占位对话时聊天区显示占位页（`chatPlaceholderHtml` 的 `crossWorkspaceAgent` kind），
-  不创建聊天会话。
-- 占位对话不提供重命名 / 删除 / 智能命名入口。
 
 ### FR-005：跨工作区跳转
 
 - 发起方：`Agent` 工具卡片展示目标身份与会话 id，点击切到目标工作区并打开该对话。
-- 目标工作区：占位页的跳转链接切到发起方工作区并打开发起方对话。
-- 目标工作区：子代理对话的「返回父对话」按 `crossWorkspaceOrigin` 直接跳发起方会话。
+- 目标工作区：跨工作区对话的「返回发起方」按 `creator` 携带的发起方身份与会话 id
+  直接跳发起方会话（本地子代理的「返回父对话」仍按 `parentSessionId`）。
 - 跳转由宿主执行（切活动标签 + 开对话）；目标工作区未打开或会话不存在时链接不可用，
   不自动打开工作区。
 
@@ -161,18 +166,19 @@ last_reviewed: 2026-10-23
 | 术语 | 含义 | owner |
 | --- | --- | --- |
 | 工作区代理身份 | `<机器名>:<工作区路径>`，`@` 与 `target` 的寻址键 | Electron 主进程（`workspaceIdentity.ts` 是唯一算法） |
-| 跨工作区子代理 | 运行时在目标工作区 Core、创建者在发起方 Core 的子代理会话 | 目标工作区 Core（会话事实）/ 发起方 Core（登记与槽位） |
-| 占位父对话 | 目标工作区列表里代表发起方会话的容器节点 | 列表读取方（由子代理 meta 派生） |
+| 跨工作区子代理 | 运行时在目标工作区 Core、创建者在发起方 Core 的顶层普通对话（`creator` 承载归属，specs/025 FR-002） | 目标工作区 Core（会话事实）/ 发起方 Core（登记与槽位） |
 | `@` 命令 | 去首尾空白后以 `@` 开头的用户消息 | Core（轮次边界解析） |
 | 跨工作区 link | 子代理会话 id → 目标工作区引用 | 宿主 `WebViewUI`（中止路由用） |
 
 ### 3.2 契约成员
 
-- `CoreRequest.crossWorkspaceAgentRequested`（含发起方会话生效设置七字段，specs/024 FR-004）
+- `CoreRequest.crossWorkspaceAgentRequested`（含发起方会话生效设置六字段，specs/024 FR-004；
+  提示词模式不携带，specs/025 FR-005）
   → `{ sessionId } / { local: true } / { error }`；
 - `CoreEvent.crossWorkspaceAgentReplyRequested` / `crossWorkspaceAgentAbortRequested` /
   `crossWorkspaceAgentEnded`；
-- `UiEvent.remoteSubAgentStarted`（含同七字段，目标 Core 按角色继承应用）/
+- `UiEvent.remoteSubAgentStarted`（含同六字段，目标 Core 全量应用、提示词模式恒 normal，
+  specs/025 FR-005）/
   `agentReplyReceived` / `crossWorkspaceAgentCompleted`；
 - `UiEvent.hostEnvironmentProvided.crossWorkspaceAgent`；
 - webview wire：`requestWorkspaces` / `setWorkspaces`、`openConversation.targetWorkspaceId`。
@@ -180,7 +186,8 @@ last_reviewed: 2026-10-23
 ### 3.3 不变量
 
 - 身份由唯一纯函数计算；同一身份对应多个打开项时 `target` 报错，不取第一项。
-- 占位对话没有消息文件、没有会话运行时；列表里的占位条目只能由子代理 meta 派生。
+- 跨工作区对话是顶层普通会话：不写 `parentSessionId`、无占位条目派生（specs/025 FR-001）；
+  归属只由 `creator` 承载，消费者不得从 `parentSessionId` 反推（specs/025 FR-002）。
 - 跨工作区子代理的结束事件是槽位释放的唯一信号；重复 / 迟到事件幂等（`release_slot_if_held`）。
 - 跳转不自动打开工作区；目标不在打开集合时只提示不可用。
 
@@ -206,7 +213,6 @@ last_reviewed: 2026-10-23
 - 新增跨机器传输与认证（远程沿用既有 SSH 接入）。
 - `@` 文件引用补全。
 - 在 system prompt 里列出全部工作区身份。
-- 跨工作区子代理继承发起方会话级配置（取目标工作区默认值）。
 
 ## 6. 对需求基线的影响
 
@@ -223,9 +229,8 @@ last_reviewed: 2026-10-23
 | --- | --- | --- | --- |
 | FR-001 | `src/host/workspaceIdentity.ts` 的 `resolveMachineName` / `workspaceAgentId`；`electron/main.ts` 打开集合派生 | `src/test/workspaceIdentity.test.ts` | 自动 |
 | FR-002 | `core-rs/src/tools.rs` 的 `run_agent`；`core-rs/src/engine.rs` 的 `spawn_remote_agent`；`src/host/crossWorkspaceRouting.ts` | `core-rs/src/tools_tests.rs`、`src/test/crossWorkspaceRouting.test.ts` | 自动 |
-| FR-003 | `core-rs/src/engine.rs` 的 `start_remote_sub_agent` / `deliver_agent_reply`；`core-rs/src/history.rs` | `core-rs/src/engine_tests.rs` | 自动 |
-| FR-004 | `core-rs/src/history.rs` 的 `load_conversation_list`；`src/shared/history/Conversation.ts`；`electron/sidebar/main.ts`；`electron/chatPlaceholderHtml.ts` | `core-rs/src/engine_tests.rs`、`src/test/chatPlaceholderReason.test.ts` | 自动 |
-| FR-005 | `electron/main.ts` 的 `showCrossWorkspacePlaceholder` / `jumpToCrossWorkspaceConversation`；`src/webview/tools/Agent.tsx` | `e2e/electron/crossWorkspaceAgent.spec.ts` | 自动 |
+| FR-003 | `core-rs/src/engine.rs` 的 `start_remote_sub_agent` / `deliver_agent_reply`；`core-rs/src/history.rs` 的 `create_remote_sub_agent_metadata` | `core-rs/src/engine_tests.rs` | 自动 |
+| FR-005 | `src/webview/App.tsx` 的「返回发起方」（按 `creator` 跳转）；`src/webview/tools/Agent.tsx` | `e2e/electron/crossWorkspaceAgent.spec.ts` | 自动 |
 | FR-006 | `core-rs/src/engine.rs` 的 `abort_session_scope`；`src/host/WebViewUI.ts` 的中止转发 | `core-rs/src/engine_tests.rs`、`src/test/abortButtonState.test.ts` | 自动 |
 | FR-007 | `src/webview/mentionState.ts`；`src/host/workspaceIdentity.ts` 的 `workspaceMentionCandidates`；`src/webview/InputArea.tsx` | `src/test/mentionState.test.ts`、`src/test/workspaceIdentity.test.ts`、`e2e/webview/workspaceMention.spec.ts` | 自动 |
 | FR-008 | `core-rs/src/engine.rs` 的 `parse_mention_identity` / `build_mention_reminder` / `resolve_pending_mention` | `core-rs/src/engine_tests.rs` | 自动 |

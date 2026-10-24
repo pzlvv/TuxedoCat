@@ -16,6 +16,7 @@ import { stringifyJsonSafe } from '../utils/stringUtils.js';
 import { deleteSessionToolResults } from '../tools/toolResultStorage.js';
 import { logger } from '../Logger.js';
 import { modelRefOf, type ModelRef } from '../llm/modelRef.js';
+import { parseSessionCreator, type SessionCreator } from '../sessionCreator.js';
 
 /** core → UI 单向事件的发送侧封装（history/Conversation 统一走它） */
 function emitToUi(event: CoreEvent): void {
@@ -260,22 +261,18 @@ export interface ConversationMetadata {
   clearedAt?: number;
   /** 当前对话的上下文（文件、模式等），用于加载时恢复 */
   context?: ConversationContext;
-  /** 父会话 ID（子对话专属），用于构建树形结构 */
+  /** 父会话 ID（本地子对话专属），用于构建树形结构；跨工作区对话不写（specs/025 FR-001） */
   parentSessionId?: string;
   /** 子代理角色（子对话专属），用于恢复时确定可用工具 */
   role?: string;
   /** 是否涉及远程通信（跨节点消息发送/接收） */
   isRemote?: boolean;
   /**
-   * 跨工作区子代理的来源（specs/023 FR-003）：目标工作区 Core 写入，
-   * 列表读取据此派生占位父对话。
+   * 会话创建者（specs/025 FR-002）：`user` = 用户 prompt 发起；agent 形态携带创建方
+   * 工作区身份与会话 id。全部会话创建时由 core 写入，读取缺失即数据异常
+   * （`parseSessionCreator` 报错，不回退）。
    */
-  crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
-  /**
-   * 占位父对话（specs/023 FR-004）：由带 `crossWorkspaceOrigin` 的子代理在列表读取时
-   * 派生，不落独立 meta 文件；不加载消息、不建立运行时。
-   */
-  placeholder?: { workspaceId: string; sessionId: string; title: string };
+  creator: SessionCreator;
   /** 当前对话使用的模型名称 */
   model?: string;
   /** 当前对话使用的模型所属 provider key（模型 + provider 一起才能完整表征一个模型） */
@@ -721,6 +718,8 @@ async function updateMetadataForNewMessage(
           createdAt: Date.now(),
           updatedAt: Date.now(),
           messageCount: 1,
+          // TS 侧建档只发生在用户消息落盘（子代理 meta 由 core 预建，不会走到 ENOENT）
+          creator: { kind: 'user' },
         };
         created = true;
       } else {
@@ -804,6 +803,10 @@ export function createConversationMetadataSync(
     messageCount: 0,
     parentSessionId,
     role,
+    // 本地建档：带父会话即本地子代理（创建方在本工作区，specs/025 FR-002），否则用户会话
+    creator: parentSessionId
+      ? { kind: 'agent', workspaceId: null, sessionId: parentSessionId }
+      : { kind: 'user' },
     ...(modelRef?.model ? { model: modelRef.model } : {}),
     ...(modelRef?.provider ? { provider: modelRef.provider } : {}),
   };
@@ -852,7 +855,10 @@ export async function loadConversationList(workspacePath: string | undefined): P
         const filePath = join(projectDir, file);
         const content = await readFile(filePath, 'utf8');
 
-        const metadata: ConversationMetadata = JSON.parse(content);
+        const parsed = JSON.parse(content) as ConversationMetadata;
+        // creator 缺失 / 形态不对 = 数据异常（specs/025 FR-002）：报错跳过该条目，
+        // 不猜测回退（当 user 会让 Agent 会话误判成可输入 / 会提醒的正常对话）
+        const metadata: ConversationMetadata = { ...parsed, creator: parseSessionCreator(parsed.creator) };
         // 跳过未发送过消息的空对话（messageCount === 0）；
         // 但清空过的会话保留在列表中（标题和条目不随内容清空而消失）
         if (metadata.messageCount === 0 && !metadata.clearedAt) {
@@ -863,27 +869,6 @@ export async function loadConversationList(workspacePath: string | undefined): P
         console.error(`[Conversation] Failed to load conversation from ${file}:`, error);
       }
     }
-
-    // specs/023 FR-004：跨工作区子代理的占位父对话由子代理 meta 派生（与 core-rs 的
-    // `load_conversation_list` 同口径），不落独立文件；子对话删除后派生条目自然消失。
-    const present = new Set(conversations.map((item) => item.sessionId));
-    const placeholders: ConversationMetadata[] = [];
-    for (const child of conversations) {
-      const origin = child.crossWorkspaceOrigin;
-      const parent = child.parentSessionId;
-      if (!origin || !parent || present.has(parent)) continue;
-      if (placeholders.some((item) => item.sessionId === parent)) continue;
-      placeholders.push({
-        sessionId: parent,
-        project: currentProject,
-        title: origin.title,
-        createdAt: child.createdAt,
-        updatedAt: child.createdAt,
-        messageCount: 0,
-        placeholder: origin,
-      });
-    }
-    conversations.push(...placeholders);
 
     // 按修改时间（最后一条用户消息）倒序排序；缺失时回退到创建时间
     conversations.sort(
@@ -932,6 +917,8 @@ export async function loadConversation(sessionId: string): Promise<Conversation>
       // 加载元数据
       const metadataContent = await readFile(metadataPath, 'utf8');
       const metadata = JSON.parse(metadataContent);
+      // creator 缺失 / 形态不对 = 数据异常（specs/025 FR-002）：加载失败，不回退
+      metadata.creator = parseSessionCreator(metadata.creator);
 
       // 记录该对话的工作目录：后续按会话解析工作目录时无需再回退到活动工作目录
       if (metadata && typeof metadata.project === 'string' && metadata.project) {
@@ -1160,6 +1147,9 @@ export async function replaceConversationMessages(sessionId: string, messages: M
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messageCount: messages.length,
+        // 防御性建档（meta 丢失）的修复值：优先取内存缓存的既有归属；该分支只在
+        // 异常状态下触发，正常会话的 creator 已在盘上
+        creator: conversationCache.get(effectiveSessionId)?.metadata.creator ?? { kind: 'user' },
       };
       await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
     }
@@ -1436,6 +1426,8 @@ export async function updateConversationMetadataTitle(
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messageCount,
+        // TS 侧建档只发生在用户消息落盘（子代理 meta 由 core 预建，不会走到 ENOENT）
+        creator: { kind: 'user' },
       };
       // 补空 .jsonl：loadConversation 要求消息文件存在（同 createConversationMetadataSync）
       try {
@@ -1477,7 +1469,9 @@ export async function readProjectConversationMetadata(currentProject: string): P
       if (!file.endsWith('.meta.json') || file === WORKSPACE_META_FILE) continue;
       try {
         const content = await readFile(join(projectDir, file), 'utf8');
-        result.push(JSON.parse(content) as ConversationMetadata);
+        // creator 缺失 / 形态不对 = 数据异常（specs/025 FR-002）：报错跳过，不回退
+        const parsed = JSON.parse(content) as ConversationMetadata;
+        result.push({ ...parsed, creator: parseSessionCreator(parsed.creator) });
       } catch (e) {
         logger.error('Conversation', `读取对话元数据失败: ${e}`);
       }

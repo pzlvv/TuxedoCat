@@ -19,6 +19,7 @@ import { collectRunningSubAgents, type RunningSubAgentBrief } from '../shared/se
 import { shouldAutoExpandSubSessions } from '../host/ui/conversationTreeDefaults';
 import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
+import type { SessionCreator } from '../shared/sessionCreator';
 import { t } from './i18n';
 import { ConversationTreeItem } from './ConversationTreeItem';
 import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
@@ -101,10 +102,10 @@ const App = () => {
   const [conversationDropdownOpen, setConversationDropdownOpen] = useState(false);
   const [conversationTitle, setConversationTitle] = useState<string>(t('app.untitled'));
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  // 当前对话的父会话 ID（子对话时有效）
+  // 当前对话的父会话 ID（本地子对话时有效；跨工作区对话无父会话，specs/025 FR-002）
   const [parentSessionId, setParentSessionId] = useState<string | null>(null);
-  /** 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区 */
-  const [crossWorkspaceOrigin, setCrossWorkspaceOrigin] = useState<{ workspaceId: string; sessionId: string; title: string } | null>(null);
+  /** 会话创建者（specs/025 FR-002）：返回按钮按它跳发起方（跨工作区）或父会话（本地） */
+  const [creator, setCreator] = useState<SessionCreator | null>(null);
   // 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）：
   // 非 Master 子代理会话锁定选项菜单的提示词模式 / 联网搜索 / MCP 三项
   const [subAgentRole, setSubAgentRole] = useState<string | null>(null);
@@ -508,7 +509,7 @@ const App = () => {
     setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
-    setCurrentSessionId, setParentSessionId, setCrossWorkspaceOrigin, setAgentMode, setThinkingMode,
+    setCurrentSessionId, setParentSessionId, setCreator, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
     setSessionIdleVersion,
@@ -549,7 +550,7 @@ const App = () => {
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
-    setCurrentSessionId, setParentSessionId, setCrossWorkspaceOrigin, setSubAgentRole, setHasActiveQuery, setContextLength,
+    setCurrentSessionId, setParentSessionId, setCreator, setSubAgentRole, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
     setDeleteConfirm, setMessages, setUserChoiceRequest,
@@ -681,7 +682,7 @@ const App = () => {
     // Generate new session for new conversation
     setConversationTitle(t('app.untitled'));
     setParentSessionId(null);
-    setCrossWorkspaceOrigin(null);
+    setCreator(null);
     // 新建会话无子代理角色（specs/020 FR-005），置灰判定回到普通会话
     setSubAgentRole(null);
     // 新对话不在 spin 模式
@@ -1156,14 +1157,14 @@ const App = () => {
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {/* 子对话返回按钮：与列表选会话共用 navigateToSession，避免出现「绕过 loading」的第二条入口 */}
-            {parentSessionId && (
+            {/* 子对话返回按钮：与列表选会话共用 navigateToSession，避免出现「绕过 loading」的第二条入口。
+                跨工作区对话（specs/025 FR-002）按 creator 跳发起方工作区，本地子代理按父会话跳 */}
+            {(parentSessionId || (creator?.kind === 'agent' && creator.workspaceId)) && (
               <button
                 onClick={() => {
-                  // 跨工作区子代理（specs/023）：返回父对话时跳到发起方工作区
-                  if (crossWorkspaceOrigin) {
-                    navigateToSession(crossWorkspaceOrigin.sessionId, crossWorkspaceOrigin.workspaceId);
-                  } else {
+                  if (creator?.kind === 'agent' && creator.workspaceId) {
+                    navigateToSession(creator.sessionId, creator.workspaceId);
+                  } else if (parentSessionId) {
                     navigateToSession(parentSessionId);
                   }
                 }}
@@ -1451,7 +1452,7 @@ onClick={handleNewConversation}
               totalInputTokens={sessionStates.get(currentSessionIdRef.current ?? '')?.totalInputTokens}
               onOpenSettings={handleOpenSettings}
               isProviderConfigured={providerConfigured}
-              isSubAgent={!!parentSessionId}
+              creator={creator}
               subAgentRole={subAgentRole}
               workMode={workMode}
             />

@@ -4,6 +4,11 @@ status: 已修
 
 # 缺陷：跨工作区占位页跳转链接恒不可用（发起方工作区已打开时也显示「未打开」）
 
+> 追记（specs/025）：跨工作区占位父对话与占位页机制已整体删除（specs/025 FR-001）——
+> 派发的对话本身是顶层普通会话、跨工作区跳转改按 `creator` 寻址，本缺陷描述的
+> 占位页跳转链路不复存在。本文件保留为历史记录；文中被删除的实现落点以行内代码
+> 记录的原始写法为准，现已不在仓库中。
+
 发起方工作区与目标工作区同时打开，从目标工作区侧栏点击跨工作区子代理的占位父对话，
 占位页恒显示「发起方工作区未打开，跳转链接不可用」且无跳转按钮——无论发起方工作区
 是否打开。发起方身份解析永远匹配失败，AC-11（[docs/archive/specs/023-cross-workspace-agent/spec.md](../../docs/archive/specs/023-cross-workspace-agent/spec.md)，
@@ -20,7 +25,7 @@ FR-005）定义的「点击跳转链接 → 切到发起方工作区并打开发
    「发起方工作区未打开，跳转链接不可用」，无「跳转到发起方对话」按钮；路径行显示
    `ph_<发起方会话 id>` 而非 A 的路径。此时 A 仍处于打开集合。
 
-根因（只读定位，未改任何源码）：`electron/main.ts` 的 `showCrossWorkspacePlaceholder`
+根因（只读定位，未改任何源码）：`electron/main.ts` 的 showCrossWorkspacePlaceholder
 把占位来源的 `origin.workspaceId` 与 `refKey(candidate)` 判等：
 
 ```ts src=electron/main.ts
@@ -39,7 +44,7 @@ core-rs 落进子代理 `meta.json` 的 `crossWorkspaceOrigin.workspaceId`（
 
 `refKey(candidate)` 是 `workspaceRefKey` 口径（如本地 `file//localC:\work\a`、远程
 `ssh//pz@host:22/srv/app`）。两种口径**永不相等**，`find` 恒不命中 →
-`originRef` 恒为 `undefined` → `crossWorkspacePlaceholderJump` 恒 `null` →
+`originRef` 恒为 `undefined` → crossWorkspacePlaceholderJump 恒 `null` →
 占位页恒渲染不可用提示、不给跳转按钮；`path` 行退化为 `sessionId`（与截图一致）。
 又因 `origin` 存在时不走 `sessionWorkspaces` 回退分支（`if (!origin && originSessionId)`），
 回退路径也救不回来。侧栏行恒携带 `placeholder` 元数据，缺陷对每次侧栏点击必现。
@@ -65,7 +70,7 @@ core-rs 落进子代理 `meta.json` 的 `crossWorkspaceOrigin.workspaceId`（
 
 - 占位来源 `workspaceId` 全链路只有 `workspaceAgentId` 一种口径；core-rs 的
   `meta.json` 落盘格式与 `crossWorkspaceOrigin` 结构不变。
-- 跳转动作落点（`jumpToCrossWorkspaceConversation` 的入参 `workspaceId`）仍是
+- 跳转动作落点（jumpToCrossWorkspaceConversation 的入参 `workspaceId`）仍是
   `workspaceRefKey` 口径——宿主按它回查打开集合引用，跨进程 IPC 形态不变。
 - `!origin` 时按发起方会话工作目录（`sessionWorkspaces` 索引 + 路径判等）回退的
   既有行为保持；本地路径按宿主口径判等、远程路径逐字比较（抹平尾分隔符）的口径

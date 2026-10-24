@@ -876,7 +876,7 @@ export class WebviewMessageHandler {
       pendingToolUseIds: loaded.pendingToolUseIds,
       savedContext: effectiveSavedContext,
       parentSessionId: conversation.metadata?.parentSessionId,
-      crossWorkspaceOrigin: conversation.metadata?.crossWorkspaceOrigin,
+      creator: conversation.metadata?.creator,
       agentMode: effectiveAgentMode,
       workMode: loaded.workMode,
       hasActiveQuery,

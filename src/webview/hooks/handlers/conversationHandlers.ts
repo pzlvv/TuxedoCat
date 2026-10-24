@@ -140,6 +140,7 @@ export function handleConversationSessionRuntimeStates(
               subAgentRunning: !!s.subAgentRunning,
               subAgentDescription: s.subAgentDescription ?? null,
               parentSessionId: s.parentSessionId ?? null,
+              creator: s.creator,
             });
           }
           props.sessionRuntimeStatesRef.current = runtime;
@@ -188,10 +189,10 @@ export function handleConversationConversationLoaded(
             // 设置压缩状态
             props.setHasCompactArchive(wire.hasCompactArchive === true);
             props.setIsCompactExpanded(false);
-            // 记录父会话 ID（子对话时有值）
+            // 记录父会话 ID（本地子对话时有值；跨工作区对话无父会话，specs/025 FR-002）
             props.setParentSessionId(wire.parentSessionId || null);
-            // 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区
-            props.setCrossWorkspaceOrigin(wire.crossWorkspaceOrigin ?? null);
+            // 会话创建者（specs/025 FR-002）：返回按钮按它跳发起方（跨工作区）或父会话（本地）
+            props.setCreator(wire.creator ?? null);
             // 记录子代理角色（specs/020 FR-005）：meta.json 的 role 事实，普通会话为 null；
             // 选项菜单置灰判据（非 Master 子代理锁定提示词模式 / 联网搜索 / MCP）
             props.setSubAgentRole(msg.conversation.metadata.role ?? null);

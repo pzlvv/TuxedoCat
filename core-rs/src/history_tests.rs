@@ -1,6 +1,7 @@
 //! `history` 的单元测试：会话文件读写、消息回放、标题推导。
 
 use super::*;
+use crate::engine::SessionCreator;
 use crate::test_support::Sandbox;
 use serde_json::json;
 
@@ -615,7 +616,7 @@ fn touch_metadata_refreshes_timestamp_and_count() {    let _sandbox = Sandbox::n
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     append_message("s1", PROJECT, &user_message("again", "u2"), None).unwrap();
 
-    touch_metadata("s1", PROJECT, true, None).unwrap();
+    touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 2);
     assert!(metadata["updatedAt"].as_u64().unwrap() > 1_600_000_000_000);
@@ -636,7 +637,7 @@ fn touch_metadata_keeps_updated_at_for_background_messages() {
     .unwrap();
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
 
-    touch_metadata("s1", PROJECT, false, Some("minimal")).unwrap();
+    touch_metadata("s1", PROJECT, false, Some("minimal"), &SessionCreator::User).unwrap();
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 1);
     assert_eq!(metadata["updatedAt"], 111);
@@ -657,7 +658,7 @@ fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
     assert_eq!(metadata[ONCE_MESSAGE_KEY]["role"], "system");
 
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
-    touch_metadata("s1", PROJECT, true, None).unwrap();
+    touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
     assert!(
         load_metadata("s1", PROJECT).unwrap().get(ONCE_MESSAGE_KEY).is_none(),
         "新消息落盘后 once 槽位必须清空"
@@ -1027,7 +1028,7 @@ fn conversation_list_excludes_workspace_manifest() {
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     // messageCount 由引擎在 append 后刷新（append_message 本身不写 meta）；
     // messageCount == 0 的空对话不进列表
-    touch_metadata("s1", PROJECT, true, None).unwrap();
+    touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
 
     let list = load_conversation_list(Some(PROJECT));
     assert_eq!(list.len(), 1, "清单不能混进会话列表：{list:?}");

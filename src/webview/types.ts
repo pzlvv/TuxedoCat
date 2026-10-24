@@ -6,6 +6,7 @@
 import type { ModelRef } from '../shared/llm/modelRef';
 import type { MessageOrigin } from '../shared/types';
 import type { McpServerInfo } from '../shared/webviewTypes';
+import type { SessionCreator } from '../shared/sessionCreator';
 import type { WebviewToHostMessage } from '../host/webviewMessages';
 import type { UiLanguage } from './i18n';
 import type { UiFontSize } from './fontSize';
@@ -278,8 +279,14 @@ export interface SessionRuntimeState {
    * 取不到时为 `null`（UI 显示回退文案）
    */
   subAgentDescription: string | null;
-  /** 父会话 id（子代理会话才有；普通会话为 null） */
+  /** 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 null，specs/025 FR-002） */
   parentSessionId: string | null;
+  /**
+   * 会话创建者（specs/025 FR-002）：镜像 shared `sessionCreator.ts` 的判别联合
+   * （零 import 模块，webview 可直接 import；不 import AssistantEventBus——其类型链
+   * 含 node 依赖，会破坏 webview 构建图）。
+   */
+  creator: SessionCreator;
 }
 
 export interface Colors {

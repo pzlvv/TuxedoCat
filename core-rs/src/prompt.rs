@@ -483,6 +483,22 @@ pub fn sub_agent_communication_section(creator_session_id: &str) -> String {
     )
 }
 
+/// 跨工作区子代理的 SystemPrompt 前缀（specs/025 FR-006）。
+///
+/// 由目标 Core 在创建时按固定模板组装（身份取派发载荷的 `originWorkspaceId` /
+/// `originSessionId`——宿主填充，不经模型工具入参）：身份段（创建方工作区身份 +
+/// 会话 id）+ 既有 `## Communication` 段（`Reply` 回传要求，`targetSessionId` 指向
+/// 创建方会话）。本地子代理不走本模板（[`sub_agent_communication_section`]）。
+pub fn remote_sub_agent_system_prompt(origin_workspace_id: &str, origin_session_id: &str) -> String {
+    format!(
+        "## Cross-workspace Agent\n\
+         You are an agent dispatched across workspaces by the creator workspace \
+         `{origin_workspace_id}` (creator session id: `{origin_session_id}`).\n\n\
+         {}",
+        sub_agent_communication_section(origin_session_id)
+    )
+}
+
 /// 工具说明区块（对齐 `generateToolUsagePrompt`）：
 /// `## Tool Usage`（一行一个工具）+ 空行 + `## Tool Details`（逐工具详细用法）。
 ///

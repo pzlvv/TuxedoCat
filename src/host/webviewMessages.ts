@@ -224,7 +224,6 @@ export type HostToWebviewMessage = {
     updatedAt: number;
     messageCount: number;
     parentSessionId?: string;
-    placeholder?: { workspaceId: string; sessionId: string; title: string };
   }>;
 } | {
   /**
@@ -253,8 +252,16 @@ export type HostToWebviewMessage = {
      * 取不到时为 `null`
      */
     subAgentDescription: string | null;
-    /** 父会话 id（子代理会话才有；普通会话为 null） */
+    /** 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 null，specs/025 FR-002） */
     parentSessionId: string | null;
+    /** 会话创建者（specs/025 FR-002），镜像 shared `sessionCreator.ts` 判别联合 */
+    creator: {
+      kind: 'user';
+    } | {
+      kind: 'agent';
+      workspaceId: string | null;
+      sessionId: string;
+    };
   }>;
 } | {
   /**
@@ -278,8 +285,8 @@ export type HostToWebviewMessage = {
       model?: string;
       provider?: string;
       role?: string;
-      /** 跨工作区子代理的来源（specs/023）：发起方工作区身份 / 会话 id / 标题 */
-      crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
+      /** 会话创建者（specs/025 FR-002）：镜像 shared `sessionCreator.ts` 判别联合 */
+      creator?: { kind: 'user' } | { kind: 'agent'; workspaceId: string | null; sessionId: string };
       /**
        * 最后一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 记在 meta.json，
        * 一个对话至多一条；webview 加载时追加到时间线末位。
@@ -292,8 +299,8 @@ export type HostToWebviewMessage = {
   /** 从 meta.json 恢复的上下文，webview 加载后直接应用 */
   savedContext?: { currentFile?: string; selectedLines?: WebviewSelectedLines; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; provider?: string };
   parentSessionId?: string;
-  /** 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区 */
-  crossWorkspaceOrigin?: { workspaceId: string; sessionId: string; title: string };
+  /** 会话创建者（specs/025 FR-002）：返回按钮按它跨工作区跳发起方或跳本地父会话 */
+  creator?: { kind: 'user' } | { kind: 'agent'; workspaceId: string | null; sessionId: string };
   /** 当前会话模型所属 provider（已按 provider 模型列表校验/回退） */
   provider?: string;
   /** 当前会话模型（已按 provider 模型列表校验/回退） */

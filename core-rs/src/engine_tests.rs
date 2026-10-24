@@ -608,6 +608,10 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     let child = harness.core.session("c1");
     child.lock().unwrap().running = true;
     child.lock().unwrap().parent_session_id = Some("p1".to_string());
+    child.lock().unwrap().creator = crate::engine::SessionCreator::Agent {
+        workspace_id: None,
+        session_id: "p1".to_string(),
+    };
     crate::subagent::register("c1", "p1");
     harness.sink.clear();
     harness.core.emit_runtime();
@@ -620,14 +624,19 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     assert_eq!(parent_entry["queryRunning"], false);
     assert_eq!(parent_entry["subAgentRunning"], true);
     assert_eq!(parent_entry["idle"], false);
-    // parentSessionId 根事实：普通会话为 null、子代理会话带父 id
-    // （spawn 时落 `parent_session_id`）
+    // parentSessionId 根事实：普通会话为 null、本地子代理会话带父 id（树事实）；
+    // creator 归属根事实：普通会话 user、本地子代理 agent 形态（specs/025 FR-002）
     assert_eq!(parent_entry["parentSessionId"], Value::Null);
+    assert_eq!(parent_entry["creator"], json!({ "kind": "user" }));
     let child_entry = states
         .iter()
         .find(|state| state["sessionId"] == "c1")
         .expect("child entry");
     assert_eq!(child_entry["parentSessionId"], "p1");
+    assert_eq!(
+        child_entry["creator"],
+        json!({ "kind": "agent", "workspaceId": null, "sessionId": "p1" })
+    );
 
     // 子代理空闲后父会话回到空闲（登记仍在，不算「有子代理在跑」）
     child.lock().unwrap().running = false;
@@ -1121,7 +1130,7 @@ fn ensure_loaded_reads_messages_and_session_metadata() {
     history::create_conversation(
         "s1",
         &workspace,
-        json!({ "sessionId": "s1", "agentMode": "auto", "model": "m9", "provider": "p9" }),
+        json!({ "sessionId": "s1", "agentMode": "auto", "model": "m9", "provider": "p9", "creator": { "kind": "user" } }),
     )
     .unwrap();
     history::append_message(
@@ -1142,6 +1151,37 @@ fn ensure_loaded_reads_messages_and_session_metadata() {
     assert_eq!(state.model.as_deref(), Some("m9"));
     assert_eq!(state.provider.as_deref(), Some("p9"));
     assert_eq!(state.project.as_deref(), Some(workspace.as_str()));
+    assert_eq!(state.creator, crate::engine::SessionCreator::User, "creator 从 meta.json 恢复");
+}
+
+/// creator 缺失 / 形态不对是数据异常：ensure_loaded 报错不回退（specs/025 FR-002）。
+#[test]
+fn ensure_loaded_rejects_missing_or_invalid_creator() {
+    let sandbox = Sandbox::new("engine-ensure-loaded-creator");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    history::create_conversation(
+        "s-no-creator",
+        &workspace,
+        json!({ "sessionId": "s-no-creator" }),
+    )
+    .unwrap();
+    history::create_conversation(
+        "s-bad-creator",
+        &workspace,
+        json!({ "sessionId": "s-bad-creator", "creator": { "kind": "robot" } }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    assert!(
+        harness.core.ensure_loaded("s-no-creator").is_err(),
+        "缺 creator 的 meta 加载失败"
+    );
+    assert!(
+        harness.core.ensure_loaded("s-bad-creator").is_err(),
+        "creator 形态不对的 meta 加载失败"
+    );
 }
 
 #[test]
@@ -1161,13 +1201,13 @@ fn ensure_loaded_restores_work_mode_from_metadata() {
     history::create_conversation(
         "spin-s1",
         &workspace,
-        json!({ "sessionId": "spin-s1", "workMode": "spin" }),
+        json!({ "sessionId": "spin-s1", "workMode": "spin", "creator": { "kind": "user" } }),
     )
     .unwrap();
     history::create_conversation(
         "plain-s1",
         &workspace,
-        json!({ "sessionId": "plain-s1" }),
+        json!({ "sessionId": "plain-s1", "creator": { "kind": "user" } }),
     )
     .unwrap();
 
@@ -1248,7 +1288,7 @@ fn abort_does_not_exit_restored_spin_mode_of_idle_session() {
     history::create_conversation(
         "s1",
         &workspace,
-        json!({ "sessionId": "s1", "workMode": "spin" }),
+        json!({ "sessionId": "s1", "workMode": "spin", "creator": { "kind": "user" } }),
     )
     .unwrap();
 
@@ -1592,6 +1632,8 @@ fn first_user_message_creates_the_conversation_files() {
     assert_eq!(metadata["title"], "帮我看看这个文件");
     assert_eq!(metadata["sessionId"], "s1");
     assert_eq!(metadata["project"], workspace);
+    // 用户 prompt 发起的会话建档即写 creator=user（specs/025 FR-002）
+    assert_eq!(metadata["creator"], json!({ "kind": "user" }));
     // 对齐 `updateMetadataForNewMessage`：新 meta.json 的 context.promptMode 缺省补 normal
     assert_eq!(metadata["context"]["promptMode"], "normal");
     assert!(history::messages_path("s1", &workspace).unwrap().is_file());
@@ -4891,13 +4933,13 @@ fn prompt_mode_is_restored_from_metadata() {
     history::create_conversation(
         "s1",
         &workspace,
-        json!({ "sessionId": "s1", "context": { "promptMode": "minimal" } }),
+        json!({ "sessionId": "s1", "creator": { "kind": "user" }, "context": { "promptMode": "minimal" } }),
     )
     .unwrap();
     history::create_conversation(
         "s2",
         &workspace,
-        json!({ "sessionId": "s2", "context": { "promptMode": "bogus" } }),
+        json!({ "sessionId": "s2", "creator": { "kind": "user" }, "context": { "promptMode": "bogus" } }),
     )
     .unwrap();
 
@@ -4953,6 +4995,7 @@ fn message_payload_overrides_apply_after_metadata_except_established_web_search(
         &workspace,
         json!({
             "sessionId": "s1",
+            "creator": { "kind": "user" },
             "context": { "agentMode": "manual", "thinkingMode": "off", "webSearch": false }
         }),
     )
@@ -5490,6 +5533,11 @@ fn agent_tool_spawns_a_sub_agent_that_replies_to_the_creator() {
     let metadata = crate::history::load_metadata(&sub_ids[0], &project).expect("子会话 meta.json");
     assert_eq!(metadata["parentSessionId"], "s1");
     assert_eq!(metadata["role"], "Master");
+    // 本地子代理 creator：agent 形态、workspaceId 为 null（specs/025 FR-002）
+    assert_eq!(
+        metadata["creator"],
+        json!({ "kind": "agent", "workspaceId": null, "sessionId": "s1" })
+    );
     assert!(metadata["messageCount"].as_u64().unwrap_or(0) >= 2);
 
     // 子会话的消息里有 Reply 的 tool_use
@@ -5900,6 +5948,35 @@ fn sub_agent_without_reply_gets_reminders() {
             .unwrap_or(false)
     });
     assert!(reminder_seen, "首个 Reminder 应当带第 1 档引导文案");
+
+    // Reminder 走静默通道（specs/025 FR-007：对用户不可见）：`silent` / `origin=agent`
+    // 的 user 消息——进上下文、落盘，回放与 conversationLoaded 都按 silent 过滤；
+    // 子代理会话的 UI 侧输入已禁用，系统催办不占消息流。
+    let sub_id = crate::subagent::list_for_creator("s1").pop().expect("sub session");
+    let sub_state = harness.core.session(&sub_id);
+    let sub_state = sub_state.lock().unwrap();
+    let reminders: Vec<&Value> = sub_state
+        .messages
+        .iter()
+        .filter(|message| {
+            message.get("type").and_then(Value::as_str) == Some("user")
+                && message["message"]["content"]
+                    .as_str()
+                    .map(|text| text.contains("have not yet sent a reply using the Reply tool"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        !reminders.is_empty(),
+        "子代理消息里应当有 Reminder（silent 形态）"
+    );
+    assert!(
+        reminders.iter().all(|message| {
+            message.get("silent").and_then(Value::as_bool) == Some(true)
+                && message.get("origin").and_then(Value::as_str) == Some("agent")
+        }),
+        "Reminder 应当带 silent / origin=agent 标记（UI 不展示）"
+    );
     crate::subagent::reset_for_test();
 }
 
@@ -7042,7 +7119,8 @@ fn cross_workspace_spawn_payload_carries_origin_settings() {
     assert_eq!(request["model"], json!("m-override"));
     assert_eq!(request["provider"], json!("fake"));
     assert_eq!(request["thinkingEffort"], json!("low"));
-    assert_eq!(request["promptMode"], json!("mixed"));
+    // 提示词模式不随派发携带（specs/025 FR-005：目标会话恒 normal），即使会话级是 mixed
+    assert_eq!(request.get("promptMode"), None);
     assert_eq!(request["webSearch"], json!(false));
     assert_eq!(request["mcpServers"], json!(["srv-x"]));
     crate::subagent::reset_for_test();
@@ -7079,7 +7157,6 @@ fn cross_workspace_spawn_payload_falls_back_to_global_defaults() {
     assert_eq!(request["model"], json!("fake-model"));
     assert_eq!(request["provider"], json!("fake"));
     assert_eq!(request["thinkingEffort"], json!("high"));
-    assert_eq!(request["promptMode"], json!("normal"));
     assert_eq!(request["webSearch"], json!(true));
     assert_eq!(request["mcpServers"], json!([]));
     crate::subagent::reset_for_test();
@@ -7118,11 +7195,10 @@ fn cross_workspace_reply_routes_to_origin() {
     crate::subagent::reset_for_test();
     let harness = EngineHarness::allow_all();
     let sub = harness.core.session("sub_cross_reply");
-    sub.lock().unwrap().cross_workspace_origin = Some(CrossWorkspaceOrigin {
-        workspace_id: "HOST:/a".to_string(),
+    sub.lock().unwrap().creator = crate::engine::SessionCreator::Agent {
+        workspace_id: Some("HOST:/a".to_string()),
         session_id: "origin-1".to_string(),
-        title: "发起方".to_string(),
-    });
+    };
     harness
         .core
         .deliver_agent_reply("origin-1", "做完了", "sub_cross_reply")
@@ -7162,9 +7238,10 @@ fn cross_workspace_abort_emits_event() {
     crate::subagent::reset_for_test();
 }
 
-/// 目标工作区 Core 建跨工作区子代理：写 meta、记来源、列表派生占位父对话。
+/// 目标工作区 Core 建跨工作区子代理：写 meta（creator 归属，specs/025 FR-002）、
+/// 顶层普通会话（无 parentSessionId、无占位条目派生，specs/025 FR-001）。
 #[test]
-fn start_remote_sub_agent_records_origin_and_placeholder() {
+fn start_remote_sub_agent_records_creator() {
     // Sandbox 自己持有全局 serial 锁，这里不能再取（std Mutex 不可重入）
     let sandbox = Sandbox::new("engine-cross-workspace-start");
     crate::subagent::reset_for_test();
@@ -7179,13 +7256,10 @@ fn start_remote_sub_agent_records_origin_and_placeholder() {
             "role": "Master",
             "prompt": "任务正文",
             "description": "remote start",
-            "parentSessionId": "ph_origin-1",
             "originWorkspaceId": "HOST:/a",
             "originSessionId": "origin-1",
-            "originTitle": "发起方对话",
             "agentMode": "auto",
             "thinkingEffort": "max",
-            "promptMode": "mixed",
             "model": "m-origin",
             "provider": "prov-origin",
             "webSearch": true,
@@ -7196,56 +7270,62 @@ fn start_remote_sub_agent_records_origin_and_placeholder() {
     let state = harness.core.session_if_exists("sub_remote_start").expect("state");
     let state = state.lock().unwrap();
     assert_eq!(state.sub_agent_role.as_deref(), Some("Master"));
-    assert_eq!(state.parent_session_id.as_deref(), Some("origin-1"));
-    // specs/024 FR-004：Master 全量继承发起方（经容器）的生效设置
+    // 跨工作区对话是顶层普通会话：无父会话，归属由 creator 承载（specs/025 FR-001 / FR-002）
+    assert_eq!(state.parent_session_id, None);
+    assert_eq!(
+        state.creator,
+        crate::engine::SessionCreator::Agent {
+            workspace_id: Some("HOST:/a".to_string()),
+            session_id: "origin-1".to_string(),
+        }
+    );
+    // specs/024 FR-004：Master 全量继承发起方的生效设置；提示词模式例外——恒 normal
+    // 不继承（specs/025 FR-005）
     assert_eq!(state.agent_mode, "auto");
     assert_eq!(state.model.as_deref(), Some("m-origin"));
     assert_eq!(state.provider.as_deref(), Some("prov-origin"));
     assert_eq!(state.thinking_effort.as_deref(), Some("max"));
-    assert_eq!(state.prompt_mode.as_deref(), Some("mixed"));
+    assert_eq!(state.prompt_mode.as_deref(), Some("normal"));
     assert_eq!(state.web_search, Some(true));
-    let origin = state.cross_workspace_origin.as_ref().expect("origin");
-    assert_eq!(origin.workspace_id, "HOST:/a");
-    assert_eq!(origin.session_id, "origin-1");
     drop(state);
 
     let metadata = history::load_metadata("sub_remote_start", &project).expect("meta");
-    assert_eq!(metadata["parentSessionId"], "ph_origin-1");
-    assert_eq!(metadata["crossWorkspaceOrigin"]["workspaceId"], "HOST:/a");
-    assert_eq!(metadata["crossWorkspaceOrigin"]["title"], "发起方对话");
+    assert!(metadata.get("parentSessionId").is_none());
+    assert!(metadata.get("crossWorkspaceOrigin").is_none());
+    assert_eq!(
+        metadata["creator"],
+        json!({ "kind": "agent", "workspaceId": "HOST:/a", "sessionId": "origin-1" })
+    );
     // 继承设置落进 context：重启后重新打开子会话 UI 仍显示继承值
     assert_eq!(metadata["context"]["agentMode"], "auto");
     assert_eq!(metadata["context"]["thinkingMode"], "max");
-    assert_eq!(metadata["context"]["promptMode"], "mixed");
+    assert_eq!(metadata["context"]["promptMode"], "normal");
     assert_eq!(metadata["context"]["webSearch"], true);
     assert_eq!(metadata["context"]["mcpEnabled"], json!(["srv-a", "srv-b"]));
     assert_eq!(metadata["model"], "m-origin");
     assert_eq!(metadata["provider"], "prov-origin");
 
-    // 列表只收录「发过消息」的对话（messageCount > 0）：跨工作区子代理的第一条消息
-    // 落盘后才会出现，占位父对话随之派生。
+    // 列表只收录「发过消息」的对话（messageCount > 0）：第一条消息落盘后作为
+    // 顶层普通条目出现，不再派生占位父对话（specs/025 FR-001）。
     history::update_metadata("sub_remote_start", &project, || json!({}), |metadata| {
         metadata["messageCount"] = json!(1);
     })
     .expect("mark child as non-empty");
 
     let list = history::load_conversation_list(Some(&project));
-    let placeholder = list
-        .iter()
-        .find(|item| item["sessionId"] == "ph_origin-1")
-        .expect("derived placeholder");
-    assert_eq!(placeholder["placeholder"]["sessionId"], "origin-1");
-    assert_eq!(placeholder["placeholder"]["workspaceId"], "HOST:/a");
+    assert!(list.iter().any(|item| item["sessionId"] == "sub_remote_start"));
+    assert!(list.iter().all(|item| item["sessionId"] != "ph_origin-1"));
 
     // 收尾：停掉后台子代理线程（没有 LLM 配置，循环会自行退出）
     harness.core.drop_session("sub_remote_start");
     crate::subagent::reset_for_test();
 }
 
-/// specs/024 FR-004：非 Master 角色（Explorer）固定 normal 预设 / 不联网，
-/// agentMode / 模型 / provider / thinking 仍继承（与本地子代理 specs/020 FR-003 同口径）。
+/// specs/025 FR-005：非 Master 角色（Explorer）同样**全量继承**发起方生效设置
+/// （不按角色裁剪为 normal / 关 / 空名单），角色仅决定工具白名单；
+/// SystemPrompt 含创建方身份与 `Reply` 要求（specs/025 FR-006）。
 #[test]
-fn start_remote_sub_agent_non_master_fixes_preset() {
+fn start_remote_sub_agent_full_inheritance_and_system_prompt() {
     let sandbox = Sandbox::new("engine-cross-workspace-explorer");
     crate::subagent::reset_for_test();
     let project = sandbox.workspace.to_string_lossy().to_string();
@@ -7259,13 +7339,10 @@ fn start_remote_sub_agent_non_master_fixes_preset() {
             "role": "Explorer",
             "prompt": "任务正文",
             "description": "remote explorer",
-            "parentSessionId": "ph_origin-2",
             "originWorkspaceId": "HOST:/a",
             "originSessionId": "origin-2",
-            "originTitle": "发起方对话",
             "agentMode": "auto",
             "thinkingEffort": "low",
-            "promptMode": "mixed",
             "model": "m-origin",
             "provider": "prov-origin",
             "webSearch": true,
@@ -7279,13 +7356,24 @@ fn start_remote_sub_agent_non_master_fixes_preset() {
     assert_eq!(state.model.as_deref(), Some("m-origin"));
     assert_eq!(state.provider.as_deref(), Some("prov-origin"));
     assert_eq!(state.thinking_effort.as_deref(), Some("low"));
+    // specs/025 FR-005：Explorer 不再被角色固定——联网搜索照常继承；提示词模式是
+    // 唯一例外——跨工作区会话恒 normal（minimal / mixed 的首轮工具白名单会剥夺
+    // `Reply`，子代理无法主动回传），不随派发继承
     assert_eq!(state.prompt_mode.as_deref(), Some("normal"));
-    assert_eq!(state.web_search, Some(false));
+    assert_eq!(state.web_search, Some(true));
+    // specs/025 FR-006：SystemPrompt 含创建方工作区身份、会话 id 与 Reply 要求
+    // （targetSessionId 指向创建方会话）
+    let prefix = state.system_prompt_prefix.as_deref().expect("system prompt prefix");
+    assert!(prefix.contains("HOST:/a"), "SystemPrompt 缺创建方工作区身份: {prefix}");
+    assert!(prefix.contains("origin-2"), "SystemPrompt 缺创建方会话 id: {prefix}");
+    assert!(prefix.contains("targetSessionId"), "SystemPrompt 缺 Reply 说明: {prefix}");
     drop(state);
 
-    // MCP 恒空的角色口径：写成空名单覆盖（不受发起方名单影响），落进 meta
+    // MCP 名单全量继承（不再恒空），落进 meta context
     let metadata = history::load_metadata("sub_remote_explorer", &project).expect("meta");
-    assert_eq!(metadata["context"]["mcpEnabled"], json!([]));
+    assert_eq!(metadata["context"]["mcpEnabled"], json!(["srv-a"]));
+    // 恒 normal 同样落盘（重启重开仍显示标准模式）
+    assert_eq!(metadata["context"]["promptMode"], "normal");
 
     harness.core.drop_session("sub_remote_explorer");
     crate::subagent::reset_for_test();
@@ -7305,13 +7393,10 @@ fn start_remote_sub_agent_rejects_missing_settings() {
         "role": "Master",
         "prompt": "任务正文",
         "description": "remote missing",
-        "parentSessionId": "ph_origin-3",
         "originWorkspaceId": "HOST:/a",
         "originSessionId": "origin-3",
-        "originTitle": "发起方对话",
         "agentMode": "auto",
         "thinkingEffort": "high",
-        "promptMode": "normal",
         "model": "m-origin",
         "provider": "prov-origin",
         "webSearch": false,

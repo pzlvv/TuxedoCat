@@ -147,6 +147,21 @@ export class Client implements AssistantEventBus {
   }
 
   /**
+   * 会话归属的工作区引用（本地 / 远程同构）；未登记返回 undefined。
+   *
+   * 只读查找：不走 `connectionForSession` 的「唯一连接」退路与登记副作用。
+   * 供宿主 UI 聚合（标签页流水灯等）在自有索引未命中时兜底——跨工作区子代理
+   * 会话由目标工作区 Core 在后台创建，不经过宿主的「打开对话 / 读列表」路径，
+   * 宿主索引要等该工作区被激活才补上；派发时刻（`assignSession`）这里已登记归属
+   * （specs/023 FR-002），按它解析归属不必等用户切到目标标签页。
+   */
+  workspaceRefForSession(sessionId: string): WorkspaceRef | undefined {
+    const id = this.sessionToConnection.get(sessionId);
+    if (!id) return undefined;
+    return this.connections.get(id)?.workspaceRef;
+  }
+
+  /**
    * 打开工作区：已存在则激活，不新建 Connection。
    *
    * 同步通道工厂直接返回 Connection；通道异步建立时返回 Promise

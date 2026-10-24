@@ -358,6 +358,35 @@ async function run(): Promise<void> {
     await harness.client.closeAll();
   }
 
+  // ── 5c. 会话归属的只读查找（workspaceRefForSession）──
+  // 宿主 UI 聚合（标签页流水灯 / 关闭确认）在自有索引未命中时按路由表兜底：
+  // 跨工作区子代理会话由目标工作区 Core 在后台创建，宿主索引要等该工作区被激活
+  // 才补上，派发时刻（assignSession）这里就要查得到归属（specs/023 FR-002）。
+  {
+    const harness = createClientHarness();
+    const remoteRef = remoteWorkspaceRef(
+      { host: '10.0.0.7', port: 22, user: 'pz', auth: { kind: 'sshPassword', password: 'pw' } },
+      '/home/pz/proj',
+    );
+    harness.client.openWorkspace(WS_A);
+    harness.client.openWorkspace(remoteRef);
+    harness.readyAll();
+    harness.client.assignSession('s-a', WS_A);
+    harness.client.assignSession('s-remote', remoteRef);
+
+    check('已登记会话查得到本地归属', harness.client.workspaceRefForSession('s-a')?.path === WS_A.path);
+    check(
+      '已登记会话查得到远程归属（远程不是 file-only）',
+      harness.client.workspaceRefForSession('s-remote')?.path === '/home/pz/proj',
+    );
+    check('未登记会话返回 undefined', harness.client.workspaceRefForSession('unknown') === undefined);
+
+    // 关闭工作区后路由残留清空：归属随 Connection 一起消失
+    await harness.client.closeWorkspace(WS_A);
+    check('关闭工作区后归属不再可查', harness.client.workspaceRefForSession('s-a') === undefined);
+    await harness.client.closeAll();
+  }
+
   // ── 6. 关闭工作区销毁 Connection ──
   {
     const harness = createClientHarness();

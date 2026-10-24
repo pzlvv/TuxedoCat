@@ -143,6 +143,7 @@ export const zhDict: Record<string, string> = {
   'messages.jumpToBottom': '跳到底部',
   'inputArea.placeholder': '输入消息，Shift+Enter 换行',
   'inputArea.placeholderSpinMode': 'Spin 模式下不响应用户输入',
+  'inputArea.placeholderNotUserCreated': '非用户创建对话无法输入',
   'inputArea.placeholderNeedConfigPrefix': '请先配置模型服务，',
   'inputArea.placeholderNeedConfigClick': '点击设置',
   'inputArea.placeholderNeedConfigTitle': '请先配置模型服务，点击设置',
@@ -207,7 +208,7 @@ export const zhDict: Record<string, string> = {
   'inputArea.webSearchHint': '联网搜索（当前会话生效；配置文件 llm.webSearch 为新对话默认值）',
   'inputArea.webSearchMinimalHint': '极简模式下不可用',
   'inputArea.subagentOptionsLockedHint': '子代理会话不可更改（随角色固定）',
-  'inputArea.subAgentWarning': '当前对话为 sub-agent，请确认后发送',
+  'inputArea.remotePromptModeLockedHint': '跨工作区对话固定标准提示词模式',
 
   /* ── tools/Bash.tsx ──────────────────────────────────────── */
   'tool.bash.clickFullOutput': '点击查看完整输出',

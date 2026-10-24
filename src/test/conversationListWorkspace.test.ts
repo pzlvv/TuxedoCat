@@ -28,7 +28,15 @@ function makeHost(getWorkspacePath: () => string | undefined): UIHost {
 }
 
 function meta(sessionId: string, project: string): ConversationMetadata {
-  return { sessionId, project, title: sessionId, createdAt: 1, updatedAt: 1, messageCount: 1 };
+  return {
+    sessionId,
+    project,
+    title: sessionId,
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: 1,
+    creator: { kind: 'user' },
+  };
 }
 
 /** 可注入 load 行为、记录 dispatch 的测试用实现 */

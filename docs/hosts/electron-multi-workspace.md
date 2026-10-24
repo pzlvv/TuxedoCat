@@ -240,13 +240,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 头部：搜索框 + 新对话按钮。
 - 搜索框按对话标题过滤当前活动工作目录的对话列表；输入即时过滤；清空恢复全部。
 - 对话列表展示当前活动工作目录的对话（含子对话树）。
-- 跨工作区子代理的占位父对话在列表里以容器节点呈现（标题后带「跨工作区容器」标记），
-  不提供重命名 / 智能命名 / 删除入口；点击打开只显示跳转页。
-- 容器行的状态灯按其直接子代理会话的运行时聚合派生（specs/024 FR-001）：任一子代理
-  等待用户 → 黄色呼吸，否则任一子代理在跑 → 蓝色流水，全部空闲 → 无灯；容器自身
-  没有运行时事实，灯是子代理运行时的只读投影（`src/shared/sessionRuntime.ts` 的
-  `deriveContainerBusyLevel` 是唯一派生），不挂未读完成呼吸、不触发完成提醒音
-  （与本地子代理同口径）；子代理转等待用户的提醒音照常（specs/024 FR-002）。
+- 跨工作区子代理的对话是**顶层普通行**（specs/025 FR-001）：有消息、可打开、行内操作
+  （重命名 / 智能命名 / 删除）与普通对话一致，无占位节点与占位页。
+- 非 user 创建的会话（`creator` 为 agent 形态，specs/025 FR-002）安静运行：完成不挂
+  未读完成呼吸（武装源头跳过）、不触发完成提醒音（specs/025 FR-003）；转等待用户的
+  提醒音照常；输入框禁用（specs/025 FR-004）。
 - 子对话树的默认展开：当前活动会话的祖先链展开（保证选中项可见）；活动会话自身的
   直接子会话数达到 5 时不默认展开（阈值与 webview 对话列表共用
   `src/host/ui/conversationTreeDefaults.ts`），用户点击折叠按钮显式设置后不再被默认
@@ -483,9 +481,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 聊天视图工作目录 | `electron/ChatViewManager.ts` 的 `createView`（`--workspace=` 参数） |
 | 工作区代理身份 | `src/host/workspaceIdentity.ts` 的 `resolveMachineName` / `workspaceAgentId`；`src/host/ui/webviewMessageHandler.ts` 的 `handleRequestWorkspaces` |
 | 跨工作区派发 | `src/host/WebViewUI.ts` 的 `requestCrossWorkspaceAgent`（`CoreRequest.crossWorkspaceAgentRequested`）；`src/host/crossWorkspaceRouting.ts` 的 `resolveCrossWorkspaceTarget` |
-| 跨工作区子代理会话 | `core-rs/src/engine.rs` 的 `start_remote_sub_agent` / `spawn_remote_agent`；`core-rs/src/history.rs` 的 `create_remote_sub_agent_metadata` |
-| 占位父对话 | `core-rs/src/history.rs` 与 `src/shared/history/Conversation.ts` 的列表派生；`electron/sidebar/main.ts` 的占位行渲染 |
-| 跨工作区跳转 | `electron/main.ts` 的 `showCrossWorkspacePlaceholder` / `jumpToCrossWorkspaceConversation`；`electron/chatPlaceholderHtml.ts` 的 `crossWorkspaceAgent` |
+| 跨工作区子代理会话 | `core-rs/src/engine.rs` 的 `start_remote_sub_agent` / `spawn_remote_agent`；`core-rs/src/history.rs` 的 `create_remote_sub_agent_metadata`（creator 归属，specs/025 FR-001 / FR-002） |
+| 跨工作区跳转 | `src/webview/App.tsx` 的「返回发起方」（按 `creator` 寻址）；`src/webview/tools/Agent.tsx` 的工具卡片跳转 |
 | 工具工作目录 | `src/shared/tools/Tool.ts` 的 `ToolUseContext.cwd`（Core 侧工具执行以它为基准展开相对路径） |
 | 引擎 cwd | Core 进程内的会话引擎（`core-rs/src/engine.rs`，随会话工作目录派生） |
 | 浮窗模式 | `electron/main.ts` 的 `applyWindowMode` / `canToggleWindowMode` / `workspaceDisplayName` |

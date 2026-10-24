@@ -1,48 +1,88 @@
 /**
- * 主输入框的禁用与 placeholder 决策（specs/016 FR-004）。
+ * 主输入框的禁用与 placeholder 决策（specs/016 FR-004；specs/025 FR-004）。
  *
  * 纯函数，InputArea 与测试共用一份实现（与 `host/abortButtonState.ts` 同模式），
- * 不在组件里另写一遍 `if`。两个禁用来源语义不同：
+ * 不在组件里另写一遍 `if`。三个禁用来源用判别原因区分（方案区分，specs/025 FR-004）：
  * - provider 未配置：禁用 + 引导覆盖层（打开设置）；
- * - spin 模式：禁用 + placeholder 提示（会话不受理输入），无覆盖层。
+ * - spin 模式：禁用 + placeholder 提示（会话不受理输入），无覆盖层；
+ * - 非用户创建（creator 为 agent 形态）：禁用 + placeholder 提示——对话由创建方
+ *   Agent 驱动，目标侧用户不输入（specs/025 FR-004）。
  */
+
+import type { SessionCreator } from '../shared/sessionCreator';
 
 export interface InputAreaDisableFacts {
   /** 服务商配置是否已完成（null = 尚未到达） */
   providerConfigured: boolean | null;
   /** 会话工作模式（core 事实投影） */
   workMode: 'normal' | 'spin';
+  /** 会话是否非用户创建（creator 为 agent 形态；specs/025 FR-004） */
+  notUserCreated: boolean;
 }
 
-/** 输入框是否禁用：provider 未配置或 spin 模式 */
-export function resolveInputDisabled(facts: InputAreaDisableFacts): boolean {
-  return facts.providerConfigured === false || facts.workMode === 'spin';
+/** 输入禁用的判别原因（specs/025 FR-004：与 spin / 未配置服务商方案区分） */
+export type InputDisabledReason = 'providerNotConfigured' | 'spinMode' | 'notUserCreated';
+
+/**
+ * 输入禁用原因；`null` = 可输入。
+ * 优先级沿用既有次序并在其后插入（specs/025 FR-004）：Spin > 非用户创建 > 未配置
+ * 服务商（引导覆盖层只属于 provider 分支，仅作用于可输入会话）。
+ */
+export function resolveInputDisabledReason(facts: InputAreaDisableFacts): InputDisabledReason | null {
+  if (facts.workMode === 'spin') return 'spinMode';
+  if (facts.notUserCreated) return 'notUserCreated';
+  if (facts.providerConfigured === false) return 'providerNotConfigured';
+  return null;
 }
 
-/** placeholder 三态：spin 提示 > 未配置空串（覆盖层负责引导）> 默认文案 */
-export function resolveInputPlaceholder(
-  facts: InputAreaDisableFacts,
-  texts: { default: string; spin: string },
+/**
+ * placeholder 文案按禁用原因选择：spin / 非用户创建换提示文案，provider 未配置取
+ * 空串（引导由覆盖层负责，specs/016 FR-004），可输入取默认文案。
+ */
+export function resolveInputPlaceholderText(
+  reason: InputDisabledReason | null,
+  texts: { default: string; spin: string; notUserCreated: string },
 ): string {
-  if (facts.workMode === 'spin') return texts.spin;
-  return facts.providerConfigured === false ? '' : texts.default;
+  if (reason === 'spinMode') return texts.spin;
+  if (reason === 'notUserCreated') return texts.notUserCreated;
+  if (reason === 'providerNotConfigured') return '';
+  return texts.default;
 }
 
 export interface SessionOptionsLockFacts {
   /**
    * 当前会话的子代理角色（`conversationLoaded.metadata.role`，meta.json 的 role 事实；
-   * 普通会话 / 旧数据为 null）。
+   * 普通会话为 null）。
    */
   subAgentRole?: string | null;
+  /**
+   * 会话创建者（specs/025 FR-002）；undefined = 尚未到达。
+   * 跨工作区派发的对话（workspaceId 非空）不适用锁定。
+   */
+  creator?: SessionCreator | null;
 }
 
 /**
- * 选项菜单是否锁定（specs/020 FR-005）：非 Master 子代理会话锁定提示词模式 /
- * 联网搜索 / MCP 服务器三项——core 侧对非 Master 角色固定 normal 预设 / 不联网 /
- * 无 MCP，UI 不提供入口。判据是「子代理且 role ≠ Master」，将来新增非 Master 角色
- * 无需改 UI；role 缺失（普通会话 / 旧数据）按普通会话对待、不锁定。
+ * 选项菜单是否锁定（specs/020 FR-005；specs/025 FR-005 收窄）：非 Master 角色的
+ * **本地**子代理锁定提示词模式 / 联网搜索 / MCP 三项——core 侧对本地非 Master 角色
+ * 固定 normal 预设 / 不联网 / 无 MCP，UI 不提供入口。跨工作区派发的对话继承创建者
+ * 配置、不按角色固定（specs/025 FR-005），本三项锁定不适用（提示词模式见
+ * `resolvePromptModeLocked` 的独立锁定）。creator 尚未到达时按本地口径处理
+ * （保守：锁定）。
  */
 export function resolveSessionOptionsLocked(facts: SessionOptionsLockFacts): boolean {
   const role = facts.subAgentRole;
-  return role !== undefined && role !== null && role !== 'Master';
+  if (role === undefined || role === null || role === 'Master') return false;
+  const remoteDispatched = facts.creator?.kind === 'agent' && facts.creator.workspaceId !== null;
+  return !remoteDispatched;
+}
+
+/**
+ * 提示词模式选项是否锁定：本地非 Master 角色随三项锁定（specs/020 FR-005）；跨工作区
+ * 派发的对话恒 normal（specs/025 FR-005——minimal / mixed 的首轮工具白名单会剥夺
+ * `Reply` 生命周期设施），同样不提供切换入口。联网搜索 / MCP 不受此锁定影响。
+ */
+export function resolvePromptModeLocked(facts: SessionOptionsLockFacts): boolean {
+  if (resolveSessionOptionsLocked(facts)) return true;
+  return facts.creator?.kind === 'agent' && facts.creator.workspaceId !== null;
 }

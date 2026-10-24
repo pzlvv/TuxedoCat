@@ -477,7 +477,6 @@ export class WebViewUI implements WebViewUiPort {
       return { error: `target workspace is not ready: ${request.targetWorkspaceId}` };
     }
     const subSessionId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    const placeholderId = `ph_${request.sessionId}`;
     // 新会话在目标 Connection 里尚不存在：先登记归属，后续 UiEvent（abort / close）才路由得到
     this.router.assignSession(subSessionId, resolved.ref);
     const originWorkspaceId = workspaceAgentId(origin.workspaceRef, machineName);
@@ -492,15 +491,13 @@ export class WebViewUI implements WebViewUiPort {
       role: request.role,
       prompt: request.prompt,
       description: request.description,
-      parentSessionId: placeholderId,
+      // 创建方身份（目标 Core 据此写 creator，specs/025 FR-002）：宿主只填这两个字段，
+      // 设置原样透传（specs/024 FR-004 / specs/025 FR-005）、提示词模式不携带（目标会话
+      // 恒 normal），宿主不是写入点
       originWorkspaceId,
       originSessionId: request.sessionId,
-      originTitle: request.originTitle,
-      // 发起方会话的生效设置原样透传（specs/024 FR-004）：宿主不是设置事实的写入点，
-      // 目标 Core 按角色继承规则应用
       agentMode: request.agentMode,
       thinkingEffort: request.thinkingEffort,
-      promptMode: request.promptMode,
       model: request.model,
       provider: request.provider,
       webSearch: request.webSearch,

@@ -52,8 +52,6 @@
 import { PRODUCT_NAME } from '../../src/config/project.js';
 // 子代理默认展开上限：与 webview 对话列表共用同一份事实（阈值两处各写一遍必然漂移）
 import { shouldAutoExpandSubSessions } from '../../src/host/ui/conversationTreeDefaults.js';
-// 容器行状态灯的级别派生（specs/024 FR-001）：与托盘 / 标签页流水灯同一份语义
-import { deriveContainerBusyLevel } from '../../src/shared/sessionRuntime.js';
 // 类型扩展名集合、打开分流与「远程二进制不支持」常量的根在 electron/fileTypes.ts
 // （US-42 验收 6）：图标说是文本的，双击就进内置文本窗口，一份事实一个写入点
 import {
@@ -76,11 +74,6 @@ interface ConversationMeta {
   role?: string;
   /** 该对话所属的工作目录（绝对路径）：打开对话时回传主进程，按对话解析工作目录 */
   project?: string;
-  /**
-   * 跨工作区子代理的占位父对话（specs/023 FR-004）：由 core 列表派生，不提供
-   * 重命名 / 智能命名 / 删除入口；点击由主进程显示跳转页。
-   */
-  placeholder?: { workspaceId: string; sessionId: string; title: string };
 }
 
 /** 工作区项（主进程取好目录名下发；id 是稳定身份，path 是展示路径） */
@@ -132,11 +125,7 @@ interface SidebarAPI {
   openWorkspace: (id: string) => void;
   activateWorkspace: (path: string) => void;
   closeWorkspace: (path: string) => void;
-  openConversation: (
-    sessionId: string,
-    project?: string,
-    placeholder?: { workspaceId: string; sessionId: string; title: string },
-  ) => void;
+  openConversation: (sessionId: string, project?: string) => void;
   newConversation: () => void;
   deleteConversation: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
   closeConversation: (sessionId: string) => void;
@@ -494,13 +483,7 @@ function render(): void {
   const collect = (c: ConversationMeta, depth: number): void => {
     const kids = childrenMap.get(c.sessionId) || [];
     const expanded = kids.length > 0 && isSubExpanded(c.sessionId);
-    // 容器行（跨工作区占位父对话）：自身无运行时事实，灯按直接子代理的运行时聚合
-    // 派生（specs/024 FR-001，waiting > running > idle）；无子代理在跑时
-    // undefined = 无灯，不猜值。子代理集合按列表父子树选出（容器父子关系在 meta，
-    // 运行时快照的 parentSessionId 指向真实发起方会话，不指向容器）
-    const state = c.placeholder
-      ? containerRowState(kids, c.sessionId)
-      : sessionStates.get(c.sessionId);
+    const state = sessionStates.get(c.sessionId);
     ordered.push({ c, html: itemHtml(c, depth, kids.length, expanded, state) });
     if (expanded) {
       for (const child of kids) collect(child, depth + 1);
@@ -572,23 +555,6 @@ function render(): void {
   }
 }
 
-/**
- * 容器行的合成运行时状态（specs/024 FR-001）：子代理集合按列表父子树选出，级别由
- * `deriveContainerBusyLevel` 聚合；idle 容器返回 undefined（无灯）。合成对象只喂
- * `itemHtml` 的流水灯分支，不进任何状态流（容器没有运行时事实，不伪造快照）。
- */
-function containerRowState(
-  kids: ConversationMeta[],
-  containerId: string,
-): SessionRuntimeState | undefined {
-  const childStates = kids
-    .map((kid) => sessionStates.get(kid.sessionId))
-    .filter((state): state is SessionRuntimeState => !!state);
-  const level = deriveContainerBusyLevel(childStates);
-  if (level === 'idle') return undefined;
-  return { sessionId: containerId, idle: false, waiting: level === 'waiting' };
-}
-
 function itemHtml(
   c: ConversationMeta,
   depth: number,
@@ -596,12 +562,9 @@ function itemHtml(
   isExpanded: boolean,
   state: SessionRuntimeState | undefined,
 ): string {
-  const rawTitle = c.title && c.title.trim() ? c.title : '(未命名对话)';
-  // 占位父对话：标注它是跨工作区子代理的容器（specs/023 FR-004）
-  const title = c.placeholder ? `${rawTitle} · 跨工作区容器` : rawTitle;
+  const title = c.title && c.title.trim() ? c.title : '(未命名对话)';
   const roleTag = c.role && c.role !== 'Master' ? ` · ${escapeHtml(c.role)}` : '';
-  // 已打开（视图层状态）与运行状态（core 运行时状态）来自各自的流，不挂在列表项上；
-  // 容器行的 state 是子代理运行时的合成投影（specs/024 FR-001），由调用方注入
+  // 已打开（视图层状态）与运行状态（core 运行时状态）来自各自的流，不挂在列表项上
   const dot = loadedSessions.has(c.sessionId) ? '<span class="loaded-dot" title="已打开"></span>' : '';
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
   // 正在等待用户输入（ask user / 权限确认）时显示黄色；
@@ -641,9 +604,7 @@ function itemHtml(
   //   不提供重命名 / 智能命名 / 删除——子代理历史由父会话管理，避免误删。
   //   其余 3 格用不可见占位符占住，保证关闭按钮仍在第 2 列第 2 行，
   //   与根对话的关闭按钮位置完全一致（只是其余 3 个按钮不显示）。
-  const actionsHtml = c.placeholder
-    ? ''
-    : isRenaming || isConfirming
+  const actionsHtml = isRenaming || isConfirming
     ? ''
     : depth === 0
       ? `<div class="item-actions">
@@ -838,8 +799,7 @@ function bindListEvents(): void {
     // 回传该对话自己的工作目录：主进程据此给聊天视图注入正确的 --workspace=
     const entry = conversations?.find((c) => c.sessionId === sessionId);
     const project = entry?.project;
-    // 占位父对话（specs/023 FR-004）：把来源工作区一并回传，主进程据此显示跳转页
-    window.sidebarAPI?.openConversation(sessionId, project, entry?.placeholder);
+    window.sidebarAPI?.openConversation(sessionId, project);
     setActive(sessionId);
   });
 

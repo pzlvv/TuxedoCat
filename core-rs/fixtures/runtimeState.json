@@ -9,6 +9,7 @@
     "backgroundRunning",
     "subAgentRunning",
     "parentSessionId",
+    "creator",
     "backgroundTasks",
     "subAgentDescription"
   ],

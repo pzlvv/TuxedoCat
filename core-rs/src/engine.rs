@@ -81,17 +81,16 @@ fn run_sub_agent(
             break;
         }
         retries += 1;
-        // Reminder 作为一条普通用户消息入队（可见、会落盘），再跑一轮消费循环。
-        // 消费循环返回即代表这一轮
-        // （含 Reminder 触发的 LLM 调用与工具执行）已经彻底结束。
+        // Reminder 经 `pending_reminder` 入队：消费循环的 Reminder 批走 `persist_reminder`
+        // （`silent` / `origin=agent` 的 user 消息——进上下文、落盘，UI 消息流不展示，
+        // 回放与 conversationLoaded 都过滤 `silent`）。子代理会话的 UI 侧输入已禁用
+        // （specs/025 FR-004），系统注入的催办对用户不可见；LLM 照常看到。
+        // `sub_agent_has_reply` 的基准是最后一个非 silent 用户消息——Reminder 不成为
+        // 基准，判定回到「任务消息之后是否调用过 Reply」，与本循环「一检出 Reply 即
+        // 收尾」的语义一致。
         let reminder = sub_agent_reminder(retries, &creator_session_id);
         let mut state = state.lock().unwrap();
-        state.pending_user_message = Some(json!({
-            "type": "user",
-            "message": { "role": "user", "content": reminder },
-            "uuid": util::unique_id("subtask"),
-            "timestamp": util::now_millis(),
-        }));
+        state.pending_reminder = Some(reminder);
         state.running = true;
         state.cancel.store(false, Ordering::Relaxed);
         state.silent_abort = false;
@@ -320,21 +319,29 @@ pub struct SessionState {
     /// 待注入的 `@` 工作区提醒（specs/023 FR-008）：轮次边界解析出 `@<身份>` 后置位，
     /// `run_turn` 在用户消息之后落一条 silent reminder。
     pub pending_mention_reminder: Option<String>,
-    /// 跨工作区子代理的来源（specs/023 FR-003）：目标工作区 Core 用它把 `Reply`
-    /// 回投到发起方会话。普通会话为 `None`。
-    pub cross_workspace_origin: Option<CrossWorkspaceOrigin>,
+    /// 跨工作区子代理的来源已并入 creator（specs/025 FR-002），字段随其删除。
+    pub creator: SessionCreator,
 }
 
-/// 跨工作区子代理的来源（specs/023）：发起方工作区身份 / 会话 id / 标题。
-///
-/// Core 侧只用 `session_id` 做回复回投与结束通知；`workspace_id` / `title` 是同一份
-/// 来源事实的其余字段，落进 `meta.json` 的 `crossWorkspaceOrigin` 供宿主派生占位条目。
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct CrossWorkspaceOrigin {
-    pub workspace_id: String,
-    pub session_id: String,
-    pub title: String,
+/// 会话创建者（specs/025 FR-002）：归属的唯一根事实。用户 prompt 发起为 `User`；
+/// Agent 创建（本地子代理 / 跨工作区派发）携带创建方工作区身份与创建方会话 id——
+/// 本地创建 `workspace_id` 为 `None`（工作区身份算法唯一落点是宿主
+/// `workspaceIdentity.ts`，Core 不持该事实）。托盘完成抑制、未读绿灯武装、输入
+/// 禁用、`Reply` 回传路由与跨工作区跳转都是它的只读投影；TS 镜像
+/// `src/shared/sessionCreator.ts`，meta.json 落盘形态两侧一致。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SessionCreator {
+    /// 用户 prompt 发起
+    User,
+    /// Agent 创建
+    #[serde(rename_all = "camelCase")]
+    Agent {
+        /// 创建方工作区身份；本地创建为 `None`
+        workspace_id: Option<String>,
+        /// 创建方会话 id（本地子代理 = 父会话 id）
+        session_id: String,
+    },
 }
 
 /// 出队时解析出的 Skill 命令（对齐 `SkillDispatchInfo`）
@@ -395,7 +402,7 @@ impl SessionState {
             sub_agent_description: None,
             pending_skill_injection: None,
             pending_mention_reminder: None,
-            cross_workspace_origin: None,
+            creator: SessionCreator::User,
         }
     }
 
@@ -529,7 +536,7 @@ impl Core {
             .iter()
             .filter_map(|session_id| sessions.get(session_id).map(|state| (session_id, state)))
             .map(|(session_id, state)| {
-                let (running, pending, waiting, compacting, background, parent, sub_agent_desc) = {
+                let (running, pending, waiting, compacting, background, parent, sub_agent_desc, creator) = {
                     let state = state.lock().unwrap();
                     (
                         state.running,
@@ -539,6 +546,7 @@ impl Core {
                         state.background,
                         state.parent_session_id.clone(),
                         state.sub_agent_description.clone(),
+                        state.creator.clone(),
                     )
                 };
                 // 运行中后台任务清单（specs/019 FR-001）：`TASKS` 锁在此处短暂获取，
@@ -565,6 +573,7 @@ impl Core {
                     background,
                     sub_agent_running,
                     parent.as_deref(),
+                    &creator,
                     &background_tasks,
                     sub_agent_desc.as_deref(),
                 )
@@ -600,6 +609,7 @@ impl Core {
         background: bool,
         sub_agent_running: bool,
         parent_session_id: Option<&str>,
+        creator: &SessionCreator,
         background_tasks: &[crate::bash_task::RunningTask],
         sub_agent_description: Option<&str>,
     ) -> Value {
@@ -614,9 +624,12 @@ impl Core {
             "pendingCompact": pending_compact,
             "backgroundRunning": background,
             "subAgentRunning": sub_agent_running,
-            // 父会话 id（子代理会话才有；spawn 时落 `parent_session_id`）。
-            // 随会话存续，不随注册表注销消失
+            // 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 `null`，
+            // specs/025 FR-002）。树事实，归属语义读 `creator`。
             "parentSessionId": parent_session_id,
+            // 会话创建者（specs/025 FR-002）：归属根事实，完成提醒 / 未读绿灯的
+            // 抑制与输入禁用据此判定（TS 镜像 `sessionCreator.ts` 判别联合）。
+            "creator": creator,
             // 运行中后台 Bash 任务清单（specs/019 FR-001，注册序；空集为 `[]`）。
             // pid / start_time 不进契约——abort 悬停明细只展示身份（描述 + 命令）。
             "backgroundTasks": background_tasks
@@ -1126,24 +1139,14 @@ impl Core {
         let Some(target) = request.target.clone() else {
             return Err("target is required for a cross-workspace agent".to_string());
         };
-        let origin_title = self
-            .project_of(&request.creator_session_id)
-            .ok()
-            .and_then(|project| history::load_metadata(&request.creator_session_id, &project))
-            .and_then(|metadata| {
-                metadata
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
-        // specs/024 FR-004：发起方会话的**生效设置**随派发请求携带——子对话经容器继承
+        // specs/024 FR-004：发起方会话的**生效设置**随派发请求携带——子对话继承
         // 发起方，不再取目标工作区默认值。生效值与查询路径同一口径：model / provider 经
-        // `config::resolve_provider` 解析为具体值，thinking / prompt / webSearch 取会话级
+        // `config::resolve_provider` 解析为具体值，thinking / webSearch 取会话级
         // 覆盖、缺省回落全局默认，MCP 启用名单取 `read_enabled_mcps` 的会话生效名单
-        // （契约成员必选，目标侧不再回落默认值）。
+        // （契约成员必选，目标侧不再回落默认值）。提示词模式**不随派发携带**（specs/025
+        // FR-005：跨工作区会话恒 normal）。
         let origin_session = self.session(&request.creator_session_id);
-        let (agent_mode, model, provider, thinking_effort, prompt_mode, web_search, mcp_servers) = {
+        let (agent_mode, model, provider, thinking_effort, web_search, mcp_servers) = {
             let state = origin_session.lock().unwrap();
             let provider_config =
                 config::resolve_provider(state.provider.as_deref(), state.model.as_deref())?;
@@ -1164,7 +1167,6 @@ impl Core {
                     .thinking_effort
                     .clone()
                     .unwrap_or_else(config::default_thinking_effort),
-                prompt::normalize_prompt_mode(state.prompt_mode.as_deref()).to_string(),
                 state.web_search.unwrap_or_else(config::default_web_search),
                 crate::mcp_config::read_enabled_mcps(Some(&request.creator_session_id)),
             )
@@ -1176,10 +1178,8 @@ impl Core {
             "role": request.role.clone(),
             "prompt": request.prompt.clone(),
             "description": request.description.clone(),
-            "originTitle": origin_title,
             "agentMode": agent_mode,
             "thinkingEffort": thinking_effort,
-            "promptMode": prompt_mode,
             "model": model,
             "provider": provider,
             "webSearch": web_search,
@@ -1301,9 +1301,10 @@ impl Core {
 
     /// 在目标工作区创建跨工作区子代理会话并立即开始执行（specs/023 FR-003）。
     ///
-    /// 由宿主经 `UiEvent.remoteSubAgentStarted` 下发到目标工作区 Core。会话级配置取
-    /// **目标工作区**的默认值（模型 / agentMode / 提示词预设 / 联网 / MCP），不继承发起方；
-    /// 非 Master 角色仍按既有规则固定 normal 预设、不联网、无 MCP。
+    /// 由宿主经 `UiEvent.remoteSubAgentStarted` 下发到目标工作区 Core。会话级配置
+    /// 全量继承发起方（specs/025 FR-005：agentMode / thinking / 模型 provider 成对 /
+    /// 联网 / MCP 名单），例外是提示词模式恒 normal（不继承，理由见赋值处注释）；
+    /// 角色仅决定工具白名单（`run_query_loop` 过滤）。
     pub fn start_remote_sub_agent(self: &Arc<Self>, event: &Value) -> Result<(), String> {
         let field = |key: &str| -> String {
             event
@@ -1317,14 +1318,12 @@ impl Core {
         let role = field("role");
         let prompt = field("prompt");
         let description = field("description");
-        let parent_session_id = field("parentSessionId");
         let origin_workspace_id = field("originWorkspaceId");
         let origin_session_id = field("originSessionId");
-        let origin_title = field("originTitle");
         // specs/024 FR-004：继承的会话级设置（发起方 Core 解析出的生效值）。契约成员
         // 必选，缺失按接线错误拒绝；`model` 允许空串（provider 未配置默认模型时合法，
         // 见 `config::resolve_provider`），`mcpServers` 允许空名单。
-        for key in ["agentMode", "thinkingEffort", "promptMode", "model", "provider"] {
+        for key in ["agentMode", "thinkingEffort", "model", "provider"] {
             if event.get(key).and_then(Value::as_str).is_none() {
                 return Err("remoteSubAgentStarted is missing required fields".to_string());
             }
@@ -1346,7 +1345,6 @@ impl Core {
         };
         let agent_mode = field("agentMode");
         let thinking_effort = field("thinkingEffort");
-        let prompt_mode = field("promptMode");
         let model = field("model");
         let provider = field("provider");
         if session_id.is_empty() || workspace_path.is_empty() || origin_session_id.is_empty() {
@@ -1361,31 +1359,34 @@ impl Core {
         {
             let mut state = state.lock().unwrap();
             state.project = Some(workspace_path.clone());
-            // 会话级配置经容器继承发起方（specs/024 FR-004），不再取目标工作区默认值。
-            // 角色口径与本地子代理一致（specs/020 FR-003）：Master 全量继承；非 Master
-            // 角色固定 normal 预设 / 不联网 / MCP 恒空（工具白名单在 `run_query_loop`
-            // 过滤），agentMode / 模型 / provider / thinking 仍继承。
+            // 会话级配置全量继承发起方（specs/025 FR-005）：载荷携带的就是发起方 Core
+            // 解析出的生效值，目标侧不回落默认值、也不按角色裁剪（角色仅决定工具
+            // 白名单，`run_query_loop` 过滤）。
             state.agent_mode = agent_mode.clone();
             state.model = Some(model.clone());
             state.provider = Some(provider.clone());
             state.thinking_effort = Some(thinking_effort.clone());
-            if role != "Master" {
-                state.prompt_mode = Some("normal".to_string());
-                state.web_search = Some(false);
-            } else {
-                state.prompt_mode = Some(prompt_mode.clone());
-                state.web_search = Some(web_search);
-            }
-            state.parent_session_id = Some(origin_session_id.clone());
+            // 提示词模式恒 normal、不继承发起方（specs/025 FR-005）：minimal / mixed 的
+            // 首轮按 minimal 预设把工具清单裁成 Bash / Edit，`Reply` 是子代理生命周期
+            // 设施（`sub_agent_has_reply` / Reminder 以它为基准），被裁掉后子代理无法
+            // 主动回传，只能靠 Reminder 兜底（minimal 更是全程无 Reply）。
+            state.prompt_mode = Some("normal".to_string());
+            state.web_search = Some(web_search);
+            // 跨工作区对话是顶层普通会话：不写 parent_session_id（specs/025 FR-001），
+            // 归属由 creator 承载（specs/025 FR-002）
+            state.creator = SessionCreator::Agent {
+                workspace_id: Some(origin_workspace_id.clone()),
+                session_id: origin_session_id.clone(),
+            };
             state.sub_agent_role = Some(role.clone());
             state.sub_agent_description = Some(description.clone());
-            state.system_prompt_prefix =
-                Some(prompt::sub_agent_communication_section(&origin_session_id));
-            state.cross_workspace_origin = Some(CrossWorkspaceOrigin {
-                workspace_id: origin_workspace_id.clone(),
-                session_id: origin_session_id.clone(),
-                title: origin_title.clone(),
-            });
+            // SystemPrompt 由目标 Core 按固定模板组装（specs/025 FR-006）：身份取
+            // 派发载荷的 origin 字段（宿主填充，不经模型工具入参），内容含创建方
+            // 工作区身份 + 会话 id 与 `Reply` 回传要求
+            state.system_prompt_prefix = Some(prompt::remote_sub_agent_system_prompt(
+                &origin_workspace_id,
+                &origin_session_id,
+            ));
             state.running = true;
         }
 
@@ -1393,30 +1394,22 @@ impl Core {
             &session_id,
             &workspace_path,
             &description,
-            &parent_session_id,
             &role,
             &origin_workspace_id,
             &origin_session_id,
-            &origin_title,
             Some(&model),
             Some(&provider),
         )?;
         // 继承的会话级设置落进 meta.json 的 context（与 agentMode 的持久化动机相同）：
         // 重启后重新打开子会话，UI 仍显示继承自容器的配置
         self.persist_context(&session_id, json!({ "key": "agentMode", "value": agent_mode }));
-        self.persist_context(
-            &session_id,
-            json!({ "key": "thinkingMode", "value": thinking_effort }),
-        );
-        self.persist_context(&session_id, json!({ "key": "promptMode", "value": prompt_mode }));
+        self.persist_context(&session_id, json!({ "key": "thinkingMode", "value": thinking_effort }));
+        // 提示词模式恒 normal（specs/025 FR-005，不随派发继承）——落盘让重启重开仍显示
+        self.persist_context(&session_id, json!({ "key": "promptMode", "value": "normal" }));
         self.persist_context(&session_id, json!({ "key": "webSearch", "value": web_search }));
-        // MCP 启用名单按角色继承（specs/024 FR-004）：Master 继承发起方名单（经容器），
-        // 非 Master 角色恒空（specs/020 FR-003 的角色口径）。写成子会话的启用覆盖，
+        // MCP 启用名单全量继承发起方（specs/025 FR-005）。写成子会话的启用覆盖，
         // 名单里目标 Core 无同名定义的 server 不建立连接（定义是机器本地资源）。
-        crate::mcp_config::write_session_enabled(
-            &session_id,
-            &if role == "Master" { mcp_servers } else { Vec::new() },
-        );
+        crate::mcp_config::write_session_enabled(&session_id, &mcp_servers);
 
         crate::subagent::register(&session_id, &origin_session_id);
         crate::subagent::mark_remote_origin(&session_id, &origin_session_id);
@@ -1433,11 +1426,6 @@ impl Core {
     }
 
     /// 该会话的跨工作区来源（普通会话为 `None`）
-    fn cross_workspace_origin_of(&self, session_id: &str) -> Option<CrossWorkspaceOrigin> {
-        self.session_if_exists(session_id)
-            .and_then(|state| state.lock().unwrap().cross_workspace_origin.clone())
-    }
-
     /// 跨工作区子代理的 Reply 到达发起方会话（specs/023 FR-003）：按普通 agent 消息入队。
     pub fn on_agent_reply_received(
         self: &Arc<Self>,
@@ -1495,17 +1483,23 @@ impl Core {
     ) -> Result<(), String> {
         let Some(state) = self.session_if_exists(target_session_id) else {
             // specs/023 FR-003：跨工作区子代理的 Reply 目标是发起方会话——它在另一个
-            // Core 里。目标等于本会话的跨工作区来源时交给宿主回投，不当作「会话不存在」。
-            if let Some(origin) = self.cross_workspace_origin_of(from_session_id) {
-                if origin.session_id == target_session_id {
-                    self.emit(json!({
-                        "type": "crossWorkspaceAgentReplyRequested",
-                        "sessionId": target_session_id,
-                        "fromSessionId": from_session_id,
-                        "content": content,
-                    }));
-                    return Ok(());
+            // Core 里。目标等于本会话 creator 指向的会话时交给宿主回投，不当作
+            // 「会话不存在」（specs/025 FR-002：归属读 creator）。
+            let creator_target = self.session_if_exists(from_session_id).and_then(|state| {
+                let guard = state.lock().unwrap();
+                match &guard.creator {
+                    SessionCreator::Agent { session_id, .. } => Some(session_id.clone()),
+                    SessionCreator::User => None,
                 }
+            });
+            if creator_target.as_deref() == Some(target_session_id) {
+                self.emit(json!({
+                    "type": "crossWorkspaceAgentReplyRequested",
+                    "sessionId": target_session_id,
+                    "fromSessionId": from_session_id,
+                    "content": content,
+                }));
+                return Ok(());
             }
             return Err(format!("目标会话 {target_session_id} 不存在"));
         };
@@ -2136,6 +2130,9 @@ impl Core {
         }
         if let Some(metadata) = history::load_metadata(session_id, &project) {
             state.agent_mode = prompt::agent_mode_of(&metadata);
+            // 恢复创建者归属（specs/025 FR-002）：缺失 / 形态不对是数据异常，加载失败
+            // 不回退（未发布无兼容义务）
+            state.creator = history::creator_of_metadata(&metadata)?;
             let (provider, model) = history::model_ref_of_session(session_id, &project);
             state.provider = provider;
             state.model = model;
@@ -3707,11 +3704,19 @@ fn announce_message_appended(
     project: &str,
     user_initiated: bool,
 ) {
-    let prompt_mode = core
-        .session_if_exists(session_id)
-        .and_then(|state| state.lock().unwrap().prompt_mode.clone());
+    let (prompt_mode, creator) = {
+        match core.session_if_exists(session_id) {
+            Some(state) => {
+                let state = state.lock().unwrap();
+                (state.prompt_mode.clone(), state.creator.clone())
+            }
+            // 会话状态不存在（尚无引擎）按用户会话兜底：touch 兜底建档只可能命中
+            // 用户路径（子代理 meta 由创建方预建，不会走到 ENOENT）
+            None => (None, SessionCreator::User),
+        }
+    };
     if let Err(error) =
-        history::touch_metadata(session_id, project, user_initiated, prompt_mode.as_deref())
+        history::touch_metadata(session_id, project, user_initiated, prompt_mode.as_deref(), &creator)
     {
         eprintln!("[core] touch metadata failed: {error}");
     }
@@ -6024,13 +6029,14 @@ fn update_title_if_needed(core: &Arc<Core>, session_id: &str, project: &str) {
         return;
     }
 
-    let (messages, session_model, session_provider) = {
+    let (messages, session_model, session_provider, session_creator) = {
         let state = core.session(session_id);
         let state = state.lock().unwrap();
         (
             state.messages.clone(),
             state.model.clone(),
             state.provider.clone(),
+            state.creator.clone(),
         )
     };
     // 取「刚追加的那条 message」；调用点只处理用户消息，等价于首条用户消息。
@@ -6052,6 +6058,8 @@ fn update_title_if_needed(core: &Arc<Core>, session_id: &str, project: &str) {
             "createdAt": util::now_millis(),
             "updatedAt": util::now_millis(),
             "messageCount": message_count,
+            // 归属在创建时一次写定（specs/025 FR-002）：用户路径的会话状态默认 User
+            "creator": session_creator,
         });
         if let Some(model) = session_model.filter(|value| !value.is_empty()) {
             created["model"] = json!(model);

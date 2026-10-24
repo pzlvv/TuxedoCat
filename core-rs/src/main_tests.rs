@@ -1527,7 +1527,20 @@ fn runtime_state_fields_match_parity_fixture() {
         "../fixtures/runtimeState.json"
     ))
     .expect("parse runtimeStateParity.json");
-    let sample = crate::engine::Core::runtime_state_json("s", false, false, false, false, false, false, false, None, &[], None);
+    let sample = crate::engine::Core::runtime_state_json(
+        "s",
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        &crate::engine::SessionCreator::User,
+        &[],
+        None,
+    );
     let mut actual: Vec<String> = sample
         .as_object()
         .expect("runtime state object")

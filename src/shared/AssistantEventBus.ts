@@ -23,8 +23,9 @@ import type { ModelRef } from './llm/modelRef.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
 import type { UserChoiceOptions } from './UserChoiceQueue.js';
 import type { ConversationMetadata } from './history/Conversation.js';
+import type { SessionCreator } from './sessionCreator.js';
 import type { ConversationSpaceInfo } from './webviewTypes.js';
-import type { McpServerDefinition, PromptPresetId, SettingsSnapshot, ThinkingEffort } from './settingsSnapshot.js';
+import type { McpServerDefinition, SettingsSnapshot, ThinkingEffort } from './settingsSnapshot.js';
 import type { McpServerInfo } from './webviewTypes.js';
 import type { NoticeLevel, NoticeParams } from './coreText.js';
 import type { SpinDesign } from './spin/Types.js';
@@ -255,12 +256,12 @@ export type CoreRequest =
     }
   | { type: 'userChoice'; sessionId: string; options: UserChoiceOptions }
   /**
-   * 跨工作区派发子代理（specs/023 FR-002；specs/024 FR-004）。
+   * 跨工作区派发子代理（specs/023 FR-002；specs/025 FR-005）。
    *
    * 发起方 Core 在 `Agent` 带 `target` 时发出并阻塞等待；宿主按身份找到目标工作区
    * Connection、在目标 Core 建子代理会话后返回新会话 id。`sessionId` 是发起方会话。
-   * `agentMode` 起六项是发起方会话**当前的生效值**（发起方 Core 解析，目标侧不再回落
-   * 默认值——specs/024 FR-004 的继承链）。
+   * `agentMode` 起各项是发起方会话**当前的生效值**（发起方 Core 解析，目标侧不再回落
+   * 默认值）；提示词模式不随派发携带——跨工作区会话恒 normal（specs/025 FR-005）。
    */
   | {
       type: 'crossWorkspaceAgentRequested';
@@ -269,14 +270,10 @@ export type CoreRequest =
       role: string;
       prompt: string;
       description: string;
-      /** 发起方会话标题（占位父对话的展示标题） */
-      originTitle: string;
       /** 发起方会话生效的 agent mode（specs/024 FR-004） */
       agentMode: AgentMode;
       /** 发起方会话生效的思考强度 */
       thinkingEffort: ThinkingEffort;
-      /** 发起方会话生效的提示词预设 */
-      promptMode: PromptPresetId;
       /** 发起方会话生效的模型（经 `config::resolve_provider` 解析为具体值） */
       model: string;
       provider: string;
@@ -511,13 +508,14 @@ export type UiEvent =
     }
   // ===== 跨工作区子代理（specs/023）=====
   /**
-   * 在目标工作区创建一个跨工作区子代理会话并立即开始执行（specs/023 FR-003）。
+   * 在目标工作区创建一个跨工作区子代理对话并立即开始执行（specs/023 FR-003；
+   * specs/025 FR-001——顶层普通会话，无 `parentSessionId`）。
    *
    * 由宿主在 `CoreRequest.crossWorkspaceAgentRequested` 的处理里直接下发到目标
-   * Connection（不按 sessionId 路由——该会话在目标 Core 里尚不存在）。
-   * `parentSessionId` 是占位父对话 id；`origin*` 记录发起方工作区身份与会话，供
-   * 回复回投、结束通知与列表里的占位条目派生使用。`agentMode` 起六项是发起方会话
-   * 的生效设置，目标 Core 按角色继承规则应用（specs/024 FR-004）。
+   * Connection（不按 sessionId 路由——该会话在目标 Core 里尚不存在）。`origin*`
+   * 记录发起方工作区身份与会话，目标 Core 据此写 `creator`（specs/025 FR-002）并
+   * 组装 SystemPrompt（specs/025 FR-006）。`agentMode` 起各项是发起方会话的生效设置，
+   * 目标 Core 全量应用（specs/025 FR-005）；提示词模式不携带——目标会话恒 normal。
    */
   | {
       type: 'remoteSubAgentStarted';
@@ -527,16 +525,12 @@ export type UiEvent =
       role: string;
       prompt: string;
       description: string;
-      parentSessionId: string;
       originWorkspaceId: string;
       originSessionId: string;
-      originTitle: string;
       /** 发起方会话生效的 agent mode（specs/024 FR-004） */
       agentMode: AgentMode;
       /** 发起方会话生效的思考强度 */
       thinkingEffort: ThinkingEffort;
-      /** 发起方会话生效的提示词预设 */
-      promptMode: PromptPresetId;
       /** 发起方会话生效的模型 */
       model: string;
       provider: string;
@@ -778,13 +772,20 @@ export interface SessionRuntimeState {
    */
   subAgentDescription: string | null;
   /**
-   * 父会话 id（子代理会话才有；普通会话为 null）。登记于子代理创建时，
-   * 随会话存续——不随 SubAgentRegistry 的注销消失（子代理完成一轮后仍留在
-   * 注册表等 Reply，此时父子关系对消费者依然有意义）。
+   * 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 `null`）。登记于
+   * 子代理创建时，随会话存续——不随 SubAgentRegistry 的注销消失（子代理完成一轮后
+   * 仍留在注册表等 Reply，此时父子关系对消费者依然有意义）。
    *
-   * 消费示例：托盘「完成提醒」用它区分「子对话完成」（不打扰）与「主对话完成」。
+   * 它是**树事实**（本地嵌套在哪）；「谁创建的」归属语义读 `creator`
+   * （specs/025 FR-002），不得从本字段反推。
    */
   parentSessionId: string | null;
+  /**
+   * 会话创建者（specs/025 FR-002）：`user` = 用户 prompt 发起；agent 形态携带创建方
+   * 工作区身份与会话 id。完成提醒 / 未读绿灯的抑制、输入禁用、`Reply` 回传路由与
+   * 跨工作区跳转都以此为判据（specs/025 FR-003 / FR-004 / FR-007）。
+   */
+  creator: SessionCreator;
 }
 
 // ==================== 通用 ====================

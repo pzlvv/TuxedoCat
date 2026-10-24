@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import type { McpServerInfo, ProviderModels } from '../../shared/webviewTypes';
+import type { SessionCreator } from '../../shared/sessionCreator';
 import type { ModelRef } from '../../shared/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt } from '../types';
@@ -64,8 +65,8 @@ export interface UseMessageHandlerProps {
   setConversationDropdownOpen: (v: boolean) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
-  /** 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区 */
-  setCrossWorkspaceOrigin: (v: { workspaceId: string; sessionId: string; title: string } | null) => void;
+  /** 会话创建者（specs/025 FR-002）：返回按钮按它跨工作区跳发起方或跳本地父会话 */
+  setCreator: (v: SessionCreator | null) => void;
   /** 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）；普通会话为 null */
   setSubAgentRole: (v: string | null) => void;
   /** 会话工作模式（spin = 输入框禁用；加载载荷与运行期 setWorkMode 都走这里） */

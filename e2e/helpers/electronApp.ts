@@ -306,7 +306,7 @@ export async function launchApp(options: {
    * 视图）→ 侧栏活动会话匹配 → 最后一个候选。
    */
   const waitForChatPage = (
-    opts: { workspaceIncludes?: string; emptyState?: boolean } = {},
+    opts: { workspaceIncludes?: string; emptyState?: boolean; sessionIncludes?: string } = {},
     timeout = 20_000,
   ): Promise<Page> =>
     new Promise<Page>((resolve, reject) => {
@@ -332,6 +332,11 @@ export async function launchApp(options: {
         let candidates = annotated.filter((c): c is NonNullable<typeof c> => c !== null);
         if (opts.workspaceIncludes) {
           candidates = candidates.filter((c) => c.ws.includes(opts.workspaceIncludes!));
+        }
+        if (opts.sessionIncludes) {
+          // 按会话 id 选视图：打开某条对话后，预加载的「新建对话」备用视图与目标
+          // 视图并存，按「不在列表里」的兜底规则会误选前者
+          candidates = candidates.filter((c) => c.sid !== null && c.sid.includes(opts.sessionIncludes!));
         }
         if (opts.emptyState) {
           // 要求 sid 已生成：预热备用视图也是空态，但尚未激活（无会话），

@@ -24,11 +24,16 @@ import { createChecker, runTests } from './helpers/harness';
  */
 
 /** 造一份会话状态（只填 diffCompletionAttention 读的字段） */
-function st(sessionId: string, level: 'idle' | 'running' | 'waiting'): { sessionId: string; idle: boolean; waiting: boolean } {
+function st(
+  sessionId: string,
+  level: 'idle' | 'running' | 'waiting',
+  extra: { creator?: { kind: 'user' } | { kind: 'agent'; workspaceId: string | null; sessionId: string } } = {},
+): { sessionId: string; idle: boolean; waiting: boolean; creator?: { kind: 'user' } | { kind: 'agent'; workspaceId: string | null; sessionId: string } } {
   return {
     sessionId,
     idle: level === 'idle',
     waiting: level === 'waiting',
+    ...extra,
   };
 }
 
@@ -84,6 +89,32 @@ runTests('completionAttention', async () => {
     const first = diffCompletionAttention(new Map(), [st('a', 'waiting')], () => seen());
     const second = diffCompletionAttention(first.next, [st('a', 'idle')], () => seen({ windowFocused: false }));
     return second.tabs.length === 0 && second.sessions.length === 0 && second.next.get('a') === 'idle';
+  })());
+
+  // specs/025 FR-003：非 user 创建的会话（本地子代理 / Agent 工具派发的跨工作区对话）
+  // 完成保持安静——对话行绿灯与标签页灯都不武装
+  check('creator 为 agent 形态的会话完成不武装（对话行与标签页灯都静默）', (() => {
+    const first = diffCompletionAttention(
+      new Map(),
+      [st('remote', 'running', { creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } })],
+      () => seen(),
+    );
+    const second = diffCompletionAttention(
+      first.next,
+      [st('remote', 'idle', { creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } })],
+      () => seen({ windowFocused: false }),
+    );
+    return second.tabs.length === 0 && second.sessions.length === 0 && second.next.get('remote') === 'idle';
+  })());
+
+  check('creator 为 user 的会话完成照常武装（specs/025 FR-003）', (() => {
+    const first = diffCompletionAttention(new Map(), [st('a', 'running', { creator: { kind: 'user' } })], () => seen());
+    const second = diffCompletionAttention(
+      first.next,
+      [st('a', 'idle', { creator: { kind: 'user' } })],
+      () => seen({ windowFocused: false }),
+    );
+    return second.sessions.length === 1 && second.sessions[0] === 'a';
   })());
 
   check('running → running、idle → running、running → waiting 都不武装', (() => {

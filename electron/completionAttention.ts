@@ -21,6 +21,7 @@
  */
 
 import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
+import { isAgentCreator, type SessionCreator } from '../src/shared/sessionCreator.js';
 import type { SessionLevel } from './trayAttention.js';
 
 /** 完成时刻的画面事实（由宿主注入；呼吸是否武装完全由它们推导） */
@@ -55,7 +56,7 @@ export interface CompletionAttentionDiff {
  */
 export function diffCompletionAttention(
   prev: ReadonlyMap<string, SessionLevel>,
-  states: ReadonlyArray<{ sessionId: string; idle?: boolean; waiting?: boolean }>,
+  states: ReadonlyArray<{ sessionId: string; idle?: boolean; waiting?: boolean; creator?: SessionCreator }>,
   factsOf: (sessionId: string) => CompletionAttentionFacts,
 ): CompletionAttentionDiff {
   const next = new Map<string, SessionLevel>();
@@ -67,7 +68,11 @@ export function diffCompletionAttention(
     // 忙闲判定收敛在 core 的 sessionBusyLevel（与托盘状态点 / 标签页流水灯同一份派生）
     const level = sessionBusyLevel({ idle: item.idle ?? true, waiting: item.waiting ?? false });
     const before = prev.get(item.sessionId);
-    if (before !== undefined && before === 'running' && level === 'idle') {
+    // 非 user 创建的会话（本地子代理 / Agent 工具派发的跨工作区对话）完成保持安静
+    // （specs/025 FR-003）：不武装对话行绿灯，也不武装标签页灯——武装是未读事实的
+    // 写入点，在源头掐掉，未读集合与各处显示天然一致
+    const isAgentCreated = item.creator !== undefined && isAgentCreator(item.creator);
+    if (before !== undefined && before === 'running' && level === 'idle' && !isAgentCreated) {
       const facts = factsOf(item.sessionId);
       // 对话项：用户当时看不到这次完成（窗口失焦 / 标签页未激活 / 非当前对话）才武装；
       // 标签页：只在完成时该标签页未激活才武装——激活中的标签页视为已读，

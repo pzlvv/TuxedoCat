@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
+import type { SessionCreator } from '../../shared/sessionCreator';
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -54,8 +55,8 @@ export interface UseAppHandlersProps {
   setConversationTitle: (v: string) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
-  /** 跨工作区子代理的来源（specs/023）：返回父对话时跳到发起方工作区 */
-  setCrossWorkspaceOrigin: (v: { workspaceId: string; sessionId: string; title: string } | null) => void;
+  /** 会话创建者（specs/025 FR-002）：返回按钮按它跨工作区跳发起方或跳本地父会话 */
+  setCreator: (v: SessionCreator | null) => void;
   /** 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）；普通会话为 null */
   setSubAgentRole: (v: string | null) => void;
   setHasActiveQuery: (v: boolean) => void;
@@ -179,7 +180,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }
     props.setConversationTitle(t('app.untitled'));
     props.setParentSessionId(null);
-    props.setCrossWorkspaceOrigin(null);
+    props.setCreator(null);
     // 新建会话无子代理角色（specs/020 FR-005），置灰判定回到普通会话
     props.setSubAgentRole(null);
     const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;

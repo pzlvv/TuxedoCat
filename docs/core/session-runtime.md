@@ -55,7 +55,8 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务（[docs/features/abort-button.md](../features/abort-button.md)） |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理）；跨工作区子代理没有本地会话状态，登记期间恒算非 idle，结束事件到达后注销 |
 | `subAgentDescription` | 子代理会话为创建时 Agent 工具调用的 description（specs/019）；普通会话与恢复路径取不到时为 `null`，UI 显示回退文案。悬停明细据此列出子代理 |
-| `parentSessionId` | 父会话 ID（子代理会话才有；普通会话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失——消费者据此区分「子对话完成」与「主对话完成」（如托盘完成提醒只对后者闪烁） |
+| `parentSessionId` | 父会话 ID（**本地**子代理会话才有；普通会话与跨工作区对话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失。它是**树事实**（本地嵌套在哪）；「谁创建的」归属语义读 `creator`，不得从本字段反推（specs/025 FR-002） |
+| `creator` | 会话创建者（specs/025 FR-002）：`user` = 用户 prompt 发起；agent 形态携带创建方工作区身份（本地创建为 `null`）与创建方会话 id。完成提醒 / 未读绿灯的抑制、输入禁用、`Reply` 回传路由与跨工作区跳转都以此为判据（specs/025 FR-003 / FR-004 / FR-007） |
 
 `idle === false`（会话非空闲）当且仅当 `queryRunning` / `waiting` / `compacting` /
 `backgroundRunning` / `subAgentRunning` 任一为真；即 `idle` 是其余字段的合取，消费者

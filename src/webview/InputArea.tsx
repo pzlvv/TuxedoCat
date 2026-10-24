@@ -7,7 +7,8 @@ import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
-import { resolveInputDisabled, resolveInputPlaceholder, resolveSessionOptionsLocked } from './inputAreaState';
+import { resolveInputDisabledReason, resolveInputPlaceholderText, resolvePromptModeLocked, resolveSessionOptionsLocked } from './inputAreaState';
+import { isAgentCreator, type SessionCreator } from '../shared/sessionCreator';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
 import { t } from './i18n';
@@ -156,8 +157,11 @@ interface InputAreaProps {
   onOpenSettings?: () => void;
   /** 服务商配置是否已完成；未完成时禁用输入框并引导点击打开设置 */
   isProviderConfigured: boolean | null;
-  /** 当前对话是否为 sub-agent（子代理） */
-  isSubAgent?: boolean;
+  /**
+   * 会话创建者（specs/025 FR-002）：agent 形态的对话禁用输入（specs/025 FR-004）；
+   * 跨工作区派发的对话（workspaceId 非空）同时豁免 020 的角色选项锁定。
+   */
+  creator?: SessionCreator | null;
   /**
    * 当前会话的子代理角色（`conversationLoaded.metadata.role`，specs/020 FR-005）；
    * 普通会话 / 旧数据为 null。非 Master 子代理会话锁定选项菜单的提示词模式 /
@@ -549,6 +553,7 @@ const ToggleMenu = memo(({
   mcpServers,
   onMcpToggle,
   subAgentRole,
+  creator,
   colors,
   isDark,
 }: {
@@ -571,8 +576,10 @@ const ToggleMenu = memo(({
   onOpenSettings: () => void;
   mcpServers?: McpServerInfo[];
   onMcpToggle?: (name: string, enabled: boolean) => void;
-  /** 当前会话的子代理角色（meta.json 的 role 事实）；非 Master 子代理锁定三项选项（specs/020 FR-005） */
+  /** 当前会话的子代理角色（meta.json 的 role 事实）；非 Master 本地子代理锁定三项选项（specs/020 FR-005） */
   subAgentRole?: string | null;
+  /** 会话创建者（specs/025 FR-002）：跨工作区派发的对话（workspaceId 非空）不锁定选项 */
+  creator?: SessionCreator | null;
   colors: Colors;
   isDark: boolean;
 }) => {
@@ -585,9 +592,13 @@ const ToggleMenu = memo(({
   /** 在该时间戳之前到达的「收起/关闭」请求会被忽略，用于让勾选 MCP 后菜单保持展开 */
   const suppressCloseUntilRef = useRef(0);
 
-  // specs/020 FR-005：非 Master 子代理会话锁定三项选项——core 侧已固定 normal 预设 /
-  // 不联网 / 无 MCP，UI 不提供入口。判定在 inputAreaState 纯函数里，与测试共用一份实现。
-  const sessionOptionsLocked = resolveSessionOptionsLocked({ subAgentRole });
+  // specs/020 FR-005（specs/025 FR-005 收窄）：非 Master 的本地子代理会话锁定三项
+  // 选项——core 侧已固定 normal 预设 / 不联网 / 无 MCP，UI 不提供入口；跨工作区派发
+  // 的对话继承创建者配置、不按角色固定，三项锁定不适用。判定在 inputAreaState 纯函数里。
+  const sessionOptionsLocked = resolveSessionOptionsLocked({ subAgentRole, creator });
+  // 提示词模式的锁定口径更宽（specs/025 FR-005）：跨工作区派发的对话恒 normal
+  // （minimal / mixed 的首轮工具白名单会剥夺 Reply），不提供切换入口。
+  const promptModeLocked = resolvePromptModeLocked({ subAgentRole, creator });
 
   /**
    * webview 过窄时（不足以并排放下二级 + 三级弹出菜单）改用「内联展开」：
@@ -1372,10 +1383,15 @@ const ToggleMenu = memo(({
             flexDirection: 'column',
             gap: '6px',
             padding: '5px 12px',
-            // 非 Master 子代理会话置灰（specs/020 FR-005）：core 固定 normal 预设
-            opacity: sessionOptionsLocked ? 0.45 : 1,
+            // 非 Master 本地子代理置灰（specs/020 FR-005：core 固定 normal 预设）；
+            // 跨工作区派发的对话恒 normal（specs/025 FR-005），同样置灰
+            opacity: promptModeLocked ? 0.45 : 1,
           }}
-          title={sessionOptionsLocked ? t('inputArea.subagentOptionsLockedHint') : undefined}
+          title={promptModeLocked
+            ? (sessionOptionsLocked
+              ? t('inputArea.subagentOptionsLockedHint')
+              : t('inputArea.remotePromptModeLockedHint'))
+            : undefined}
         >
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {/* checkbox 占位符，保持文字对齐 */}
@@ -1387,8 +1403,8 @@ const ToggleMenu = memo(({
           <PromptModeSegmentControl
             value={promptMode}
             onChange={(mode) => {
-              // 锁定时点击不产生任何状态变更、不上报（specs/020 FR-005）
-              if (sessionOptionsLocked) return;
+              // 锁定时点击不产生任何状态变更、不上报（specs/020 FR-005 / specs/025 FR-005）
+              if (promptModeLocked) return;
               onPromptModeChange(mode);
             }}
             colors={colors}
@@ -1729,7 +1745,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   onOpenSettings,
   isProviderConfigured,
   workMode,
-  isSubAgent,
+  creator,
   subAgentRole,
   mcpServers,
   onMcpToggle,
@@ -1798,13 +1814,21 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     clear: () => { setInput(''); setPastedImages([]); setHistoryIndex(-1); setSavedInput(''); slashActiveRef.current = false; },
   }), [input, pastedImages, historyIndex, savedInput]);
 
-  // 两个独立的禁用来源：provider 未配置（引导去设置）与 spin 模式（会话不受理输入）。
-  // 覆盖层只属于 provider 分支；spin 只禁用 + 换 placeholder（specs/016 FR-004）。
-  const disableFacts = { providerConfigured: isProviderConfigured, workMode };
-  const isInputDisabled = resolveInputDisabled(disableFacts);
-  const inputPlaceholder = resolveInputPlaceholder(disableFacts, {
+  // 三个禁用来源（specs/016 FR-004；specs/025 FR-004）：provider 未配置（引导去设置）、
+  // spin 模式（会话不受理输入）与非用户创建（对话由创建方 Agent 驱动）。覆盖层只属于
+  // provider 分支；spin 与非用户创建只禁用 + 换 placeholder。判定在 inputAreaState
+  // 纯函数里，与测试共用一份实现。
+  const disableFacts = {
+    providerConfigured: isProviderConfigured,
+    workMode,
+    notUserCreated: isAgentCreator(creator ?? { kind: 'user' }),
+  };
+  const disabledReason = resolveInputDisabledReason(disableFacts);
+  const isInputDisabled = disabledReason !== null;
+  const inputPlaceholder = resolveInputPlaceholderText(disabledReason, {
     default: t('inputArea.placeholder'),
     spin: t('inputArea.placeholderSpinMode'),
+    notUserCreated: t('inputArea.placeholderNotUserCreated'),
   });
 
   // Filter skills based on query after "/"
@@ -2165,7 +2189,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       className="max-w-[680px] mx-auto rounded-lg border-2 transition-colors"
       style={{
         backgroundColor: 'transparent',
-        borderColor: isSubAgent ? '#ef4444' : inputFocused ? colors.borderFocus : colors.border,
+        borderColor: inputFocused ? colors.borderFocus : colors.border,
         position: 'relative',
       }}
     >
@@ -2175,24 +2199,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           opacity: 1;
         }
       `}</style>
-      {/* Sub-agent Warning Banner */}
-      {isSubAgent && (
-        <div
-          className="px-3 py-1.5 flex items-center gap-2 ui-fs-12 border-b"
-          style={{
-            backgroundColor: 'rgba(239, 68, 68, 0.12)',
-            borderColor: 'rgba(239, 68, 68, 0.3)',
-            color: '#ef4444',
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-            <circle cx="8" cy="8" r="7" stroke="#ef4444" strokeWidth="1.5"/>
-            <line x1="8" y1="4.5" x2="8" y2="9.5" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round"/>
-            <circle cx="8" cy="11.5" r="0.8" fill="#ef4444"/>
-          </svg>
-          <span className="truncate flex-1 leading-relaxed">{t('inputArea.subAgentWarning')}</span>
-        </div>
-      )}
       {/* Queued Message Banner */}
       {queuedMessage && (
         <div
@@ -2431,6 +2437,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             mcpServers={mcpServers}
             onMcpToggle={onMcpToggle}
             subAgentRole={subAgentRole}
+            creator={creator}
             colors={colors}
             isDark={isDark}
           />

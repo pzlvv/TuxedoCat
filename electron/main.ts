@@ -35,6 +35,7 @@ import { showStyledMessageBox } from './styledMessageBox.js';
 import { guardViewNavigation } from './viewNavigation.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
+import type { Client } from '../src/host/Client.js';
 import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
 import { normalizeWorkspacePath, sameWorkspace } from '../src/host/workspacePaths.js';
 import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/remoteConnect.js';
@@ -60,7 +61,6 @@ import {
 } from '../src/host/workspaceRef.js';
 import { getChatPlaceholderHtml, type ChatPlaceholderReason } from './chatPlaceholderHtml.js';
 import {
-  resolveCrossWorkspaceJumpOrigin,
   resolveMachineName,
   resolveWorkspaceByIdentity,
 } from '../src/host/workspaceIdentity.js';
@@ -471,6 +471,8 @@ let webviewUi: WebViewUI | undefined;
 let coreShutdown: (() => Promise<void>) | undefined;
 /** 当前宿主实现（initCore 创建） */
 let uiHost: ElectronUIHost | undefined;
+/** 共享装配的 Client（initCore 创建）：会话 → Connection 路由表的宿主侧只读入口 */
+let coreClient: Client | undefined;
 /**
  * 当前生效的主题模式（内存事实）。
  * 启动时从 settings.json 载入，菜单里切换后立即更新——菜单勾选态据此渲染，
@@ -1506,9 +1508,7 @@ function isMainWindowFocused(): boolean {
 
 /** 会话归属工作区的稳定 id（复用标签页流水灯 `collectWorkspaceActivity` 的同一套归属查找） */
 function resolveSessionWorkspaceKey(sessionId: string): string | null {
-  const workspace = sessionWorkspaces.get(sessionId);
-  if (!workspace) return null;
-  const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
+  const target = resolveSessionWorkspaceRef(sessionId);
   return target ? refKey(target) : null;
 }
 
@@ -2255,6 +2255,25 @@ function syncWindowTitle(): void {
 type WorkspaceActivityLevel = 'waiting' | 'running';
 
 /**
+ * 会话归属的打开项（工作区引用）：宿主索引命中后按打开集合匹配；未命中时按
+ * Client 的会话路由表兜底。路由表兜底的场景：跨工作区子代理会话由目标工作区
+ * Core 在后台创建（specs/025 FR-001），不经过「打开对话 / 读列表」路径——宿主
+ * 索引（`syncSessionWorkspaceIndex`）只刷新活动工作区的列表快照，要等该工作区
+ * 被激活重读列表才补上；而派发时刻（`requestCrossWorkspaceAgent` →
+ * `assignSession`）路由表就已登记归属（specs/023 FR-002），按它解析归属，
+ * 标签页流水灯 / 关闭确认不必等用户切到目标标签页才亮。
+ */
+function resolveSessionWorkspaceRef(sessionId: string): WorkspaceRef | undefined {
+  const indexed = sessionWorkspaces.get(sessionId);
+  if (indexed) {
+    return openWorkspaces.find((candidate) => workspacePathMatches(candidate, indexed));
+  }
+  const routed = coreClient?.workspaceRefForSession(sessionId);
+  if (!routed) return undefined;
+  return openWorkspaces.find((candidate) => sameWorkspaceRef(candidate, routed));
+}
+
+/**
  * 汇总每个打开的工作目录的运行时状态，供标题栏标签页流水灯使用：
  * 该目录下任一会话在等待用户操作（ask user / 权限确认）→ `waiting`（黄，优先）；
  * 否则任一会话非 idle（查询 / 压缩 / 后台 Bash / 子代理）→ `running`（蓝）。
@@ -2265,7 +2284,8 @@ type WorkspaceActivityLevel = 'waiting' | 'running';
  *   经 Connection 推到宿主后存在这里。Standalone（产品形态）下 core 在独立进程，
  *   会话运行时事实在 Core 进程内，主进程里没有可读的登记表；
  * - 归属：宿主的「会话 → 工作目录」索引（打开 / 加载对话时登记，见
- *   `syncSessionWorkspaceIndex`），即 core 那张表在本进程的投影。
+ *   `syncSessionWorkspaceIndex`），即 core 那张表在本进程的投影；索引未命中时
+ *   按 Client 路由表兜底（`resolveSessionWorkspaceRef`）。
  */
 function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
   const result: Record<string, WorkspaceActivityLevel> = {};
@@ -2274,11 +2294,7 @@ function collectWorkspaceActivity(): Record<string, WorkspaceActivityLevel> {
     // waiting（等用户）> running > idle
     const level = sessionBusyLevel(state);
     if (level === 'idle') continue;
-    const workspace = sessionWorkspaces.get(state.sessionId);
-    if (!workspace) continue;
-    // 会话登记的目录与打开集合可能写法不同（本地：大小写 / 分隔符 / 尾斜杠；
-    // 远程路径逐字比较），统一按引用口径匹配
-    const target = openWorkspaces.find((candidate) => workspacePathMatches(candidate, workspace));
+    const target = resolveSessionWorkspaceRef(state.sessionId);
     if (!target) continue;
     const key = refKey(target);
     if (level === 'waiting') result[key] = 'waiting';
@@ -3903,72 +3919,6 @@ function isWorkspaceUsableForConversation(workspace: string | undefined): boolea
 }
 
 /**
- * 占位父对话 id 前缀（specs/023 FR-004）：`ph_<发起方会话 id>`。
- * 占位对话不是真实会话——没有 meta / jsonl，不建立运行时，打开只显示跳转页。
- */
-const PLACEHOLDER_SESSION_PREFIX = 'ph_';
-
-/** 当前聊天区显示的跨工作区占位页的跳转目标；null = 不是占位页 */
-let crossWorkspacePlaceholderJump: { workspaceId: string; sessionId: string } | null = null;
-
-/**
- * 打开跨工作区占位页（specs/023 FR-004/FR-005）。
- *
- * 跳转目标按代理身份解析（`resolveCrossWorkspaceJumpOrigin`，specs/023 FR-001）：
- * `ph_<originSessionId>` 拆出发起方会话 id；侧栏行携带的来源 `workspaceId` 是
- * `workspaceAgentId` 口径——此前这里拿它跟 `refKey`（`workspaceRefKey` 口径）判等，
- * 两种口径永不相等，跳转链接恒不可用。发起方工作区已关闭时链接不可用（页面展示
- * 原因，不给按钮），不自动打开工作区。
- */
-function showCrossWorkspacePlaceholder(
-  sessionId: string,
-  origin?: { workspaceId: string; sessionId: string; title: string },
-): void {
-  const originSessionId = sessionId.startsWith(PLACEHOLDER_SESSION_PREFIX)
-    ? sessionId.slice(PLACEHOLDER_SESSION_PREFIX.length)
-    : '';
-  // 来源缺省时按会话索引反查工作目录回退（syncSessionWorkspaceIndex 是主进程副作用，留在本地）
-  let originPathFallback: string | undefined;
-  if (!origin && originSessionId) {
-    syncSessionWorkspaceIndex();
-    originPathFallback = sessionWorkspaces.get(originSessionId);
-  }
-  const originRef = resolveCrossWorkspaceJumpOrigin(
-    openWorkspaces,
-    resolveMachineName(process.platform, process.env, hostname()),
-    origin,
-    originSessionId,
-    originPathFallback,
-  );
-  const jumpSessionId = origin?.sessionId ?? originSessionId;
-  crossWorkspacePlaceholderJump = originRef && jumpSessionId
-    ? { workspaceId: refKey(originRef), sessionId: jumpSessionId }
-    : null;
-  chatViews?.showChatPlaceholder(getChatPlaceholderHtml({
-    kind: 'crossWorkspaceAgent',
-    path: originRef ? refDisplay(originRef) : sessionId,
-    reason: null,
-    jump: crossWorkspacePlaceholderJump
-      ? { ...crossWorkspacePlaceholderJump, title: origin?.title ?? '' }
-      : null,
-  }));
-}
-
-/** 跳到另一个工作区的会话（切活动标签 + 开对话视图；目标工作区未打开时忽略） */
-function jumpToCrossWorkspaceConversation(workspaceId: string, sessionId: string): void {
-  const ref = openWorkspaces.find((candidate) => refKey(candidate) === workspaceId);
-  if (!ref) {
-    console.warn('[main] jump target workspace is not open:', workspaceId);
-    return;
-  }
-  crossWorkspacePlaceholderJump = null;
-  activateWorkspace(ref);
-  sessionWorkspaces.set(sessionId, ref.path);
-  void registerCoreSessionWorkspace(sessionId, ref.path);
-  chatViews?.openConversation(sessionId, refKey(ref), ref.path);
-}
-
-/**
  * 把聊天区对齐当前活动工作区（活动项变化 / 可用性变化时调用）：
  * - 可用 → 正常显示该目录的对话视图；
  * - 建链中 / 不可用 → **不显示对话列表与 webview**，改显占位页
@@ -4006,7 +3956,6 @@ function syncChatAreaForActiveWorkspace(): void {
       reason: availability === 'unavailable'
         ? (unavailableReasons.get(refKey(workspacePath)) ?? null)
         : null,
-      jump: null,
     }),
   );
 }
@@ -4554,7 +4503,6 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // webview 内点击子代理/回复/From 链接等跳转到指定会话：新起一个 webview 加载该对话
   if (message.type === 'openConversation') {
     if (sessionId) {
-      crossWorkspacePlaceholderJump = null;
       let workspace: string | undefined;
       if (message.targetWorkspaceId) {
         // 跨工作区跳转（specs/023 FR-005）：按代理身份解析打开集合，未打开 / 歧义都忽略
@@ -4833,12 +4781,6 @@ function setupIpc(): void {
     if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
     if (workspacePath) void reconnectWorkspace(refKey(workspacePath));
   });
-  // 跨工作区占位页的「跳转到发起方对话」（specs/023 FR-005）
-  ipcMain.on('chat:jump-to-origin', (event) => {
-    if (!chatViews?.isChatPlaceholderWebContents(event.sender)) return;
-    const jump = crossWorkspacePlaceholderJump;
-    if (jump) jumpToCrossWorkspaceConversation(jump.workspaceId, jump.sessionId);
-  });
 
   // 视图流：已打开会话集合（owner 是 ChatViewManager）
   ipcMain.handle('sidebar:get-loaded-sessions', () => {
@@ -4908,18 +4850,8 @@ function setupIpc(): void {
     _event,
     sessionId: string,
     project?: string,
-    placeholder?: { workspaceId: string; sessionId: string; title: string },
   ) => {
     if (typeof sessionId === 'string' && sessionId) {
-      // 跨工作区占位父对话（specs/023 FR-004）：不加载会话，只显示跳转页
-      if (sessionId.startsWith(PLACEHOLDER_SESSION_PREFIX)) {
-        showCrossWorkspacePlaceholder(
-          sessionId,
-          placeholder && typeof placeholder === 'object' ? placeholder : undefined,
-        );
-        return;
-      }
-      crossWorkspacePlaceholderJump = null;
       if (typeof project === 'string' && project) {
         // 只接受仍处于打开集合中的目录：陈旧列表项（工作目录已关闭）不得把
         // 会话重新登记到已关闭目录，否则会打开一张没有对应标签页的视图
@@ -5341,7 +5273,7 @@ function initCore(): void {
 
   // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
   // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）
-  const { ui } = bootstrapCore(host, spinDesign, conversationsMgr, {
+  const { ui, client } = bootstrapCore(host, spinDesign, conversationsMgr, {
     locale: app.getLocale(),
     log: (...args: unknown[]) => {
       const line = args.map(a => String(a)).join(' ');
@@ -5384,6 +5316,7 @@ function initCore(): void {
   host.setWorkspacePath(workspacePath);
   webviewUi = ui;
   uiHost = host;
+  coreClient = client;
   // 初始同步「已打开会话」集合（此刻通常为空）：让 UserChoiceQueue 的 open 判定
   // 从一开始就走多视图语义，而不是退化成「open == active」的单视图语义
   webviewUi.setOpenSessions(chatViews?.getLoadedSessionIds() ?? []);

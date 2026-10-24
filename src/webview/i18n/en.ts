@@ -143,6 +143,7 @@ export const enDict: Record<string, string> = {
   'messages.jumpToBottom': 'Jump to bottom',
   'inputArea.placeholder': 'Type your message, Shift+Enter for new line',
   'inputArea.placeholderSpinMode': 'Not accepting input in Spin mode',
+  'inputArea.placeholderNotUserCreated': 'Conversations not created by the user cannot accept input',
   'inputArea.placeholderNeedConfigPrefix': 'Please configure the model service first, ',
   'inputArea.placeholderNeedConfigClick': 'click Settings',
   'inputArea.placeholderNeedConfigTitle': 'Please configure the model service first, click Settings',
@@ -207,7 +208,7 @@ export const enDict: Record<string, string> = {
   'inputArea.webSearchHint': 'Web search (applies to current session; config llm.webSearch is the default for new conversations)',
   'inputArea.webSearchMinimalHint': 'Unavailable in minimal mode',
   'inputArea.subagentOptionsLockedHint': 'Locked for this sub-agent role',
-  'inputArea.subAgentWarning': 'This is a sub-agent conversation, please confirm before sending',
+  'inputArea.remotePromptModeLockedHint': 'Cross-workspace sessions use the standard prompt mode',
 
   /* ── tools/Bash.tsx ──────────────────────────────────────── */
   'tool.bash.clickFullOutput': 'Click to view full output',

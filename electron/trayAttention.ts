@@ -6,10 +6,11 @@
  * 即使别的会话还在跑——两个对话在跑时其中一个完成，聚合状态仍是 running，
  * 用户同样不该错过，此时红点闪。
  *
- * 「子对话完成」不提醒：子代理会话（`parentSessionId` 非空）自身的完成不是任务
- * 结束——主对话还在跑；父会话**仅因子代理在跑**而忙（spin 模式）时子代理跑完
- * 落回 idle 也不是——那是子对话一轮的结束，不是主对话完成。「转等待用户」
- * （running → waiting，ask user / 权限确认）不受此抑制，照常提醒。
+ * 「子对话完成」不提醒：非 user 创建的会话（本地子代理 / Agent 工具派发的跨工作区
+ * 对话，specs/025 FR-002/FR-003）自身的完成不是任务结束——主对话还在跑；父会话
+ * **仅因子代理在跑**而忙（spin 模式）时子代理跑完落回 idle 也不是——那是子对话
+ * 一轮的结束，不是主对话完成。「转等待用户」（running → waiting，ask user /
+ * 权限确认）不受此抑制，照常提醒。
  *
  * 「完成」还要过一道**确认窗口**才算数：空闲挂起项（`docs/features/user-message-pipeline.md`
  * FR-003，webview 本地事实）与排队压缩等队列续跑都发生在 idle 推送**之后**——
@@ -23,6 +24,7 @@
  */
 
 import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
+import { isAgentCreator, type SessionCreator } from '../src/shared/sessionCreator.js';
 
 /** 单个会话的忙闲级别（与托盘状态点同一套取值，派生收敛在 core 的 sessionBusyLevel） */
 export type SessionLevel = 'idle' | 'running' | 'waiting';
@@ -36,8 +38,10 @@ export interface SessionRuntimeSummary {
   compacting?: boolean;
   backgroundRunning?: boolean;
   subAgentRunning?: boolean;
-  /** 父会话 id（子代理会话才有；普通会话为 null / 缺省） */
+  /** 父会话 id（本地子代理会话才有；树事实，归属语义不看它——specs/025 FR-002） */
   parentSessionId?: string | null;
+  /** 会话创建者（specs/025 FR-002）：完成提醒抑制的判据 */
+  creator?: SessionCreator;
 }
 
 /** 差分基准：会话的忙闲级别 + 「忙是否仅由子代理贡献」 */
@@ -92,8 +96,11 @@ export function diffSessionEndEvents(
   for (const item of states) {
     const level = sessionBusyLevel({ idle: item.idle ?? true, waiting: item.waiting ?? false });
     const before = prev.get(item.sessionId);
-    const isSubagent = !!item.parentSessionId;
-    if (before && before.level === 'running' && level === 'idle' && !isSubagent && !before.subagentOnlyBusy) {
+    // 非 user 创建的会话（本地子代理 / Agent 工具派发的跨工作区对话）完成不提醒
+    // （specs/025 FR-003）：判定读 creator，不再看 parentSessionId（跨工作区对话
+    // 是顶层会话，parentSessionId 为 null）
+    const isAgentCreated = item.creator !== undefined && isAgentCreator(item.creator);
+    if (before && before.level === 'running' && level === 'idle' && !isAgentCreated && !before.subagentOnlyBusy) {
       completedSessions.push(item.sessionId);
     }
     // 转等待用户不受「子对话」抑制：子代理ask user / 权限确认同样要提醒

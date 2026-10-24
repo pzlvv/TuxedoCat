@@ -27,10 +27,10 @@ const home = makeTempDir('conversation-list-manifest-home');
 process.env.USERPROFILE = home;
 process.env.HOME = home;
 
-function writeSession(dir: string, sessionId: string): void {
+function writeSession(dir: string, sessionId: string, creator: unknown = { kind: 'user' }): void {
   fs.writeFileSync(
     path.join(dir, `${sessionId}.meta.json`),
-    JSON.stringify({ sessionId, title: sessionId, createdAt: 1, updatedAt: 1, messageCount: 2 }),
+    JSON.stringify({ sessionId, title: sessionId, createdAt: 1, updatedAt: 1, messageCount: 2, creator }),
   );
   fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), '{"uuid":"u1"}\n');
 }
@@ -45,6 +45,14 @@ async function run(): Promise<void> {
   fs.writeFileSync(path.join(dir, 'workspace.meta.json'), JSON.stringify({ workspacePath: project }));
   writeSession(dir, 'session_keep');
   writeSession(dir, 'session_del');
+  // creator 缺失 / 形态不对的 meta 是数据异常（specs/025 FR-002）：读取侧报错跳过该条目
+  // （无 creator 的 meta 要绕过 writeSession 的默认参数直写，undefined 会命中默认值）
+  fs.writeFileSync(
+    path.join(dir, 'session_nocreator.meta.json'),
+    JSON.stringify({ sessionId: 'session_nocreator', title: 'session_nocreator', createdAt: 1, updatedAt: 1, messageCount: 2 }),
+  );
+  fs.writeFileSync(path.join(dir, 'session_nocreator.jsonl'), '{"uuid":"u1"}\n');
+  writeSession(dir, 'session_badcreator', { kind: 'robot' });
   setSessionWorkspace('session_keep', project);
   setSessionWorkspace('session_del', project);
   // 删除链路内部可能触达引擎 / 运行时清理，注册一个只记录的总线兜底
@@ -55,6 +63,10 @@ async function run(): Promise<void> {
   check(
     'loadConversationList 不列工作区清单',
     list.length === 2 && list.every((m) => m.sessionId.startsWith('session_')),
+  );
+  check(
+    'creator 缺失 / 形态不对的条目被报错跳过（specs/025 FR-002）',
+    !list.some((m) => m.sessionId === 'session_nocreator' || m.sessionId === 'session_badcreator'),
   );
   const metadataAll = await readProjectConversationMetadata(project);
   check(

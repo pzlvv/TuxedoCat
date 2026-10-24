@@ -9,11 +9,11 @@ import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, ScriptDecision } from '../helpers/mockLlmServer';
 
 /**
- * US-56 跨工作区代理（specs/023）
+ * US-56 跨工作区代理（specs/023；specs/025 直建普通对话）
  *
  * Electron 整应用链路：两个本地工作区同时打开，父会话（工作区 A）一轮发出带
- * `target` 的 `Agent` 调用，断言子代理会话创建在工作区 B、B 的列表里出现
- * 「占位父对话 + 子代理」的树，A 的列表不出现该子代理。
+ * `target` 的 `Agent` 调用，断言跨工作区对话创建在工作区 B 且是**顶层普通对话**
+ * （specs/025 FR-001：无占位父对话、可打开、输入禁用），A 的列表不出现该对话。
  *
  * 身份口径与 `src/host/workspaceIdentity.ts` 一致：`机器名:path.resolve(目录)`。
  */
@@ -50,7 +50,7 @@ test.afterEach(async () => {
   await fs.promises.rm(workspaceB, { recursive: true, force: true }).catch(() => undefined);
 });
 
-test('US-56 跨工作区派发：子代理落在目标工作区，目标侧出现占位父对话', async () => {
+test('US-56 跨工作区派发：对话落在目标工作区且为顶层普通对话（specs/025 FR-001）', async () => {
   const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
   app = await launchApp({
     repoRoot,
@@ -64,7 +64,7 @@ test('US-56 跨工作区派发：子代理落在目标工作区，目标侧出�
   mockLlm.setHandler((req): ScriptDecision => {
     const text = lastUserText(req.body.messages);
     if (text === '在 B 里做点事') {
-      // 目标工作区的子代理：首轮 Reply 回投发起方
+      // 目标工作区的跨工作区对话：首轮 Reply 回投发起方
       if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
         return { kind: 'text', text: 'B 里做完了。' };
       }
@@ -96,19 +96,22 @@ test('US-56 跨工作区派发：子代理落在目标工作区，目标侧出�
   await chatA.fill('textarea.input-textarea', '派给另一个工作区');
   await chatA.press('textarea.input-textarea', 'Enter');
 
-  // 切到工作区 B：列表里出现占位父对话（标题带「跨工作区容器」标记）
+  // 切到工作区 B：顶层出现普通对话行（标题 = description），无容器标记、无子树折叠按钮
   await tabs.nth(1).click();
   const sidebarB = await app.sidebarPage();
-  const placeholder = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区容器' });
-  await expect(placeholder).toHaveCount(1, { timeout: 30_000 });
+  const row = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区任务' });
+  await expect(row).toHaveCount(1, { timeout: 30_000 });
+  await expect(row).not.toContainText('跨工作区容器');
+  await expect(row.locator('[data-action="toggle-sub"]')).toHaveCount(0);
 
-  // 展开占位节点：子代理会话挂在它下面
-  await placeholder.locator('[data-action="toggle-sub"]').click();
-  await expect(
-    sidebarB.locator(`${SIDEBAR_ITEM}.child`).filter({ hasText: '跨工作区任务' }),
-  ).toHaveCount(1, { timeout: 15_000 });
+  // 点击打开：正常对话视图渲染消息，不出现占位页（按行 sid 选页，避开预加载备用视图）
+  const rowSid1 = await row.getAttribute('data-session-id');
+  await row.click();
+  const chatB = await app.chatPage({ sessionIncludes: rowSid1 ?? '' });
+  await expect(chatB.getByText('在 B 里做点事')).toBeVisible({ timeout: 20_000 });
+  await expect(chatB.getByText('跨工作区子代理容器')).toHaveCount(0);
 
-  // 工作区 A 的列表里没有这个子代理（它归属目标工作区）
+  // 工作区 A 的列表里没有这个对话（它归属目标工作区）
   await tabs.nth(0).click();
   const sidebarA = await app.sidebarPage();
   await expect(
@@ -116,7 +119,7 @@ test('US-56 跨工作区派发：子代理落在目标工作区，目标侧出�
   ).toHaveCount(0);
 });
 
-test('US-56 占位页跳转：发起方工作区已打开时显示跳转链接（specs/023 FR-005 / AC-11）', async () => {
+test('US-56 跨工作区对话打开后输入禁用、返回发起方按 creator 跳转（specs/025 FR-004 / FR-005）', async () => {
   const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
   app = await launchApp({
     repoRoot,
@@ -161,22 +164,32 @@ test('US-56 占位页跳转：发起方工作区已打开时显示跳转链接�
   await chatA.fill('textarea.input-textarea', '派给另一个工作区');
   await chatA.press('textarea.input-textarea', 'Enter');
 
-  // 切到工作区 B：点击占位父对话（发起方工作区 A 仍打开，跳转链接必须可用）
+  // 切到工作区 B：打开跨工作区对话
   await tabs.nth(1).click();
   const sidebarB = await app.sidebarPage();
-  const placeholder = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区容器' });
-  await expect(placeholder).toHaveCount(1, { timeout: 30_000 });
-  await placeholder.click();
+  const row = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区任务' });
+  await expect(row).toHaveCount(1, { timeout: 30_000 });
+  const rowSid2 = await row.getAttribute('data-session-id');
+  await row.click();
+  const chatB = await app.chatPage({ sessionIncludes: rowSid2 ?? '' });
 
-  const jumpPage = await app.waitForPage('data:text/html');
-  await expect(jumpPage.getByText('跨工作区子代理容器')).toBeVisible();
-  await expect(jumpPage.locator('#jumpBtn')).toBeVisible();
-  await expect(jumpPage.getByText('跳转链接不可用')).toHaveCount(0);
-  // 路径行显示发起方工作区展示路径，而不是退化为 ph_ 占位会话 id
-  await expect(jumpPage.getByText(path.basename(workspaceA))).toBeVisible();
+  // 输入框禁用 + placeholder「非用户创建对话无法输入」（specs/025 FR-004）
+  const textareaB = chatB.locator('textarea.input-textarea');
+  await expect(textareaB).toBeDisabled({ timeout: 20_000 });
+  await expect(textareaB).toHaveAttribute('placeholder', '非用户创建对话无法输入');
+
+  // 「返回发起方」按钮按 creator 跳转（specs/025 FR-005）：切回工作区 A 并打开发起方对话
+  const back = chatB.getByTitle(/返回父对话|Back to parent/);
+  await expect(back).toBeVisible();
+  await back.click();
+
+  // 活动标签切回 A，聊天区显示发起方对话（标题 = 首条用户消息）
+  await expect(chatA.getByText('派给另一个工作区').first()).toBeVisible({ timeout: 20_000 });
+  // A 的输入框可输入（creator=user 的会话不受禁用影响）
+  await expect(chatA.locator('textarea.input-textarea')).toBeEnabled({ timeout: 20_000 });
 });
 
-test('US-56 容器行状态灯与会话设置继承（specs/024 FR-001 / FR-004）', async () => {
+test('US-56 会话设置全量继承与 creator 落盘（specs/025 FR-002 / FR-005）', async () => {
   const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
   app = await launchApp({
     repoRoot,
@@ -190,11 +203,11 @@ test('US-56 容器行状态灯与会话设置继承（specs/024 FR-001 / FR-004�
   mockLlm.setHandler((req): ScriptDecision => {
     const text = lastUserText(req.body.messages);
     if (text === '在 B 里做点事') {
-      // 子代理的第二轮（Reply 的 tool 结果）：收尾文本
+      // 跨工作区对话的第二轮（Reply 的 tool 结果）：收尾文本
       if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
         return { kind: 'text', text: 'B 里做完了。' };
       }
-      // 第一轮延迟应答：子代理停在「工具调用等待」窗口，容器行流水灯稳定可见
+      // 第一轮延迟应答：对话停在「工具调用等待」窗口，运行流水灯稳定可见
       return { kind: 'tool', name: 'Reply', args: { message: 'B 里做完了。' }, delayMs: 8000 };
     }
     if (JSON.stringify(req.body.messages).includes('派给另一个工作区')) {
@@ -223,32 +236,43 @@ test('US-56 容器行状态灯与会话设置继承（specs/024 FR-001 / FR-004�
   await chatA.fill('textarea.input-textarea', '派给另一个工作区');
   await chatA.press('textarea.input-textarea', 'Enter');
 
-  // 切到工作区 B：容器行出现，且子代理在跑（delayMs 撑住窗口）→ 运行流水灯（AC-1）
+  // 对方 tab 流水灯不依赖手动切换：归属在派发时刻已登记（Client 路由表），
+  // 目标工作区还没被激活（宿主索引未刷新）也必须亮运行灯（delayMs 撑住窗口）
+  await expect(tabs.nth(1)).toHaveClass(/activity-running/, { timeout: 15_000 });
+
+  // 切到工作区 B：顶层对话行在跑（delayMs 撑住窗口）→ 运行流水灯
   await tabs.nth(1).click();
   const sidebarB = await app.sidebarPage();
-  const placeholder = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区容器' });
-  await expect(placeholder).toHaveCount(1, { timeout: 30_000 });
-  await expect(placeholder.locator('.running-bar')).toBeVisible({ timeout: 15_000 });
+  const row = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区任务' });
+  await expect(row).toHaveCount(1, { timeout: 30_000 });
+  await expect(row.locator('.running-bar')).toBeVisible({ timeout: 15_000 });
 
-  // 子代理收尾后容器行灯熄灭（AC-3）：等发起方收到回投结果，再等流水灯消失
+  // 收尾后行灯熄灭：等发起方收到回投结果，再等流水灯消失
   await tabs.nth(0).click();
   await expect(chatA.getByText('已经派给 B。')).toBeVisible({ timeout: 30_000 });
   await tabs.nth(1).click();
-  await expect(placeholder.locator('.running-bar')).toHaveCount(0, { timeout: 20_000 });
+  await expect(row.locator('.running-bar')).toHaveCount(0, { timeout: 20_000 });
 
-  // 设置经容器继承（AC-7 / AC-10）：读目标工作区子代理 meta.json 断言继承值与名单
-  await placeholder.locator('[data-action="toggle-sub"]').click();
-  const child = sidebarB.locator(`${SIDEBAR_ITEM}.child`).filter({ hasText: '跨工作区任务' });
-  await expect(child).toHaveCount(1, { timeout: 15_000 });
-  const subId = await child.getAttribute('data-session-id');
+  // creator 落盘 + 全量继承（specs/025 FR-002 / FR-005）：读目标工作区对话 meta.json，
+  // 断言归属与七项设置等于发起方会话的生效值（不按角色裁剪）
+  const rowId = await row.getAttribute('data-session-id');
   const metaPath = path.join(
     app.homeDir,
     CONFIG_DIR_NAME,
     'conversations',
     encodeURIComponent(workspaceB),
-    `${subId}.meta.json`,
+    `${rowId}.meta.json`,
   );
   const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  expect(meta.creator).toEqual({
+    kind: 'agent',
+    workspaceId: agentId(workspaceA),
+    sessionId: expect.any(String),
+  });
+  expect(typeof meta.creator.sessionId).toBe('string');
+  expect(meta.creator.sessionId).not.toBe('');
+  expect(meta.parentSessionId).toBeUndefined();
+  expect(meta.crossWorkspaceOrigin).toBeUndefined();
   // 发起方 launchApp(agentMode: 'auto') + settings（thinking off / webSearch false /
   // model mock-model / provider mock / 无 mcp.json）→ 继承值全部可预期
   expect(meta.context.agentMode).toBe('auto');

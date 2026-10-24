@@ -44,7 +44,8 @@ export class ElectronConversationManager extends ConversationManager {
   protected async dispatchList(list: readonly ConversationMetadata[]): Promise<void> {
     // ① 原生侧栏：纯磁盘元数据（loaded 标记由 ChatViewManager 单独推）
     this.outlet('sidebar:conversations-updated', list);
-    // ② webview 内部列表（子对话树等）
+    // ② webview 内部列表（子对话树等）；跨工作区对话是顶层普通条目，无占位字段
+    // （specs/025 FR-001）
     this.host.sendToWebview({
       type: 'conversationsData',
       conversations: list.map((c) => ({
@@ -54,7 +55,6 @@ export class ElectronConversationManager extends ConversationManager {
         updatedAt: c.updatedAt,
         messageCount: c.messageCount,
         parentSessionId: c.parentSessionId,
-        ...(c.placeholder ? { placeholder: c.placeholder } : {}),
       })),
     });
     this.host.log(`Conversation list refreshed (${list.length} conversations)`);
