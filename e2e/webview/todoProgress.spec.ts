@@ -141,6 +141,38 @@ test('US-59 悬停满 100ms 才显示浮层', async () => {
   await expect(progressTip()).toHaveCount(0);
 });
 
+test('US-59 浮层宽度随内容自适应，最宽不超过输入区宽度', async () => {
+  const { page, host } = handle;
+  const longContent = '这是一个很长的任务条目，用来撑开浮层宽度'.repeat(4);
+  await seedConversations();
+  await host.setSessionTodos('sess-todo-a', [
+    { content: longContent, status: 'pending', activeForm: '' },
+  ]);
+  await openConversation('带清单的对话');
+  await expect(progressButton()).toHaveText('任务进度: 0/1');
+
+  const inputBox = await page.locator('[data-input-area]').boundingBox();
+
+  // 长条目：宽度扩到输入区宽度（不再固定在旧的 320px 上限）
+  await progressButton().hover();
+  await expect(progressTip()).toBeVisible();
+  const longTipBox = await progressTip().boundingBox();
+  expect(longTipBox!.width).toBeGreaterThan(320);
+  expect(longTipBox!.width).toBeLessThanOrEqual(inputBox!.width);
+
+  // 短条目：按内容收缩，不占满输入区
+  await host.send({
+    type: 'sessionTodos',
+    sessionId: 'sess-todo-a',
+    todos: [{ content: '短', status: 'pending', activeForm: '' }],
+  });
+  await expect(progressTip().getByText('短')).toBeVisible();
+  const shortTipBox = await progressTip().boundingBox();
+  expect(shortTipBox!.width).toBeLessThan(longTipBox!.width);
+  expect(shortTipBox!.width).toBeLessThan(inputBox!.width);
+  await page.mouse.move(5, 5);
+});
+
 test('US-59 悬停不足 100ms 就移出：浮层不出现', async () => {
   const { page, host } = handle;
   await seedConversations();

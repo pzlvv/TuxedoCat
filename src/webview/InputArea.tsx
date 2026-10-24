@@ -2224,6 +2224,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   const sendDisabled = !hasContent || isInputDisabled || busy || !!queuedMessage || !!idleSuspendedMessage;
   return (
     <div
+      data-input-area="true"
       className="max-w-[680px] mx-auto rounded-lg border-2 transition-colors"
       style={{
         backgroundColor: 'transparent',
@@ -2403,8 +2404,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       </div>
       {/* Divider */}
       <div className="border-t" style={{ borderColor: colors.border }} />
-      {/* Row 2: Context Progress Bar + Balance/Cache + File Info + Abort + Send Button */}
-      <div className="px-3 py-1.5 flex justify-between items-center gap-2">
+      {/* Row 2: Context Progress Bar + Balance/Cache + File Info + Abort + Send Button
+          relative：任务进度浮层以本行右边缘为锚点，宽度上限即输入区宽度（FR-003） */}
+      <div className="relative px-3 py-1.5 flex justify-between items-center gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {/* Context Usage Progress Bar */}
           <ContextProgressBar totalContextTokens={totalContextTokens} maxContextTokens={maxContextTokens} compactPending={compactPending} onClick={onCompress} colors={colors} />
@@ -2491,60 +2493,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
               >
                 {t('inputArea.todoProgress', { done: todoProgress.done, total: todoProgress.total })}
               </button>
-              {todoTipVisible && (
-                <div
-                  data-todo-progress-tip="true"
-                  className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
-                  style={{
-                    backgroundColor: colors.bgSecondary,
-                    borderColor: colors.border,
-                    maxWidth: 320,
-                  }}
-                >
-                  <div className="flex flex-col gap-1" style={{ maxHeight: 240, overflowY: 'auto' }}>
-                    {todoProgress.items.map((todo, index) => (
-                      <div key={index} className="flex items-start gap-2 ui-fs-11">
-                        <span
-                          className="flex-shrink-0 mt-0.5"
-                          style={{
-                            color: todo.status === 'in_progress'
-                              ? colors.harness
-                              : todo.status === 'completed'
-                                ? colors.timelineStatusSuccess
-                                : colors.textSystem,
-                          }}
-                        >
-                          <Icon
-                            name={todo.status === 'completed'
-                              ? 'check-square'
-                              : todo.status === 'in_progress'
-                                ? 'circle-dot'
-                                : 'square'}
-                            size={12}
-                          />
-                        </span>
-                        <span
-                          style={{
-                            color: todo.status === 'completed' ? colors.textSystem : colors.textPrimary,
-                            textDecoration: todo.status === 'completed' ? 'line-through' : 'none',
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {todo.content}
-                          {todo.status === 'in_progress' && todo.activeForm && (
-                            <span
-                              className="block ui-fs-11 italic mt-0.5"
-                              style={{ color: colors.harness }}
-                            >
-                              {todo.activeForm}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           )}
           <ToggleMenu
@@ -2703,6 +2651,62 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             </ConfigProvider>
           </div>
         </div>
+        {/* 任务进度浮层（docs/features/todo-list.md FR-003）：锚在底栏右边缘，宽度随内容自适应，
+          上限为输入区宽度；pointer-events-none：只读投影，点击不产生任何上行。 */}
+        {todoTipVisible && todoProgress && (
+          <div
+            data-todo-progress-tip="true"
+            className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
+            style={{
+              backgroundColor: colors.bgSecondary,
+              borderColor: colors.border,
+              maxWidth: '100%',
+            }}
+          >
+            <div className="flex flex-col gap-1" style={{ maxHeight: 240, overflowY: 'auto' }}>
+              {todoProgress.items.map((todo, index) => (
+                <div key={index} className="flex items-start gap-2 ui-fs-11">
+                  <span
+                    className="flex-shrink-0 mt-0.5"
+                    style={{
+                      color: todo.status === 'in_progress'
+                        ? colors.harness
+                        : todo.status === 'completed'
+                          ? colors.timelineStatusSuccess
+                          : colors.textSystem,
+                    }}
+                  >
+                    <Icon
+                      name={todo.status === 'completed'
+                        ? 'check-square'
+                        : todo.status === 'in_progress'
+                          ? 'circle-dot'
+                          : 'square'}
+                      size={12}
+                    />
+                  </span>
+                  <span
+                    style={{
+                      color: todo.status === 'completed' ? colors.textSystem : colors.textPrimary,
+                      textDecoration: todo.status === 'completed' ? 'line-through' : 'none',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {todo.content}
+                    {todo.status === 'in_progress' && todo.activeForm && (
+                      <span
+                        className="block ui-fs-11 italic mt-0.5"
+                        style={{ color: colors.harness }}
+                      >
+                        {todo.activeForm}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
