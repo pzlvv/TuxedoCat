@@ -20,7 +20,7 @@ import { getSessionWorkspace, setSessionWorkspace } from '../../shared/history/C
 import { getSettingsStore } from '../SettingsStore.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../shared/llm/modelRef.js';
 import { getConversationModelRef } from '../../shared/history/Conversation.js';
-import { userChoiceQueue } from '../../shared/UserChoiceQueue.js';
+import { userChoiceQueue, type UserChoiceResult } from '../../shared/UserChoiceQueue.js';
 import type {
   HostToWebviewMessage,
   HostToWebviewMessageWithoutSessionId,
@@ -1017,14 +1017,29 @@ export class WebviewMessageHandler {
   private async handleRespondUserChoice(message: Extract<WebviewToHostMessage, { type: 'respondUserChoice' }>): Promise<void> {
     this.log(`[WebviewMessageHandler] User choice response: ${message.choiceId}, index: ${message.index}`);
     const pending = this.userChoiceManager.pendingUserChoices.get(message.choiceId);
-    if (pending) {
-      this.userChoiceManager.pendingUserChoices.delete(message.choiceId);
-      userChoiceQueue.respond(pending.sessionId, { index: message.index, reply: message.reply });
-      pending.resolve({ index: message.index, reply: message.reply });
-      this.onUserChoiceResponded?.(pending.sessionId);
-    } else {
+    if (!pending) {
       this.log(`[WebviewMessageHandler] Warning: No pending choice found for ${message.choiceId}`);
+      return;
     }
+
+    this.userChoiceManager.pendingUserChoices.delete(message.choiceId);
+    const result: UserChoiceResult = message.answers
+      ? {
+          kind: 'question',
+          answers: message.answers.map((answer) => ({
+            id: answer.id,
+            selected: answer.selected,
+            custom: answer.custom ?? null,
+          })),
+        }
+      : {
+          kind: 'permission',
+          index: message.index,
+          reply: message.reply ?? null,
+        };
+    userChoiceQueue.respond(pending.sessionId, result);
+    pending.resolve(result);
+    this.onUserChoiceResponded?.(pending.sessionId);
   }
 
   /**

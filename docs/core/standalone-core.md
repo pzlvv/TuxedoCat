@@ -352,7 +352,7 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
   权限结果的语义是「保持询问」而不是「拒绝」。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
-- `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。
+- `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。`userChoice` 的载荷与结果按 `kind` 判别：`permission` 带 `message` / `choices`、结果为 `index` / `reply`；`question`（AskUserQuestion）带 `questions`、结果为 `answers`。
 - `UiRequest` 的十四个请求（`conversationListRequested` / `smartNamingRequested` / `balanceRequested` /
   `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
   `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /

@@ -2415,7 +2415,7 @@ fn ask_user_question_round_trips_through_the_user_choice_request() {
             openai_tool_sse(
                 "call_1",
                 "AskUserQuestion",
-                r#"{"question":"选哪个？","choices":[{"label":"A"},{"label":"B"}]}"#,
+                r#"{"questions":[{"id":"q","question":"选哪个？","options":[{"label":"A"},{"label":"B"}]}]}"#,
             )
         } else {
             openai_text_sse(&["收到"])
@@ -2428,7 +2428,7 @@ fn ask_user_question_round_trips_through_the_user_choice_request() {
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         // AskUserQuestion 的 checkPermissions 直接放行：回传 permResult 本身
         "toolPermissionRequested" => Some(request["permResult"].clone()),
-        "userChoice" => Some(json!({ "index": 1, "reply": "" })),
+        "userChoice" => Some(json!({ "answers": [{ "id": "q", "selected": ["B"], "custom": null }] })),
         _ => Some(json!({})),
     });
     submit(&harness, "s1", "问个问题", "u-1");
@@ -2445,18 +2445,23 @@ fn ask_user_question_round_trips_through_the_user_choice_request() {
         permissions[0]["permResult"]
     );
 
-    // 用户问答：请求载荷带 toolName / message / choices
+    // 用户问答：请求载荷带 kind / toolName / questions
     let choices = harness.sink.requests_of("userChoice");
     assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0]["options"]["kind"], "question");
     assert_eq!(choices[0]["options"]["toolName"], "AskUserQuestion");
-    assert_eq!(choices[0]["options"]["message"], "选哪个？");
-    assert_eq!(choices[0]["options"]["choices"][0]["label"], "A");
-    assert_eq!(choices[0]["options"]["choices"][1]["label"], "B");
+    assert_eq!(choices[0]["options"]["questions"][0]["id"], "q");
+    assert_eq!(choices[0]["options"]["questions"][0]["question"], "选哪个？");
+    assert_eq!(choices[0]["options"]["questions"][0]["options"][0]["label"], "A");
+    assert_eq!(choices[0]["options"]["questions"][0]["options"][1]["label"], "B");
 
-    // tool_result：命中选项时用 label 兜底空 reply，并带上选项下标
+    // tool_result：按 dsh 口径回传 answers JSON
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "success");
-    assert_eq!(result["output"], "User response: B (selected option index: 1)");
+    assert_eq!(
+        result["output"],
+        "{\"answers\":[{\"id\":\"q\",\"selected\":[\"B\"],\"custom\":null}]}"
+    );
 }
 
 #[test]
@@ -6533,7 +6538,7 @@ fn invalid_ask_user_question_schema_never_marks_the_session_waiting() {
             openai_tool_sse(
                 "call_1",
                 "AskUserQuestion",
-                r#"{"question":"选哪个？","choices":[{"label":"A","color":"red"}]}"#,
+                r#"{"questions":[{"id":"q","question":"选哪个？","options":[{"label":"A","color":"red"}]}]}"#,
             )
         } else {
             openai_text_sse(&["好的"])
@@ -6571,7 +6576,11 @@ fn blank_ask_user_question_never_marks_the_session_waiting() {
     let sandbox = Sandbox::new("engine-ask-user-blank-question");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "AskUserQuestion", r#"{"question":"   "}"#)
+            openai_tool_sse(
+                "call_1",
+                "AskUserQuestion",
+                r#"{"questions":[{"id":"q","question":"   "}]}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }

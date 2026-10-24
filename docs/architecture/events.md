@@ -115,7 +115,7 @@ export type CoreRequestHandlers = {
 全量让消费者不必自己维护状态表，也不会因为丢一条增量而永久错位。
 
 `CoreRequest` 的结果类型由 `CoreRequestResultMap` 约束（`toolPermissionRequested → PermissionResult`、
-`userChoice → { index; reply? }`、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
+`userChoice → UserChoiceResult`（`kind: 'permission'` 带 `index` / `reply`，`kind: 'question'` 带 `answers`）、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
 调用点不需要手动收窄。
 
 `SessionRuntimeState` 只放 core 能提供的**根事实**（`sessionId` / `idle` / `waiting` /
@@ -178,7 +178,7 @@ export type CoreRequestHandlers = {
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 结果类型 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
-| 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions` | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时） | `requestUserChoice` | `{ index: number; reply?: string }` |
+| 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `questions`） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
 | 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链；提示词模式不携带——跨工作区会话恒 normal，specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。

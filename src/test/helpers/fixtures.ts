@@ -141,7 +141,7 @@ export function makeTestBus(options: TestBusOptions = {}): TestBus {
   bus.onCoreRequests({
     toolPermissionRequested:
       options.toolPermissionRequested ?? (async () => ({ behavior: 'allow' })),
-    userChoice: options.userChoice ?? (async () => ({ index: 0 })),
+    userChoice: options.userChoice ?? (async () => ({ kind: 'permission', index: 0, reply: null })),
     crossWorkspaceAgentRequested:
       options.crossWorkspaceAgentRequested
       ?? (async () => ({ error: 'not supported' })),

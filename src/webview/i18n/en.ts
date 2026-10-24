@@ -238,6 +238,13 @@ export const enDict: Record<string, string> = {
   /* ── UserChoiceOverlay.tsx ───────────────────────────────── */
   'userChoice.placeholder': 'Type your thoughts',
   'userChoice.submit': 'Send',
+  'userChoice.prev': 'Previous',
+  'userChoice.next': 'Next',
+  'userChoice.submitAnswers': 'Submit',
+  'userChoice.other': 'Other',
+  'userChoice.otherDescription': 'Type your own reply',
+  'userChoice.questionPlaceholder': 'Type your reply, Enter for next, Shift+Enter for new line',
+  'userChoice.questionPlaceholderLast': 'Type your reply, Enter to submit, Shift+Enter for new line',
 
   /* ── ThinkingAnimation.tsx ───────────────────────────────── */
   'thinkingAnim.think1': 'I know you are impatient, but no need to rush',

@@ -224,7 +224,7 @@ function openBus(daemon: CoreDaemon, path: string) {
   bus.onCoreEvents(recording.handlers);
   const requestHandlers: CoreRequestHandlers = {
     toolPermissionRequested: async () => ({ behavior: 'allow' }),
-    userChoice: async () => ({ index: 0 }),
+    userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
     crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
   };
   bus.onCoreRequests(requestHandlers);
@@ -341,8 +341,8 @@ async function run(): Promise<void> {
     const recordingB = createRecordingCoreEventHandlers();
     busA.onCoreEvents(recordingA.handlers);
     busB.onCoreEvents(recordingB.handlers);
-    busA.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ index: 0 }), crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }) });
-    busB.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ index: 0 }), crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }) });
+    busA.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ kind: 'permission', index: 0, reply: null }), crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }) });
+    busB.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ kind: 'permission', index: 0, reply: null }), crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }) });
 
     check('两个 channel 都完成握手', await waitFor(() => busA.isReady() && busB.isReady()));
     busA.emitToCore({ type: 'abortRequested', sessionId: 's1' });
@@ -536,7 +536,7 @@ async function run(): Promise<void> {
         const bus = createCoreChannelBus(daemon.openChannel(localWorkspaceRef('D:/repo/a')), () => undefined);
         const recording = createRecordingCoreEventHandlers();
         bus.onCoreEvents(recording.handlers);
-        bus.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ index: 0 }), crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }) });
+        bus.onCoreRequests({ toolPermissionRequested: async () => ({ behavior: 'allow' }), userChoice: async () => ({ kind: 'permission', index: 0, reply: null }), crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }) });
         check('真实 daemon 起 Core 并握手', await waitFor(() => bus.isReady(), 20_000));
         bus.emitToCore({
           type: 'hostEnvironmentProvided',

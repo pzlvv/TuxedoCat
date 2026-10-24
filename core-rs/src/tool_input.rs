@@ -36,14 +36,18 @@ enum Kind<'a> {
     CoerceInt(Range),
     /// `z.coerce.boolean()`
     CoerceBool,
+    /// `z.boolean()`（不做 coerce）
+    Bool,
     /// `z.enum([...])`
     Enum(&'a [&'a str]),
     /// Edit 的 `replace_all`：`z.union([boolean, string.transform])`
     ReplaceAll,
     /// TodoWrite 的 `todos`：`z.array(z.object({...}))`
     TodoArray,
-    /// AskUserQuestion 的 `choices`：`z.array(z.strictObject({...})).min(1).max(9)`
-    ChoicesArray,
+    /// AskUserQuestion 的 `questions`：`z.array(z.strictObject({...})).min(1).max(9)`
+    QuestionArray,
+    /// AskUserQuestion 单题的 `options`：`z.array(z.strictObject({...}))`
+    OptionsArray,
 }
 
 struct Field<'a> {
@@ -148,10 +152,7 @@ fn todo_fields() -> Vec<Field<'static>> {
 }
 
 fn ask_user_fields() -> Vec<Field<'static>> {
-    vec![
-        Field { name: "question", required: true, kind: Kind::Str(None) },
-        Field { name: "choices", required: false, kind: Kind::ChoicesArray },
-    ]
+    vec![Field { name: "questions", required: true, kind: Kind::QuestionArray }]
 }
 
 fn agent_fields() -> Vec<Field<'static>> {
@@ -170,6 +171,17 @@ fn reply_fields() -> Vec<Field<'static>> {
     vec![
         Field { name: "message", required: true, kind: Kind::Str(None) },
         Field { name: "targetSessionId", required: false, kind: Kind::Str(None) },
+    ]
+}
+
+/// AskUserQuestion 单题：`z.strictObject({ id, question, header?, options?, multi_select? })`
+fn question_item_fields() -> Vec<Field<'static>> {
+    vec![
+        Field { name: "id", required: true, kind: Kind::Str(None) },
+        Field { name: "question", required: true, kind: Kind::Str(None) },
+        Field { name: "header", required: false, kind: Kind::Str(None) },
+        Field { name: "options", required: false, kind: Kind::OptionsArray },
+        Field { name: "multi_select", required: false, kind: Kind::Bool },
     ]
 }
 
@@ -246,7 +258,8 @@ fn missing_required_issue(kind: &Kind<'_>, path: Value) -> Value {
         return invalid_value_issue(values, path);
     }
     let expected = match kind {
-        Kind::TodoArray => "array",
+        Kind::TodoArray | Kind::QuestionArray | Kind::OptionsArray => "array",
+        Kind::Bool => "boolean",
         _ => "string",
     };
     invalid_type(expected, None, "undefined", None, path)
@@ -273,10 +286,12 @@ fn validate_kind(kind: &Kind<'_>, value: &Value, path: &Value) -> Result<Value, 
         }
         Kind::CoerceInt(range) => coerce_int(value, *range, path),
         Kind::CoerceBool => Ok(Value::Bool(js_truthy(value))),
+        Kind::Bool => check_bool(value, path),
         Kind::Enum(values) => check_enum(value, values, path),
         Kind::ReplaceAll => check_replace_all(value, path),
         Kind::TodoArray => check_todos(value, path),
-        Kind::ChoicesArray => check_choices(value, path),
+        Kind::QuestionArray => check_questions(value, path),
+        Kind::OptionsArray => check_options(value, path),
     }
 }
 
@@ -383,11 +398,70 @@ fn check_todos(value: &Value, path: &Value) -> Result<Value, Vec<Value>> {
     }
 }
 
-/// AskUserQuestion 的 `choices`：`z.array(z.strictObject({ label, description? })).min(1).max(9)`。
+/// `z.boolean()`：不做 coerce，只接受 JSON boolean。
+fn check_bool(value: &Value, path: &Value) -> Result<Value, Vec<Value>> {
+    match value {
+        Value::Bool(_) => Ok(value.clone()),
+        _ => Err(vec![invalid_type(
+            "boolean",
+            None,
+            parsed_type(value),
+            None,
+            path.clone(),
+        )]),
+    }
+}
+
+/// AskUserQuestion 的 `questions`：`z.array(z.strictObject({...})).min(1).max(9)`。
 ///
 /// zod 先逐项校验（严格对象：多余字段报 `unrecognized_keys`），再检查数组长度上下限；
 /// 因此长度越界时错误排在逐项错误之后（见 `toolInputValidation.json` 的用例）。
-fn check_choices(value: &Value, path: &Value) -> Result<Value, Vec<Value>> {
+fn check_questions(value: &Value, path: &Value) -> Result<Value, Vec<Value>> {
+    let Value::Array(items) = value else {
+        return Err(vec![invalid_type(
+            "array",
+            None,
+            parsed_type(value),
+            None,
+            path.clone(),
+        )]);
+    };
+    let fields = question_item_fields();
+    let mut issues: Vec<Value> = Vec::new();
+    let mut out: Vec<Value> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let mut item_base: Vec<Value> = path.as_array().cloned().unwrap_or_default();
+        item_base.push(Value::Number(serde_json::Number::from(index as u64)));
+        match validate_object(item, &fields, true, &item_base) {
+            Ok(value) => out.push(value),
+            Err(mut errs) => issues.append(&mut errs),
+        }
+    }
+    if items.is_empty() {
+        issues.push(too_small_array(1, path.clone()));
+    } else if items.len() > 9 {
+        issues.push(too_big_array(9, path.clone()));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for item in &out {
+        if let Some(id) = item.get("id").and_then(Value::as_str) {
+            if !ids.insert(id.to_string()) {
+                issues.push(custom_issue(
+                    path.clone(),
+                    "Question ids must be unique within one call",
+                ));
+            }
+        }
+    }
+    if issues.is_empty() {
+        Ok(Value::Array(out))
+    } else {
+        Err(issues)
+    }
+}
+
+/// 单题的 `options`：空数组合法（等价于省略），非空时 1–9；同题 label 必须唯一。
+fn check_options(value: &Value, path: &Value) -> Result<Value, Vec<Value>> {
     let Value::Array(items) = value else {
         return Err(vec![invalid_type(
             "array",
@@ -408,16 +482,33 @@ fn check_choices(value: &Value, path: &Value) -> Result<Value, Vec<Value>> {
             Err(mut errs) => issues.append(&mut errs),
         }
     }
-    if items.is_empty() {
-        issues.push(too_small_array(1, path.clone()));
-    } else if items.len() > 9 {
+    if !items.is_empty() && items.len() > 9 {
         issues.push(too_big_array(9, path.clone()));
+    }
+    let mut labels = std::collections::HashSet::new();
+    for item in &out {
+        if let Some(label) = item.get("label").and_then(Value::as_str) {
+            if !labels.insert(label.to_string()) {
+                issues.push(custom_issue(
+                    path.clone(),
+                    "Option labels must be unique within one question",
+                ));
+            }
+        }
     }
     if issues.is_empty() {
         Ok(Value::Array(out))
     } else {
         Err(issues)
     }
+}
+
+fn custom_issue(path: Value, message: &str) -> Value {
+    issue(vec![
+        ("code", json!("custom")),
+        ("path", path),
+        ("message", json!(message)),
+    ])
 }
 
 /// 非严格 `z.object({ content, status, activeForm })`（多余字段被忽略）

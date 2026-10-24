@@ -21,7 +21,7 @@ import type { Message, MessageData, StreamMessageData, StreamEndData, TodoEntry 
 import type { AgentMode } from './types.js';
 import type { ModelRef } from './llm/modelRef.js';
 import type { PermissionResult, ToolProgressData } from './tools/Tool.js';
-import type { UserChoiceOptions } from './UserChoiceQueue.js';
+import type { UserChoiceOptions, UserChoiceResult } from './UserChoiceQueue.js';
 import type { ConversationMetadata } from './history/Conversation.js';
 import type { SessionCreator } from './sessionCreator.js';
 import type { ConversationSpaceInfo } from './webviewTypes.js';
@@ -298,7 +298,7 @@ export type CoreRequest =
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type CoreRequestResultMap = {
   toolPermissionRequested: PermissionResult;
-  userChoice: { index: number; reply?: string };
+  userChoice: UserChoiceResult;
   /**
    * 成功带目标工作区里的子代理会话 id；`local` 表示 target 就是当前工作区，
    * 由 Core 按缺省策略建本机子代理；失败带原因（不创建任何会话）。

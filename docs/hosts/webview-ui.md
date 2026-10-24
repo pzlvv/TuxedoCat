@@ -371,7 +371,8 @@ dropSession(sessionId: string): void {
 该会话的 `idle` / `waiting` 状态（[docs/core/session-runtime.md](../core/session-runtime.md)），避免侧栏黄灯 / 托盘状态点残留——否则等待方
 （工具权限确认 / `AskUserQuestion`）会永久挂起，且队列在会话关闭后仍会尝试弹出该会话的选择框。拒绝以异常形式传播：
 权限确认按 **deny** 处理（与 `toolPermissionRequested` 的失败兜底同一口径），
-`AskUserQuestion` 由工具执行层统一捕获转成工具错误。
+`AskUserQuestion` 由工具执行层统一捕获转成工具错误；用户正常回复时按
+`{ kind: 'question', answers }` 回传（specs/026）。
 
 ## 10. 与 core 的 `SessionRuntimeState` 的边界
 

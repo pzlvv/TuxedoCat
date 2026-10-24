@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
 import type { SessionCreator } from '../../shared/sessionCreator';
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
@@ -129,6 +129,7 @@ export interface UseAppHandlersReturn {
   handleDeleteIdleSuspended: () => void;
   handleUserChoiceResponse: (index: number, reply?: string) => void;
   handleUserChoiceSubmit: (inputValue: string) => void;
+  handleAnswersSubmit: (answers: UserChoiceAnswer[]) => void;
   handleChoiceResponse: (index: number) => void;
   handleToggleFileHidden: () => void;
   toggleSubSession: (sessionId: string) => void;
@@ -595,6 +596,30 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }, 0);
   }, []);
 
+  const handleAnswersSubmit = useCallback((answers: UserChoiceAnswer[]) => {
+    const currentRequest = props.userChoiceRequestRef.current;
+    if (!hasHostMessageApi() || !currentRequest) return;
+
+    postMessage({
+      type: 'respondUserChoice',
+      choiceId: currentRequest.choiceId,
+      index: -1,
+      answers,
+    });
+
+    props.userChoiceInputRef.current = '';
+    props.setUserChoiceRequest(null);
+    if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
+      props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
+    }
+    setTimeout(() => {
+      props.mainInputRef.current?.focus();
+      const currentInput = props.inputAreaRef.current?.getValue() ?? '';
+      const pos = Math.min(props.cursorPositionRef.current ?? currentInput.length, currentInput.length);
+      props.mainInputRef.current?.setSelectionRange(pos, pos);
+    }, 0);
+  }, []);
+
   const handleChoiceResponse = useCallback((index: number) => {
     handleUserChoiceResponse(index);
   }, [handleUserChoiceResponse]);
@@ -623,6 +648,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     handleDeleteIdleSuspended,
     handleUserChoiceResponse,
     handleUserChoiceSubmit,
+    handleAnswersSubmit,
     handleChoiceResponse,
     handleToggleFileHidden,
     toggleSubSession,

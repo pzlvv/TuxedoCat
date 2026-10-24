@@ -82,6 +82,9 @@ US-54 的终端窗口 BrowserWindow 生命周期（工作区关闭联动关窗�
 US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与 DeepSeek 账户，
 由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼装 / 错误映射 / 本地一_shot 假服务器）
 与 `engine_tests` 的工具注入用例覆盖。
+US-58 的逐页选择框交互（多问题分页 / 多选 / 其他项 / Enter 行为）——需要 webview 渲染层
+断言；协议与答案形状由 `src/test/userChoice*.test.ts` 与 `core-rs` 的 `ask_user` 用例锁定，
+分页与键盘交互人工验证。
 由 `src/test/` 与 `core-rs` 的既有单测与后续补充覆盖。
 
 运行方式与前置构建见 `e2e/README.md`。

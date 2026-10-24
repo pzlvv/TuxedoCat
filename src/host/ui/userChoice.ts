@@ -55,7 +55,7 @@ export class UserChoiceManager {
    */
   private diffSnapshotSessionId: string | undefined;
   /** 按 choiceId 存储的 pending 用户选择回调 */
-  public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: { index: number; reply?: string }) => void }> = new Map();
+  public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: UserChoiceResult) => void }> = new Map();
   /**
    * 用户选择框弹出后的可选回调（当前无人传入，保留给宿主做额外动作）。
    * waiting 状态已由 core 的 `sessionRuntime` → `CoreEvent.sessionRuntimeChanged`
@@ -190,47 +190,59 @@ export class UserChoiceManager {
    * 弹出用户选择框并等待应答（队列投递与未接线兜底的共同落点）。
    * beforeContent 允许 null：Write 新建文件时无原文，diff 预览需要区分「空串」与「无原文件」。
    */
-  private async showUserChoice(sessionID: string, options: {
-    toolName: string;
-    message: string;
-    choices?: Array<{ label: string; description?: string }>;
-    showPreview?: boolean;
-    previewContent?: string;
-    previewTitle?: string;
-    beforeContent?: string | null;
-    afterContent?: string;
-    contextBefore?: string[];
-    contextAfter?: string[];
-  }): Promise<{ index: number; reply?: string }> {
+  private async showUserChoice(sessionID: string, options: UserChoiceOptions): Promise<UserChoiceResult> {
     const choiceId = `choice-${Date.now()}-${Math.random()}`;
 
-    this.currentContextBefore = (options.contextBefore || [])
-      .filter((line) => {
-        const lineStr = String(line);
-        return line !== null && lineStr.trim().length > 0 && lineStr !== 'undefined';
-      });
-    this.currentContextAfter = (options.contextAfter || [])
-      .filter((line) => {
-        const lineStr = String(line);
-        return line !== null && lineStr.trim().length > 0 && lineStr !== 'undefined';
-      });
+    if (options.kind === 'permission') {
+      this.currentContextBefore = (options.contextBefore || [])
+        .filter((line) => {
+          const lineStr = String(line);
+          return line !== null && lineStr.trim().length > 0 && lineStr !== 'undefined';
+        });
+      this.currentContextAfter = (options.contextAfter || [])
+        .filter((line) => {
+          const lineStr = String(line);
+          return line !== null && lineStr.trim().length > 0 && lineStr !== 'undefined';
+        });
 
-    this.currentBeforeContent = options.beforeContent || '';
-    this.currentAfterContent = options.afterContent || '';
-    // 本次写入归属该会话（startLine / endLine 由 ToolHandler 侧保留，这里不动）
-    this.diffSnapshotSessionId = sessionID;
+      this.currentBeforeContent = options.beforeContent || '';
+      this.currentAfterContent = options.afterContent || '';
+      // 本次写入归属该会话（startLine / endLine 由 ToolHandler 侧保留，这里不动）
+      this.diffSnapshotSessionId = sessionID;
 
-    this.log(`[UserChoiceManager] Saved beforeContent (${this.currentBeforeContent.length} chars) and afterContent (${this.currentAfterContent.length} chars)`);
+      this.log(`[UserChoiceManager] Saved beforeContent (${this.currentBeforeContent.length} chars) and afterContent (${this.currentAfterContent.length} chars)`);
+    }
 
     // previewContent / previewTitle 曾随消息下发，但 webview 从未读取（预览实际走
     // updateToolArgs 与 showDiff 通路），不再上 wire。
-    this.postToWebview(sessionID, {
-      type: 'requestUserChoice',
-      choiceId,
-      toolName: options.toolName,
-      message: options.message,
-      choices: options.choices,
-    });
+    if (options.kind === 'question') {
+      this.postToWebview(sessionID, {
+        type: 'requestUserChoice',
+        choiceId,
+        toolName: options.toolName,
+        message: '',
+        questions: options.questions.map((question) => ({
+          id: question.id,
+          question: question.question,
+          header: question.header ?? undefined,
+          options: question.options.length > 0
+            ? question.options.map((option) => ({
+                label: option.label,
+                description: option.description ?? undefined,
+              }))
+            : undefined,
+          multi_select: question.multi_select,
+        })),
+      });
+    } else {
+      this.postToWebview(sessionID, {
+        type: 'requestUserChoice',
+        choiceId,
+        toolName: options.toolName,
+        message: options.message,
+        choices: options.choices,
+      });
+    }
 
     // 会话运行时状态：等待用户操作（ask user / 权限确认）→ 侧栏黄灯 / 托盘状态点
     emitUserChoicePending(sessionID, true);

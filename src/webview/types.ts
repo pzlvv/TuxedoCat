@@ -204,11 +204,36 @@ export interface IdleSuspendedMessage {
   wire: SendMessageWire;
 }
 
+export interface UserChoiceOption {
+  label: string;
+  description?: string;
+}
+
+/**
+ * AskUserQuestion 的单个问题（specs/026）。
+ * 入参形状对齐 dsh：`options` 缺省即纯文本问题，`multi_select` 缺省为 false。
+ */
+export interface UserChoiceQuestion {
+  id: string;
+  question: string;
+  header?: string;
+  options?: UserChoiceOption[];
+  multi_select?: boolean;
+}
+
+export interface UserChoiceAnswer {
+  id: string;
+  selected: string[];
+  custom?: string;
+}
+
 export interface UserChoiceRequest {
   choiceId: string;
   toolName: string;
   message: string;
-  choices?: Array<{ label: string; description?: string }>;
+  choices?: UserChoiceOption[];
+  /** AskUserQuestion 场景的问题清单；权限确认场景没有该字段 */
+  questions?: UserChoiceQuestion[];
 }
 
 export interface SessionState {

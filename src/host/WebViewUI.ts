@@ -28,7 +28,7 @@ import {
 import { hostname as osHostname } from 'os';
 import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
-import type { UserChoiceOptions } from '../shared/UserChoiceQueue.js';
+import type { UserChoiceOptions, UserChoiceResult } from '../shared/UserChoiceQueue.js';
 import type { SessionRuntimeState } from '../shared/AssistantEventBus.js';
 import type { NoticeLevel, NoticeParams } from '../shared/coreText.js';
 import { CoreNoticeKeys } from '../shared/coreText.js';
@@ -611,7 +611,7 @@ export class WebViewUI implements WebViewUiPort {
     return this.toolHandler.requestToolPermission(sessionId, toolUseId, toolName, permResult, displayArgs, agentMode);
   }
 
-  requestUserChoice(sessionId: string, options: UserChoiceOptions): Promise<{ index: number; reply?: string }> {
+  requestUserChoice(sessionId: string, options: UserChoiceOptions): Promise<UserChoiceResult> {
     return this.userChoiceManager.requestUserChoice(sessionId, options);
   }
 

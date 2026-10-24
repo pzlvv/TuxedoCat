@@ -940,304 +940,460 @@
       "name": "AskUserQuestion-78",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi"
+        "questions": [
+          {
+            "id": "q1",
+            "question": "hi"
+          }
+        ]
       },
       "error": null,
       "parsed": {
-        "question": "hi"
+        "questions": [
+          {
+            "id": "q1",
+            "question": "hi"
+          }
+        ]
       }
     },
     {
       "name": "AskUserQuestion-79",
       "tool": "AskUserQuestion",
       "input": {},
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"question\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-80",
       "tool": "AskUserQuestion",
       "input": {
-        "question": 5
+        "questions": []
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"question\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"questions\"\n    ],\n    \"message\": \"Too small: expected array to have >=1 items\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-81",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "extra": 1
+        "questions": "x"
       },
-      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\"\n    ],\n    \"message\": \"Invalid input: expected array, received string\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-82",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a"
+            "question": "hi"
           }
         ]
       },
-      "error": null,
-      "parsed": {
-        "question": "hi",
-        "choices": [
-          {
-            "label": "a"
-          }
-        ]
-      }
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"id\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "parsed": null
     },
     {
       "name": "AskUserQuestion-83",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a",
-            "description": "d"
+            "id": 5,
+            "question": "hi"
           }
         ]
       },
-      "error": null,
-      "parsed": {
-        "question": "hi",
-        "choices": [
-          {
-            "label": "a",
-            "description": "d"
-          }
-        ]
-      }
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"id\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "parsed": null
     },
     {
       "name": "AskUserQuestion-84",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": []
+        "questions": [
+          {
+            "id": "q",
+            "question": "a"
+          },
+          {
+            "id": "q",
+            "question": "b"
+          }
+        ]
       },
-      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Too small: expected array to have >=1 items\"\n  }\n]",
+      "error": "[\n  {\n    \"code\": \"custom\",\n    \"path\": [\n      \"questions\"\n    ],\n    \"message\": \"Question ids must be unique within one call\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-85",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": "x"
+        "questions": [
+          {
+            "id": "q"
+          }
+        ]
       },
-      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Invalid input: expected array, received string\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"question\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-86",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
-          5
+        "questions": [
+          {
+            "id": "q",
+            "question": 5
+          }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0\n    ],\n    \"message\": \"Invalid input: expected object, received number\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"question\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-87",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "description": "d"
+            "id": "q",
+            "question": "hi"
           }
-        ]
+        ],
+        "extra": 1
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-88",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": 5
+            "id": "q",
+            "question": "hi",
+            "x": 1
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"x\"\n    ],\n    \"path\": [\n      \"questions\",\n      0\n    ],\n    \"message\": \"Unrecognized key: \\\"x\\\"\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-89",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a",
-            "description": 5
+            "id": "q",
+            "question": "hi",
+            "options": []
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
-      "parsed": null
+      "error": null,
+      "parsed": {
+        "questions": [
+          {
+            "id": "q",
+            "question": "hi",
+            "options": []
+          }
+        ]
+      }
     },
     {
       "name": "AskUserQuestion-90",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a",
-            "description": null
+            "id": "q",
+            "question": "hi",
+            "options": "x"
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\"\n    ],\n    \"message\": \"Invalid input: expected array, received string\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-91",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a",
-            "x": 1
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "description": "d"
+              }
+            ]
           }
         ]
       },
-      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"x\"\n    ],\n    \"path\": [\n      \"choices\",\n      0\n    ],\n    \"message\": \"Unrecognized key: \\\"x\\\"\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-92",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a"
-          },
-          {
-            "label": "b",
-            "z": 1,
-            "y": 2
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "label": 5
+              }
+            ]
           }
         ]
       },
-      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"z\",\n      \"y\"\n    ],\n    \"path\": [\n      \"choices\",\n      1\n    ],\n    \"message\": \"Unrecognized keys: \\\"z\\\", \\\"y\\\"\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-93",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a"
-          },
-          {
-            "label": 5
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "label": "a",
+                "description": 5
+              }
+            ]
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      1,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\",\n      0,\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-94",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
-          },
-          {
-            "label": "a"
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "label": "a",
+                "description": null
+              }
+            ]
           }
         ]
       },
-      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 9,\n    \"inclusive\": true,\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Too big: expected array to have <=9 items\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\",\n      0,\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "AskUserQuestion-95",
       "tool": "AskUserQuestion",
       "input": {
-        "question": "hi",
-        "choices": [
+        "questions": [
           {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
-          },
-          {
-            "label": 5
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "label": "a",
+                "x": 1
+              }
+            ]
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      0,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      1,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      2,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      3,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      4,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      5,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      6,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      7,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      8,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"choices\",\n      9,\n      \"label\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  },\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 9,\n    \"inclusive\": true,\n    \"path\": [\n      \"choices\"\n    ],\n    \"message\": \"Too big: expected array to have <=9 items\"\n  }\n]",
+      "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"x\"\n    ],\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\",\n      0\n    ],\n    \"message\": \"Unrecognized key: \\\"x\\\"\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-96",
+      "tool": "AskUserQuestion",
+      "input": {
+        "questions": [
+          {
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "label": "a"
+              },
+              {
+                "label": "a"
+              }
+            ]
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"code\": \"custom\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\"\n    ],\n    \"message\": \"Option labels must be unique within one question\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-97",
+      "tool": "AskUserQuestion",
+      "input": {
+        "questions": [
+          {
+            "id": "q",
+            "question": "hi",
+            "multi_select": "true"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"questions\",\n      0,\n      \"multi_select\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received string\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-98",
+      "tool": "AskUserQuestion",
+      "input": {
+        "questions": [
+          {
+            "id": "q1",
+            "question": "a",
+            "options": [
+              {
+                "label": "x",
+                "description": "d"
+              }
+            ],
+            "multi_select": true
+          },
+          {
+            "id": "q2",
+            "question": "b"
+          }
+        ]
+      },
+      "error": null,
+      "parsed": {
+        "questions": [
+          {
+            "id": "q1",
+            "question": "a",
+            "options": [
+              {
+                "label": "x",
+                "description": "d"
+              }
+            ],
+            "multi_select": true
+          },
+          {
+            "id": "q2",
+            "question": "b"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AskUserQuestion-99",
+      "tool": "AskUserQuestion",
+      "input": {
+        "questions": [
+          {
+            "id": "q",
+            "question": "hi",
+            "options": [
+              {
+                "label": "a"
+              },
+              {
+                "label": "b"
+              },
+              {
+                "label": "c"
+              },
+              {
+                "label": "d"
+              },
+              {
+                "label": "e"
+              },
+              {
+                "label": "f"
+              },
+              {
+                "label": "g"
+              },
+              {
+                "label": "h"
+              },
+              {
+                "label": "i"
+              },
+              {
+                "label": "j"
+              }
+            ]
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 9,\n    \"inclusive\": true,\n    \"path\": [\n      \"questions\",\n      0,\n      \"options\"\n    ],\n    \"message\": \"Too big: expected array to have <=9 items\"\n  }\n]",
+      "parsed": null
+    },
+    {
+      "name": "AskUserQuestion-100",
+      "tool": "AskUserQuestion",
+      "input": {
+        "questions": [
+          {
+            "id": "q1",
+            "question": "a"
+          },
+          {
+            "id": "q2",
+            "question": "b"
+          },
+          {
+            "id": "q3",
+            "question": "c"
+          },
+          {
+            "id": "q4",
+            "question": "d"
+          },
+          {
+            "id": "q5",
+            "question": "e"
+          },
+          {
+            "id": "q6",
+            "question": "f"
+          },
+          {
+            "id": "q7",
+            "question": "g"
+          },
+          {
+            "id": "q8",
+            "question": "h"
+          },
+          {
+            "id": "q9",
+            "question": "i"
+          },
+          {
+            "id": "q10",
+            "question": "j"
+          }
+        ]
+      },
+      "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_big\",\n    \"maximum\": 9,\n    \"inclusive\": true,\n    \"path\": [\n      \"questions\"\n    ],\n    \"message\": \"Too big: expected array to have <=9 items\"\n  }\n]",
       "parsed": null
     },
     {

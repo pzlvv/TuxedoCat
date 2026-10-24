@@ -2356,16 +2356,36 @@ fn ask_context(sandbox: &Sandbox, response: Value) -> ToolContext {
 #[test]
 fn ask_user_question_requires_a_non_empty_question() {
     assert_eq!(
-        validate_input("AskUserQuestion", &json!({ "question": "" }), "."),
+        validate_input(
+            "AskUserQuestion",
+            &json!({ "questions": [{ "id": "q", "question": "" }] }),
+            ".",
+        ),
         Some("Question cannot be empty".to_string())
     );
     assert_eq!(
-        validate_input("AskUserQuestion", &json!({ "question": "   " }), "."),
+        validate_input(
+            "AskUserQuestion",
+            &json!({ "questions": [{ "id": "q", "question": "   " }] }),
+            ".",
+        ),
         Some("Question cannot be empty".to_string())
     );
     assert_eq!(
-        validate_input("AskUserQuestion", &json!({ "question": "ok" }), "."),
+        validate_input(
+            "AskUserQuestion",
+            &json!({ "questions": [{ "id": "q", "question": "ok" }] }),
+            ".",
+        ),
         None
+    );
+    assert_eq!(
+        validate_input(
+            "AskUserQuestion",
+            &json!({ "questions": [{ "id": " ", "question": "ok" }] }),
+            ".",
+        ),
+        Some("Question id cannot be empty".to_string())
     );
 }
 
@@ -2374,7 +2394,7 @@ fn ask_user_question_reports_an_error_without_a_callback() {
     let sandbox = Sandbox::new("tools-ask-nocb");
     let outcome = execute(
         "AskUserQuestion",
-        &json!({ "question": "hi" }),
+        &json!({ "questions": [{ "id": "q", "question": "hi" }] }),
         &context(&sandbox),
     );
     assert!(outcome.is_error());
@@ -2382,55 +2402,50 @@ fn ask_user_question_reports_an_error_without_a_callback() {
 }
 
 #[test]
-fn ask_user_question_returns_the_selected_choice_label() {
+fn ask_user_question_returns_the_answers_payload() {
     let sandbox = Sandbox::new("tools-ask-choice");
-    let ctx = ask_context(&sandbox, json!({ "index": 1, "reply": "" }));
+    let ctx = ask_context(
+        &sandbox,
+        json!({ "answers": [{ "id": "q", "selected": ["否"], "custom": null }] }),
+    );
     let outcome = execute(
         "AskUserQuestion",
-        &json!({ "question": "继续吗？", "choices": [{ "label": "是" }, { "label": "否" }] }),
+        &json!({
+            "questions": [{
+                "id": "q",
+                "question": "继续吗？",
+                "options": [{ "label": "是" }, { "label": "否" }]
+            }]
+        }),
         &ctx,
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
-    assert_eq!(text(&outcome), "User response: 否 (selected option index: 1)");
+    assert_eq!(
+        text(&outcome),
+        "{\"answers\":[{\"id\":\"q\",\"selected\":[\"否\"],\"custom\":null}]}"
+    );
 }
 
 #[test]
-fn ask_user_question_prefers_the_free_text_reply() {
+fn ask_user_question_keeps_the_custom_reply() {
     let sandbox = Sandbox::new("tools-ask-free");
-    let ctx = ask_context(&sandbox, json!({ "index": 0, "reply": "  自定义  " }));
+    let ctx = ask_context(
+        &sandbox,
+        json!({ "answers": [{ "id": "q", "selected": [], "custom": "hello" }] }),
+    );
     let outcome = execute(
         "AskUserQuestion",
-        &json!({ "question": "q", "choices": [{ "label": "A" }, { "label": "B" }] }),
+        &json!({ "questions": [{ "id": "q", "question": "q" }] }),
         &ctx,
     );
     assert_eq!(
         text(&outcome),
-        "User response: 自定义 (selected option index: 0)"
+        "{\"answers\":[{\"id\":\"q\",\"selected\":[],\"custom\":\"hello\"}]}"
     );
 }
 
 #[test]
-fn ask_user_question_open_question_keeps_free_text_without_index() {
-    let sandbox = Sandbox::new("tools-ask-open");
-    let ctx = ask_context(&sandbox, json!({ "index": -1, "reply": "hello" }));
-    let outcome = execute("AskUserQuestion", &json!({ "question": "q" }), &ctx);
-    assert_eq!(text(&outcome), "User response: hello");
-}
-
-#[test]
-fn ask_user_question_out_of_range_index_falls_back_to_empty_reply() {
-    let sandbox = Sandbox::new("tools-ask-range");
-    let ctx = ask_context(&sandbox, json!({ "index": 5, "reply": "" }));
-    let outcome = execute(
-        "AskUserQuestion",
-        &json!({ "question": "q", "choices": [{ "label": "A" }, { "label": "B" }] }),
-        &ctx,
-    );
-    assert_eq!(text(&outcome), "User response: ");
-}
-
-#[test]
-fn ask_user_question_sends_tool_name_message_and_choices() {
+fn ask_user_question_sends_question_payload() {
     let sandbox = Sandbox::new("tools-ask-options");
     let captured: std::sync::Arc<std::sync::Mutex<Option<Value>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -2444,7 +2459,7 @@ fn ask_user_question_sends_tool_name_message_and_choices() {
         cancel: None,
         user_choice: Some(std::sync::Arc::new(move |options: &Value| {
             *sink.lock().unwrap() = Some(options.clone());
-            Some(json!({ "index": 0, "reply": "" }))
+            Some(json!({ "answers": [] }))
         })),
         background: None,
         subagent: None,
@@ -2452,17 +2467,31 @@ fn ask_user_question_sends_tool_name_message_and_choices() {
     execute(
         "AskUserQuestion",
         &json!({
-            "question": "选哪个？",
-            "choices": [{ "label": "A", "description": "第一" }, { "label": "B" }]
+            "questions": [{
+                "id": "q",
+                "question": "选哪个？",
+                "header": "选择",
+                "options": [{ "label": "A", "description": "第一" }, { "label": "B" }],
+                "multi_select": true
+            }]
         }),
         &ctx,
     );
     let options = captured.lock().unwrap().clone().expect("captured options");
+    assert_eq!(options["kind"], "question");
     assert_eq!(options["toolName"], "AskUserQuestion");
-    assert_eq!(options["message"], "选哪个？");
     assert_eq!(
-        options["choices"],
-        json!([{ "label": "A", "description": "第一" }, { "label": "B" }])
+        options["questions"],
+        json!([{
+            "id": "q",
+            "question": "选哪个？",
+            "header": "选择",
+            "options": [
+                { "label": "A", "description": "第一" },
+                { "label": "B", "description": null }
+            ],
+            "multi_select": true
+        }])
     );
 }
 

@@ -355,6 +355,7 @@ export function handleToolRequestUserChoice(
               toolName: msg.toolName,
               message: msg.message,
               choices: msg.choices !== undefined && msg.choices.length > 0 ? msg.choices : undefined,
+              questions: msg.questions,
             };
           }
           if (msg.sessionId === sessionId) {
@@ -367,6 +368,7 @@ export function handleToolRequestUserChoice(
               toolName: msg.toolName,
               message: msg.message,
               choices: msg.choices !== undefined && msg.choices.length > 0 ? msg.choices : undefined,
+              questions: msg.questions,
             });
           }
 }

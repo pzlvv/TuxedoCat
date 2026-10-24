@@ -8,13 +8,20 @@
  */
 
 import * as assert from 'assert';
-import { userChoiceQueue, type UserChoiceOptions } from '../shared/UserChoiceQueue';
+import { userChoiceQueue, type UserChoiceOptions, type UserChoiceResult } from '../shared/UserChoiceQueue';
 import { createChecker, runTests } from './helpers/harness';
 
 const options: UserChoiceOptions = {
+  kind: 'permission',
   toolName: 'Bash',
   message: '确认执行',
   choices: [{ label: '允许' }, { label: '拒绝' }],
+};
+
+const permissionIndex = async (promise: Promise<UserChoiceResult>): Promise<number> => {
+  const result = await promise;
+  assert.equal(result.kind, 'permission');
+  return result.kind === 'permission' ? result.index : -1;
 };
 
 async function run(): Promise<void> {
@@ -42,9 +49,9 @@ async function run(): Promise<void> {
   assert.deepEqual(restored, ['s1']);
   check('session loaded: dispatches pending choice', true);
 
-  const r1 = userChoiceQueue.respond('s1', { index: 1 });
+  const r1 = userChoiceQueue.respond('s1', { kind: 'permission', index: 1, reply: null });
   assert.equal(r1, true);
-  assert.equal((await p1).index, 1);
+  assert.equal(await permissionIndex(p1), 1);
   check('respond resolves pending choice', true);
 
   // 3) 已 open 的会话：enqueue 立即投递
@@ -53,9 +60,9 @@ async function run(): Promise<void> {
   assert.deepEqual(shown, ['s2']);
   check('open session: shown immediately', true);
 
-  const r2 = userChoiceQueue.respond('s2', { index: 0 });
+  const r2 = userChoiceQueue.respond('s2', { kind: 'permission', index: 0, reply: null });
   assert.equal(r2, true);
-  assert.equal((await p2).index, 0);
+  assert.equal(await permissionIndex(p2), 0);
   assert.equal(userChoiceQueue.hasPendingChoice('s2'), false);
   check('respond clears pending state', true);
 

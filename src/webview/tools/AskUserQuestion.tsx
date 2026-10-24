@@ -5,7 +5,14 @@ import { t } from '../i18n';
 import { uiFontSizePx } from '../fontSize';
 
 export const AskUserQuestion: React.FC<ToolCallProps> = ({ args, colors, status, output }) => {
-  const question = args?.question || '';
+  // specs/026：新形状是 questions[]；旧对话里的 tool_use 仍是 question / choices。
+  const rawQuestions = args?.questions;
+  const question = Array.isArray(rawQuestions) && rawQuestions.length > 0
+    ? rawQuestions
+        .map((item) => item?.question)
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .join(' / ')
+    : (typeof args?.question === 'string' ? args.question : '');
 
   return (
     <ToolHeader icon="HelpCircle" name="Ask User" colors={colors}>

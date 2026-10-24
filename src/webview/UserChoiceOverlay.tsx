@@ -1,12 +1,14 @@
 import React, { useState, useCallback, memo } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import type { UserChoiceRequest, Colors } from './types';
+import type { UserChoiceRequest, Colors, UserChoiceAnswer } from './types';
 import { t } from './i18n';
+import QuestionOverlay from './QuestionOverlay';
 
 interface UserChoiceOverlayProps {
   userChoiceRequest: UserChoiceRequest;
   onChoiceResponse: (index: number) => void;
   onSubmit: (inputValue: string) => void;
+  onAnswersSubmit: (answers: UserChoiceAnswer[]) => void;
   inputFocused: boolean;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   inputSyncRef: React.MutableRefObject<string>;
@@ -18,6 +20,7 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
   userChoiceRequest,
   onChoiceResponse,
   onSubmit,
+  onAnswersSubmit,
   inputFocused,
   choiceInputRef,
   inputSyncRef,
@@ -65,6 +68,17 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
     }
   }, [localChoiceInput, onSubmit]);
 
+  // AskUserQuestion 走逐页 UI；权限确认保持原有的即时提交形状（specs/026）。
+  if (userChoiceRequest.questions && userChoiceRequest.questions.length > 0) {
+    return (
+      <QuestionOverlay
+        questions={userChoiceRequest.questions}
+        onSubmit={onAnswersSubmit}
+        colors={colors}
+      />
+    );
+  }
+
   return (
     <div
       className="user-choice-overlay max-w-[680px] mx-auto rounded-lg border-2 transition-colors focus:outline-none"
@@ -73,8 +87,8 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
         borderColor: inputFocused ? colors.borderFocus : colors.border,
       }}
     >
-      {/* 选项说明 — 可滚动区域，仅消息内容滚动 */}
-      <div className="choice-list overflow-y-auto px-3 pt-2 animate-fade-in">
+      {/* 选项说明 — 高度随内容自然增长，不做内部滚动 */}
+      <div className="px-3 pt-2 animate-fade-in">
         <div className="text-sm whitespace-pre-wrap pb-2" style={{ color: colors.textPrimary }}>
           {userChoiceRequest.message}
         </div>

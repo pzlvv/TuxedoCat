@@ -9,7 +9,7 @@
 
 import * as assert from 'assert';
 import { setGlobalEventBus, resetGlobalEventBus } from '../shared/AssistantEventBus';
-import { userChoiceQueue, type UserChoiceOptions } from '../shared/UserChoiceQueue';
+import { userChoiceQueue, type UserChoiceOptions, type UserChoiceResult } from '../shared/UserChoiceQueue';
 import { UserChoiceManager } from '../host/ui/userChoice';
 import { createChecker, runTests } from './helpers/harness';
 import { applySettingsSnapshot } from '../shared/settings';
@@ -17,6 +17,7 @@ import { resolveSettingsSnapshot } from '../shared/settingsSnapshot';
 import { makeTestBus } from './helpers/fixtures';
 
 const options: UserChoiceOptions = {
+  kind: 'permission',
   toolName: 'AskUserQuestion',
   message: '选一个',
   choices: [{ label: 'A' }, { label: 'B' }],
@@ -48,11 +49,18 @@ async function run(): Promise<void> {
     for (const [choiceId, entry] of manager.pendingUserChoices) {
       if (entry.sessionId !== sessionId) continue;
       manager.pendingUserChoices.delete(choiceId);
-      userChoiceQueue.respond(sessionId, { index });
-      entry.resolve({ index });
+      const result: UserChoiceResult = { kind: 'permission', index, reply: null };
+      userChoiceQueue.respond(sessionId, result);
+      entry.resolve(result);
       return;
     }
     throw new Error(`no pending dialog for ${sessionId}`);
+  };
+
+  const permissionIndex = async (promise: Promise<UserChoiceResult>): Promise<number> => {
+    const result = await promise;
+    assert.equal(result.kind, 'permission');
+    return result.kind === 'permission' ? result.index : -1;
   };
 
   // 1) 子代理会话不在前台：不弹框，保留 pending
@@ -72,7 +80,7 @@ async function run(): Promise<void> {
 
   // 3) 用户应答：队列 Promise resolve
   respond('child', 1);
-  assert.equal((await childRequest).index, 1);
+  assert.equal(await permissionIndex(childRequest), 1);
   check('respond resolves the deferred request', true);
 
   // 4) 会话已 open：立即弹框
@@ -83,7 +91,7 @@ async function run(): Promise<void> {
   assert.equal(afterOpen[1].sessionId, 'open-now');
   check('open session: dialog posted immediately', true);
   respond('open-now', 0);
-  assert.equal((await openRequest).index, 0);
+  assert.equal(await permissionIndex(openRequest), 0);
 
   // 5) 会话在等待期间被释放：挂起的队列项被拒绝
   const goneRequest = manager.requestUserChoice('gone', options);

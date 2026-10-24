@@ -187,6 +187,17 @@ export type HostToWebviewMessage = {
   toolName: string;
   message: string;
   choices?: Array<{ label: string; description?: string }>;
+  /**
+   * AskUserQuestion 的问题清单（specs/026）。
+   * 权限确认场景没有该字段，webview 按旧形状渲染。
+   */
+  questions?: Array<{
+    id: string;
+    question: string;
+    header?: string;
+    options?: Array<{ label: string; description?: string }>;
+    multi_select?: boolean;
+  }>;
 } | {
   type: 'updateToolStatus';
   sessionId: string;
@@ -791,6 +802,10 @@ export type WebviewToHostMessage = {
   choiceId: string;
   index: number;
   reply?: string;
+  /**
+   * AskUserQuestion 的逐题回复（specs/026）。权限确认场景仍用 index / reply。
+   */
+  answers?: Array<{ id: string; selected: string[]; custom?: string }>;
 } | {
   /** 中止当前查询；多视图宿主下携带发起方会话 */
   type: 'abort';

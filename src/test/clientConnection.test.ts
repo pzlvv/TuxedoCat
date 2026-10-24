@@ -182,7 +182,7 @@ function createClientHarness(): ClientHarness {
   });
   client.onCoreRequests({
     toolPermissionRequested: async () => ({ behavior: 'allow' }),
-    userChoice: async () => ({ index: 0 }),
+    userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
     crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
   });
 

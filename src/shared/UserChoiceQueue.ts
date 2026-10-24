@@ -19,7 +19,30 @@
 
 import { logger } from './Logger.js';
 
-export interface UserChoiceOptions {
+/**
+ * AskUserQuestion 的单个问题（specs/026，入参形状对齐 dsh）。
+ *
+ * 内部规范化后三个字段全必选：`header` 缺失用 `null`，`options` 缺失用空数组，
+ * `description` 缺失用 `null`，`multi_select` 缺失用 `false`。
+ */
+export interface UserQuestion {
+  id: string;
+  question: string;
+  header: string | null;
+  options: Array<{ label: string; description: string | null }>;
+  multi_select: boolean;
+}
+
+/** 单题回复：`selected` 是选项 label 数组，`custom` 是自由文本（缺失用 null）。 */
+export interface UserAnswer {
+  id: string;
+  selected: string[];
+  custom: string | null;
+}
+
+/** 工具权限确认场景（`toolPermissionRequested` 之后弹的确认框）。 */
+export interface PermissionChoiceOptions {
+  kind: 'permission';
   toolName: string;
   message: string;
   choices: Array<{ label: string; description?: string }>;
@@ -32,10 +55,18 @@ export interface UserChoiceOptions {
   contextAfter?: string[];
 }
 
-export interface UserChoiceResult {
-  index: number;
-  reply?: string;
+/** AskUserQuestion 场景（逐题作答，答案按 id 回传）。 */
+export interface QuestionChoiceOptions {
+  kind: 'question';
+  toolName: 'AskUserQuestion';
+  questions: UserQuestion[];
 }
+
+export type UserChoiceOptions = PermissionChoiceOptions | QuestionChoiceOptions;
+
+export type UserChoiceResult =
+  | { kind: 'permission'; index: number; reply: string | null }
+  | { kind: 'question'; answers: UserAnswer[] };
 
 interface PendingChoiceEntry {
   sessionId: string;

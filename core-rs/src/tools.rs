@@ -546,16 +546,45 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "AskUserQuestion",
-            "description": "Ask the user a question and wait for their response.",
-            // choices 只声明为 array（不展开数组元素），
-            // 元素字段（label / description）由运行期校验，见 tool_input::check_choices。
+            "description": "Ask the user one or more questions and wait for their replies.",
+            // 形状对齐 dsh：questions[] 每项带 id / question / header? / options? / multi_select?。
+            // 元素形状与数量上下限在这里完整写出，运行期校验见 tool_input::check_questions。
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string", "description": "The question to ask the user" },
-                    "choices": { "type": "array", "description": "Multiple choice options (1-9). If not provided, user can reply with free text." }
+                    "questions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 9,
+                        "description": "Questions to ask the user (1-9).",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "id": { "type": "string", "description": "Stable id for this question; echoed in the answer." },
+                                "question": { "type": "string", "description": "The specific question to ask the user." },
+                                "header": { "type": "string", "description": "Optional short heading for the question." },
+                                "options": {
+                                    "type": "array",
+                                    "maxItems": 9,
+                                    "description": "Optional choices to show the user. Omit or pass an empty array for a free-text question.",
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "label": { "type": "string", "description": "Short user-facing option label." },
+                                            "description": { "type": "string", "description": "One sentence explaining the tradeoff or impact." }
+                                        },
+                                        "required": ["label"]
+                                    }
+                                },
+                                "multi_select": { "type": "boolean", "description": "Whether the user may select more than one option. Defaults to false." }
+                            },
+                            "required": ["id", "question"]
+                        }
+                    }
                 },
-                "required": ["question"]
+                "required": ["questions"]
             }
         }),
         json!({
@@ -712,11 +741,20 @@ pub fn validate_input(name: &str, input: &Value, cwd: &str) -> Option<String> {
             }
         }
         "AskUserQuestion" => {
-            // 对齐 `!input.question || !input.question.trim()`：schema 已保证
-            // question 是字符串，这里只需处理空串 / 纯空白。
-            let question = input.get("question").and_then(Value::as_str).unwrap_or("");
-            if util::js_trim(question).is_empty() {
-                return Some("Question cannot be empty".to_string());
+            // schema 已保证 questions 是数组且每项 question 是字符串；这里处理
+            // 空串 / 纯空白，以及 id 空串（回复按 id 回传，空 id 无法对应）。
+            let Some(questions) = input.get("questions").and_then(Value::as_array) else {
+                return Some("Questions cannot be empty".to_string());
+            };
+            for question in questions {
+                let text = question.get("question").and_then(Value::as_str).unwrap_or("");
+                if util::js_trim(text).is_empty() {
+                    return Some("Question cannot be empty".to_string());
+                }
+                let id = question.get("id").and_then(Value::as_str).unwrap_or("");
+                if util::js_trim(id).is_empty() {
+                    return Some("Question id cannot be empty".to_string());
+                }
             }
         }
         _ => {}
@@ -4171,43 +4209,18 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
 
 // ==================== AskUserQuestion ====================
 
-/// AskUserQuestion：把问题 + 选项经 `CoreRequest.userChoice` 弹给用户，阻塞等待应答。
+/// AskUserQuestion：把 `questions` 经 `CoreRequest.userChoice` 弹给用户，阻塞等待回复。
 ///
-/// - 请求 `options` 固定为 `{ toolName, message, choices }`（无选项时 choices 为空数组，
-///   不会退化成权限确认的「允许 / 拒绝」）；
-/// - 用户响应 `{ index, reply? }` 后按选项是否命中映射成 `{ index, reply }`，
-///   再按 `mapToolResultToToolResultBlockParam` 的文案格式产出 tool_result。
+/// - 请求载荷 `{ kind: "question", toolName: "AskUserQuestion", questions }`；
+/// - 用户回复 `{ kind: "question", answers: [{ id, selected, custom? }] }` 后，
+///   按 dsh 的 `render` 口径产出 `{"answers":[...]}` JSON
+///   （`docs/features/ask-user-question.md` FR-005）。
 fn run_ask_user_question(input: &Value, ctx: &ToolContext) -> ToolOutcome {
-    let question = input.get("question").and_then(Value::as_str).unwrap_or("");
-    let choices: Vec<Value> = input
-        .get("choices")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    // 对齐 `choices?.map(c => ({ label, description: c.description || undefined }))`：
-    // 只保留 label 与（存在且非空的）description。
-    let mapped_choices: Vec<Value> = choices
-        .iter()
-        .map(|choice| {
-            let mut out = Map::new();
-            out.insert(
-                "label".to_string(),
-                choice.get("label").cloned().unwrap_or(Value::Null),
-            );
-            if let Some(description) = choice.get("description").and_then(Value::as_str) {
-                if !description.is_empty() {
-                    out.insert("description".to_string(), json!(description));
-                }
-            }
-            Value::Object(out)
-        })
-        .collect();
-
+    let questions = normalize_questions(input);
     let options = json!({
+        "kind": "question",
         "toolName": "AskUserQuestion",
-        "message": question,
-        "choices": mapped_choices,
+        "questions": questions,
     });
 
     // 请求失败（无订阅者 / 超时）走 `ToolOutcome::Error`，最终产出
@@ -4219,39 +4232,48 @@ fn run_ask_user_question(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         return ToolOutcome::Error("Failed to request user choice".to_string());
     };
 
-    let index = response.get("index").and_then(Value::as_i64);
-    let reply_text = util::js_trim(response.get("reply").and_then(Value::as_str).unwrap_or(""))
-        .to_string();
+    let answers = response.get("answers").cloned().unwrap_or_else(|| json!([]));
+    ToolOutcome::Success(
+        serde_json::to_string(&json!({ "answers": answers }))
+            .unwrap_or_else(|_| "{\"answers\":[]}".to_string()),
+    )
+}
 
-    // 选择题模式：命中选项时用选项 label 兜底空 reply。
-    let (out_index, out_reply) = if !choices.is_empty() {
-        match index {
-            Some(idx) if idx >= 0 && (idx as usize) < choices.len() => {
-                let label = choices[idx as usize]
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let reply = if reply_text.is_empty() {
-                    label.to_string()
-                } else {
-                    reply_text.clone()
-                };
-                (Some(idx), reply)
-            }
-            _ => (None, reply_text.clone()),
-        }
-    } else if let Some(idx) = index {
-        // 开放题模式：index >= 0 时保留（对齐 `userChoice.index >= 0 ? index : undefined`）
-        (if idx >= 0 { Some(idx) } else { None }, reply_text.clone())
-    } else {
-        (None, reply_text.clone())
-    };
-
-    let mut content = format!("User response: {out_reply}");
-    if let Some(idx) = out_index {
-        content.push_str(&format!(" (selected option index: {idx})"));
-    }
-    ToolOutcome::Success(content)
+/// 把入参的 `questions` 规范化成内部必选字段形态：
+/// `header` 缺失 → null，`options` 缺失 → []，`description` 缺失 → null，
+/// `multi_select` 缺失 → false（`docs/features/ask-user-question.md` FR-001）。
+fn normalize_questions(input: &Value) -> Vec<Value> {
+    let raw = input
+        .get("questions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    raw.iter()
+        .map(|question| {
+            let options = question
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|option| {
+                            json!({
+                                "label": option.get("label").cloned().unwrap_or(Value::Null),
+                                "description": option.get("description").cloned().unwrap_or(Value::Null),
+                            })
+                        })
+                        .collect::<Vec<Value>>()
+                })
+                .unwrap_or_default();
+            json!({
+                "id": question.get("id").cloned().unwrap_or(Value::Null),
+                "question": question.get("question").cloned().unwrap_or(Value::Null),
+                "header": question.get("header").cloned().unwrap_or(Value::Null),
+                "options": options,
+                "multi_select": question.get("multi_select").and_then(Value::as_bool).unwrap_or(false),
+            })
+        })
+        .collect()
 }
 
 /// `Skill` 工具。

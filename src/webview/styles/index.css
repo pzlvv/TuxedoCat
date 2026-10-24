@@ -89,11 +89,7 @@ body {
   height: var(--app-vh, 100dvh);
 }
 
-/* 用户选择面板的选项列表最大高度：同样使用动态视口，避免移动端超出可见区域被裁掉 */
-.choice-list {
-  max-height: 25vh;
-  max-height: 25dvh;
-}
+/* 用户选择面板的选项列表不设高度上限：高度随内容自然增长，由上方消息区让位 */
 
 /* 独立窗口宿主（多视图：Electron / 浏览器端）：强制深色背景，
    避免依赖 BrowserWindow 背景导致的白闪 */

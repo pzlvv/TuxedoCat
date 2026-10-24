@@ -138,7 +138,7 @@ function createFakeCore(
   overrides: Partial<StandaloneCoreBusOptions> = {},
   requestHandlers: CoreRequestHandlers | null = {
     toolPermissionRequested: async () => ({ behavior: 'allow' }),
-    userChoice: async () => ({ index: 1 }),
+    userChoice: async () => ({ kind: 'permission', index: 1, reply: null }),
     crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
   },
 ): FakeCore {
@@ -642,7 +642,7 @@ async function run(): Promise<void> {
       bus.onCoreEvents(recording.handlers);
       bus.onCoreRequests({
         toolPermissionRequested: async () => ({ behavior: 'allow' }),
-        userChoice: async () => ({ index: 0 }),
+        userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
         crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
       });
       bus.emitToCore({

@@ -2271,6 +2271,8 @@ impl Core {
             ])
         });
         let mut options = Map::new();
+        // specs/026：权限确认与 AskUserQuestion 共用 userChoice 通道，用 kind 判别。
+        options.insert("kind".to_string(), json!("permission"));
         options.insert("toolName".to_string(), json!(tool_name));
         options.insert(
             "message".to_string(),

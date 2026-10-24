@@ -312,27 +312,31 @@ Sends a message to a target session.
 ### AskUserQuestion
 ## AskUserQuestion Tool
 
-Ask the user a question and get their response. Use this tool when you need input from the user during a task.
+Ask the user one or more questions and get their replies. Use this tool when you need input from the user during a task.
 
 **Parameters:**
-- `question` (string, required): The question to ask
-- `choices` (array, optional): Up to 9 predefined choices for the user to pick from, each `{ label, description? }`
+- `questions` (array, required): 1-9 questions. Each item is `{ id, question, header?, options?, multi_select? }`.
+  - `id` (string, required): stable id for this question; echoed in the reply.
+  - `question` (string, required): the specific question to ask.
+  - `header` (string, optional): short heading, e.g. "Database".
+  - `options` (array, optional): up to 9 choices, each `{ label, description? }`. Omit or pass an empty array for a free-text question.
+  - `multi_select` (boolean, optional): allow selecting more than one option. Defaults to false.
 
 **How to use:**
-- Provide a clear question in the "question" field
-- Optionally provide choices as an array of { label, description? } objects
-- Without choices: user can reply with any text
-- With choices: user can pick an option or type free text
+- Give each question a unique `id`; replies come back as `answers: [{ id, selected, custom? }]`.
+- `selected` holds option labels; `custom` holds free text typed by the user.
+- Without `options`: the user gets a free-text input.
+- With `options`: the user can pick an option or type free text.
 
 **Examples:**
-- Ask a yes/no question: `{ question: "Continue with this approach?", choices: [{ label: "Yes" }, { label: "No" }] }`
-- Ask for input: `{ question: "What port number should I use?" }`
-- Ask with options: `{ question: "Which database?", choices: [{ label: "PostgreSQL" }, { label: "MySQL", description: "Existing project uses MySQL" }] }`
+- Ask a yes/no question: `{ questions: [{ id: "continue", question: "Continue with this approach?", options: [{ label: "Yes" }, { label: "No" }] }] }`
+- Ask for input: `{ questions: [{ id: "port", question: "What port number should I use?" }] }`
+- Ask two questions: `{ questions: [{ id: "db", question: "Which database?", options: [{ label: "PostgreSQL" }, { label: "MySQL" }] }, { id: "tests", question: "Which tests?", options: [{ label: "Unit" }, { label: "E2E" }], multi_select: true }] }`
 
 **Important:**
-- This tool BLOCKS execution until the user responds
-- The user can also type free text even when choices are provided
-- Limit choices to 9 or fewer for readability
+- This tool BLOCKS execution until the user replies
+- The user can also type free text even when options are provided
+- Keep each call to 9 questions or fewer, and each question to 9 options or fewer
 
 "#;
 

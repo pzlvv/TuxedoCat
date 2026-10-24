@@ -245,18 +245,14 @@
     },
     {
       "name": "AskUserQuestion",
-      "description": "Ask the user a question and wait for their response.",
+      "description": "Ask the user one or more questions and wait for their replies.",
       "required": [
-        "question"
+        "questions"
       ],
       "properties": {
-        "question": {
-          "type": "string",
-          "description": "The question to ask the user"
-        },
-        "choices": {
+        "questions": {
           "type": "array",
-          "description": "Multiple choice options (1-9). If not provided, user can reply with free text."
+          "description": "Questions to ask the user (1-9)."
         }
       }
     },

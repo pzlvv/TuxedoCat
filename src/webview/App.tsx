@@ -595,7 +595,7 @@ const App = () => {
     handleEditQueuedMessage, handleDeleteQueuedMessage,
     handleEditIdleSuspended, handleDeleteIdleSuspended,
     handleCompress, handleUserChoiceResponse, handleUserChoiceSubmit,
-    handleChoiceResponse, handleToggleFileHidden,
+    handleAnswersSubmit, handleChoiceResponse, handleToggleFileHidden,
     toggleSubSession: _toggleSubSession,
   } = useAppHandlers(appHandlerProps as any);
 
@@ -1399,6 +1399,7 @@ onClick={handleNewConversation}
         <div
           className="px-4 pt-2"
           style={{
+            flexShrink: 0,
             // 底部安全区：仅在系统手势条/圆角比常规留白更高时才生效（max 而非相加），
             // 避免普通浏览器下多出一截空白；桌面 / VS Code 下 env() 为 0，等于 1rem。
             paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
@@ -1409,6 +1410,7 @@ onClick={handleNewConversation}
               userChoiceRequest={userChoiceRequest}
               onChoiceResponse={handleChoiceResponse}
               onSubmit={handleUserChoiceSubmit}
+              onAnswersSubmit={handleAnswersSubmit}
               inputFocused={inputFocused}
               choiceInputRef={choiceInputRef}
               inputSyncRef={userChoiceInputRef}
