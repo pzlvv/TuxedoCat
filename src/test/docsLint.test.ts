@@ -25,7 +25,9 @@
  *    代码加了成员而文档数字没跟上时失败。
  * 9. **文档路径存在性**：markdown 行内代码里 `src/` / `docs/` / `core-rs/` / `electron/` 等
  *    前缀的仓库路径必须存在（行内代码整体不参与章节引用扫描，但路径是「指得到的东西」，
- *    单独校验；含通配符 / 占位符的写法不在此列）。
+ *    单独校验；含通配符 / 占位符的写法不在此列）。按 `.gitignore` 属于「本机自备、不入库」
+ *    的路径（如 `e2e/environments.json`）缺失不在此列，判据见 `helpers/docPathExistence.ts`
+ *    （`specs/defects/docs-lint-flags-gitignored-paths.md`）。
  * 10. **UiEvent 命名风格**：全小写驼峰、过去式、无 `on` 前缀、无命令式动词开头
  *     （AGENTS.md 第 3 节；`AssistantEventBus.ts` 的联合逐成员检查）。
  * 11. **CoreEvent 触发点列**：`docs/architecture/events.md` 2.1 表的「core 侧触发点」列里反引号模块名
@@ -98,6 +100,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import projectConfig from '../config/project.json';
+import { isLocalOnlyPath } from './helpers/docPathExistence';
 import { createChecker, runTests } from './helpers/harness';
 
 /** 仓库根：编译产物在 `out/src/test/`，往上三层 */
@@ -916,6 +919,9 @@ function main(): void {
         // `path.rs::symbol`（测试名 / 导出符号）与 `path.md#锚点` 都只校验文件部分
         const filePart = token.split('::')[0].split('#')[0].replace(/\/+$/, '');
         if (filePart !== '' && !fs.existsSync(path.join(REPO_ROOT, filePart))) {
+          // 按 `.gitignore` 属于「本机自备、不入库」的路径（如 `e2e/environments.json`）缺失是
+          // 常态，文档引用它是正当的（specs/defects/docs-lint-flags-gitignored-paths.md）
+          if (isLocalOnlyPath(filePart)) continue;
           brokenPaths.push(`${rel}:${i + 1} 路径不存在：\`${token}\``);
         }
       }
