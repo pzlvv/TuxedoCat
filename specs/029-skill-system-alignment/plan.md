@@ -167,9 +167,10 @@ FR-001），并在 `tools_tests.rs` 加一条用例锁定「`validate_input` 拒
    只会让真相再次分叉；读取分支保留即可。
 6. **顺手做「向上父目录查找」**：否决——独立能力，属 spec 非目标，另开 spec。
 
-## 需要评审拍板的一处
+## ADR 落点
 
-`.<configDir>/skills` 的弱化方向（spec 非目标，已归位到
-[docs/architecture/open-questions.md](../../docs/architecture/open-questions.md)）是一个有分量的
-产品决策——建议单独落一份 ADR（`docs/adr/0011-...`）记录「发现面转向 `.agents` 共享目录、产品
-目录降为兼容层」的决策与被否决的替代方案。是否本次一并写，请评审时明确。
+「发现面转向 `.agents` 共享目录、`.<configDir>` 降为兼容层」这个决策单独落一份
+[docs/adr/0011-agents-shared-skills-discovery.md](../../docs/adr/0011-agents-shared-skills-discovery.md)
+（评审已确认），记录 rank 表、两个调用开关的语义、五个被否决的替代方案，以及「共享目录的写入方
+不受本项目控制，第三方技能按依赖对待」这条代价。ADR 的「规格」行指向本次落地新增的
+`docs/features/skills.md`，该文件与 ADR 在同一次实施里落盘。

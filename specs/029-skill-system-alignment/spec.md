@@ -24,6 +24,8 @@ status: 待评审
 | [docs/architecture/repo-map.md](../../docs/architecture/repo-map.md) | [目录布局](../../docs/architecture/repo-map.md#目录布局) | 修改 | `src/shared/` 一行去掉 `skills/`（实现只剩 `core-rs/src/skills.rs`） |
 | [docs/architecture/open-questions.md](../../docs/architecture/open-questions.md) | [第 1 节 Core（Rust）](../../docs/architecture/open-questions.md#1-corerust) | 修改 | 新增一行：弱化 `.<configDir>/skills` 的路线待定（现状 + 待定） |
 | [AGENTS.md](../../AGENTS.md) | [第 5 节 工作流](../../AGENTS.md#5-工作流) | 修改 | 技能落库路径改为 `.agents/skills`；`.zcode/skills` 降为本地 junction，不再入库 |
+| [docs/adr/0011-agents-shared-skills-discovery.md](../../docs/adr/0011-agents-shared-skills-discovery.md) | — | 新增 | 决策记录：发现面转向 `.agents` 共享目录、产品目录降为兼容层，含被否决的替代方案与「共享目录的写入方不受本项目控制」这一代价 |
+| [docs/adr/README.md](../../docs/adr/README.md) | [ADR 索引](../../docs/adr/README.md) | 修改 | 索引表登记 ADR-0011 |
 
 ## 用户场景与验收标准
 

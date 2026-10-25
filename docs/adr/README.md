@@ -17,6 +17,7 @@
 | [0008](0008-viewer-file-watch-core-push.md) | 查看器文件自动刷新用 Core 主动推送而非宿主轮询 | 已采纳 |
 | [0009](0009-todo-state-owned-by-core.md) | Todo 状态由 Core 持有，宿主按需索取、变更推送 | 已采纳 |
 | [0010](0010-ask-user-question-dsh-schema.md) | AskUserQuestion 入参对齐 dsh 的 questions 形状 | 已采纳 |
+| [0011](0011-agents-shared-skills-discovery.md) | 技能发现面转向 `.agents` 共享目录（产品目录降为兼容层） | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。
