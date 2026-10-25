@@ -164,7 +164,7 @@ fn preset_tool_whitelist_and_minimal_prompt() {
     // normal 暴露全部工具，system prompt 含核心原则 + 工具说明 + 环境
     let normal_tools = filter_tools_by_preset(all.clone(), "normal");
     assert_eq!(normal_tools.len(), all.len());
-    let normal = build_system_prompt_with_preset("normal", &cwd, &normal_tools)
+    let normal = build_system_prompt_with_preset("normal", &cwd, &normal_tools, None)
         .expect("PATH 已由 Sandbox 钉死");
     assert!(normal.starts_with("You are a helpful software engineer assistant."));
     assert!(normal.contains("## Core Principles"));
@@ -179,7 +179,7 @@ fn preset_tool_whitelist_and_minimal_prompt() {
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect();
         assert_eq!(names, vec!["Bash", "Edit"], "preset={preset}");
-        let prompt = build_system_prompt_with_preset(preset, &cwd, &tools)
+        let prompt = build_system_prompt_with_preset(preset, &cwd, &tools, None)
             .expect("PATH 已由 Sandbox 钉死");
         assert_eq!(prompt, "You are a helpful software engineer assistant.");
     }
@@ -312,7 +312,7 @@ mod system_prompt_parity_tests {
             .get("toolUsage")
             .and_then(Value::as_str)
             .expect("对照表缺少 toolUsage");
-        let actual_tool_usage = tool_usage_section(&crate::tools::definitions());
+        let actual_tool_usage = tool_usage_section(&crate::tools::definitions(), None);
         assert_eq!(
             actual_tool_usage,
             expected_tool_usage,
@@ -377,8 +377,8 @@ fn tool_usage_details_follow_the_injected_tool_list() {
         .cloned()
         .collect();
 
-    let with = tool_usage_section(&full);
-    let without = tool_usage_section(&without_web);
+    let with = tool_usage_section(&full, None);
+    let without = tool_usage_section(&without_web, None);
 
     assert!(with.contains("## WebSearch Tool"), "全量清单应含 WebSearch 段");
     assert!(with.contains("## WebFetch Tool"), "全量清单应含 WebFetch 段");
@@ -408,7 +408,7 @@ fn tool_usage_details_follow_the_injected_tool_list() {
 #[test]
 fn explorer_role_description_matches_allowlist() {
     let allow = crate::tools::sub_agent_role_tools("Explorer").expect("Explorer 应有白名单");
-    let line = TOOL_DETAILS
+    let line = TOOL_DETAILS_BEFORE_TRANSFER
         .lines()
         .find(|line| line.starts_with("- \"Explorer\":"))
         .expect("角色表缺少 Explorer 条目");
@@ -427,8 +427,99 @@ fn explorer_role_description_matches_allowlist() {
 fn agent_role_table_lists_all_registered_roles() {
     for role in crate::tools::SUB_AGENT_ROLES {
         assert!(
-            TOOL_DETAILS.contains(&format!("\"{role}\":").as_str()),
+            TOOL_DETAILS_BEFORE_TRANSFER.contains(&format!("\"{role}\":").as_str()),
             "Agent 角色表缺少 {role} 条目"
         );
     }
+}
+
+// ==================== Transfer 简详双形态（specs/028 FR-006）====================
+
+/// 简述形态位于 `Reply` 与 `AskUserQuestion` 之间、不展开参数表；
+/// `### Agent` 段定义 cross-workspace ToolAgent 术语（唯一的既有段落改动）。
+#[test]
+fn transfer_brief_details_position_and_agent_term() {
+    let usage = tool_usage_section(&tools::definitions(), None);
+    let reply = usage.find("### Reply").expect("Reply 段");
+    let transfer = usage.find("### Transfer").expect("Transfer 段");
+    let ask = usage
+        .find("### AskUserQuestion")
+        .expect("AskUserQuestion 段");
+    assert!(
+        reply < transfer && transfer < ask,
+        "Transfer 段应位于 Reply 与 AskUserQuestion 之间"
+    );
+    let section = &usage[transfer..ask];
+    assert!(
+        section.contains("only after a cross-workspace ToolAgent"),
+        "简述应含时机限制：{section}"
+    );
+    assert!(
+        !section.contains("sourcePath"),
+        "简述段不应展开参数表：{section}"
+    );
+    assert!(
+        usage.contains("**cross-workspace ToolAgent**"),
+        "Agent 段应定义术语（供简述引用）"
+    );
+}
+
+/// 详细形态点名发起方身份；与 reminder 正文逐字同源（公共变量，不写第二份）。
+#[test]
+fn transfer_detailed_form_and_reminder_share_usage_lines() {
+    let usage = tool_usage_section(&tools::definitions(), Some("HOST:/origin"));
+    let transfer = usage.find("### Transfer").expect("Transfer 段");
+    let ask = usage
+        .find("### AskUserQuestion")
+        .expect("AskUserQuestion 段");
+    let section = &usage[transfer..ask];
+    assert!(
+        section.contains("creator workspace `HOST:/origin`"),
+        "详细形态应点名发起方身份：{section}"
+    );
+    let lines = transfer_usage_lines("HOST:/origin");
+    assert!(section.contains(&lines), "详细形态应含公共用法正文");
+
+    let reminder = transfer_reminder("HOST:/target");
+    assert!(reminder.starts_with("<Reminder>"));
+    assert!(reminder.trim_end().ends_with("</Reminder>"));
+    assert!(reminder.contains("\"HOST:/target\""));
+    assert!(
+        reminder.contains(&transfer_usage_lines("HOST:/target")),
+        "reminder 正文应与详细形态同源"
+    );
+}
+
+/// 措辞约束：简述 / 详细 / reminder 不出现 `Agent.target` 点记号与 `@` 记号。
+#[test]
+fn transfer_texts_avoid_invisible_notation() {
+    let brief = tool_usage_section(&tools::definitions(), None);
+    let transfer_at = brief.find("### Transfer").unwrap();
+    let ask = brief.find("### AskUserQuestion").unwrap();
+    let brief_section = &brief[transfer_at..ask];
+    for text in [
+        brief_section.to_string(),
+        transfer_detailed_details("HOST:/o"),
+        transfer_reminder("HOST:/t"),
+    ] {
+        assert!(
+            !text.contains("Agent.target"),
+            "不应出现 Agent.target 点记号：{text}"
+        );
+        assert!(!text.contains('@'), "不应出现 @ 记号：{text}");
+    }
+}
+
+/// 本地子代理（无跨工作区对端）保持简述形态：提示词不含详细形态的点名句。
+#[test]
+fn local_sub_agent_prompt_keeps_brief_form() {
+    let prompt = format!(
+        "{}
+
+{}",
+        sub_agent_communication_section("s-1"),
+        tool_usage_section(&tools::definitions(), None)
+    );
+    assert!(prompt.contains("only after a cross-workspace ToolAgent"));
+    assert!(!prompt.contains("creator workspace"));
 }

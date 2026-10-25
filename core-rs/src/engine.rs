@@ -306,6 +306,10 @@ pub struct SessionState {
     /// system prompt 前缀（`QueryEngine.systemPromptPrefix`）：非空时拼在组装结果开头
     /// （Master 子代理 = 主对话同款提示词 + 开头 `## Communication` 段）。
     pub system_prompt_prefix: Option<String>,
+    /// 跨工作区子代理的对端工作区身份（specs/028 FR-006）：`Transfer` 说明段
+    /// 简详双形态的判定依据——`Some` 时 Tool Details 用详细形态并回填该身份。
+    /// 形态随会话创建一次确定、会话内恒定。
+    pub transfer_counterpart: Option<String>,
     /// 子代理角色（`Master`），落进 `meta.json` 的 `role`。
     pub sub_agent_role: Option<String>,
     /// 子代理创建时 Agent 工具调用的 description（specs/019 FR-001）：随
@@ -398,6 +402,7 @@ impl SessionState {
             parent_session_id: None,
             static_system_prompt: None,
             system_prompt_prefix: None,
+            transfer_counterpart: None,
             sub_agent_role: None,
             sub_agent_description: None,
             pending_skill_injection: None,
@@ -1104,6 +1109,57 @@ impl Core {
         }
     }
 
+    /// 跨工作区传输钩子（specs/028 FR-002，注入 `ToolContext`）：
+    /// 发 `CoreRequest.crossWorkspaceTransferRequested` 给宿主并阻塞等待。
+    ///
+    /// 等待期间按 `llm::CANCEL_POLL_SLICE_MS` 切片轮询会话取消标记（FR-007）：
+    /// 命中即取消 pending 并提前返回——宿主在 abort 中转时已先行取消传输，
+    /// 迟到的应答由 pending 表丢弃，不会留下悬挂等待。
+    pub fn transfer_hook(self: &Arc<Self>) -> tools::TransferHook {
+        let core = Arc::clone(self);
+        Arc::new(
+            move |request: tools::TransferRequest,
+                  cancel: &std::sync::atomic::AtomicBool|
+                  -> Result<tools::TransferSummary, String> {
+                let payload = json!({
+                    "type": "crossWorkspaceTransferRequested",
+                    "sessionId": request.session_id,
+                    "sourcePath": request.source_path,
+                    "targetPath": request.target_path,
+                    "sourceTarget": request.source_target,
+                    "destTarget": request.dest_target,
+                });
+                let Some(result) = core.cancellable_request(payload, cancel) else {
+                    return Err(
+                        "cross-workspace transfer request failed: host did not respond"
+                            .to_string(),
+                    );
+                };
+                if let Some(error) = result.get("error").and_then(Value::as_str) {
+                    return Err(error.to_string());
+                }
+                Ok(tools::TransferSummary {
+                    files: result.get("files").and_then(Value::as_u64).unwrap_or(0),
+                    bytes: result.get("bytes").and_then(Value::as_u64).unwrap_or(0),
+                    skipped_symlinks: result
+                        .get("skippedSymlinks")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    source_workspace_id: result
+                        .get("sourceWorkspaceId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    dest_workspace_id: result
+                        .get("destWorkspaceId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                })
+            },
+        )
+    }
+
     /// 子代理工具钩子（注入 `ToolContext`）。
     ///
     /// `spawn` 对应 `AgentTool.call` 的建会话 + 起后台查询；`deliver` 对应
@@ -1387,6 +1443,9 @@ impl Core {
                 &origin_workspace_id,
                 &origin_session_id,
             ));
+            // Transfer 详细形态的对端（specs/028 FR-006）：Tool Details 段随会话
+            // 类型切换为详细形态，逐字点名发起方身份
+            state.transfer_counterpart = Some(origin_workspace_id.clone());
             state.running = true;
         }
 
@@ -2357,6 +2416,31 @@ impl Core {
         self.await_response(id, receiver)
     }
 
+    /// 带取消轮询的宿主请求（`Transfer` 用，specs/028 FR-007）：等待应答期间按
+    /// `llm::CANCEL_POLL_SLICE_MS` 切片轮询取消标记，命中即从 pending 表移除并
+    /// 返回 `None`（调用方按取消收敛）。
+    fn cancellable_request(
+        &self,
+        request: Value,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<Value> {
+        let (id, receiver) = self.send_request(request)?;
+        loop {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut bus = self.bus.lock().unwrap();
+                bus.cancel_request(id);
+                return None;
+            }
+            match receiver.recv_timeout(std::time::Duration::from_millis(
+                crate::llm::CANCEL_POLL_SLICE_MS,
+            )) {
+                Ok(value) => return Some(value),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
     /// 发一次 `CoreRequest` 并等待应答；在途期间把会话标记为 `waiting`
     ///
     /// 只接受 `UserBlockingRequest`：真的在等用户的请求（`userChoice`）。用户选择框的
@@ -2855,6 +2939,8 @@ fn execute_tool(
         background: Some(core.background_hooks()),
         // 子代理工具钩子（Agent 建会话 / Reply 投递）
         subagent: Some(core.subagent_hooks()),
+        // 跨工作区传输钩子（Transfer，specs/028）
+        transfer: Some(core.transfer_hook()),
     };
     // MCP 工具（`mcp__<server>__<tool>`）不在内置工具表里：必须先分流，
     // 否则会落到 `tools::execute` 的兜底分支被报成「工具不存在」。
@@ -4082,17 +4168,23 @@ fn run_query_loop(
         // `static_system_prompt` 整体替换组装结果；`system_prompt_prefix` 只在组装结果前
         // 加一段：Master 子代理 = 主对话同款提示词 +
         // 开头 `## Communication` 段。
-        let (static_prompt, prompt_prefix) = {
+        let (static_prompt, prompt_prefix, transfer_counterpart) = {
             let state = state.lock().unwrap();
             (
                 state.static_system_prompt.clone(),
                 state.system_prompt_prefix.clone(),
+                state.transfer_counterpart.clone(),
             )
         };
         let base_prompt = match static_prompt {
             Some(prompt) => prompt,
             // PATH 解析失败会在这里成为整轮查询的错误（`docs/core/standalone-core.md` 第 3.2 节）
-            None => prompt::build_system_prompt_with_preset(preset, project, &tools)?,
+            None => prompt::build_system_prompt_with_preset(
+                preset,
+                project,
+                &tools,
+                transfer_counterpart.as_deref(),
+            )?,
         };
         let system_prompt = match prompt_prefix {
             Some(prefix) => format!("{prefix}\n\n{base_prompt}"),

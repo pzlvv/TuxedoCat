@@ -17,6 +17,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Client, type ClientChannel, type SFTPWrapper, type FileEntryWithStats } from 'ssh2';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
+import type { TransferEndpoint } from '../workspaceTransfer.js';
 
 /** SSH 连接目标 */
 export interface SshTarget {
@@ -524,5 +525,112 @@ export class SshClient {
     });
     this.sftpSession = session;
     return session;
+  }
+
+  /**
+   * 跨工作区传输的远端端点（specs/028 FR-003）：把 SFTP 会话包成
+   * `workspaceTransfer.ts` 的 `TransferEndpoint` 最小面。lstat 语义（符号链接
+   * 单列）；rename 带覆盖回退（部分服务端对已存在目标报错）；流式读写走
+   * ssh2 的 SFTP 流，与本地端同一 `pipeline` 背压搬运。
+   */
+  async transferEndpoint(): Promise<TransferEndpoint> {
+    const sftp = await this.requireSftp();
+    const isNoSuchFile = (error: Error): boolean => {
+      const code: unknown = (error as { code?: unknown }).code;
+      return code === 2 || code === '2' || code === 'ENOENT' || /no such file/i.test(error.message);
+    };
+    const renameOnce = (from: string, to: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        sftp.rename(from, to, (error) => {
+          if (error) reject(new Error(`SFTP rename failed (${from} -> ${to}): ${error.message}`));
+          else resolve();
+        });
+      });
+    return {
+      isAbsolutePath: (p) => p.startsWith('/'),
+      stat: (p) =>
+        new Promise((resolve, reject) => {
+          sftp.lstat(p, (error, stats) => {
+            if (error) {
+              if (isNoSuchFile(error)) resolve(null);
+              else reject(new Error(`SFTP lstat failed (${p}): ${error.message}`));
+              return;
+            }
+            resolve({
+              kind: stats.isDirectory() ? 'directory' : 'file',
+              symlink: stats.isSymbolicLink(),
+              size: stats.size,
+            });
+          });
+        }),
+      readdir: (p) =>
+        new Promise((resolve, reject) => {
+          sftp.readdir(p, (error, entries) => {
+            if (error) {
+              reject(new Error(`SFTP readdir failed (${p}): ${error.message}`));
+              return;
+            }
+            resolve(
+              entries.map((entry) => ({
+                name: entry.filename,
+                kind: entry.attrs.isSymbolicLink()
+                  ? ('symlink' as const)
+                  : entry.attrs.isDirectory()
+                    ? ('directory' as const)
+                    : ('file' as const),
+              })),
+            );
+          });
+        }),
+      mkdirp: async (p) => {
+        // SFTP 没有 recursive mkdir：按分隔符逐级建，已存在视为成功
+        const parts = p.split('/').filter((part) => part.length > 0);
+        let current = p.startsWith('/') ? '' : '.';
+        for (const part of parts) {
+          current = current === '' ? `/${part}` : `${current}/${part}`;
+          await new Promise<void>((resolve, reject) => {
+            sftp.mkdir(current, (error) => {
+              if (!error) {
+                resolve();
+                return;
+              }
+              // 已存在（EEXIST 或部分服务端的通用 Failure）：lstat 判定后放行
+              sftp.lstat(current, (statError) => {
+                if (!statError) resolve();
+                else reject(new Error(`SFTP mkdir failed (${current}): ${error.message}`));
+              });
+            });
+          });
+        }
+      },
+      rename: async (from, to) => {
+        try {
+          await renameOnce(from, to);
+        } catch {
+          // 覆盖语义：先 unlink 目标再试一次
+          await new Promise<void>((resolve) => {
+            sftp.unlink(to, () => resolve());
+          });
+          await renameOnce(from, to);
+        }
+      },
+      unlink: (p) =>
+        new Promise<void>((resolve, reject) => {
+          sftp.unlink(p, (error) => {
+            if (error) reject(new Error(`SFTP unlink failed (${p}): ${error.message}`));
+            else resolve();
+          });
+        }),
+      readStream: (p) => sftp.createReadStream(p),
+      writeStream: (p) => sftp.createWriteStream(p),
+      join: (dir, name) => (dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`),
+      dirname: (p) => {
+        const trimmed = p.replace(/\/+$/, '');
+        const index = trimmed.lastIndexOf('/');
+        if (index < 0) return '.';
+        if (index === 0) return '/';
+        return trimmed.slice(0, index);
+      },
+    };
   }
 }

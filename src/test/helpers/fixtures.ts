@@ -56,6 +56,7 @@ export interface TestBusOptions {
   userChoice?: CoreRequestHandlers['userChoice'];
   /** 跨工作区派发的答复，默认「宿主不支持」 */
   crossWorkspaceAgentRequested?: CoreRequestHandlers['crossWorkspaceAgentRequested'];
+  crossWorkspaceTransferRequested?: CoreRequestHandlers['crossWorkspaceTransferRequested'];
 }
 
 export interface RecordingCoreEventHandlers {
@@ -144,6 +145,9 @@ export function makeTestBus(options: TestBusOptions = {}): TestBus {
     userChoice: options.userChoice ?? (async () => ({ kind: 'permission', index: 0, reply: null })),
     crossWorkspaceAgentRequested:
       options.crossWorkspaceAgentRequested
+      ?? (async () => ({ error: 'not supported' })),
+    crossWorkspaceTransferRequested:
+      options.crossWorkspaceTransferRequested
       ?? (async () => ({ error: 'not supported' })),
   });
 
@@ -304,5 +308,6 @@ export function provideHostEnvironment(
     settings: overrides.settings ?? resolveSettingsSnapshot({}),
     mcpServers: overrides.mcpServers ?? [],
     crossWorkspaceAgent: false,
+    crossWorkspaceTransfer: false,
   });
 }

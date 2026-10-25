@@ -293,6 +293,22 @@ export type CoreRequest =
       webSearch: boolean;
       /** 发起方会话生效的 MCP 启用名单（server 名单；空名单合法） */
       mcpServers: string[];
+    }
+  /**
+   * 跨工作区文件传输（specs/028 FR-002）。
+   *
+   * 发起方 Core 在 `Transfer` 工具执行时发出并阻塞等待；宿主解析两端工作区身份、
+   * 执行传输后返回统计或错误。`sessionId` 是发起方会话；`sourceTarget` / `destTarget`
+   * 的 `null` 表示该端缺省 = 发起会话所属工作区（契约成员必选，缺省语义用 `null`）。
+   */
+  | {
+      type: 'crossWorkspaceTransferRequested';
+      sessionId: string;
+      sourcePath: string;
+      targetPath: string;
+      /** null = 发起会话所属工作区（缺省端） */
+      sourceTarget: string | null;
+      destTarget: string | null;
     };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
@@ -304,6 +320,19 @@ export type CoreRequestResultMap = {
    * 由 Core 按缺省策略建本机子代理；失败带原因（不创建任何会话）。
    */
   crossWorkspaceAgentRequested: { sessionId: string } | { local: true } | { error: string };
+  /**
+   * 成功带传输统计与宿主解析后的两端身份（结果文本用）；失败带原因，
+   * 两端零写入（specs/028 FR-002 / FR-003）。
+   */
+  crossWorkspaceTransferRequested:
+    | {
+        files: number;
+        bytes: number;
+        skippedSymlinks: number;
+        sourceWorkspaceId: string;
+        destWorkspaceId: string;
+      }
+    | { error: string };
 };
 
 /**
@@ -495,6 +524,13 @@ export type UiEvent =
        * 注入 reminder，以及是否接受 `Agent.target`——不做宿主类型嗅探。
        */
       crossWorkspaceAgent: boolean;
+      /**
+       * 宿主是否支持跨工作区文件传输（specs/028 FR-005）。
+       *
+       * Electron 为 true；VS Code / TUI 为 false。只作用于 `Transfer` 工具的执行
+       * （位假时调用报「当前宿主不支持」）；工具定义与提示词恒定注入，不随本位收敛。
+       */
+      crossWorkspaceTransfer: boolean;
     }
   // ===== 用户选择 =====
   /**

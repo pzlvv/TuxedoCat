@@ -452,6 +452,38 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 ask_choices(tool_name, args, cwd),
             )
         }
+        // specs/028：入参非法直接 deny（不弹确认框）；合法走 ask（确认文案含
+        // 源 / 目标路径，agentMode 加工如常——auto / risk 放行、manual 保持询问）。
+        "Transfer" => {
+            for key in ["sourcePath", "targetPath"] {
+                let value = args.get(key).and_then(Value::as_str).unwrap_or("");
+                if crate::util::js_trim(value).is_empty() {
+                    return CheckResult::deny(format!(
+                        "Invalid {key}: {key} is required and must be a non-empty string"
+                    ));
+                }
+            }
+            for key in ["sourceTarget", "destTarget"] {
+                match args.get(key) {
+                    None | Some(Value::Null) => {}
+                    Some(Value::String(value)) if value.is_empty() => {
+                        return CheckResult::deny(format!(
+                            "Invalid {key}: {key} must not be empty"
+                        ));
+                    }
+                    Some(Value::String(_)) => {}
+                    Some(_) => {
+                        return CheckResult::deny(format!(
+                            "Invalid {key}: {key} must be a string"
+                        ));
+                    }
+                }
+            }
+            CheckResult::ask(
+                ask_message(tool_name, args, cwd),
+                ask_choices(tool_name, args, cwd),
+            )
+        }
         // 先校验入参，非法直接 deny
         // （deny 不被 auto / risk 加工，永远弹不出确认框）。
         "Write" => {
@@ -629,6 +661,12 @@ pub fn ask_message(tool_name: &str, args: &Value, cwd: &str) -> String {
         "Edit" => {
             let file_path = args.get("file_path").and_then(Value::as_str).unwrap_or("");
             format!("请求编辑文件：{file_path}")
+        }
+        // specs/028：确认文案展示源 → 目标路径（两端身份由通用参数展示携带）
+        "Transfer" => {
+            let source = args.get("sourcePath").and_then(Value::as_str).unwrap_or("");
+            let target = args.get("targetPath").and_then(Value::as_str).unwrap_or("");
+            format!("请求跨工作区传输：{source} → {target}")
         }
         _ => format!("请求执行：{tool_name}"),
     }

@@ -22,9 +22,13 @@ import { sameWorkspaceRef, type WorkspaceRef } from './workspaceRef.js';
 import { resolveMachineName, workspaceAgentId } from './workspaceIdentity.js';
 import {
   resolveCrossWorkspaceTarget,
+  resolveTransferEnds,
   type CrossWorkspaceRoute,
   type CrossWorkspaceRouter,
 } from './crossWorkspaceRouting.js';
+import { fsEndpoint, runSessionTransfer, type TransferEndpoint } from './workspaceTransfer.js';
+import { SshClient } from './standalone/sshClient.js';
+import { SSH_WORKSPACE_SCHEME } from './workspaceRef.js';
 import { hostname as osHostname } from 'os';
 import type { SpinDesign } from './SpinDesign.js';
 import type { ConversationManager } from './ConversationManager.js';
@@ -377,6 +381,7 @@ export class WebViewUI implements WebViewUiPort {
         this.requestToolPermission(r.sessionId, r.toolUseId, r.toolName, r.permResult, r.displayArgs, r.agentMode),
       userChoice: (r) => this.requestUserChoice(r.sessionId, r.options),
       crossWorkspaceAgentRequested: (r) => Promise.resolve(this.requestCrossWorkspaceAgent(r)),
+      crossWorkspaceTransferRequested: (r) => this.requestCrossWorkspaceTransfer(r),
     };
   }
 
@@ -505,6 +510,107 @@ export class WebViewUI implements WebViewUiPort {
       mcpServers: request.mcpServers,
     });
     return { sessionId: subSessionId };
+  }
+
+  /**
+   * 跨工作区文件传输（specs/028 FR-002 / FR-003）：解析两端 → 守卫 → 执行。
+   *
+   * 守卫逐项报错、两端零写入：两端同工作区（本工具仅服务跨工作区）、两端都不是
+   * 发起会话所属工作区、身份未打开 / 歧义 / 远程端未就绪。远程端按
+   * `WorkspaceRef.endpoint` 建传输专用的 SSH 连接（口令与接入同源），本地端直连
+   * fs；SSH↔SSH 由传输引擎逐文件流式中继，不经第三台机器。
+   */
+  private async requestCrossWorkspaceTransfer(
+    request: Extract<import('../shared/AssistantEventBus.js').CoreRequest, { type: 'crossWorkspaceTransferRequested' }>,
+  ): Promise<
+    | { files: number; bytes: number; skippedSymlinks: number; sourceWorkspaceId: string; destWorkspaceId: string }
+    | { error: string }
+  > {
+    let origin: CrossWorkspaceRoute;
+    try {
+      origin = this.router.connectionForSession(request.sessionId);
+    } catch (error) {
+      return { error: `cannot resolve origin session ${request.sessionId}: ${String(error)}` };
+    }
+    const machineName = resolveMachineName(process.platform, process.env, osHostname());
+    // 两端解析与守卫（specs/028 FR-002）是纯函数，矩阵用例在
+    // `src/test/crossWorkspaceTransfer.test.ts`
+    const ends = resolveTransferEnds(
+      this.host.getOpenWorkspaceRefs(),
+      origin.workspaceRef,
+      request.sourceTarget,
+      request.destTarget,
+      machineName,
+    );
+    if (ends.kind === 'error') return { error: ends.error };
+    const { sourceRef, destRef } = ends;
+    // 远程端建传输专用 SSH 连接；建完再搬运，失败即报错、两端零写入
+    const sshClients: SshClient[] = [];
+    const endpointFor = async (
+      ref: WorkspaceRef,
+      label: string,
+    ): Promise<TransferEndpoint | { error: string }> => {
+      if (ref.endpoint === null) return fsEndpoint();
+      if (ref.scheme !== SSH_WORKSPACE_SCHEME) {
+        return { error: `unsupported workspace scheme for transfer (${label}): ${ref.scheme}` };
+      }
+      const { host, port, user, auth } = ref.endpoint;
+      if (user === null || auth === null || auth.kind !== 'sshPassword') {
+        return { error: `workspace credentials are unavailable (${label}): ${workspaceAgentId(ref, machineName)}` };
+      }
+      // 就绪判定与 specs/023 同口径：传输不依赖目标 Core 的会话，但要求工作区连接活着
+      const route = this.router.connectionForWorkspace(ref);
+      if (!route || !route.isReady()) {
+        return { error: `target workspace is not ready: ${workspaceAgentId(ref, machineName)}` };
+      }
+      const client = new SshClient(
+        { host, port: port ?? 22, user, password: auth.password },
+        (...args: unknown[]) => this.log(args.map((arg) => String(arg)).join(' ')),
+      );
+      sshClients.push(client);
+      try {
+        await client.connect();
+        return await client.transferEndpoint();
+      } catch (error) {
+        return { error: `cannot open transfer channel to ${workspaceAgentId(ref, machineName)}: ${String(error)}` };
+      }
+    };
+    try {
+      const sourceEnd = await endpointFor(sourceRef, 'source');
+      if ('error' in sourceEnd) return { error: sourceEnd.error };
+      const destEnd = await endpointFor(destRef, 'destination');
+      if ('error' in destEnd) return { error: destEnd.error };
+      if (!sourceEnd.isAbsolutePath(request.sourcePath)) {
+        return { error: `source path must be absolute: ${request.sourcePath}` };
+      }
+      if (!destEnd.isAbsolutePath(request.targetPath)) {
+        return { error: `target path must be absolute: ${request.targetPath}` };
+      }
+      try {
+        const counts = await runSessionTransfer({
+          sessionId: request.sessionId,
+          source: sourceEnd,
+          sourcePath: request.sourcePath,
+          dest: destEnd,
+          destPath: request.targetPath,
+        });
+        return {
+          files: counts.files,
+          bytes: counts.bytes,
+          skippedSymlinks: counts.skippedSymlinks,
+          sourceWorkspaceId: workspaceAgentId(sourceRef, machineName),
+          destWorkspaceId: workspaceAgentId(destRef, machineName),
+        };
+      } catch (error) {
+        // abort 中转取消的传输按「已取消」收尾，Core 侧映射为工具被中止（specs/028 FR-007）
+        if (error instanceof Error && error.name === 'AbortError') {
+          return { error: 'transfer canceled' };
+        }
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    } finally {
+      for (const client of sshClients) client.dispose();
+    }
   }
 
   // --- 渲染 handler ---

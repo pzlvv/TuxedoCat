@@ -3,6 +3,7 @@
  * 接收和处理来自 webview 的所有消息
  */
 import type { UIHost } from '../UIHost.js';
+import { cancelTransfersForSession } from '../workspaceTransfer.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../../shared/Logger.js';
 import { getProbeDispatcher } from '../../shared/llm/httpDispatcher.js';
@@ -211,6 +212,11 @@ export class WebviewMessageHandler {
    * 写 settings.json 经 UIHost（core 只读不写，见 `docs/architecture/host-ui-modules.md` 第 3 节）。
    */
   private emitUiEvent(event: UiEvent): Promise<void> {
+    if (event.type === 'abortRequested') {
+      // abort 的 UiEvent 必经宿主中转：先取消该会话进行中的跨工作区传输，
+      // 传输执行器以「已取消」收尾请求，Core 侧按工具被中止收敛（specs/028 FR-007）
+      cancelTransfersForSession(event.sessionId);
+    }
     requireEventBus().emitToCore(event);
     return Promise.resolve();
   }

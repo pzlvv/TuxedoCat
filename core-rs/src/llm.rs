@@ -26,7 +26,7 @@ pub(crate) const MAX_RETRIES: u32 = 3;
 /// 取消轮询切片（ms）：`read_sse` 的阻塞等待与重试延迟都切成该粒度，每片之间查
 /// 一次 `cancel`。abort 的响应上限由此决定（50ms 量级），不取决于下一个 SSE
 /// 事件的到达时间，也不叠加在超时 / 重试等待上。
-const CANCEL_POLL_SLICE_MS: u64 = 50;
+pub(crate) const CANCEL_POLL_SLICE_MS: u64 = 50;
 
 /// 流式看门狗（对齐 `streamTimeout.ts`）：
 /// - 首字节超时：从发起请求到收到**首个有效事件**（心跳 `ping` / SSE 注释不算）；

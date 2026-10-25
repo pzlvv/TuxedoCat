@@ -29,6 +29,9 @@ pub struct HostEnvironment {
     pub config_dir_name: String,
     /// 宿主是否支持跨工作区代理（specs/023 FR-009）：Electron true，VS Code / TUI false。
     pub cross_workspace_agent: bool,
+    /// 宿主是否支持跨工作区文件传输（specs/028 FR-005）：Electron true，
+    /// VS Code / TUI false。只作用于 `Transfer` 工具的执行；工具定义与提示词恒定注入。
+    pub cross_workspace_transfer: bool,
 }
 
 static HOST_ENV: Mutex<Option<HostEnvironment>> = Mutex::new(None);
@@ -50,6 +53,16 @@ pub fn cross_workspace_agent() -> bool {
         .unwrap()
         .as_ref()
         .map(|env| env.cross_workspace_agent)
+        .unwrap_or(false)
+}
+
+/// 宿主是否支持跨工作区文件传输（specs/028 FR-005）；快照未到达时按不支持处理。
+pub fn cross_workspace_transfer() -> bool {
+    HOST_ENV
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|env| env.cross_workspace_transfer)
         .unwrap_or(false)
 }
 

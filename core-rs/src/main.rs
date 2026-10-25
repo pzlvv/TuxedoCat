@@ -595,9 +595,14 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     .and_then(Value::as_str)
                     .unwrap_or(config::DEFAULT_CONFIG_DIR_NAME)
                     .to_string(),
-                // specs/023 FR-009：宿主能力位；缺字段按不支持处理（旧宿主 / TUI）。
+                // specs/023 FR-009 / specs/028 FR-005：宿主能力位；缺字段按不支持处理
+                // （旧宿主 / TUI）。
                 cross_workspace_agent: event
                     .get("crossWorkspaceAgent")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                cross_workspace_transfer: event
+                    .get("crossWorkspaceTransfer")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             });

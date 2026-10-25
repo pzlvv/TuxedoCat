@@ -83,8 +83,8 @@ interface Scenario {
   permHoldMs: number;
   /** userChoice 到达后压住应答的时长；0 = 该场景不等到 userChoice */
   choiceHoldMs: number;
-  /** 首轮工具调用：缺省 Bash；`Agent` 用于驱动 crossWorkspaceAgentRequested（specs/023） */
-  tool?: 'Bash' | 'Agent';
+  /** 首轮工具调用：缺省 Bash；`Agent` / `Transfer` 驱动跨工作区请求（specs/023 / specs/028） */
+  tool?: 'Bash' | 'Agent' | 'Transfer';
 }
 
 /**
@@ -140,6 +140,8 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
   let choiceReleasedAt = -1;
   let agentArrivedAt = -1;
   let agentReleasedAt = -1;
+  let transferArrivedAt = -1;
+  let transferReleasedAt = -1;
 
   let buffer = '';
   child.stdout.setEncoding('utf8');
@@ -169,6 +171,19 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
               void sleep(scenario.choiceHoldMs).then(() => {
                 choiceReleasedAt = frames.length;
                 send({ kind: 'response', id, ok: true, result: { index: 0 } });
+              });
+            } else if (frame.request?.type === 'crossWorkspaceTransferRequested') {
+              // specs/028：传输往返在途期间不算等用户（`cancellable_request`）
+              transferArrivedAt = frames.length - 1;
+              const id = frame.id;
+              void sleep(400).then(() => {
+                transferReleasedAt = frames.length;
+                send({
+                  kind: 'response',
+                  id,
+                  ok: true,
+                  result: { error: 'transfer requires two different workspaces; for copies inside a single workspace use Bash (cp / mv) instead' },
+                });
               });
             } else if (frame.request?.type === 'crossWorkspaceAgentRequested') {
               // specs/023：跨工作区派发是渲染往返（plain_request），不标 waiting
@@ -221,6 +236,7 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
         settings: settingsSnapshotFromHome(homeDir),
         mcpServers: [],
         crossWorkspaceAgent: true,
+        crossWorkspaceTransfer: true,
       },
     });
     send({ kind: 'uiEvent', event: { type: 'sessionWorkspaceAssigned', sessionId: SESSION_ID, workspacePath: workspace } });
@@ -268,6 +284,23 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
     problems.push(`toolPermissionRequested 恰一次，实际 ${permissionRequests.length}`);
   }
 
+  if (scenario.tool === 'Transfer') {
+    const transferRequests = frames.filter(
+      (frame) => frame.kind === 'request' && frame.request?.type === 'crossWorkspaceTransferRequested',
+    );
+    if (transferRequests.length !== 1) {
+      problems.push(`crossWorkspaceTransferRequested 恰一次，实际 ${transferRequests.length}`);
+    }
+    if (transferArrivedAt < 0 || transferReleasedAt < 0) {
+      problems.push('crossWorkspaceTransferRequested 未完成往返');
+      return { waitingTrueDuringInflight: -1, settled: false, preconditionFailures: problems };
+    }
+    return {
+      waitingTrueDuringInflight: countWaitingTrue(transferArrivedAt, transferReleasedAt),
+      settled: waitingFlags.filter((snapshot) => snapshot.waiting).length === 0,
+      preconditionFailures: problems,
+    };
+  }
   if (scenario.tool === 'Agent') {
     const agentRequests = frames.filter(
       (frame) => frame.kind === 'request' && frame.request?.type === 'crossWorkspaceAgentRequested',
@@ -318,7 +351,7 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
 /** 假 LLM：先回一次 Bash 工具调用，再回最终文本（对齐 standaloneCorePermission 的驱动方式） */
 function startFakeLlm(
   command: string,
-  tool: 'Bash' | 'Agent',
+  tool: 'Bash' | 'Agent' | 'Transfer',
 ): Promise<{ url: string; close: () => Promise<void> }> {
   let hits = 0;
   const server = http.createServer((request, response) => {
@@ -342,7 +375,9 @@ function startFakeLlm(
                         arguments: JSON.stringify(
                           tool === 'Agent'
                             ? { prompt: '代理任务', agentRole: 'Master', target: 'HOST:/b' }
-                            : { command },
+                            : tool === 'Transfer'
+                              ? { sourcePath: '/nonexistent/src', targetPath: '/nonexistent/dst' }
+                              : { command },
                         ),
                       },
                     },
@@ -387,6 +422,11 @@ const WAITING_REGISTRY: Record<string, { waiting: boolean; run: () => Promise<Ro
   crossWorkspaceAgentRequested: {
     waiting: false,
     run: () => runRoundtrip({ mode: 'risk', command: '', permHoldMs: 400, choiceHoldMs: 0, tool: 'Agent' }),
+  },
+  // 渲染往返（`cancellable_request`）：跨工作区传输在途期间不算等用户（specs/028）
+  crossWorkspaceTransferRequested: {
+    waiting: false,
+    run: () => runRoundtrip({ mode: 'risk', command: '', permHoldMs: 400, choiceHoldMs: 0, tool: 'Transfer' }),
   },
   // 用户阻塞（`waiting_request`）：真确认框在途期间必须标 waiting。
   // choiceHoldMs 给到 1200：waiting=true 快照须在压答窗口内入账（帧序号 ≤ choiceReleasedAt），

@@ -689,6 +689,7 @@ fn todo_ctx(sandbox: &Sandbox, session_id: &str) -> crate::tools::ToolContext {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     }
 }
 

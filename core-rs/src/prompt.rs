@@ -20,7 +20,7 @@ const CORE_PRINCIPLES: &str = "You are a helpful software engineer assistant.
 /// TodoWrite / Agent / Reply / AskUserQuestion，其后按注入清单拼接
 /// `WEB_SEARCH_TOOL_DETAILS` / `WEB_FETCH_TOOL_DETAILS`，`SKILL_TOOL_DETAILS`
 /// 恒在最后）。
-const TOOL_DETAILS: &str = r#"### Bash
+const TOOL_DETAILS_BEFORE_TRANSFER: &str = r#"### Bash
 Execute shell commands.
 
 **IMPORTANT**: Always use bash/POSIX syntax for commands, regardless of the actual shell. This ensures commands work across bash, PowerShell, and cmd.exe.
@@ -282,6 +282,7 @@ Available agent roles (required):
 - Use for research tasks that need independent investigation
 - Use for parallelizable work that benefits from isolation
 - When the user addresses another workspace with `@`, call this tool with `target` set to that workspace ID instead of doing the task in the current workspace
+- Dispatching with `target` set to another open workspace is a **cross-workspace ToolAgent**: the sub-agent runs in that workspace instead of the current one
 - The sub-agent has its own isolated context and tool access
 
 **Important:**
@@ -308,8 +309,9 @@ Sends a message to a target session.
 - After completing your assigned task, use Reply to send the result
 - Use Reply to provide progress updates during long-running tasks
 - The target session will receive your reply as a message
+"#;
 
-### AskUserQuestion
+const TOOL_DETAILS_AFTER_TRANSFER: &str = r#"### AskUserQuestion
 ## AskUserQuestion Tool
 
 Ask the user one or more questions and get their replies. Use this tool when you need input from the user during a task.
@@ -339,6 +341,57 @@ Ask the user one or more questions and get their replies. Use this tool when you
 - Keep each call to 9 questions or fewer, and each question to 9 options or fewer
 
 "#;
+
+/// `Transfer` 简述段（specs/028 FR-006 简详双形态之一）：普通会话与本地子代理用。
+/// 一句能力定位 + 时机限制（术语在 `### Agent` 段定义）；不展开参数表与传输语义。
+const TRANSFER_BRIEF_DETAILS: &str = r#"
+### Transfer
+## Transfer Tool
+
+Moves files or directories between open workspaces, only after a cross-workspace ToolAgent (see the Agent tool).
+
+"#;
+
+/// `Transfer` 详细用法正文（specs/028 FR-006 公共变量）：`{counterpart}` 为对端
+/// 工作区身份。两处消费、不写第二份——跨工作区子代理会话 Tool Details 的详细
+/// 形态（对端 = 发起方身份）、发起方派发后的 reminder（对端 = 本次目标身份）。
+fn transfer_usage_lines(counterpart: &str) -> String {
+    format!(
+        "- sourcePath / targetPath: absolute paths, each on its own machine; a remote path is never translated into local form
+         - sourceTarget / destTarget: workspace agent ID (`hostname:path`). Omit the end that is the current conversation's workspace; the other end here is `{counterpart}`
+         - At least one end must be the current conversation's workspace
+         - Directories transfer recursively; existing files are overwritten, existing directories are merged, nothing extra at the destination is deleted; symlinks are skipped and reported in the result"
+    )
+}
+
+/// `Transfer` 详细形态段（跨工作区子代理会话的 Tool Details）：边界句 + 公共变量。
+pub fn transfer_detailed_details(counterpart: &str) -> String {
+    format!(
+        "
+### Transfer
+         ## Transfer Tool
+
+         Moves files or directories (recursively) between this workspace and the creator workspace `{counterpart}`. For anything inside a single workspace, use Bash (cp / mv) instead.
+
+         {}
+
+",
+        transfer_usage_lines(counterpart)
+    )
+}
+
+/// 发起方 reminder（specs/028 FR-006）：带 `target` 的 `Agent` 派发成功后，
+/// 由 `run_agent` 经 `SuccessWithMessages` 注入的一条 silent 消息正文——
+/// 复用公共变量（对端 = 本次目标身份），`<Reminder>` 包装与 `@` reminder 同款。
+pub fn transfer_reminder(counterpart: &str) -> String {
+    format!(
+        "<Reminder>
+         You just dispatched an agent to workspace \"{counterpart}\". To move files between the current workspace and \"{counterpart}\", use the Transfer tool:
+         {}
+         </Reminder>",
+        transfer_usage_lines(counterpart)
+    )
+}
 
 /// WebSearch 的 `## Tool Details` 段：只在工具被注入时由 `tool_usage_section`
 /// 拼入——联网搜索关闭时两工具不进清单，提示词不得再宣传它们
@@ -510,7 +563,7 @@ pub fn remote_sub_agent_system_prompt(origin_workspace_id: &str, origin_session_
 /// 对应段也不进 Tool Details——提示词与工具清单必须随同一开关同步收敛，否则模型
 /// 仍会照提示词调用清单里不存在的工具（`docs/features/web-search.md` FR-004、
 /// specs/defects/web-search-off-still-usable）。
-pub fn tool_usage_section(tools: &[Value]) -> String {
+pub fn tool_usage_section(tools: &[Value], transfer_counterpart: Option<&str>) -> String {
     let tool_list = tools
         .iter()
         .filter_map(|tool| {
@@ -528,7 +581,15 @@ pub fn tool_usage_section(tools: &[Value]) -> String {
             .iter()
             .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
     };
-    let mut details = String::from(TOOL_DETAILS);
+    // specs/028 FR-006：`### Transfer` 段按会话形态切换——跨工作区子代理会话为
+    // 详细形态（点名发起方身份），其余为简述；形态随会话类型创建时一次确定。
+    let transfer_details = match transfer_counterpart {
+        Some(counterpart) => transfer_detailed_details(counterpart),
+        None => TRANSFER_BRIEF_DETAILS.to_string(),
+    };
+    let mut details = String::from(TOOL_DETAILS_BEFORE_TRANSFER);
+    details.push_str(&transfer_details);
+    details.push_str(TOOL_DETAILS_AFTER_TRANSFER);
     if present("WebSearch") {
         details.push_str(WEB_SEARCH_TOOL_DETAILS);
     }
@@ -547,11 +608,12 @@ pub fn build_system_prompt_with_preset(
     preset: &str,
     cwd: &str,
     tools: &[Value],
+    transfer_counterpart: Option<&str>,
 ) -> Result<String, String> {
     let mut parts: Vec<String> = vec![preset_core_prompt(preset).to_string()];
 
     if preset == "normal" {
-        parts.push(tool_usage_section(tools));
+        parts.push(tool_usage_section(tools, transfer_counterpart));
 
         parts.push(environment_section(cwd)?);
 
@@ -576,7 +638,7 @@ pub fn build_system_prompt_with_preset(
 /// 环境段没有这一行（权限模式由 UI 展示）。
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn build_system_prompt(cwd: &str, _agent_mode: &str, _metadata: &Value) -> Result<String, String> {
-    build_system_prompt_with_preset("normal", cwd, &tools::definitions())
+    build_system_prompt_with_preset("normal", cwd, &tools::definitions(), None)
 }
 
 /// 环境段（对齐 `generateSystemDynamicPrompt` 的文本与字段）

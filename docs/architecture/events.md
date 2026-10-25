@@ -88,12 +88,12 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 75 个事件：
+四组词汇表，共 76 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 32 | `WebViewUI`（`onCoreEvents` 映射表） |
-| `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 3 | `WebViewUI`（`onCoreRequests` 映射表） |
+| `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 26 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 14 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
@@ -115,7 +115,7 @@ export type CoreRequestHandlers = {
 全量让消费者不必自己维护状态表，也不会因为丢一条增量而永久错位。
 
 `CoreRequest` 的结果类型由 `CoreRequestResultMap` 约束（`toolPermissionRequested → PermissionResult`、
-`userChoice → UserChoiceResult`（`kind: 'permission'` 带 `index` / `reply`，`kind: 'question'` 带 `answers`）、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
+`userChoice → UserChoiceResult`（`kind: 'permission'` 带 `index` / `reply`，`kind: 'question'` 带 `answers`）、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`、`crossWorkspaceTransferRequested → { files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
 调用点不需要手动收窄。
 
 `SessionRuntimeState` 只放 core 能提供的**根事实**（`sessionId` / `idle` / `waiting` /
@@ -180,6 +180,7 @@ export type CoreRequestHandlers = {
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
 | 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `questions`） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
 | 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链；提示词模式不携带——跨工作区会话恒 normal，specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
+| 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → 本地 fs / 传输专用 SshClient 执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId }` / `{ error }` |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 6 节。
@@ -218,7 +219,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 15 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp_config::set_session_mcp_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后） |
 | 16 | `mcpEnabledListChanged` | `sessionId`, `names`（**完整启用列表**，去重、保留顺序） | `setMcpEnabledList`（设置面板「应用到当前对话」）；宿主保存默认配置时直接发（写盘前先把当前对话钉在它当前的列表上） | `mcp_config::write_session_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后）；与 `mcpEnabledChanged` 是同一条事实的两个粒度 |
 | 17 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `rollback.rs` 的 `rollback_edit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
-| 18 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers`, `crossWorkspaceAgent`（宿主是否支持跨工作区代理） | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `main.rs` 的 `on_host_environment` → `settings.rs` 的 `apply_from_host_environment` → `CoreEvent.coreReady` |
+| 18 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers`, `crossWorkspaceAgent`（宿主是否支持跨工作区代理）, `crossWorkspaceTransfer`（宿主是否支持跨工作区文件传输；只作用于 `Transfer` 执行，工具定义与提示词恒定注入，specs/028 FR-005） | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `main.rs` 的 `on_host_environment` → `settings.rs` 的 `apply_from_host_environment` → `CoreEvent.coreReady` |
 | 19 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带；`workspacePath` 兜底 Core 重启恢复，完整链路见 [docs/features/user-message-pipeline.md](../features/user-message-pipeline.md)） | `Core::on_user_message` → 入队 / 落盘 / 命令解析 / 轮次消费 |
 | 20 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `Core::on_user_choice_pending` → 会话运行时状态的 `waiting` 来源（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 21 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `config.rs` 的 `set_session_workspace`（`null` / 空串清除登记） |

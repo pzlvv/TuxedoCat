@@ -297,6 +297,7 @@ async function run(): Promise<void> {
       log: () => undefined,
       logToConsole: false,
       crossWorkspaceAgent: false,
+      crossWorkspaceTransfer: false,
       extensionPath: path.resolve(__dirname, '../..'),
       openStandaloneChannel: (ref) => {
         if (!ref.endpoint) {

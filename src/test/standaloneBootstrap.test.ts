@@ -83,6 +83,7 @@ async function run(): Promise<void> {
     },
     logToConsole: false,
     crossWorkspaceAgent: false,
+    crossWorkspaceTransfer: false,
     extensionPath: REPO_ROOT,
   });
 

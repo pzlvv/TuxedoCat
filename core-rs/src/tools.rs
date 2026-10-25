@@ -235,6 +235,36 @@ pub struct SubAgentHooks {
         std::sync::Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>,
 }
 
+/// `Transfer` 的传输请求（specs/028 FR-002）：经
+/// `CoreRequest.crossWorkspaceTransferRequested` 交给宿主解析两端并执行。
+#[derive(Clone, Debug)]
+pub struct TransferRequest {
+    pub session_id: String,
+    pub source_path: String,
+    pub target_path: String,
+    /// `None` = 发起会话所属工作区（缺省端）
+    pub source_target: Option<String>,
+    pub dest_target: Option<String>,
+}
+
+/// 传输统计（宿主应答载荷；结果文本由 `run_transfer` 组装）
+#[derive(Clone, Debug)]
+pub struct TransferSummary {
+    pub files: u64,
+    pub bytes: u64,
+    pub skipped_symlinks: u64,
+    pub source_workspace_id: String,
+    pub dest_workspace_id: String,
+}
+
+/// `Transfer` 的引擎钩子：发 `crossWorkspaceTransferRequested` 给宿主并阻塞等待；
+/// 第二参是会话取消标记（切片轮询，命中即提前返回，宿主侧已按 abort 中转取消）。
+pub type TransferHook = std::sync::Arc<
+    dyn Fn(TransferRequest, &std::sync::atomic::AtomicBool) -> Result<TransferSummary, String>
+        + Send
+        + Sync,
+>;
+
 pub struct ToolContext {
     pub session_id: String,
     pub cwd: String,
@@ -258,6 +288,8 @@ pub struct ToolContext {
     pub background: Option<crate::bash_task::Hooks>,
     /// 子代理工具的引擎钩子（`Agent` / `Reply`）。单测不设置时这两个工具报错。
     pub subagent: Option<SubAgentHooks>,
+    /// 跨工作区传输钩子（`Transfer`，specs/028）。单测不设置时该工具报错。
+    pub transfer: Option<TransferHook>,
 }
 
 #[derive(Debug)]
@@ -544,6 +576,22 @@ pub fn definitions() -> Vec<Value> {
                 "required": ["message"]
             }
         }),
+        // specs/028：跨工作区传输。定义恒定注入所有宿主（FR-005 前缀一致性），
+        // 能力位只在 run_transfer 执行时拦截；入参描述不引用模型不可见的记号（FR-006）。
+        json!({
+            "name": "Transfer",
+            "description": "Transfer files or directories between open workspaces, for cross-workspace agent workflows only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "sourcePath": { "type": "string", "description": "Absolute source path on the source workspace's machine" },
+                    "targetPath": { "type": "string", "description": "Absolute target path on the target workspace's machine" },
+                    "sourceTarget": { "type": "string", "description": "Source workspace agent ID (`hostname:path`). Omit for the current conversation's workspace" },
+                    "destTarget": { "type": "string", "description": "Destination workspace agent ID (`hostname:path`). Omit for the current conversation's workspace" }
+                },
+                "required": ["sourcePath", "targetPath"]
+            }
+        }),
         json!({
             "name": "AskUserQuestion",
             "description": "Ask the user one or more questions and wait for their replies.",
@@ -657,6 +705,7 @@ pub fn execute(name: &str, input: &Value, ctx: &ToolContext) -> ToolOutcome {
         "TodoWrite" => run_todo_write(input, &ctx.session_id),
         "Agent" => run_agent(input, ctx),
         "Reply" => run_reply(input, ctx),
+        "Transfer" => run_transfer(input, ctx),
         "AskUserQuestion" => run_ask_user_question(input, ctx),
         "WebSearch" => web_search::run_web_search(input),
         "WebFetch" => web_search::run_web_fetch(input),
@@ -737,6 +786,15 @@ pub fn validate_input(name: &str, input: &Value, cwd: &str) -> Option<String> {
                 // 对齐 `input.command.length > 10000`（JS UTF-16 code unit）
                 if util::utf16_len(command) > 10_000 {
                     return Some("Command is too long (max 10000 characters)".to_string());
+                }
+            }
+        }
+        // specs/028：路径非空语义校验（类型形状由 `parse_input` 的 schema 先行把关）
+        "Transfer" => {
+            for key in ["sourcePath", "targetPath"] {
+                let value = input.get(key).and_then(Value::as_str).unwrap_or("");
+                if util::js_trim(value).is_empty() {
+                    return Some(format!("{key} must not be empty"));
                 }
             }
         }
@@ -1737,13 +1795,32 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 Some(target) => format!("**Workspace**: `{target}`\n"),
                 None => String::new(),
             };
-            ToolOutcome::Success(format!(
+            let text = format!(
                 "✓ Agent [{role}] created\n\n\
                  Sub-agent created with ID: {sub_session_id}. Task: {description}\n\n\
                  **Sub-agent ID**: `{sub_session_id}`\n\
                  {workspace_line}\
                  The sub-agent will reply directly when done."
-            ))
+            );
+            // specs/028 FR-006：跨工作区派发后注入 Transfer 详细 Usage reminder
+            // （isMeta silent 消息，正文复用公共变量、对端 = 本次目标身份）；
+            // 本机派发不注入。
+            match &target {
+                Some(target) => ToolOutcome::SuccessWithMessages {
+                    text,
+                    new_messages: vec![json!({
+                        "type": "user",
+                        "message": {
+                            "role": "user",
+                            "content": crate::prompt::transfer_reminder(target),
+                        },
+                        "uuid": format!("transfer_reminder_{}", crate::util::now_millis()),
+                        "timestamp": crate::util::now_millis(),
+                        "isMeta": true,
+                    })],
+                },
+                None => ToolOutcome::Success(text),
+            }
         }
         // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）。
         // spawn 失败时后台任务不会启动，槽位必须在此归还
@@ -1804,6 +1881,110 @@ fn reply_failure(error: &str) -> ToolOutcome {
     ToolOutcome::CommandFailed {
         text: format!("Reply 失败: {error}"),
         exit_code: -1,
+    }
+}
+
+// ==================== Transfer（specs/028）====================
+
+/// `Transfer` 工具：跨工作区文件传输。
+///
+/// Core 只做入参校验、能力位检查与结果文本组装；两端解析守卫与搬运都在宿主
+/// （`CoreRequest.crossWorkspaceTransferRequested`，engine 注入的 `TransferHook`）。
+/// 取消：钩子在等待宿主期间轮询会话取消标记，命中即按「工具被中止」收尾
+/// （FR-007；宿主侧在 abort 中转时已先行取消传输）。
+fn run_transfer(input: &Value, ctx: &ToolContext) -> ToolOutcome {
+    let read_path = |key: &str| -> Result<String, String> {
+        match input.get(key) {
+            Some(Value::String(value)) if !util::js_trim(value).is_empty() => Ok(value.clone()),
+            Some(Value::String(_)) => Err(format!("{key} must not be empty")),
+            Some(Value::Null) | None => Err(format!("{key} is required and must be a string")),
+            Some(_) => Err(format!("{key} must be a string")),
+        }
+    };
+    let source_path = match read_path("sourcePath") {
+        Ok(value) => value,
+        Err(error) => return ToolOutcome::Error(error),
+    };
+    let target_path = match read_path("targetPath") {
+        Ok(value) => value,
+        Err(error) => return ToolOutcome::Error(error),
+    };
+    // target 空串与 `Agent.target` 同口径：入参错误，不静默当缺省（FR-001）
+    let read_target = |key: &str| -> Result<Option<String>, String> {
+        match input.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(value)) if value.is_empty() => {
+                Err(format!("{key} must not be empty"))
+            }
+            Some(Value::String(value)) => Ok(Some(value.clone())),
+            Some(_) => Err(format!("{key} must be a string")),
+        }
+    };
+    let source_target = match read_target("sourceTarget") {
+        Ok(value) => value,
+        Err(error) => return ToolOutcome::Error(error),
+    };
+    let dest_target = match read_target("destTarget") {
+        Ok(value) => value,
+        Err(error) => return ToolOutcome::Error(error),
+    };
+    // 能力位只作用于执行；定义与提示词恒定注入（FR-005）
+    if !crate::config::cross_workspace_transfer() {
+        return ToolOutcome::Error(
+            "current host does not support cross-workspace transfer".to_string(),
+        );
+    }
+    let Some(hook) = ctx.transfer.as_ref() else {
+        return ToolOutcome::Error("Transfer: no transfer runtime available".to_string());
+    };
+    let cancel_never = std::sync::atomic::AtomicBool::new(false);
+    let cancel = ctx.cancel.as_deref().unwrap_or(&cancel_never);
+    let request = TransferRequest {
+        session_id: ctx.session_id.clone(),
+        source_path,
+        target_path,
+        source_target,
+        dest_target,
+    };
+    match (hook)(request, cancel) {
+        Ok(summary) => {
+            let skipped = if summary.skipped_symlinks > 0 {
+                format!(" (skipped {} symlinks)", summary.skipped_symlinks)
+            } else {
+                String::new()
+            };
+            ToolOutcome::Success(format!(
+                "✓ Transferred {} files ({}) from `{}` to `{}`{skipped}",
+                summary.files,
+                format_byte_size(summary.bytes),
+                summary.source_workspace_id,
+                summary.dest_workspace_id,
+            ))
+        }
+        Err(error) => {
+            // 宿主按 abort 中转取消后回 `{ error: "transfer canceled" }`；
+            // 此时取消标记已置位，按「工具被中止」收尾（FR-007）
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string())
+            } else {
+                ToolOutcome::Error(error)
+            }
+        }
+    }
+}
+
+/// 字节数的人类可读形态（结果文本用；B / KB / MB / GB，一位小数）
+fn format_byte_size(bytes: u64) -> String {
+    const UNIT: f64 = 1024.0;
+    let size = bytes as f64;
+    if size >= UNIT.powi(3) {
+        format!("{:.1} GB", size / UNIT.powi(3))
+    } else if size >= UNIT.powi(2) {
+        format!("{:.1} MB", size / UNIT.powi(2))
+    } else if size >= UNIT {
+        format!("{:.1} KB", size / UNIT)
+    } else {
+        format!("{bytes} B")
     }
 }
 

@@ -15,7 +15,7 @@ status: 已修
   （`core-rs/src/engine.rs` `run_query_loop`），有测试锁定（`engine_tests.rs`
   `web_tools_follow_the_web_search_flag`）。
 - `tool_usage_section` 的 `## Tool Usage` 清单按过滤后列表生成，但 `## Tool Details`
-  追加的是静态常量 `TOOL_DETAILS`（`core-rs/src/prompt.rs`），其中 `### WebSearch` /
+  追加的是静态常量 `TOOL_DETAILS_BEFORE_TRANSFER` 与 `TOOL_DETAILS_AFTER_TRANSFER`（`core-rs/src/prompt.rs`），其中 `### WebSearch` /
   `### WebFetch` 两段不随清单消失——关闭后模型仍被完整告知两工具的参数、算子与
   使用时机（"Use this tool when the question needs current information"）。
 - 工具执行入口无开关校验：`run_tool` 无条件分发两工具（`core-rs/src/tools.rs`），

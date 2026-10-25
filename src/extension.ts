@@ -59,8 +59,10 @@ export function activate(context: vscode.ExtensionContext) {
     },
     logToConsole: false,
     extensionPath: context.extensionPath,
-    // VS Code 是单工作区宿主：不提供跨工作区代理（specs/023 FR-009）
+    // VS Code 是单工作区宿主：不提供跨工作区代理（specs/023 FR-009），
+    // 也不提供跨工作区文件传输（specs/028 FR-005；工具恒注入、执行报错）
     crossWorkspaceAgent: false,
+    crossWorkspaceTransfer: false,
   });
 
   host.setExtensionUri(context.extensionUri);

@@ -5285,7 +5285,9 @@ function initCore(): void {
     logToConsole: true,
     extensionPath: APP_ROOT,
     // Electron 多工作区宿主：支持跨工作区代理（specs/023 FR-009）
+    // 与跨工作区文件传输（specs/028 FR-005）
     crossWorkspaceAgent: true,
+    crossWorkspaceTransfer: true,
   });
 
   // 订阅 Connection 生命周期：启动恢复 / 手动重连的建连失败（从未就绪）在此落成

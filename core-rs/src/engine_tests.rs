@@ -539,6 +539,7 @@ fn workspace_and_host_environment_updates_are_recorded() {
         log_to_console: true,
         config_dir_name: sandbox.config_dir_name.clone(),
         cross_workspace_agent: true,
+        cross_workspace_transfer: true,
     });
     assert_eq!(config::host_environment().unwrap().extension_path, "D:/ext");
     // 会创建 conversations 目录并记一条日志
@@ -7023,6 +7024,7 @@ fn resolve_pending_mention_sets_reminder_only_when_capable() {
         log_to_console: false,
         config_dir_name: sandbox.config_dir_name.clone(),
         cross_workspace_agent: false,
+        cross_workspace_transfer: false,
     });
     state.lock().unwrap().pending_mention_reminder = None;
     resolve_pending_mention(&state);
@@ -7466,4 +7468,62 @@ fn todo_write_emits_todos_changed() {
     assert!(result_at < changed_at, "got {types:?}");
 
     crate::tools::clear_session_todos("s1");
+}
+
+/// Transfer 钩子（specs/028 FR-002 / FR-007）：宿主应答统计 → `TransferSummary`、
+/// 请求载荷缺省端以 `null` 下发；宿主不响应且取消标记置位时提前返回，不悬挂。
+#[test]
+fn transfer_hook_roundtrip_and_cancel() {
+    let sandbox = Sandbox::new("engine-transfer-hook");
+    sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
+    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
+        Some("crossWorkspaceTransferRequested") => Some(json!({
+            "files": 2, "bytes": 128, "skippedSymlinks": 1,
+            "sourceWorkspaceId": "m1:/a", "destWorkspaceId": "m2:/b"
+        })),
+        Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
+        Some("userChoice") => Some(json!({ "index": 0 })),
+        _ => Some(json!({})),
+    });
+    let hook = harness.core.transfer_hook();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let summary = hook(
+        tools::TransferRequest {
+            session_id: "s-t1".to_string(),
+            source_path: "/a".to_string(),
+            target_path: "/b".to_string(),
+            source_target: None,
+            dest_target: Some("m2:/b".to_string()),
+        },
+        &cancel,
+    )
+    .expect("transfer summary");
+    assert_eq!(summary.files, 2);
+    assert_eq!(summary.bytes, 128);
+    assert_eq!(summary.skipped_symlinks, 1);
+    assert_eq!(summary.source_workspace_id, "m1:/a");
+    assert_eq!(summary.dest_workspace_id, "m2:/b");
+    // 契约成员必选：缺省端以 null 下发
+    let request = harness
+        .sink
+        .requests_of("crossWorkspaceTransferRequested")
+        .pop()
+        .expect("transfer request recorded");
+    assert_eq!(request["sourceTarget"], Value::Null);
+    assert_eq!(request["destTarget"], json!("m2:/b"));
+    assert_eq!(request["sourcePath"], json!("/a"));
+
+    // 取消路径：宿主不响应 + 取消标记已置位 → 立即收敛，不悬挂等待
+    let silent = EngineHarness::start(|_request| None);
+    let outcome = silent.core.transfer_hook()(
+        tools::TransferRequest {
+            session_id: "s-t1".to_string(),
+            source_path: "/a".to_string(),
+            target_path: "/b".to_string(),
+            source_target: None,
+            dest_target: None,
+        },
+        &std::sync::atomic::AtomicBool::new(true),
+    );
+    assert!(outcome.is_err(), "取消后应当立即失败，不悬挂");
 }

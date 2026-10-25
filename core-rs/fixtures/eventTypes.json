@@ -41,7 +41,8 @@
   "coreRequests": [
     "toolPermissionRequested",
     "userChoice",
-    "crossWorkspaceAgentRequested"
+    "crossWorkspaceAgentRequested",
+    "crossWorkspaceTransferRequested"
   ],
   "uiEvents": [
     "userMessageSubmitted",

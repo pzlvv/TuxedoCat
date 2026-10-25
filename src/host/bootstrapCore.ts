@@ -69,6 +69,11 @@ export interface CoreBootstrapOptions {
    */
   crossWorkspaceAgent: boolean;
   /**
+   * 宿主是否支持跨工作区文件传输（specs/028 FR-005）：随 `hostEnvironmentProvided`
+   * 下发给 Core，只作用于 `Transfer` 工具的执行。Electron true，VS Code / TUI false。
+   */
+  crossWorkspaceTransfer: boolean;
+  /**
    * 测试注入：为一个工作区打开 Core 通道。
    * 默认经 daemon 启动配置中的 Core 可执行文件。
    */
@@ -150,6 +155,7 @@ export function bootstrapCore(
     settings: settingsStore.getSnapshot(),
     mcpServers: settingsStore.getMcpServers(),
     crossWorkspaceAgent: options.crossWorkspaceAgent,
+    crossWorkspaceTransfer: options.crossWorkspaceTransfer,
   });
 
   // ── 1. Client 与总线：注册全局总线 ──

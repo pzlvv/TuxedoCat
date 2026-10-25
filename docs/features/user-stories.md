@@ -59,6 +59,7 @@ last_reviewed: 2026-10-20
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |
 | `e2e/electron/subagentExplorer.spec.ts` | US-51（工具四件套 / 执行侧拒绝 / 视图置灰） | Electron 整应用 |
 | `e2e/electron/crossWorkspaceAgent.spec.ts` | US-56（跨工作区派发 / 占位对话 / 跳转 / 中止） | Electron 整应用 |
+| `e2e/electron/crossWorkspaceTransfer.spec.ts` | US-60（本地↔本地递归传输 / 守卫零写入） | Electron 整应用 |
 | `e2e/webview/workspaceMention.spec.ts` | US-57（`@` 候选 / 插入 / 排除本工作区） | webview UI |
 | `e2e/webview/todoProgress.spec.ts` | US-59（进度按钮 / 悬停 100ms / 固定与取消 / 恢复 / 压缩不丢） | webview UI |
 | `e2e/webview/subagentOptionsLock.spec.ts` | US-51（role 事实到达后的选项置灰） | webview UI |

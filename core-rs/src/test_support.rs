@@ -78,6 +78,7 @@ impl Sandbox {
             log_to_console: false,
             config_dir_name: config_dir_name.clone(),
             cross_workspace_agent: true,
+            cross_workspace_transfer: true,
         });
         // 沙箱默认「宿主已连接、配置为空」：真实路径上 `hostEnvironmentProvided`
         // 永远先于任何其它 UiEvent（`docs/architecture/core-ui-separation.md` 第 7 节），

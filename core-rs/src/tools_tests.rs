@@ -24,6 +24,7 @@ fn skill_tool_is_last_in_definitions() {
             "TodoWrite",
             "Agent",
             "Reply",
+            "Transfer",
             "AskUserQuestion",
             "WebSearch",
             "WebFetch",
@@ -46,6 +47,7 @@ fn context(sandbox: &Sandbox) -> ToolContext {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     }
 }
 
@@ -88,6 +90,7 @@ fn definitions_cover_every_builtin_tool() {
             "TodoWrite",
             "Agent",
             "Reply",
+            "Transfer",
             "AskUserQuestion",
             "WebSearch",
             "WebFetch",
@@ -439,6 +442,7 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
     let handle = std::thread::spawn(move || {
         execute(
@@ -587,6 +591,7 @@ fn bash_sleep_commands_have_no_foreground_timeout() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
 
     let outcome = execute("Bash", &json!({ "command": "printf 'go\\n'; sleep 0.2" }), &ctx);
@@ -621,6 +626,7 @@ fn bash_abort_kills_a_sleep_command_without_a_timeout() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
     std::thread::spawn(move || {
@@ -701,6 +707,7 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
     // 取消死线留给 shell 启动的余量见 `bash_timeout_applies_after_the_shell_...`：
@@ -825,6 +832,7 @@ fn background_context(
         user_choice: None,
         background: Some(background_hooks(&captured)),
         subagent: None,
+        transfer: None,
     }
 }
 
@@ -1118,6 +1126,7 @@ fn bash_reports_streaming_progress() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
 
     let outcome = execute(
@@ -1160,6 +1169,7 @@ fn bash_progress_preview_is_capped_at_four_kilobytes() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
 
     // 输出远大于 4K：`fullOutput` 必须带上省略标记，`totalBytes` 仍是完整长度
@@ -2113,6 +2123,7 @@ fn todo_write_updates_the_session_table() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
     let outcome = execute(
         "TodoWrite",
@@ -2150,6 +2161,7 @@ fn todo_write_empty_list_clears_the_table() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
     execute(
         "TodoWrite",
@@ -2178,6 +2190,7 @@ fn todo_write_failure_keeps_the_previous_table() {
         user_choice: None,
         background: None,
         subagent: None,
+        transfer: None,
     };
     execute(
         "TodoWrite",
@@ -2350,6 +2363,7 @@ fn ask_context(sandbox: &Sandbox, response: Value) -> ToolContext {
         })),
         background: None,
         subagent: None,
+        transfer: None,
     }
 }
 
@@ -2463,6 +2477,7 @@ fn ask_user_question_sends_question_payload() {
         })),
         background: None,
         subagent: None,
+        transfer: None,
     };
     execute(
         "AskUserQuestion",
@@ -3586,6 +3601,7 @@ fn set_cross_workspace_capability(enabled: bool) {
         log_to_console: false,
         config_dir_name: ".test-core".to_string(),
         cross_workspace_agent: enabled,
+        cross_workspace_transfer: enabled,
     });
 }
 
@@ -3627,6 +3643,7 @@ fn agent_target_selects_remote_spawn_hook() {
         user_choice: None,
         background: None,
         subagent: Some(hooks),
+        transfer: None,
     };
 
     // 不带 target：本机钩子
@@ -3641,9 +3658,10 @@ fn agent_target_selects_remote_spawn_hook() {
         &json!({ "prompt": "x", "agentRole": "Master", "target": "HOST:/b" }),
         &ctx,
     );
+    // specs/028：远程派发的成功形态升为 SuccessWithMessages（附 Transfer reminder）
     assert!(matches!(
         outcome,
-        ToolOutcome::Success(ref text)
+        ToolOutcome::SuccessWithMessages { ref text, .. }
             if text.contains("sub_remote") && text.contains("**Workspace**: `HOST:/b`")
     ));
     assert!(remote_called.load(Ordering::Relaxed));
@@ -3670,6 +3688,7 @@ fn agent_empty_target_is_rejected() {
         user_choice: None,
         background: None,
         subagent: Some(hooks),
+        transfer: None,
     };
     let outcome = execute(
         "Agent",
@@ -3699,6 +3718,7 @@ fn agent_target_rejected_when_host_does_not_support_it() {
         user_choice: None,
         background: None,
         subagent: Some(hooks),
+        transfer: None,
     };
     // 单测进程没有宿主环境快照 → cross_workspace_agent() 为 false
     let outcome = execute(
@@ -3710,4 +3730,247 @@ fn agent_target_rejected_when_host_does_not_support_it() {
         outcome,
         ToolOutcome::Error(ref text) if text.contains("does not support cross-workspace agents")
     ));
+}
+
+// ==================== Transfer（specs/028）====================
+
+/// `Transfer` 的位置与入参形态：位于 `Reply` 与 `AskUserQuestion` 之间
+/// （Skill 恒最后），必填 `sourcePath` / `targetPath`，两端 target 可选（FR-001）。
+#[test]
+fn transfer_definition_position_and_schema() {
+    let tools = definitions();
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect();
+    let reply = names.iter().position(|name| *name == "Reply").unwrap();
+    let transfer = names.iter().position(|name| *name == "Transfer").unwrap();
+    let ask = names
+        .iter()
+        .position(|name| *name == "AskUserQuestion")
+        .unwrap();
+    assert_eq!(transfer, reply + 1, "Transfer 应紧跟 Reply");
+    assert_eq!(ask, transfer + 1, "AskUserQuestion 应紧跟 Transfer");
+
+    let definition = definitions()
+        .into_iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some("Transfer"))
+        .expect("Transfer 定义");
+    assert_eq!(
+        definition["input_schema"]["required"],
+        json!(["sourcePath", "targetPath"])
+    );
+}
+
+/// 角色绑定不变式（FR-004）：`Transfer` ∈ 白名单 ⇒ `Agent` ∈ 白名单。
+#[test]
+fn transfer_follows_agent_in_role_whitelists() {
+    for role in SUB_AGENT_ROLES {
+        if let Some(allow) = sub_agent_role_tools(role) {
+            if allow.contains(&"Transfer") {
+                assert!(
+                    allow.contains(&"Agent"),
+                    "角色 {role} 的白名单含 Transfer 但不含 Agent（specs/028 FR-004 绑定）"
+                );
+            }
+        }
+    }
+    // 现状口径：Explorer 不含 Agent，因此也不含 Transfer
+    let explorer = sub_agent_role_tools("Explorer").unwrap();
+    assert!(!explorer.contains(&"Transfer"));
+    assert!(!explorer.contains(&"Agent"));
+}
+
+/// 入参校验矩阵：schema 缺字段 / 未知字段、语义空路径、target 空串（FR-001）。
+#[test]
+fn transfer_input_validation_matrix() {
+    let base = json!({
+        "sourcePath": "/a/b.txt",
+        "targetPath": "/c/d.txt",
+        "destTarget": "host:/ws",
+    });
+    let broken = json!({ "targetPath": "/c/d.txt" });
+    assert!(
+        crate::tool_input::parse_input("Transfer", &broken).is_err(),
+        "缺 sourcePath 应当 schema 失败"
+    );
+    let mut unknown = base.clone();
+    unknown["extra"] = json!(1);
+    assert!(
+        crate::tool_input::parse_input("Transfer", &unknown).is_err(),
+        "未知字段应当 schema 失败"
+    );
+    let parsed = crate::tool_input::parse_input("Transfer", &base)
+        .expect("合法入参应当通过 schema");
+    assert_eq!(parsed["destTarget"], json!("host:/ws"));
+
+    let mut blank = base.clone();
+    blank["sourcePath"] = json!("  ");
+    assert_eq!(
+        validate_input("Transfer", &blank, "."),
+        Some("sourcePath must not be empty".to_string())
+    );
+
+    // target 空串是执行侧入参错误，不静默当缺省（与 Agent.target 同口径）
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    let ctx = transfer_test_context(None, None);
+    let mut target_empty = base.clone();
+    target_empty["destTarget"] = json!("");
+    match execute("Transfer", &target_empty, &ctx) {
+        ToolOutcome::Error(text) => assert_eq!(text, "destTarget must not be empty"),
+        other => panic!("期望入参错误，得到 {other:?}"),
+    }
+}
+
+/// 能力位只作用于执行（FR-005）；钩子缺省时报运行时缺失。
+#[test]
+fn transfer_capability_gate_and_missing_hook() {
+    let _serial = crate::test_support::serial();
+    let input = json!({ "sourcePath": "/a", "targetPath": "/b" });
+    let ctx = transfer_test_context(None, None);
+
+    set_cross_workspace_capability(false);
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Error(text) => assert_eq!(
+            text,
+            "current host does not support cross-workspace transfer"
+        ),
+        other => panic!("能力位为假应当报宿主不支持，得到 {other:?}"),
+    }
+
+    set_cross_workspace_capability(true);
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Error(text) => assert_eq!(text, "Transfer: no transfer runtime available"),
+        other => panic!("钩子缺省应当报运行时缺失，得到 {other:?}"),
+    }
+}
+
+/// 成功路径：请求透传入参（缺省端为 None），结果文本含统计与两端身份（FR-003）。
+#[test]
+fn transfer_success_summary_text() {
+    use std::sync::Mutex;
+
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    let seen: Mutex<Vec<TransferRequest>> = Mutex::new(Vec::new());
+    let seen_slot = std::sync::Arc::new(seen);
+    let recorder = seen_slot.clone();
+    let ctx = transfer_test_context(
+        Some(std::sync::Arc::new(move |request, _cancel| {
+            recorder.lock().unwrap().push(request);
+            Ok(TransferSummary {
+                files: 3,
+                bytes: 4096,
+                skipped_symlinks: 2,
+                source_workspace_id: "m1:/ws1".to_string(),
+                dest_workspace_id: "m2:/ws2".to_string(),
+            })
+        })),
+        None,
+    );
+    let input = json!({
+        "sourcePath": "/a",
+        "targetPath": "/b",
+        "destTarget": "m2:/ws2",
+    });
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Success(text) => {
+            assert!(text.contains("3 files"), "文案应含文件数：{text}");
+            assert!(text.contains("4.0 KB"), "文案应含字节数：{text}");
+            assert!(text.contains("m1:/ws1"), "文案应含源身份：{text}");
+            assert!(text.contains("m2:/ws2"), "文案应含目标身份：{text}");
+            assert!(text.contains("skipped 2 symlinks"), "文案应含跳过数：{text}");
+        }
+        other => panic!("期望成功，得到 {other:?}"),
+    }
+    let requests = seen_slot.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].source_target, None, "缺省端应为 None");
+    assert_eq!(requests[0].dest_target.as_deref(), Some("m2:/ws2"));
+}
+
+/// 宿主回取消错误且会话取消标记已置位：按「工具被中止」收尾（FR-007）。
+#[test]
+fn transfer_cancel_maps_to_canceled_outcome() {
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    let ctx = transfer_test_context(
+        Some(std::sync::Arc::new(|_request, _cancel| {
+            Err("transfer canceled".to_string())
+        })),
+        Some(std::sync::atomic::AtomicBool::new(true)),
+    );
+    let input = json!({ "sourcePath": "/a", "targetPath": "/b" });
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Canceled(text) => {
+            assert_eq!(text, "Tool was canceled due to abort")
+        }
+        other => panic!("期望被中止，得到 {other:?}"),
+    }
+}
+
+/// 构造 Transfer 测试上下文：钩子与取消标记按需注入。
+fn transfer_test_context(
+    hook: Option<TransferHook>,
+    cancel: Option<std::sync::atomic::AtomicBool>,
+) -> ToolContext {
+    ToolContext {
+        session_id: "s-transfer".to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: cancel.map(std::sync::Arc::new),
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: None,
+        transfer: hook,
+    }
+}
+
+/// 带 `target` 的成功派发注入 Transfer reminder（isMeta silent 消息，正文复用
+/// 公共变量）；缺省（本机）派发不注入（specs/028 FR-006）。
+#[test]
+fn agent_dispatch_appends_transfer_reminder() {
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    let hooks = SubAgentHooks {
+        spawn: std::sync::Arc::new(|_request| Ok("sub_local".to_string())),
+        spawn_remote: std::sync::Arc::new(|_request| Ok("sub_remote".to_string())),
+        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
+    };
+    let ctx = ToolContext {
+        session_id: "s1".to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: None,
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: Some(hooks),
+        transfer: None,
+    };
+
+    let remote_input = json!({ "prompt": "x", "agentRole": "Master", "target": "HOST:/b" });
+    match execute("Agent", &remote_input, &ctx) {
+        ToolOutcome::SuccessWithMessages { text, new_messages } => {
+            assert!(text.contains("sub_remote"), "文本应含子会话 id：{text}");
+            assert_eq!(new_messages.len(), 1, "应恰好注入一条 reminder");
+            assert_eq!(new_messages[0]["isMeta"], json!(true));
+            let content = new_messages[0]["message"]["content"]
+                .as_str()
+                .expect("reminder 内容");
+            assert!(content.starts_with("<Reminder>"));
+            assert!(content.contains("\"HOST:/b\""), "应逐字点名目标身份：{content}");
+        }
+        other => panic!("期望带 reminder 的成功，得到 {other:?}"),
+    }
+
+    let local_input = json!({ "prompt": "x", "agentRole": "Master" });
+    match execute("Agent", &local_input, &ctx) {
+        ToolOutcome::Success(text) => assert!(text.contains("sub_local")),
+        other => panic!("本机派发应为纯 Success（不注入 reminder），得到 {other:?}"),
+    }
 }

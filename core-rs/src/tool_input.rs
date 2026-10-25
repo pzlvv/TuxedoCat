@@ -75,6 +75,7 @@ pub fn parse_input(tool: &str, input: &Value) -> Result<Value, String> {
         "AskUserQuestion" => validate_object(input, &ask_user_fields(), true, &[]),
         "Agent" => validate_object(input, &agent_fields(), true, &[]),
         "Reply" => validate_object(input, &reply_fields(), true, &[]),
+        "Transfer" => validate_object(input, &transfer_fields(), true, &[]),
         _ => return Ok(input.clone()),
     };
     match result {
@@ -171,6 +172,17 @@ fn reply_fields() -> Vec<Field<'static>> {
     vec![
         Field { name: "message", required: true, kind: Kind::Str(None) },
         Field { name: "targetSessionId", required: false, kind: Kind::Str(None) },
+    ]
+}
+
+/// specs/028：路径必填（非空语义在 `tools::validate_input` / `run_transfer` 双查）；
+/// 两端 target 可选，空串是执行侧错误（与 `Agent.target` 同口径），schema 不拦。
+fn transfer_fields() -> Vec<Field<'static>> {
+    vec![
+        Field { name: "sourcePath", required: true, kind: Kind::Str(None) },
+        Field { name: "targetPath", required: true, kind: Kind::Str(None) },
+        Field { name: "sourceTarget", required: false, kind: Kind::Str(None) },
+        Field { name: "destTarget", required: false, kind: Kind::Str(None) },
     ]
 }
 

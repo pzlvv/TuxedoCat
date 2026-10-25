@@ -52,9 +52,14 @@ async function run(): Promise<void> {
   const conversations = new StubConversationManager(host);
   /** 通道侧收到的 hostEnvironmentProvided 条数 */
   let snapshots = 0;
+  /** 最近一次 hostEnvironmentProvided 载荷（能力位字段断言用，specs/028 FR-005） */
+  let lastEnvironment: unknown = null;
   const openChannel = (): OpenedCoreChannel => {
     const bus = createTestBus();
-    bus.onUiEvent('hostEnvironmentProvided', () => { snapshots += 1; });
+    bus.onUiEvent('hostEnvironmentProvided', (event: unknown) => {
+      snapshots += 1;
+      lastEnvironment = event;
+    });
     return { bus, dispose: async () => undefined };
   };
   bootstrapCore(host, stubSpinDesign, conversations, {
@@ -62,6 +67,7 @@ async function run(): Promise<void> {
     log: () => undefined,
     logToConsole: false,
     crossWorkspaceAgent: false,
+    crossWorkspaceTransfer: false,
     extensionPath: '/tmp/ext',
     openStandaloneChannel: () => openChannel(),
   });
@@ -91,6 +97,14 @@ async function run(): Promise<void> {
       : new Promise((resolve) => setTimeout(resolve, 5));
   await waitFirst(snapshots);
   check('连接建立即推送宿主环境与配置快照', snapshots >= 1);
+  // 能力位随宿主环境一次给齐：Electron 双 true、VS Code / TUI 双 false
+  // （specs/023 FR-009 / specs/028 FR-005）；本骨架按 VS Code 形态接线。
+  check(
+    'hostEnvironmentProvided 携带跨工作区能力位（本骨架为双 false）',
+    (lastEnvironment as Record<string, unknown> | null) !== null
+      && (lastEnvironment as Record<string, unknown>).crossWorkspaceAgent === false
+      && (lastEnvironment as Record<string, unknown>).crossWorkspaceTransfer === false,
+  );
 
   const store = getSettingsStore();
   let pushes = 0;

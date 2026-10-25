@@ -244,6 +244,32 @@
       }
     },
     {
+      "name": "Transfer",
+      "description": "Transfer files or directories between open workspaces, for cross-workspace agent workflows only.",
+      "required": [
+        "sourcePath",
+        "targetPath"
+      ],
+      "properties": {
+        "sourcePath": {
+          "type": "string",
+          "description": "Absolute source path on the source workspace's machine"
+        },
+        "targetPath": {
+          "type": "string",
+          "description": "Absolute target path on the target workspace's machine"
+        },
+        "sourceTarget": {
+          "type": "string",
+          "description": "Source workspace agent ID (`hostname:path`). Omit for the current conversation's workspace"
+        },
+        "destTarget": {
+          "type": "string",
+          "description": "Destination workspace agent ID (`hostname:path`). Omit for the current conversation's workspace"
+        }
+      }
+    },
+    {
       "name": "AskUserQuestion",
       "description": "Ask the user one or more questions and wait for their replies.",
       "required": [
