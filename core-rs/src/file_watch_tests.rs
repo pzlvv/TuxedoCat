@@ -294,3 +294,51 @@ fn same_watch_id_replaces_previous() {
     registry.unwatch("w1").expect("unwatch");
     let _ = fs::remove_dir_all(&workspace);
 }
+
+#[test]
+fn watches_directory_children() {
+    // 目录目标（文档视图哨兵：`.git` / `.git/refs/heads`）：目录内任何变化都要上报，
+    // 目录外的同名 / 其它变化不算。
+    let workspace = temp_workspace("dir-target");
+    let git_dir = workspace.join(".git");
+    fs::create_dir_all(&git_dir).expect("create dir target");
+    let index = git_dir.join("index");
+    fs::write(&index, "v1").expect("seed child");
+
+    let (bus, capture) = capture_bus();
+    let registry = FileWatchRegistry::new();
+    registry
+        .watch(
+            bus,
+            "w1".to_string(),
+            workspace.to_str().unwrap(),
+            git_dir.to_str().unwrap(),
+        )
+        .expect("register directory watch");
+
+    // 目录外的兄弟文件：不在监听范围内
+    fs::write(workspace.join("outside.txt"), "x").expect("write sibling");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        capture.events_of("workspaceFileChanged").is_empty(),
+        "events outside the directory target must not fire"
+    );
+
+    // 目录内替换子文件（git 的 index / refs 更新形态）
+    atomic_replace(&index, "v2");
+    assert!(
+        wait_for(
+            || !changed_events(&capture).is_empty(),
+            Duration::from_secs(5)
+        ),
+        "expected a changed event for the directory target"
+    );
+    let event = changed_events(&capture).remove(0);
+    assert!(
+        event["path"].as_str().unwrap_or("").ends_with(".git"),
+        "event path is the directory target itself: {event}"
+    );
+
+    registry.unwatch("w1").expect("unwatch");
+    let _ = fs::remove_dir_all(&workspace);
+}

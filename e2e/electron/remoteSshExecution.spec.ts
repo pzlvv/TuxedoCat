@@ -599,7 +599,7 @@ test('US-54 真实 SSH 终端：右键打开终端连上远端 shell、标题含
   }, { timeout: 60_000 }).toBe('0');
 });
 
-test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行数，commit 后手动刷新取到最新变更集', async () => {
+test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行数，远端 commit 后哨兵自动刷新', async () => {
   // 远端建仓：一次基线提交，然后制造「未暂存改动 + 未跟踪新文档 + 非 md 改动」
   const repo = `${remoteWs}/docrepo`;
   await sshExec(`rm -rf ${repo} && mkdir -p ${repo} && cd ${repo}`
@@ -628,11 +628,10 @@ test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行�
   await expect(cRow.locator('.doc-plus')).toHaveText('+1');
   await expect(sb.locator('#filesTree .file-row[data-path="notes.txt"]')).toHaveCount(0);
 
-  // 远端哨兵自动刷新尚未生效：core 的 watch 通道只接受普通文件，git 目录被拒
-  //（specs/defects/remote-doc-sentinel-watch-rejects-directories.md）。按 US-63 验收 4 的
-  //「建立失败记日志、手动刷新兜底」口径，这里锁定兜底路径仍取到最新变更集。
+  // 远端哨兵：在会话外 commit（不经 UI、不点刷新）后文档视图自动重取，变更集清空
+  //（specs/030 FR-003 / US-63 验收 4：远端复用 specs/018 的 watch 通道，目录目标由
+  // core 的 FileWatchRegistry 支持）。
   await sshExec(`cd ${repo} && git add -A && git commit -qm all-done`);
-  await sb.locator('#filesRefresh').click();
   await expect(sb.locator('#filesTree .file-row[data-path="a.md"]')).toHaveCount(0, { timeout: 60_000 });
   await expect(sb.getByText('没有变更的 Markdown 文档')).toBeVisible({ timeout: 30_000 });
 

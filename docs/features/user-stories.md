@@ -51,7 +51,7 @@ last_reviewed: 2026-10-20
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
-| `e2e/electron/remoteSshExecution.spec.ts` | US-37、US-42（远端文件浏览：树读取 / 刷新 / 永久删除）、US-54（打开终端 / 标题含工作区路径 / shell 退出关窗）、US-62（远端条目修改时间）、US-63（远端文档视图：git 口径 / 行数 / 手动刷新兜底） | Electron 整应用 |
+| `e2e/electron/remoteSshExecution.spec.ts` | US-37、US-42（远端文件浏览：树读取 / 刷新 / 永久删除）、US-54（打开终端 / 标题含工作区路径 / shell 退出关窗）、US-62（远端条目修改时间）、US-63（远端文档视图：git 口径 / 行数 / 远端哨兵自动刷新） | Electron 整应用 |
 | `e2e/remoteWorkspace/picker.spec.ts` | US-36（远端目录选择器：路径框编辑 / 选中项 / Tab 补全 / 焦点常驻） | 远端目录选择器页面 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44、US-61、US-62、US-63 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39、US-53（录制改键与菜单展示） | Electron 整应用 |
@@ -84,10 +84,9 @@ DeepSeek 账户，由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼
 断开与重连、关闭工作区联动关窗——打开终端 / 首标签连上远端 shell / 标题含工作区路径 /
 shell 退出后窗口关闭由 `e2e/electron/remoteSshExecution.spec.ts` 覆盖，其余需真实 SSH
 服务器（通道已打通，尚未补用例），断开语义的状态机由 `src/test/terminalShells.test.ts`
-（假通道）锁定；US-63 的远端哨兵自动刷新——远端 git 口径
-（变更集 / 行数 / 未跟踪文档）与手动刷新兜底由 `e2e/electron/remoteSshExecution.spec.ts`
-覆盖，远端监听注册失败的缺口登记在
-`specs/defects/remote-doc-sentinel-watch-rejects-directories.md`，本地 git 行数口径由
+（假通道）锁定；US-63 的远端 git 哨兵——远端
+git 口径（变更集 / 行数 / 未跟踪文档）与 commit 后的自动刷新由
+`e2e/electron/remoteSshExecution.spec.ts` 覆盖，本地 git 行数口径由
 `src/test/sidebarDocViewGit.test.ts`（临时真实 git 仓）与 `src/test/sidebarDocWatch.test.ts`
 锁定）。
 

@@ -1,5 +1,5 @@
 ---
-status: 待修
+status: 已修
 ---
 
 # 缺陷：远端文档视图的 git 哨兵监听注册不上（core 的 watch 只接受普通文件）
@@ -44,14 +44,18 @@ checkout 后应自动刷新。实际远端两条监听全部注册失败，文�
 
 - **RT-1**：远端建仓并制造未提交改动 → 开启文档视图（列出变更 md 与 +N/-M）→ 会话外
   `git commit` → 不点刷新，文档视图自动变为「没有变更的 Markdown 文档」（落点：
-  `e2e/electron/remoteSshExecution.spec.ts` 的 US-63 用例，当前断言的是手动刷新兜底路径，
-  修复后改为断言自动刷新）。
-- **RT-2**：core 侧单测覆盖「目标为目录」的注册与事件上报（落点：`core-rs/src/file_watch_tests.rs`）。
+  `e2e/electron/remoteSshExecution.spec.ts` 的 US-63 用例，断言的是自动刷新）。
+- **RT-2**：core 侧单测覆盖「目标为目录」的注册与事件上报：目录内替换子文件上报
+  `changed`（事件 path 为目录目标本身），目录外的兄弟文件不触发（落点：
+  `core-rs/src/file_watch_tests.rs` 的 `watches_directory_children`）。
 
 ## 验证记录
 
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
 | 复现（远端自动刷新） | `E2E_DEBUG=1 npx playwright test -c e2e/playwright.config.ts --project=electron-app remoteSshExecution -g "US-63"` | 红 | 60s 内文档视图未刷新；主进程日志两条 `watch target is not a regular file` |
-| 兜底路径（手动刷新） | 同上 | 绿 | 当前 e2e 断言的就是该兜底路径（修复后改断言自动刷新） |
-| core 侧目录监听 | — | not-run | 修复需改 `core-rs` 并重建双平台 Core 产物 |
+| RT-2（core 目录监听） | `cargo test --manifest-path core-rs/Cargo.toml file_watch` | 绿 | 7 条通过，含新增 `watches_directory_children`（0.39s） |
+| RT-1（修复后自动刷新） | `npm run build:core:host && npm run build:core:linux-x64 && npm run copy-assets` 后跑上面同一条 e2e | 绿 | 1 passed（6.5s）：远端 commit 后不点刷新即清空变更集 |
+| 既有回归（本地哨兵） | `npx playwright test -c e2e/playwright.config.ts --project=electron-app fileExplorer -g "US-63"` | 绿 | 本地文档视图 4 条用例（含 AC-14 外部 commit 自动刷新）全过 |
+| 既有回归（查看器文件监听） | `npx playwright test -c e2e/playwright.config.ts --project=electron-app preview` | 绿 | US-38 本地刷新 5 条用例全过：文件目标仍走「父目录 + basename」口径 |
+| core 全量回归 | `npm run test:core` | 绿 | 978 passed / 0 failed（164.81s） |

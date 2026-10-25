@@ -1,8 +1,12 @@
-//! 远程工作区文件监听（specs/018 FR-002 / FR-003）。
+//! 远程工作区文件监听（specs/018 FR-002 / FR-003，目录目标服务于 specs/030 的文档视图哨兵）。
 //!
-//! 宿主为当前查看器窗口注册一个 `watchId`，Core 用 `notify` 监听目标文件的**父目录**
-//! （非递归）并按 basename 过滤：编辑器常见的「写临时文件 + rename」会让文件级 watcher
-//! 失效，父目录监听能同时捕获 replace / delete / recreate。
+//! 宿主注册一个 `watchId`，Core 用 `notify` 监听目标（非递归）：
+//! - **文件目标**（查看器）：监听其**父目录**并按 basename 过滤——编辑器常见的
+//!   「写临时文件 + rename」会让文件级 watcher 失效，父目录监听能同时捕获
+//!   replace / delete / recreate；
+//! - **目录目标**（文档视图的 git 哨兵，监听 `.git` / `.git/refs/heads`）：监听目录本身，
+//!   目录内任何非 Access 事件都上报——git 的 commit / stage / checkout 原子替换目录里的
+//!   index 与 refs，只按文件名过滤会漏掉这些变化。
 //!
 //! 每个 watch 一条去抖线程（50ms）：`notify` 回调只把原始事件送进 channel，线程合并后
 //! 以「目标文件当前是否存在」判定 `changed` / `deleted`，经 `SharedBus` 发一条
@@ -68,8 +72,8 @@ impl FileWatchRegistry {
 
     /// 注册监听。`workspace_root` 与 `path` 都是目标机器上的绝对路径。
     ///
-    /// 失败（越界 / 不存在 / 不是普通文件 / watcher 创建失败）如实返回错误字符串，
-    /// 由宿主显示「自动刷新不可用」，不静默放行。
+    /// 失败（越界 / 目标是 socket 等特殊文件 / watcher 创建失败）如实返回错误字符串，
+    /// 由宿主显示「自动刷新不可用」，不静默放行。目标缺失放行（等重建，见 `validate_target`）。
     pub fn watch(
         &self,
         bus: SharedBus,
@@ -78,30 +82,43 @@ impl FileWatchRegistry {
         path: &str,
     ) -> Result<(), String> {
         let target = validate_target(workspace_root, path)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| format!("watch target has no parent: {}", target.display()))?
-            .to_path_buf();
-        let target_name = target
-            .file_name()
-            .ok_or_else(|| format!("watch target has no file name: {}", target.display()))?
-            .to_os_string();
+        // 目录目标（文档视图的 git 哨兵：`.git` 与 `.git/refs/heads`）直接监听目录本身，
+        // 目录内任何非 Access 事件都算目标变化——git 的 commit / stage / checkout 会原子
+        // 替换目录里的 index / refs，只按 basename 过滤文件会漏掉这些。文件目标沿用
+        // 「监听父目录 + basename 过滤」的口径（对「写临时文件 + rename」的原子保存有效）。
+        let target_is_dir = fs::metadata(&target).map(|meta| meta.is_dir()).unwrap_or(false);
+        let (watch_root, filter_name) = if target_is_dir {
+            (target.clone(), None)
+        } else {
+            let parent = target
+                .parent()
+                .ok_or_else(|| format!("watch target has no parent: {}", target.display()))?
+                .to_path_buf();
+            let name = target
+                .file_name()
+                .ok_or_else(|| format!("watch target has no file name: {}", target.display()))?
+                .to_os_string();
+            (parent, Some(name))
+        };
 
         let (tx, rx) = channel::<RawEvent>();
         let callback_tx = tx.clone();
-        let filter_name = target_name.clone();
+        let filter_name = filter_name.clone();
         let mut watcher =
             notify::recommended_watcher(move |result: notify::Result<notify::Event>| match result {
                 Ok(event) => {
                     if matches!(event.kind, EventKind::Access(_)) {
                         return;
                     }
-                    // 父目录里其它文件的噪音按 basename 过滤（notify 的路径可能保留原始
-                    // 大小写，Windows 下按不区分大小写比较）。
-                    let touched = event
-                        .paths
-                        .iter()
-                        .any(|path| path.file_name().is_some_and(|name| same_name(name, &filter_name)));
+                    // 目录目标不过滤；文件目标按 basename 过滤父目录里其它文件的噪音
+                    //（notify 的路径可能保留原始大小写，Windows 下按不区分大小写比较）。
+                    let touched = match &filter_name {
+                        None => true,
+                        Some(name) => event
+                            .paths
+                            .iter()
+                            .any(|path| path.file_name().is_some_and(|n| same_name(n, name.as_os_str()))),
+                    };
                     if touched {
                         let _ = callback_tx.send(RawEvent::Fs);
                     }
@@ -113,8 +130,8 @@ impl FileWatchRegistry {
             .map_err(|err| format!("failed to create file watcher: {err}"))?;
 
         watcher
-            .watch(&parent, RecursiveMode::NonRecursive)
-            .map_err(|err| format!("failed to watch {}: {err}", parent.display()))?;
+            .watch(&watch_root, RecursiveMode::NonRecursive)
+            .map_err(|err| format!("failed to watch {}: {err}", watch_root.display()))?;
 
         let thread = spawn_debounce_thread(bus, watch_id.clone(), target, rx);
 
@@ -145,11 +162,12 @@ impl Default for FileWatchRegistry {
 
 /// 校验监听目标。
 ///
-/// 目标**存在**时按解析符号链接后的真实路径校验：落在工作区根内且为普通文件，
-/// 越界（含符号链接指向根外）拒绝。目标**缺失**（断线期间被删后 Connection 重建的
-/// 重注册形态，specs/018 FR-006「文件重新出现后清除标记并刷新」）按「父目录可达且
-/// 在根内」放行：父目录监听已在位，文件重新出现立即上报 `changed`——先要求文件存在
-/// 会让重注册永久失败，Core 侧再无监听、重建永不恢复。
+/// 目标**存在**时按解析符号链接后的真实路径校验：落在工作区根内，且是普通文件或目录
+/// （目录目标是文档视图的 git 哨兵：监听 `.git` / `refs/heads` 目录本身），其它类型
+/// （socket / fifo / 设备）拒绝；越界（含符号链接指向根外）拒绝。目标**缺失**（断线期间
+/// 被删后 Connection 重建的重注册形态，specs/018 FR-006「文件重新出现后清除标记并刷新」）
+/// 按「父目录可达且在根内」放行：父目录监听已在位，文件重新出现立即上报 `changed`——
+/// 先要求文件存在会让重注册永久失败，Core 侧再无监听、重建永不恢复。
 fn validate_target(workspace_root: &str, path: &str) -> Result<PathBuf, String> {
     let root = fs::canonicalize(workspace_root)
         .map_err(|err| format!("workspace root is not accessible: {workspace_root}: {err}"))?;
@@ -174,8 +192,8 @@ fn validate_target(workspace_root: &str, path: &str) -> Result<PathBuf, String> 
             if !existing.starts_with(&root) {
                 return Err(format!("watch target escapes the workspace root: {path}"));
             }
-            if !existing.is_file() {
-                return Err(format!("watch target is not a regular file: {path}"));
+            if !existing.is_file() && !existing.is_dir() {
+                return Err(format!("watch target is neither a file nor a directory: {path}"));
             }
             Ok(existing)
         }
