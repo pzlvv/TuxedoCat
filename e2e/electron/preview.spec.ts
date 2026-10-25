@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
-import { launchApp, makeWorkspace } from '../helpers/electronApp';
+import { launchApp, makeWorkspace, mainEval } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 
@@ -137,4 +137,119 @@ test('US-38 本地图片刷新保持缩放', async () => {
   await fs.promises.writeFile(imagePath, updatedGif);
   await expect.poll(async () => image.getAttribute('src'), { timeout: 10_000 }).not.toBe(before);
   await expect(viewerPage.locator('#badge')).toHaveText('110%', { timeout: 5_000 });
+});
+
+/** 展开侧栏文件分区（只在用例开头点一次，重复点会折叠） */
+async function expandFiles(): Promise<import('@playwright/test').Page> {
+  const sidebar = await app.sidebarPage();
+  await sidebar.locator('#filesHeader').click();
+  return sidebar;
+}
+
+/** 当前存活的内置查看器窗口数（顶替路径的判据：名额只有一个） */
+async function viewerWindowCount(): Promise<number> {
+  const raw = await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    return JSON.stringify(e.BrowserWindow.getAllWindows()
+      .filter(function(w){ try { return !w.isDestroyed() && w.webContents.getURL().indexOf('imageViewer') >= 0; } catch (err) { return false; } })
+      .map(function(w){ try { return { title: w.getTitle(), bounds: w.getNormalBounds() }; } catch (err) { return null; } })
+      .filter(function(item){ return item !== null; }));
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  return (JSON.parse(raw) as unknown[]).length;
+}
+
+/** 取唯一查看器窗口的标题与矩形（没有窗口时返回 null） */
+async function viewerWindow(): Promise<{ title: string; bounds: { x: number; y: number; width: number; height: number } } | null> {
+  const raw = await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    const w = e.BrowserWindow.getAllWindows().find(function(win){
+      try { return !win.isDestroyed() && win.webContents.getURL().indexOf('imageViewer') >= 0; } catch (err) { return false; }
+    });
+    return JSON.stringify(w ? { title: w.getTitle(), bounds: w.getNormalBounds() } : null);
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  return JSON.parse(raw) as { title: string; bounds: { x: number; y: number; width: number; height: number } } | null;
+}
+
+/** 读 workspace-state.json 里记忆的查看器矩形（文件可能尚未创建 / 正在写） */
+function savedViewerRect(): { x: number; y: number; width: number; height: number } | null {
+  try {
+    const state = JSON.parse(fs.readFileSync(app.stateFile, 'utf-8')) as Record<string, unknown>;
+    const rect = state.viewerWindowRect as Record<string, number> | undefined;
+    if (!rect) return null;
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  } catch {
+    return null;
+  }
+}
+
+const PNG_ONE_PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+test('US-38 查看器单实例顶替：再开一张图沿用同一窗口，旧窗口被销毁', async () => {
+  await fs.promises.writeFile(path.join(workspaceDir, 'pic-a.png'), PNG_ONE_PIXEL);
+  await fs.promises.writeFile(path.join(workspaceDir, 'pic-b.png'), PNG_ONE_PIXEL);
+  const sb = await expandFiles();
+
+  await sb.locator('.file-row[data-path="pic-a.png"]').dblclick();
+  const firstPage = await app.waitForPage('imageViewer', 20_000);
+  await expect(firstPage.locator('#image')).toBeVisible({ timeout: 20_000 });
+  await expect(firstPage).toHaveTitle('pic-a.png', { timeout: 10_000 });
+  expect(await viewerWindowCount()).toBe(1);
+
+  // 再开第二张：名额被顶替，不叠开第二个查看器窗口
+  await sb.locator('.file-row[data-path="pic-b.png"]').dblclick();
+  await expect.poll(viewerWindowCount, { timeout: 15_000 }).toBe(1);
+  const survivor = await viewerWindow();
+  expect(survivor?.title).toBe('pic-b.png');
+  // 旧页面已被销毁：上下文里只剩一个查看器页面，且是新的那张图
+  const viewerPages = app.context.pages().filter((p) => p.url().includes('imageViewer'));
+  expect(viewerPages).toHaveLength(1);
+  await expect(viewerPages[0].locator('#image')).toBeVisible({ timeout: 20_000 });
+  await expect(viewerPages[0]).toHaveTitle('pic-b.png', { timeout: 10_000 });
+});
+
+test('US-38 查看器窗口位置记忆：移动后关闭，再开沿用上次矩形', async () => {
+  await fs.promises.writeFile(path.join(workspaceDir, 'pic.png'), PNG_ONE_PIXEL);
+  const sb = await expandFiles();
+
+  await sb.locator('.file-row[data-path="pic.png"]').dblclick();
+  const viewerPage = await app.waitForPage('imageViewer', 20_000);
+  await expect(viewerPage.locator('#image')).toBeVisible({ timeout: 20_000 });
+
+  // 把窗口摆到主屏工作区内的一块确定矩形（planViewerSlotBounds 只做可见性校验，不改尺寸）
+  const target = JSON.parse(await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    const wa = e.screen.getPrimaryDisplay().workArea;
+    const w = e.BrowserWindow.getAllWindows().find(function(win){
+      return !win.isDestroyed() && win.webContents.getURL().indexOf('imageViewer') >= 0;
+    });
+    if (!w) return 'no-window';
+    const rect = { x: wa.x + 80, y: wa.y + 60, width: 720, height: 520 };
+    w.setBounds(rect);
+    return JSON.stringify(rect);
+  } catch (err) { return 'ERR ' + err.message; }})()`)) as { x: number; y: number; width: number; height: number };
+  expect(await viewerWindow()).toMatchObject({ bounds: target });
+
+  // 矩形落盘有 2s 防抖：等状态文件里出现同一矩形
+  await expect.poll(savedViewerRect, { timeout: 15_000 }).toEqual(target);
+
+  // 关闭查看器（close 时补记一次最终矩形），再打开同一张图
+  const closed = await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    const w = e.BrowserWindow.getAllWindows().find(function(win){
+      return !win.isDestroyed() && win.webContents.getURL().indexOf('imageViewer') >= 0;
+    });
+    if (!w) return 'no-window';
+    w.close();
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  expect(closed).toBe('ok');
+  await expect.poll(viewerWindowCount, { timeout: 15_000 }).toBe(0);
+
+  await sb.locator('.file-row[data-path="pic.png"]').dblclick();
+  await expect.poll(viewerWindowCount, { timeout: 20_000 }).toBe(1);
+  const reopened = await viewerWindow();
+  expect(reopened?.bounds).toEqual(target);
 });

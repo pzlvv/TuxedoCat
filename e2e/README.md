@@ -1,13 +1,15 @@
 # e2e 场景级测试（Playwright）
 
 以真实用户操作（输入、点击、悬停、快捷键）驱动的场景级端到端测试，需求基线是
-`docs/features/user-stories.md`（每条用例标题标注覆盖的 `US-xx`）。四个 project 对应四层：
+`docs/features/user-stories.md`（每条用例标题标注覆盖的 `US-xx`，`US ↔ 用例` 映射与
+未覆盖豁免段见该文件的附录）。五个 project 对应五层：
 
 | project | 层级 | 驱动对象 | 宿主侧 |
 | --- | --- | --- | --- |
 | `webview-ui` | webview UI | Chromium 加载构建产物 `dist/webview/index.html` | 假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答 |
 | `electron-app` | 整应用 | 真实 Electron 应用（`dist-electron/main.cjs`） | **standalone core**（Rust，`dist/resources/core/`，先 `npm run build:core`）+ 本地 mock LLM SSE 服务器（`helpers/mockLlmServer.ts`） |
 | `remote-workspace-ui` | 远端目录选择器页面 | Chromium 加载构建产物 `dist/remoteWorkspace/index.html`（`electron/remoteWorkspace/`） | 假 `window.remoteWorkspaceAPI`（内存目录树）：这一步要连真实 SSH 才走得到，整应用 e2e 覆盖不了 |
+| `terminal-ui` | 远程终端页面 | Chromium 加载构建产物 `dist/terminal/index.html`（`electron/terminal/`） | 假 `window.terminalAPI`（内存标签表 + 回显 shell）：同上，真实链路要连 SSH |
 | `tui-installer` | TUI 分发 | TUI 版安装程序（`release/tui-installer/`，用例内构建宿主平台） | 内嵌 Core / ripgrep / TUI bundle 的自解压安装与启动（`docs/features/tui-installer.md`） |
 
 ## 运行
@@ -19,10 +21,12 @@
 npm run build:webview && npm run copy-assets && npm run build:electron
 npx playwright install chromium            # 网络受限时：PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
 
-npm run test:e2e            # 全部（webview-ui + electron-app + remote-workspace-ui + tui-installer，串行）
+npm run test:e2e            # 全部（五个 project，串行，workers=1）
 npm run test:e2e:webview    # 仅 webview UI 级
 npm run test:e2e:electron   # 仅 Electron 整应用
 npm run test:e2e:remoteWorkspace   # 仅远端目录选择器页面
+npm run test:e2e:terminal   # 仅远程终端页面
+npm run test:e2e:tui        # 仅 TUI 安装程序
 ```
 
 Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modules/electron`。
@@ -64,11 +68,11 @@ e2e/
 │   │                           #   慢速回答 → 慢速流（中止场景）；无响应 → 不回响应头（静默挂住）；
 │   │                           #   其余 → 文本终轮
 │   └── electronApp.ts          # Electron 启动器：沙箱隔离 + CDP 直连 + 活动视图解析
-├── webview/                    # US-1/2/3/4/5/6/7/8/9/10/11/12/13/16/17/18/19/20/21/22/23/24/25/26/29/40/41/45
-│                               # （titlebar.spec 为标题栏快照时序，US-36 渲染层）
-├── electron/                   # US-1/2/14/15/18/19/20/21/22/27/28/30/31/32/34/35/36/37/38/39/42/43/44/45
-├── remoteWorkspace/            # US-36 选择器页面（路径框编辑 / 选中项 / Tab 补全 / 焦点常驻）
-└── tui/                         # TUI 安装程序 e2e（构建 / 自解压 / 载荷可执行 / 启动守卫，docs/features/tui-installer.md）
+├── webview/                    # webview UI 级场景用例（覆盖的 US 见 user-stories 附录）
+├── electron/                   # Electron 整应用场景用例（同上）
+├── remoteWorkspace/            # 远端目录选择器页面（路径框编辑 / 选中项 / Tab 补全 / 焦点常驻）
+├── terminal/                   # 远程终端页面（标签 / 断开态与重连 / 主题跟随 / 复制粘贴）
+└── tui/                        # TUI 安装程序 e2e（构建 / 自解压 / 载荷可执行 / 启动守卫，docs/features/tui-installer.md）
 ```
 
 ## 隔离策略（electron-app）

@@ -119,6 +119,12 @@ export function openTerminalWindow(options: TerminalWindowOptions): void {
   guardViewNavigation(win.webContents, 'terminal');
   win.once('ready-to-show', () => win.show());
 
+  // 页面启动时会把 document.title 设成 `ssh://user@host`（渲染端不需要知道工作区路径），
+  // Electron 默认用页面标题覆盖窗口标题，于是同主机的多个工作区终端在任务栏里无法区分。
+  // 窗口标题按 US-54 验收 1 必须含工作区路径：拦掉页面标题更新，保留构造时的
+  // `${target}${ref.path}`（specs/defects/terminal-window-title-drops-workspace-path.md）。
+  win.on('page-title-updated', (event) => { event.preventDefault(); });
+
   // 标签切换快捷键（与工作区标签页同一组合，docs/hosts/electron-multi-workspace.md 第 14.4 节）：
   // 终端窗口是独立 BrowserWindow，主窗口的菜单兜底覆盖不到这里——before-input-event
   // 在主进程拦截，命中即把方向推给渲染端切相邻终端标签（环绕目标由渲染端按同一份

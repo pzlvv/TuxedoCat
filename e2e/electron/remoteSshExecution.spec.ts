@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Client } from 'ssh2';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
-import { launchApp } from '../helpers/electronApp';
+import { launchApp, waitForMessageBox, clickMessageBoxButton, messageBoxText } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, RecordedRequest } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
@@ -154,13 +154,14 @@ test.afterEach(async () => {
 });
 
 /** 启动应用并恢复预置的远程工作区；返回绑定该工作区的聊天视图 */
-async function launchWithRemoteWorkspace(): Promise<Awaited<ReturnType<AppHandle['chatPage']>>> {
-  mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+async function launchWithRemoteWorkspace(remotePath = remoteWs): Promise<Awaited<ReturnType<AppHandle['chatPage']>>> {
+  const ref = remotePath === remoteWs ? remoteRef : { ...remoteRef, path: remotePath };
+  mockLlm = await startMockLlm({ workspaceDir: remotePath, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,
-    workspaceDir: remoteWs,
-    openWorkspaces: [remoteRef],
+    workspaceDir: remotePath,
+    openWorkspaces: [ref],
     agentMode: 'auto',
   });
   const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 180_000);
@@ -464,4 +465,176 @@ test('manual 权限模式：远程 Bash 弹确认、允许后在远端执行', a
   const result = lastToolResult(mockLlm.requests[1]);
   expect(result).toContain('manual-perm-ok');
   expect(result).toContain('Linux');
+});
+
+test('US-42 远程（SSH）文件浏览：树来自远端、悬停显示修改时间、删除经 SFTP 落到远端', async () => {
+  await launchWithRemoteWorkspace();
+  const sb = await app!.sidebarPage();
+  await sb.locator('#filesHeader').click();
+
+  // 根层来自远端 SFTP 读盘：notes 目录在
+  const notesDir = sb.locator('#filesTree .file-row[data-path="notes"]');
+  await expect(notesDir).toBeVisible({ timeout: 90_000 });
+  await notesDir.click();
+
+  // 懒加载下一层：远端文件行
+  const hello = sb.locator('#filesTree .file-row[data-path="notes/hello.txt"]');
+  await expect(hello).toBeVisible({ timeout: 60_000 });
+
+  // US-62 远程口径：悬停提示带修改时间（同一绝对时刻的同一呈现）
+  await expect(hello).toHaveAttribute('title', /修改时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
+
+  // 远端新建文件 → 刷新按钮重新读远端，新条目出现
+  const addedPath = `${remoteWs}/notes/added-later.txt`;
+  await sshExec(`printf 'added later\n' > ${addedPath}`);
+  await sb.locator('#filesRefresh').click();
+  const added = sb.locator('#filesTree .file-row[data-path="notes/added-later.txt"]');
+  await expect(added).toBeVisible({ timeout: 60_000 });
+
+  // 右键删除：确认框 → 远端真删（SFTP 直读核实），树自动刷新后条目消失
+  await added.click({ button: 'right' });
+  await sb.locator('[data-menu="delete"]').click();
+  const box = await waitForMessageBox(app!);
+  const call = await messageBoxText(box);
+  // 远端没有回收站：确认按钮是「永久删除」，与本地「移入回收站」区分
+  expect(call.buttons).toEqual(['永久删除', '取消']);
+  await clickMessageBoxButton(box, 0);
+  await expect(added).toHaveCount(0, { timeout: 60_000 });
+  expect(await sshReadFile(addedPath)).toBeNull();
+  // 同目录的既有文件不受影响
+  expect(await sshReadFile(`${remoteWs}/notes/hello.txt`)).toContain('e2e-remote-marker-42');
+});
+
+/** 桩住 Menu.buildFromTemplate：记录弹出的菜单（点击条目用），popup 不真弹 */
+async function stubTabMenus(): Promise<void> {
+  const result = await app!.evaluateInMain(`(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    if (!globalThis.__origBuildFromTemplate) {
+      globalThis.__origBuildFromTemplate = e.Menu.buildFromTemplate.bind(e.Menu);
+    }
+    globalThis.__menus = [];
+    e.Menu.buildFromTemplate = function(template){
+      const menu = globalThis.__origBuildFromTemplate(template);
+      menu.popup = function(){
+        globalThis.__menus.push({
+          items: template.map(function(t){ return { label: t.label === undefined ? null : t.label, enabled: t.enabled !== false }; }),
+          clicks: template.map(function(t){ return typeof t.click === 'function' ? t.click : null; }),
+        });
+      };
+      return menu;
+    };
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  const value = (result as { result?: { result?: { value?: string } } })?.result?.result?.value;
+  if (value !== 'ok') throw new Error(`菜单桩注入失败：${value}`);
+}
+
+async function clickLastMenuItem(index: number): Promise<void> {
+  const result = await app!.evaluateInMain(`(function(){try{
+    const m = globalThis.__menus[globalThis.__menus.length - 1];
+    const fn = m && m.clicks[${index}];
+    if (typeof fn !== 'function') return 'no-click';
+    fn();
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  const value = (result as { result?: { result?: { value?: string } } })?.result?.result?.value;
+  if (value !== 'ok') throw new Error(`菜单条目 ${index} 点击失败：${value}`);
+}
+
+/** 打开当前（远程）工作区标签页的终端窗口，返回其页面 */
+async function openRemoteTerminal(): Promise<import('@playwright/test').Page> {
+  await stubTabMenus();
+  const titlebar = await app!.titlebarPage();
+  const tab = titlebar.locator('#workspaceTabs [role="tab"]').first();
+  await expect(tab).toBeVisible({ timeout: 90_000 });
+  await tab.click({ button: 'right' });
+  await expect.poll(async () => {
+    const raw = await app!.evaluateInMain('(function(){return String(globalThis.__menus.length);})()');
+    return Number((raw as { result?: { result?: { value?: string } } })?.result?.result?.value ?? 0);
+  }, { timeout: 15_000 }).toBe(1);
+  // 条目顺序：关闭 / 关闭所有空闲会话 / 关闭其它所有工作区 / 分隔线 / 打开终端
+  await clickLastMenuItem(4);
+  return app!.waitForPage('/terminal/', 60_000);
+}
+
+test('US-54 真实 SSH 终端：右键打开终端连上远端 shell、标题含 ssh://、退出后窗口关闭', async () => {
+  await launchWithRemoteWorkspace();
+  const termPage = await openRemoteTerminal();
+
+  // 首标签自动建立并连上远端 shell
+  await expect(termPage.locator('.tab')).toHaveCount(1, { timeout: 90_000 });
+  await expect(termPage.locator('#pane-1 .xterm')).toBeVisible({ timeout: 60_000 });
+
+  // 窗口标题 = ssh://user@host + 远端工作区路径
+  const expectedTitle = `ssh://${SSH.user}@${SSH.host}${remoteWs}`;
+  await expect.poll(async () => {
+    const raw = await app!.evaluateInMain(`(function(){try{
+      const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+      const w = e.BrowserWindow.getAllWindows().find(function(win){
+        try { return !win.isDestroyed() && win.webContents.getURL().indexOf('/terminal/') >= 0; } catch (err) { return false; }
+      });
+      return w ? w.getTitle() : 'no-window';
+    } catch (err) { return 'ERR ' + err.message; }})()`);
+    return (raw as { result?: { result?: { value?: string } } })?.result?.result?.value;
+  }, { timeout: 30_000 }).toBe(expectedTitle);
+
+  // 命令真的在远端执行：uname 输出 Linux
+  await termPage.locator('.xterm-helper-textarea').click();
+  await termPage.keyboard.type('uname -s');
+  await termPage.keyboard.press('Enter');
+  await expect.poll(() => termPage.locator('#pane-1 .xterm-rows').textContent(), { timeout: 60_000 })
+    .toContain('Linux');
+
+  // 远端 shell 退出 → 最后一个标签自动关闭 → 终端窗口随之销毁（AC-1 / AC-4）
+  await termPage.keyboard.type('exit');
+  await termPage.keyboard.press('Enter');
+  await expect.poll(async () => {
+    const raw = await app!.evaluateInMain(`(function(){try{
+      const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+      return String(e.BrowserWindow.getAllWindows().filter(function(win){
+        try { return !win.isDestroyed() && win.webContents.getURL().indexOf('/terminal/') >= 0; } catch (err) { return false; }
+      }).length);
+    } catch (err) { return 'ERR ' + err.message; }})()`);
+    return (raw as { result?: { result?: { value?: string } } })?.result?.result?.value;
+  }, { timeout: 60_000 }).toBe('0');
+});
+
+test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行数，commit 后手动刷新取到最新变更集', async () => {
+  // 远端建仓：一次基线提交，然后制造「未暂存改动 + 未跟踪新文档 + 非 md 改动」
+  const repo = `${remoteWs}/docrepo`;
+  await sshExec(`rm -rf ${repo} && mkdir -p ${repo} && cd ${repo}`
+    + ' && git init -q && git config user.email e2e@example.com && git config user.name e2e'
+    + " && printf '# A\nline1\nline2\n' > a.md && printf '# B\n' > b.md"
+    + " && printf 'plain\n' > notes.txt && git add . && git commit -qm init");
+  await sshExec(`cd ${repo}`
+    + " && printf '# A\nline1\nline2\nnew1\nnew2\n' > a.md"
+    + " && printf '# C\n' > c.md"
+    + " && printf 'changed\n' > notes.txt");
+
+  await launchWithRemoteWorkspace(repo);
+  const sb = await app!.sidebarPage();
+  await sb.locator('#filesHeader').click();
+  await expect(sb.locator('#filesTree .file-row[data-path="a.md"]')).toBeVisible({ timeout: 90_000 });
+
+  // 切到文档视图：git 判定与行数统计在远端执行（ssh exec），记录经 SFTP 读
+  await sb.locator('#filesDocToggle').click();
+  const aRow = sb.locator('#filesTree .file-row[data-path="a.md"]');
+  await expect(aRow).toBeVisible({ timeout: 60_000 });
+  await expect(aRow.locator('.doc-plus')).toHaveText('+2');
+  await expect(aRow.locator('.doc-minus')).toHaveText('-0');
+  // 未跟踪新文档按全文计新增；非 md 不列
+  const cRow = sb.locator('#filesTree .file-row[data-path="c.md"]');
+  await expect(cRow).toBeVisible({ timeout: 30_000 });
+  await expect(cRow.locator('.doc-plus')).toHaveText('+1');
+  await expect(sb.locator('#filesTree .file-row[data-path="notes.txt"]')).toHaveCount(0);
+
+  // 远端哨兵自动刷新尚未生效：core 的 watch 通道只接受普通文件，git 目录被拒
+  //（specs/defects/remote-doc-sentinel-watch-rejects-directories.md）。按 US-63 验收 4 的
+  //「建立失败记日志、手动刷新兜底」口径，这里锁定兜底路径仍取到最新变更集。
+  await sshExec(`cd ${repo} && git add -A && git commit -qm all-done`);
+  await sb.locator('#filesRefresh').click();
+  await expect(sb.locator('#filesTree .file-row[data-path="a.md"]')).toHaveCount(0, { timeout: 60_000 });
+  await expect(sb.getByText('没有变更的 Markdown 文档')).toBeVisible({ timeout: 30_000 });
+
+  await sshExec(`rm -rf ${repo}`).catch(() => undefined);
 });

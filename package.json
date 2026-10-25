@@ -116,6 +116,7 @@
     "test:e2e:webview": "playwright test -c e2e/playwright.config.ts --project=webview-ui",
     "test:e2e:electron": "playwright test -c e2e/playwright.config.ts --project=electron-app",
     "test:e2e:remoteWorkspace": "playwright test -c e2e/playwright.config.ts --project=remote-workspace-ui",
+    "test:e2e:terminal": "playwright test -c e2e/playwright.config.ts --project=terminal-ui",
     "check-types:e2e": "tsc --noEmit -p e2e/tsconfig.json",
     "build:tui": "cargo build --release --manifest-path tui-rs/Cargo.toml",
     "tui": "cargo run --release --manifest-path tui-rs/Cargo.toml",

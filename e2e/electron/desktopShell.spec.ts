@@ -420,3 +420,132 @@ test('US-39+US-27 Spin 设计器：命令与菜单两入口打开；内置命令
   // 内置命令全程没有 LLM 请求（不进 LLM 上下文，US-27 验收 2）
   expect(mockLlm.requests.length).toBe(0);
 });
+
+// ── US-33 托盘状态点与任务结束闪烁 ────────────────────────────────────────────
+
+interface TrayProbeLog {
+  tooltips: string[];
+  /** 每次 setImage 的位图签名（前 24 字节）：亮 / 灭两个相位的签名不同 */
+  images: string[];
+  /** 是否捕获到托盘实例（左键唤醒要触发它的 click 事件） */
+  hasInstance: boolean;
+}
+
+/** 在主进程桩住 Tray 原型方法，把托盘的可观察面（提示文案 / 图标相位 / 实例）记下来 */
+async function installTrayProbe(): Promise<void> {
+  const result = await mainExpr<string>(`(function(){
+    const proto = e.Tray.prototype;
+    globalThis.__trayProbe = { tooltips: [], images: [], instance: null };
+    if (!globalThis.__origTraySetImage) {
+      globalThis.__origTraySetImage = proto.setImage;
+      globalThis.__origTraySetToolTip = proto.setToolTip;
+      globalThis.__origTraySetContextMenu = proto.setContextMenu;
+    }
+    proto.setImage = function(img){
+      globalThis.__trayProbe.instance = this;
+      let sig = 'unknown';
+      try { sig = Array.from(Buffer.from(img.toBitmap()).subarray(0, 24)).join(','); } catch (err) { sig = 'ERR'; }
+      globalThis.__trayProbe.images.push(sig);
+    };
+    proto.setToolTip = function(text){
+      globalThis.__trayProbe.instance = this;
+      globalThis.__trayProbe.tooltips.push(String(text));
+    };
+    proto.setContextMenu = function(){ globalThis.__trayProbe.instance = this; };
+    return 'ok';
+  })()`);
+  if (result !== 'ok') throw new Error(`托盘桩注入失败：${result}`);
+}
+
+async function readTrayProbe(): Promise<TrayProbeLog> {
+  const raw = await mainExpr<string>('(function(){return JSON.stringify({tooltips: globalThis.__trayProbe.tooltips, images: globalThis.__trayProbe.images, hasInstance: globalThis.__trayProbe.instance !== null});})()');
+  return JSON.parse(raw) as TrayProbeLog;
+}
+
+/** 最小化主窗口（「任务结束提醒」要求窗口不在前台） */
+async function minimizeMainWindow(): Promise<void> {
+  const result = await mainExpr<string>(`(function(){
+    const wins = e.BrowserWindow.getAllWindows().filter(function(w){ return !w.isDestroyed(); });
+    wins.forEach(function(w){ w.minimize(); });
+    return String(wins.length);
+  })()`);
+  if (!/^\d+$/.test(result)) throw new Error(`最小化主窗口失败：${result}`);
+}
+
+test('US-33 验收 1/2/3：状态点随聚合状态变色、后台任务完成时闪烁、点击托盘唤出窗口', async () => {
+  await installTrayProbe();
+
+  // 慢速流：留出「后台化」与「完成」两段观察窗口
+  mockLlm.setHandler(() => ({
+    kind: 'slow', text: '慢速流式输出'.repeat(6), chunkDelayMs: 350,
+  }));
+  const chatPage = await app.chatPage();
+  await expect(chatPage.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+  await chatPage.fill('textarea.input-textarea', '跑一个慢任务');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.locator('button[title="终止"]')).toBeEnabled({ timeout: 30_000 });
+
+  // 状态点：有任务运行中 → 红点（提示文案是颜色语义的唯一可观察面）
+  await expect.poll(async () => (await readTrayProbe()).tooltips.at(-1), { timeout: 20_000 })
+    .toContain('有任务运行中');
+
+  // 窗口转到后台后再结束：这时才允许提醒（前台完成不打扰）
+  await minimizeMainWindow();
+
+  // 全部完成 → 绿点文案
+  await expect.poll(async () => (await readTrayProbe()).tooltips.at(-1), { timeout: 60_000 })
+    .toContain('全部任务空闲');
+
+  // 闪烁：亮 / 灭两相位交替（同一状态的静态图标只 setImage 一次）
+  await expect.poll(async () => {
+    const log = await readTrayProbe();
+    return new Set(log.images.slice(-6)).size;
+  }, { timeout: 20_000 }).toBeGreaterThan(1);
+
+  // 左键唤出主窗口（托盘 click 事件）→ 窗口可见、不最小化
+  const woken = await mainExpr<string>(`(function(){
+    if (!globalThis.__trayProbe.instance) return 'no-tray';
+    globalThis.__trayProbe.instance.emit('click');
+    return 'ok';
+  })()`);
+  expect(woken).toBe('ok');
+  await expect.poll(async () => mainExpr<boolean>(`(function(){
+    const w = e.BrowserWindow.getAllWindows().find(function(win){
+      return !win.isDestroyed() && win.webContents.getURL().indexOf('imageViewer') < 0;
+    });
+    return !!w && w.isVisible() && !w.isMinimized();
+  })()`), { timeout: 15_000 }).toBe(true);
+
+  // 唤出即取消提醒：闪烁停止（图标不再周期性变化），文案仍是全部空闲
+  await expect.poll(async () => (await readTrayProbe()).images.length, { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  const settled = (await readTrayProbe()).images.length;
+  await new Promise((r) => setTimeout(r, 1600));
+  expect((await readTrayProbe()).images.length).toBe(settled);
+  expect((await readTrayProbe()).tooltips.at(-1)).toContain('全部任务空闲');
+});
+
+test('US-33 验收 1：等待用户确认时状态点转黄（转等待也是任务结束提醒）', async () => {
+  await installTrayProbe();
+
+  // manual 权限模式（启动器默认）：Write 工具会弹确认框，core 在此期间把会话标记 waiting
+  mockLlm.setHandler((req) => {
+    const last = req.body.messages[req.body.messages.length - 1];
+    if (last?.role === 'tool') return { kind: 'text', text: '文件写好了。' };
+    return {
+      kind: 'tool',
+      name: 'Write',
+      args: { file_path: path.join(workspaceDir, 'note.md'), content: 'x' },
+      preamble: '我来写文件。',
+    };
+  });
+  const chatPage = await app.chatPage();
+  await expect(chatPage.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+  await chatPage.fill('textarea.input-textarea', '写个文件');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.locator('.user-choice-overlay')).toBeVisible({ timeout: 30_000 });
+
+  // 黄点：等待用户确认（颜色语义由提示文案体现）
+  await expect.poll(async () => (await readTrayProbe()).tooltips.at(-1), { timeout: 20_000 })
+    .toContain('等待用户确认');
+});

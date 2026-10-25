@@ -51,7 +51,7 @@ last_reviewed: 2026-10-20
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
-| `e2e/electron/remoteSshExecution.spec.ts` | US-37、US-42 | Electron 整应用 |
+| `e2e/electron/remoteSshExecution.spec.ts` | US-37、US-42（远端文件浏览：树读取 / 刷新 / 永久删除）、US-54（打开终端 / 标题含工作区路径 / shell 退出关窗）、US-62（远端条目修改时间）、US-63（远端文档视图：git 口径 / 行数 / 手动刷新兜底） | Electron 整应用 |
 | `e2e/remoteWorkspace/picker.spec.ts` | US-36（远端目录选择器：路径框编辑 / 选中项 / Tab 补全 / 焦点常驻） | 远端目录选择器页面 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44、US-61、US-62、US-63 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39、US-53（录制改键与菜单展示） | Electron 整应用 |
@@ -65,31 +65,30 @@ last_reviewed: 2026-10-20
 | `e2e/webview/todoProgress.spec.ts` | US-59（进度按钮 / 悬停 100ms / 固定与取消 / 恢复 / 压缩不丢） | webview UI |
 | `e2e/webview/subagentOptionsLock.spec.ts` | US-51（role 事实到达后的选项置灰） | webview UI |
 | `e2e/terminal/terminalUi.spec.ts` | US-54（首标签自动建立的页面侧）、US-55（标签新建 / 切换 / 关闭、断开态覆盖层与重连、主题跟随、复制粘贴） | terminal 页面 |
+| `e2e/webview/userChoicePaging.spec.ts` | US-58（分页进度 / 单选翻页 / 多选与其他并存 / Enter 语义 / answers 载荷） | webview UI |
+| `e2e/webview/spinModeInput.spec.ts` | US-39（spin 输入禁用的渲染层：禁用 + placeholder + 停止按钮转黄 + 单向不退出） | webview UI |
+| `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 他区忙碌汇总确认） | Electron 整应用 |
 
-未覆盖 e2e 的 US（US-33 的托盘图标状态点与闪烁提醒——属 OS 集成层，提示音默认值由
-`src/test/soundSettings.test.ts` 锁定；US-38 的图片查看器窗口，以及查看器单实例顶替与
-窗口位置记忆——Playwright 无法断言多 BrowserWindow 生命周期与屏幕坐标，顶替决策与
-矩形校验由 `src/test/viewerWindows.test.ts` 锁定，窗口行为人工验证；US-39 的 spin 输入
-禁用——需要真实 spin 执行链，禁用 / placeholder 决策由 `src/test/inputAreaState.test.ts` 与
-`src/test/abortButtonState.test.ts` 锁定，落盘与恢复由 core-rs `engine_tests` 锁定；
-US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端；US-63 的远程文档视图与
-远端 git 哨兵——同一远程口径（US-42 同口径豁免），git 行数口径由
+未覆盖 e2e 的 US（US-33 的托盘图标像素外观与原生右键菜单弹窗——状态点三色、任务结束
+闪烁与左键唤出由 `e2e/electron/desktopShell.spec.ts` 桩住 `Tray` 原型断言，颜色聚合口径由
+`src/test/trayStatusIcon.test.ts` 锁定，只剩图标渲染与原生菜单外观人工验证；US-38 的远程
+查看器自动刷新（验收 6 的远程口径）——需要真实 SSH 远端，本地刷新与窗口名额 / 矩形记忆由
+`e2e/electron/preview.spec.ts` 与 `src/test/viewerWindows.test.ts` 锁定；US-39 的真实 spin
+执行链——渲染层的禁用 / placeholder / 停止按钮转黄 / 单向不退出由
+`e2e/webview/spinModeInput.spec.ts` 覆盖，`meta.json` 的 `workMode` 落盘与恢复、SpinLoop 与
+子代理编排（验收 4）由 core-rs `engine_tests` 锁定；US-48 的原生菜单弹窗外观——菜单条目、
+置灰终态与点击动作由 `e2e/electron/tabContextMenu.spec.ts` 桩住 `Menu.buildFromTemplate`
+断言，只有弹窗渲染人工验证；US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与
+DeepSeek 账户，由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼装 / 错误映射 / 本地一_shot
+假服务器）与 `engine_tests` 的工具注入用例覆盖；US-54 的连接复用、主机密钥变更告警、
+断开与重连、关闭工作区联动关窗——打开终端 / 首标签连上远端 shell / 标题含工作区路径 /
+shell 退出后窗口关闭由 `e2e/electron/remoteSshExecution.spec.ts` 覆盖，其余需真实 SSH
+服务器（通道已打通，尚未补用例），断开语义的状态机由 `src/test/terminalShells.test.ts`
+（假通道）锁定；US-63 的远端哨兵自动刷新——远端 git 口径
+（变更集 / 行数 / 未跟踪文档）与手动刷新兜底由 `e2e/electron/remoteSshExecution.spec.ts`
+覆盖，远端监听注册失败的缺口登记在
+`specs/defects/remote-doc-sentinel-watch-rejects-directories.md`，本地 git 行数口径由
 `src/test/sidebarDocViewGit.test.ts`（临时真实 git 仓）与 `src/test/sidebarDocWatch.test.ts`
-锁定；US-43 的「在文件资源管理器中
-打开」——会弹出真实资源管理器窗口；US-48 的标签页右键菜单——原生 OS 菜单无法被 Playwright
-驱动，「关闭」与「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话
-视图含子代理对话 / 空闲可关含当前选中的对话 / 忙碌不动 / 汇总确认）由
-`src/test/workspaceBatchClose.test.ts` 锁定，菜单弹出与置灰人工验证）
-US-54 的真实 SSH 通路（连接复用 / 主机密钥变更告警 / 断开与重连）——需要真实 SSH 服务器
-（US-42 同口径），断开语义的状态机由 `src/test/terminalShells.test.ts`（假通道）锁定；
-US-54 的终端窗口 BrowserWindow 生命周期（工作区关闭联动关窗、退出全关）——Playwright 无法
-断言多 BrowserWindow 生命周期（US-38 同口径），真机手工验证。
-US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与 DeepSeek 账户，
-由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼装 / 错误映射 / 本地一_shot 假服务器）
-与 `engine_tests` 的工具注入用例覆盖。
-US-58 的逐页选择框交互（多问题分页 / 多选 / 其他项 / Enter 行为）——需要 webview 渲染层
-断言；协议与答案形状由 `src/test/userChoice*.test.ts` 与 `core-rs` 的 `ask_user` 用例锁定，
-分页与键盘交互人工验证。
-由 `src/test/` 与 `core-rs` 的既有单测与后续补充覆盖。
+锁定）。
 
 运行方式与前置构建见 `e2e/README.md`。

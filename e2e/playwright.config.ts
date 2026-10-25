@@ -6,7 +6,7 @@ import { assertEnvironmentFileIfPresent } from './helpers/testEnvironment';
 /**
  * 场景级 e2e 配置（`e2e/README.md`）。
  *
- * 两个 project 对应两层用例：
+ * 五个 project 对应五层用例：
  * - `webview-ui`：Chromium 直接加载构建产物 `dist/webview/index.html`，宿主侧以
  *   假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答，
  *   驱动「webview UI 在真实浏览器里的用户操作」。
@@ -14,6 +14,8 @@ import { assertEnvironmentFileIfPresent } from './helpers/testEnvironment';
  *   SSE 服务器），驱动「整应用的真实用户链路」。
  * - `remote-workspace-ui`：`electron/remoteWorkspace/` 的选择器页面（要连真实 SSH
  *   才走得到，整应用 e2e 覆盖不了）：Chromium 加载构建产物 + 假远端目录树。
+ * - `terminal-ui`：`electron/terminal/` 的远程终端页面（同上的假通道手法）。
+ * - `tui-installer`：TUI 安装程序（无浏览器：构建 → 自解压 → 载荷可执行 → 启动守卫）。
  */
 const repoRoot = path.resolve(__dirname, '..');
 
