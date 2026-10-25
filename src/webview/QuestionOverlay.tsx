@@ -26,15 +26,16 @@ function createDrafts(questions: UserChoiceQuestion[]): Record<string, Draft> {
 /**
  * AskUserQuestion 的逐页选择框（specs/026 FR-003 / FR-004）。
  *
- * 一次只呈现一个问题，底部固定进度条与导航；普通 radio 点击后自动进入下一页，
- * 最后一页不自动提交。输入框始终显示，输入内容即代表「其他」。
+ * 一次只呈现一个问题，底部固定进度条与导航；单选点击普通选项后自动进入下一页，
+ * 最后一页不自动提交。有选项时末尾附「其他」卡片：指示器与内嵌输入框并排，聚焦、
+ * 点击或输入都勾选「其他」，多选勾选后 checkbox 置灰锁定、与普通选项并存。
  */
 const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, colors }) => {
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() => createDrafts(questions));
   const [index, setIndex] = useState(0);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // 程序聚焦（点选项后把焦点送进输入框）不应被当成用户主动聚焦，否则会立刻把
+  // 程序聚焦（点选项后把焦点送进输入框）不应被当成用户主动聚焦，否则单选会立刻把
   // 刚选的普通选项改成「其他」（docs/features/ask-user-question.md FR-004）。
   const programmaticFocusRef = useRef(false);
 
@@ -78,42 +79,32 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
     el.focus();
   }, []);
 
-  const handleOptionClick = useCallback((label: string, isOther: boolean) => {
+  const handleOptionClick = useCallback((label: string) => {
     const question = current;
     const value = drafts[question.id];
-    let next: Draft;
 
     if (question.multi_select) {
-      if (isOther) {
-        next = { ...value, otherSelected: !value.otherSelected, custom: value.otherSelected ? '' : value.custom };
-      } else {
-        next = {
-          ...value,
-          selected: value.selected.includes(label)
-            ? value.selected.filter((item) => item !== label)
-            : [...value.selected, label],
-        };
-      }
-    } else if (isOther) {
-      next = { ...value, selected: [], otherSelected: true };
+      // 多选与「其他」互不影响：切换普通选项不动勾选与文本（并存，FR-004）。
+      updateDraft(question.id, {
+        ...value,
+        selected: value.selected.includes(label)
+          ? value.selected.filter((item) => item !== label)
+          : [...value.selected, label],
+      });
     } else {
-      next = { ...value, selected: [label], otherSelected: false, custom: '' };
+      updateDraft(question.id, { ...value, selected: [label], otherSelected: false, custom: '' });
     }
 
-    updateDraft(question.id, next);
-
-    const willAnswer = next.selected.length > 0
-      || (next.otherSelected && next.custom.trim().length > 0);
-
-    if (!question.multi_select && !isOther && !isLast) {
-      goTo(index + 1, willAnswer);
+    if (!question.multi_select && !isLast) {
+      goTo(index + 1, true);
       setTimeout(focusInput, 0);
       return;
     }
     setTimeout(focusInput, 0);
   }, [current, drafts, focusInput, goTo, index, isLast, updateDraft]);
 
-  // 用户主动聚焦输入框即视为选择「其他」：单选清空普通选项，多选保留。
+  // 用户主动聚焦输入框即勾选「其他」：单选清空普通选项，多选保留已选普通项（并存）。
+  // 程序聚焦（点选项后送入焦点）不改变选择（FR-004）。
   const handleCustomFocus = useCallback(() => {
     if (programmaticFocusRef.current) {
       programmaticFocusRef.current = false;
@@ -129,6 +120,8 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
     });
   }, [current, drafts, updateDraft]);
 
+  // 输入非空即勾选「其他」；多选勾选后锁定，清空文本不取消（disable，不是 Clear），
+  // 单选清空文本即取消。多选下「其他」与普通选项并存，互不清除（FR-004）。
   const handleCustomChange = useCallback((value: string) => {
     const question = current;
     const previous = drafts[question.id];
@@ -136,11 +129,28 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
     if (value.trim()) {
       next.otherSelected = true;
       if (!question.multi_select) next.selected = [];
-    } else {
+    } else if (!question.multi_select) {
       next.otherSelected = false;
     }
     updateDraft(question.id, next);
   }, [current, drafts, updateDraft]);
+
+  // 点击「其他」卡片：未勾选时勾选并聚焦输入框（单选同时清空普通选项）；多选已勾选
+  // 时再点一次即取消——清空文本、保留普通选项勾选并解锁（FR-004）。
+  const handleOtherCardClick = useCallback(() => {
+    const question = current;
+    const value = drafts[question.id];
+    if (question.multi_select) {
+      if (value.otherSelected) {
+        updateDraft(question.id, { ...value, otherSelected: false, custom: '' });
+        return;
+      }
+      updateDraft(question.id, { ...value, otherSelected: true });
+    } else if (!value.otherSelected) {
+      updateDraft(question.id, { ...value, otherSelected: true, selected: [] });
+    }
+    focusInput();
+  }, [current, drafts, focusInput, updateDraft]);
 
   const handleCustomKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
@@ -150,14 +160,10 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
     else goTo(index + 1, answered(current));
   }, [answered, current, goTo, index, isLast, submit]);
 
-  const options = (current.options ?? []).map((option) => ({ ...option, isOther: false }));
-  if (options.length > 0) {
-    options.push({
-      label: t('userChoice.other'),
-      description: t('userChoice.otherDescription'),
-      isOther: true,
-    });
-  }
+  const options = current.options ?? [];
+  // 多选勾选「其他」后（焦点入框 / 点卡片 / 输入非空文本）整题置灰锁定：普通选项
+  // 不可再切换、已勾选保持勾选；再点一次卡片取消勾选并解锁（FR-004）。
+  const otherLocked = current.multi_select && draft.otherSelected;
 
   const progressColor = (question: UserChoiceQuestion): string => {
     if (answered(question)) return colors.harness;
@@ -186,19 +192,23 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
         {options.length > 0 && (
           <div className="flex flex-col gap-1.5 pb-2">
             {options.map((option) => {
-              const selected = option.isOther
-                ? draft.otherSelected
-                : draft.selected.includes(option.label);
+              const selected = draft.selected.includes(option.label);
               return (
                 <button
-                  key={option.isOther ? '__other__' : option.label}
+                  key={option.label}
                   type="button"
-                  onClick={() => handleOptionClick(option.label, option.isOther)}
+                  disabled={otherLocked}
+                  onClick={() => handleOptionClick(option.label)}
                   className="user-choice-button w-full px-3 py-[9px] rounded-lg text-left text-sm leading-[1.5] transition-all"
                   style={{
                     backgroundColor: selected ? colors.primaryFrame : 'transparent',
                     color: colors.textPrimary,
                     border: `1px solid ${selected ? colors.harness : colors.border}`,
+                    // 「其他」勾选后整题置灰锁定：已勾选保持勾选；pointerEvents
+                    // 一并压掉 hover 与误点击。
+                    opacity: otherLocked ? 0.5 : 1,
+                    cursor: otherLocked ? 'default' : undefined,
+                    pointerEvents: otherLocked ? 'none' : undefined,
                   }}
                 >
                   <div className="flex items-start gap-2">
@@ -230,7 +240,7 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
                     <span className="min-w-0 flex-1">
                       <span
                         className="font-medium leading-[1.5] block"
-                        style={{ color: option.isOther ? colors.textSystem : colors.textPrimary }}
+                        style={{ color: colors.textPrimary }}
                       >
                         {option.label}
                       </span>
@@ -244,32 +254,100 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
                 </button>
               );
             })}
+
+            {/* 「其他」卡片（FR-004）：指示器与内嵌输入框并排，占位符以「其它」开头；
+                多选勾选后整题置灰锁定，再点一次卡片取消勾选并解锁。 */}
+            <div
+              className="user-choice-button w-full px-3 py-[9px] rounded-lg text-left text-sm leading-[1.5] transition-all"
+              onClick={handleOtherCardClick}
+              style={{
+                backgroundColor: draft.otherSelected ? colors.primaryFrame : 'transparent',
+                color: colors.textPrimary,
+                border: `1px solid ${draft.otherSelected ? colors.harness : colors.border}`,
+                cursor: 'pointer',
+              }}
+            >
+              <div className="flex items-start gap-2">
+                <span
+                  aria-hidden
+                  style={{
+                    width: 16,
+                    height: 16,
+                    marginTop: 2,
+                    flexShrink: 0,
+                    borderRadius: current.multi_select ? 4 : '50%',
+                    border: `2px solid ${draft.otherSelected && !current.multi_select ? colors.harness : colors.border}`,
+                    display: 'grid',
+                    placeItems: 'center',
+                  }}
+                >
+                  {draft.otherSelected && (
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: current.multi_select ? 2 : '50%',
+                        background: current.multi_select ? colors.textSystem : colors.harness,
+                        display: 'block',
+                      }}
+                    />
+                  )}
+                </span>
+                <TextareaAutosize
+                  ref={inputRef}
+                  value={draft.custom}
+                  onChange={(e) => handleCustomChange(e.target.value)}
+                  onFocus={handleCustomFocus}
+                  onKeyDown={handleCustomKeyDown}
+                  // 点击输入框只做编辑：阻断冒泡，否则锁定态下点进输入框会触发卡片
+                  // 的「再点一次取消」，把已输入的文本清掉。
+                  onClick={(e) => e.stopPropagation()}
+                  placeholder={isLast
+                    ? t('userChoice.otherPlaceholderLast')
+                    : t('userChoice.otherPlaceholder')}
+                  className="min-w-0 flex-1 resize-none focus:outline-none text-sm"
+                  style={{
+                    backgroundColor: 'transparent',
+                    color: colors.textPrimary,
+                    border: 'none',
+                    padding: 0,
+                    lineHeight: '1.5',
+                    display: 'block',
+                  }}
+                  minRows={1}
+                  maxRows={12}
+                />
+              </div>
+            </div>
           </div>
         )}
 
-        <div className="pb-2">
-          <TextareaAutosize
-            ref={inputRef}
-            value={draft.custom}
-            onChange={(e) => handleCustomChange(e.target.value)}
-            onFocus={handleCustomFocus}
-            onKeyDown={handleCustomKeyDown}
-            placeholder={isLast
-              ? t('userChoice.questionPlaceholderLast')
-              : t('userChoice.questionPlaceholder')}
-            className="w-full resize-none focus:outline-none text-sm rounded-lg"
-            style={{
-              backgroundColor: 'transparent',
-              color: colors.textPrimary,
-              border: `1px solid ${colors.border}`,
-              padding: '10px 12px',
-              lineHeight: '1.5',
-              display: 'block',
-            }}
-            minRows={1}
-            maxRows={12}
-          />
-        </div>
+        {/* 纯文本问题没有「其他」概念，保持独立输入框（FR-004：输入框始终显示）。 */}
+        {options.length === 0 && (
+          <div className="pb-2">
+            <TextareaAutosize
+              ref={inputRef}
+              value={draft.custom}
+              onChange={(e) => handleCustomChange(e.target.value)}
+              onFocus={handleCustomFocus}
+              onKeyDown={handleCustomKeyDown}
+              placeholder={isLast
+                ? t('userChoice.questionPlaceholderLast')
+                : t('userChoice.questionPlaceholder')}
+              className="w-full resize-none focus:outline-none text-sm rounded-lg"
+              style={{
+                backgroundColor: 'transparent',
+                color: colors.textPrimary,
+                border: `1px solid ${colors.border}`,
+                padding: '10px 12px',
+                lineHeight: '1.5',
+                display: 'block',
+              }}
+              minRows={1}
+              maxRows={12}
+            />
+          </div>
+        )}
       </div>
 
       <div className="px-3 pb-2 pt-2" style={{ borderTop: `1px solid ${colors.border}` }}>

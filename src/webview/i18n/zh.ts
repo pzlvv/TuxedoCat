@@ -241,8 +241,8 @@ export const zhDict: Record<string, string> = {
   'userChoice.prev': '上一页',
   'userChoice.next': '下一页',
   'userChoice.submitAnswers': '提交',
-  'userChoice.other': '其他',
-  'userChoice.otherDescription': '输入你自己的回复',
+  'userChoice.otherPlaceholder': '其它，Enter 下一页，Shift+Enter 换行',
+  'userChoice.otherPlaceholderLast': '其它，Enter 提交，Shift+Enter 换行',
   'userChoice.questionPlaceholder': '输入回复，Enter 下一页，Shift+Enter 换行',
   'userChoice.questionPlaceholderLast': '输入回复，Enter 提交，Shift+Enter 换行',
 
