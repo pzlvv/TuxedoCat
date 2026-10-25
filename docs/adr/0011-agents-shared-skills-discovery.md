@@ -13,7 +13,7 @@
   共享根是 `.agents/skills`（项目级与用户级各一个）——opencode 与 dsh 都读它。只有产品私有
   目录意味着同一个技能要在每个工具下各放一份，或者靠人手维护软链。
 - **同一事实两份副本**：本仓库自身就在承受这个代价——`.zcode/skills` 是指向
-  `.tuxedo-cat/skills` 的 junction，两条路径在 git 索引里各提交了 9 个内容相同的 blob，
+  `<configDir>/skills` 的 junction，两条路径在 git 索引里各提交了 9 个内容相同的 blob，
   「谁是真相」要靠 AGENTS.md 的文字约定维持。
 
 同时，技能的两个调用开关与业界语义不一致：`user-invocable: false` 被实现成「对模型也隐藏」，
@@ -47,7 +47,7 @@
    「技能该放哪」长期含糊；`.agents` 已被 opencode 与 dsh 共同支持，是更窄的交集。
 3. **`.agents` 与 `.<configDir>` 同级但产品目录优先。** 否决：迁移后项目自己的技能放在
    `.agents`，产品目录优先会让「后来者在产品目录补一份同名技能」静默盖掉共享技能，与弱化方向相反。
-4. **迁移时把 `.tuxedo-cat/skills` 留成指向 `.agents/skills` 的反向 junction。** 否决：反向链接
+4. **迁移时把 `<configDir>/skills` 留成指向 `.agents/skills` 的反向 junction。** 否决：反向链接
    会让真相再次分叉；保留读取分支已经足够兼容。
 5. **模型侧拒绝放在执行处（`run_skill`）。** 否决：用户 `/name` 的注入路径与模型调用共用同一个
    执行入口，在执行处拒绝会连带拦掉用户触发；要区分来源就得把内部状态写进 tool input。

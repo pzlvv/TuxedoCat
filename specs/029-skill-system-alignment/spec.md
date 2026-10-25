@@ -1,5 +1,5 @@
 ---
-status: 待评审
+status: 实施中
 ---
 
 # 改动规格：技能系统的调用语义、共享目录与优先级
@@ -43,12 +43,12 @@ status: 待评审
   - **AC-9**（FR-002）：GIVEN 仓库里同时存在 `.claude/skills/z/SKILL.md` WHEN 请求技能列表 THEN 列表不含 `z`（不读 `.claude`）。
 - 场景 4：优先级与同名仲裁
   - **AC-10**（FR-003）：GIVEN 项目 `<cwd>/.agents/skills/p/SKILL.md` 与用户 `~/.agents/skills/p/SKILL.md` 同名且描述不同 WHEN 调用 `/p` THEN 用项目那份；名单里 `p` 只出现一次，描述取项目那份。
-  - **AC-11**（FR-003）：GIVEN 同一层级下 `<cwd>/.agents/skills/p/` 与 `<cwd>/.tuxedo-cat/skills/p/` 同时存在 WHEN 调用 `/p` THEN 用 `.agents` 那份；名单只一条。
+  - **AC-11**（FR-003）：GIVEN 同一层级下 `<cwd>/.agents/skills/p/` 与 `<cwd>/<configDir>/skills/p/` 同时存在 WHEN 调用 `/p` THEN 用 `.agents` 那份；名单只一条。
   - **AC-12**（FR-003）：GIVEN 项目技能名为 `commit`（与 bundled 同名）WHEN 调用 `/commit` THEN 用项目那份，bundled 被遮蔽；名单只一条。
   - **AC-13**（FR-003）：GIVEN 任一同名冲突被仲裁 WHEN 读取 core 日志 THEN 有一条 WARNING 同时点名胜出路径与被忽略路径。
   - **AC-14**（FR-003）：GIVEN 同一物理目录经两个根可见（junction / symlink）WHEN 加载 THEN 只算一次，且不产生同名 WARNING。
 - 场景 5：本仓库迁移
-  - **AC-15**（FR-004）：GIVEN 本仓库 WHEN 查看 git 索引 THEN 9 个技能位于 `.agents/skills/<name>/SKILL.md`，`.tuxedo-cat/skills/` 与 `.zcode/skills/` 都不再入库。
+  - **AC-15**（FR-004）：GIVEN 本仓库 WHEN 查看 git 索引 THEN 9 个技能位于 `.agents/skills/<name>/SKILL.md`，`<configDir>/skills/` 与 `.zcode/skills/` 都不再入库。
   - **AC-16**（FR-004）：GIVEN 本机工作区 WHEN 打开 ZCode 会话 THEN `.zcode/skills` 是指向 `.agents/skills` 的 junction，可用技能清单与迁移前一致。
 - 场景 6：实现单一化
   - **AC-17**（FR-005）：GIVEN 仓库 WHEN 查找技能加载实现 THEN 只有 `core-rs/src/skills.rs` 一份；`src/shared/skills/` 不存在，repo-map 的 `src/shared/` 一行不再列 `skills/`。
@@ -111,7 +111,7 @@ WARNING——这与「同名不同文件」是两类情况，必须分开。
 
 ### FR-004：本仓库的技能迁到 `.agents/skills`
 
-仓库自带的 9 个技能从 `.tuxedo-cat/skills/` 迁到 `.agents/skills/`，`.tuxedo-cat/skills/` 与
+仓库自带的 9 个技能从 `<configDir>/skills/` 迁到 `.agents/skills/`，`<configDir>/skills/` 与
 `.zcode/skills/` 都不再入库——目前这两条路径各提交了 9 个同样的 blob，是同一份事实的两份副本。
 
 `.zcode/skills` 保留为**本地** junction，指向 `.agents/skills`，供 ZCode 会话读取；它在
@@ -133,7 +133,7 @@ WARNING——这与「同名不同文件」是两类情况，必须分开。
 - 两个开关都关闭可达：WARNING + 不可达，不做加载失败处理（不影响其他技能）。
 - 模型调用 `disable-model-invocation` 的技能：返回错误 tool_result，文案点名该技能只能由用户触发，正文不注入。
 - `/name` 匹配保持区分大小写、按名称精确匹配，不做归一化（与现状一致）。
-- 迁移后 `~/.tuxedo-cat/skills` 与 `<cwd>/.tuxedo-cat/skills` 仍被读取：弱化是后续方向，本次不删读取分支。
+- 迁移后 `~/<configDir>/skills` 与 `<cwd>/<configDir>/skills` 仍被读取：弱化是后续方向，本次不删读取分支。
 - 项目根上的技能在子目录里打开会话时仍不可见（不向上查找，见非目标）。
 
 ## 非目标

@@ -35,7 +35,7 @@ last_reviewed: 2026-10-26
   - **AC-13**（FR-003）：GIVEN 任一同名冲突被仲裁 WHEN 读取 core 日志 THEN 有一条 WARNING 同时点名胜出路径与被忽略路径。
   - **AC-14**（FR-003）：GIVEN 同一物理目录经两个根可见（junction / symlink）WHEN 加载 THEN 只算一次，且不产生同名 WARNING。
 - 场景 5：仓库与实现
-  - **AC-15**（FR-004）：GIVEN 本仓库 WHEN 查看 git 索引 THEN 9 个技能位于 `.agents/skills/<name>/SKILL.md`，`.tuxedo-cat/skills/` 与 `.zcode/skills/` 都不在索引里。
+  - **AC-15**（FR-004）：GIVEN 本仓库 WHEN 查看 git 索引 THEN 9 个技能位于 `.agents/skills/<name>/SKILL.md`，`<configDir>/skills/` 与 `.zcode/skills/` 都不在索引里。
   - **AC-16**（FR-004）：GIVEN 本机工作区 WHEN 打开 ZCode 会话 THEN `.zcode/skills` 是指向 `.agents/skills` 的 junction，可用技能清单与迁移前一致。
   - **AC-17**（FR-005）：GIVEN 仓库 WHEN 查找技能加载实现 THEN 只有 `core-rs/src/skills.rs` 一份；`src/shared/` 下没有技能加载模块。
 

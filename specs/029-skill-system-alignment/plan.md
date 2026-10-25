@@ -95,7 +95,7 @@ FR-001），并在 `tools_tests.rs` 加一条用例锁定「`validate_input` 拒
 
 ### 5. 仓库迁移（`.agents/skills`）
 
-1. `git mv .tuxedo-cat/skills .agents/skills`（9 个技能目录），删空的 `.tuxedo-cat/`；
+1. `git mv <configDir>/skills .agents/skills`（9 个技能目录），删空的 `.<configDir>/`；
 2. `git rm -r --cached .zcode/skills`，`.gitignore` 去掉 `!.zcode/skills/` 一行（`.zcode/*`
    已忽略，`.zcode/skills` 从此是本地 junction）；
 3. 本机重建 junction：`.zcode/skills` → `.agents/skills`（Windows `cmd //c mklink /J`，
@@ -124,7 +124,7 @@ FR-001），并在 `tools_tests.rs` 加一条用例锁定「`validate_input` 拒
 | `core-rs/src/skills_tests.rs` / `commands_tests.rs` / `tools_tests.rs` / `prompt_tests.rs` / `main_tests.rs` | 修改 + 新增用例 | — |
 | `src/shared/skills/**` | 删除 | 无（零消费方） |
 | `.agents/skills/**` | 新增（9 个技能迁入） | 无 |
-| `.tuxedo-cat/skills/**`、`.zcode/skills/**` | 从索引删除 | 无 |
+| `<configDir>/skills/**`、`.zcode/skills/**` | 从索引删除 | 无 |
 | `.gitignore`、`AGENTS.md` | 修改 | 无 |
 | `docs/features/skills.md` | 新增 | 需求基线（as-built） |
 | `docs/features/user-stories/tools.md` | 修改 US-27 验收标准 | 需求基线 |
@@ -163,7 +163,7 @@ FR-001），并在 `tools_tests.rs` 加一条用例锁定「`validate_input` 拒
    （spec 非目标），来源只在 core 日志与文档里体现。
 4. **加 `.claude/skills` 兼容根**：否决——spec 明确不兼容，两套跨工具约定并存会让「谁是真相」
    再次含糊。
-5. **迁移时把 `.tuxedo-cat/skills` 留成反向 junction**：否决——弱化产品目录的方向下，反向链接
+5. **迁移时把 `<configDir>/skills` 留成反向 junction**：否决——弱化产品目录的方向下，反向链接
    只会让真相再次分叉；读取分支保留即可。
 6. **顺手做「向上父目录查找」**：否决——独立能力，属 spec 非目标，另开 spec。
 
