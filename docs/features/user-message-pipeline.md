@@ -247,7 +247,7 @@ Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动�
 | 命令消息 | 去除首尾空白后以 `/` 开头的用户消息 | Core `commands.rs` 的 `dispatch` |
 | `@` 命令 | 去除首尾空白后以 `@` 开头的用户消息 | Core `engine.rs` 的 `resolve_pending_mention` |
 | 内置命令 | 命令注册表中按名称 / 别名匹配的命令（如 `/spin`） | Core `commands.rs` |
-| Skill 命令 | 匹配 Skill 名称 / 别名的命令消息 | Core `skills.rs`（宿主侧补全用 `src/shared/skills/` 的加载器读同一份技能目录） |
+| Skill 命令 | 匹配 Skill 名称 / 别名的命令消息 | Core `skills.rs`（宿主侧斜杠菜单经 `UiRequest.skillsRequested` 取同一份技能目录） |
 | 排队项 | webview 中表示「已提交、尚未进入上下文」的 UI 状态 | webview |
 | 工作目录 | 会话归属的目录，`project_root(sessionId)` 的返回值 | Core `config.rs` |
 
