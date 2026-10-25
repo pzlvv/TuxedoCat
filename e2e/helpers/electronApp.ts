@@ -36,6 +36,11 @@ import type { MockLlm } from './mockLlmServer';
 export interface ChatPageOptions {
   /** 只匹配绑定工作区路径包含该子串的视图 */
   workspaceIncludes?: string;
+  /**
+   * 只匹配自身会话 id 包含该子串的视图（`window.__currentSessionId`）：打开某条对话后，
+   * 预加载的「新建对话」备用视图与目标视图并存，按「不在侧栏列表里」的兜底规则会误选前者。
+   */
+  sessionIncludes?: string;
   /** 只匹配空会话视图（消息区空态且会话已生成） */
   emptyState?: boolean;
 }
@@ -306,7 +311,7 @@ export async function launchApp(options: {
    * 视图）→ 侧栏活动会话匹配 → 最后一个候选。
    */
   const waitForChatPage = (
-    opts: { workspaceIncludes?: string; emptyState?: boolean; sessionIncludes?: string } = {},
+    opts: ChatPageOptions = {},
     timeout = 20_000,
   ): Promise<Page> =>
     new Promise<Page>((resolve, reject) => {
@@ -415,14 +420,11 @@ export async function launchApp(options: {
     browser,
     context,
     /**
-     * 活动聊天视图。可选过滤：`workspaceIncludes`（视图绑定的工作区路径）、
-     * `emptyState`（空会话视图）。切换会话/工作区/新建对话后应重新获取。
+     * 活动聊天视图。可选过滤见 `ChatPageOptions`（工作区路径 / 会话 id / 空会话态）。
+     * 切换会话 / 工作区 / 新建对话后应重新获取。
      * `timeoutMs` 缺省 20s；远程工作区冷部署（SSH 引导上传产物）时给更长的预算。
      */
-    chatPage: (
-      opts?: { workspaceIncludes?: string; emptyState?: boolean },
-      timeoutMs?: number,
-    ) => waitForChatPage(opts ?? {}, timeoutMs),
+    chatPage: (opts?: ChatPageOptions, timeoutMs?: number) => waitForChatPage(opts ?? {}, timeoutMs),
     titlebarPage: () => waitForPage('dist/titlebar/index.html'),
     sidebarPage: () => waitForPage('dist/sidebar/index.html'),
     waitForPage,
