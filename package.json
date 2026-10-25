@@ -106,7 +106,7 @@
     "electron:debug": "node scripts/electron-launch.js --inspect=9229",
     "dev:electron": "npm run build:core:debug && npm run build:webview && npm run copy-assets && npm run build:electron && node scripts/electron-launch.js",
     "package:app:build": "npm run build:core && npm run build:webview && npm run copy-assets && node scripts/verify-core-artifacts.mjs",
-    "package:app:installer": "npm run build:electron:prod && electron-builder --config electron-builder.config.js && node scripts/verify-nsis-payload.mjs",
+    "package:app:installer": "npm run build:electron:prod && electron-builder --config electron-builder.config.js --win && node scripts/verify-nsis-payload.mjs",
     "package:app:installer:x64": "npm run build:electron:prod && electron-builder --config electron-builder.config.js --win nsis:x64 && node scripts/verify-nsis-payload.mjs",
     "package:app": "npm run package:app:build && npm run package:app:installer",
     "package:app:x64": "npm run package:app:build && npm run package:app:installer:x64",
