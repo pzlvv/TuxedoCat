@@ -31,16 +31,16 @@ status: 已修
 
   ```text 示意
   $ npm run package:app:installer
-  • building        target=snap     file=release/tuxedo-cat_0.0.1_amd64.snap
-  • building        target=AppImage file=release/Tuxedo Cat-0.0.1.AppImage
-  [verify-nsis-payload] 在 /home/pz/git/TuxedoCat/release 下找不到 Tuxedo Cat-0.0.1-setup-*.exe
+  • building        target=snap     file=release/<product-name>_0.0.1_amd64.snap
+  • building        target=AppImage file=release/<product-name>-0.0.1.AppImage
+  [verify-nsis-payload] 在 /home/pz/git/<repo>/release 下找不到 <product-name>-0.0.1-setup-*.exe
   # exit 1
   ```
 
   由此 `npm run package`（`package:ext && package:app:installer && package:tui`）在第二段中断。
 
 - 同一台机器、同一份 `dist/` 上跑 `npm run package:app:installer:x64`（带 `--win nsis:x64`）
-  exit 0，产出 `Tuxedo Cat-0.0.1-setup-x64.exe` 且链尾校验通过 —— 缺的只是显式平台选择器，
+  exit 0，产出 `<product-name>-0.0.1-setup-x64.exe` 且链尾校验通过 —— 缺的只是显式平台选择器，
   不是 wine / 环境依赖（`/usr/bin/wine` 存在）。
 
 - 影响面：README「打包」一节承诺 `npm run package` 产出「Electron 桌面安装包」并写明「只追加
