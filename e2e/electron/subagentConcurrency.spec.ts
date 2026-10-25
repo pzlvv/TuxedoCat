@@ -125,7 +125,16 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
   await expect
     .poll(() => subFirstRequests([1, 2, 3, 4, 5, 6]).length, { timeout: 60_000 })
     .toBe(6);
-  // 侧栏最终列出全部会话：父 1 + 子 6
+  // 侧栏最终列出全部会话：父 1 + 子 6。默认展开上限是 `SUBAGENT_AUTO_EXPAND_LIMIT`
+  // （5：达到即不自动展开，`src/host/ui/conversationTreeDefaults.ts`，与 webview 对话树
+  // 同一份事实）——6 个子会话默认折叠，先锁定折叠态，再点开父会话的折叠按钮断言 7 条。
+  // 直接数 7 会把「批量委派不自动撑满列表」这条既有设计当成缺陷（specs/defects/
+  // us49-sidebar-not-listing-subagents.md）。
+  const parentRow = sb.locator(SIDEBAR_ITEM).first();
+  await expect
+    .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 30_000 })
+    .toBe(1);
+  await parentRow.locator('[data-action="toggle-sub"]').click();
   await expect
     .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 30_000 })
     .toBe(7);

@@ -1,5 +1,5 @@
 ---
-status: 待修
+status: 已修
 ---
 
 # 缺陷：US-49 e2e 首用例侧栏恒见 1 个会话（宿主侧列表已到 7）
@@ -22,7 +22,7 @@ status: 待修
   - 非本机负载（安静机器单独跑仍红）；
   - 非近期 specs/023 引入（在 `2bee849`（specs/023 的前一个提交）的独立 worktree
     里构建产物后复跑，同样红）；
-  - 非选择器不匹配子代理条目（第二用例同选择器数到 5，`subagentExplorer` 亦用之）。
+  - 非选择器不匹配子代理条目（第二用例同选择器数到 5，`e2e/electron/subagentExplorer.spec.ts` 亦用之）。
 - 该用例自 specs/005（`497456d`）落地时声称 e2e 147/147 全绿；此后某时点起转红，
   因 electron e2e 不在 CI、且此前无人重跑，转红时点无法从历史直接定位。
 
@@ -37,7 +37,7 @@ status: 待修
 
 - 并发上限 4、FIFO 排队、排队者不提前建会话的引擎语义不变（本缺陷不涉引擎；
   首用例后半段的 `maxOverlap === 4` / FIFO 断言所依赖的数据均已在 mock 侧核实存在）。
-- 第二用例（前台中止：排队取消、不建会话）与 `subagentExplorer` 的侧栏交互不变。
+- 第二用例（前台中止：排队取消、不建会话）与 `e2e/electron/subagentExplorer.spec.ts` 的侧栏交互不变。
 
 ## 回归测试
 
@@ -54,3 +54,6 @@ status: 待修
 | 应用日志取证 | 同 RT-1 + `E2E_DEBUG=1` | 部分验证 | `Conversation list refreshed` 序列 1→5→…→7（21 次 `7 conversations`），宿主列表正常；侧栏 DOM 停在 1——红在侧栏观察层，不在引擎 |
 | 前置归因 | `git worktree`（`2bee849`）构建 webview/electron/core 后复跑 | 红 | 排除 specs/023 及其后提交引入；worktree 用后即删 |
 | 产物新旧归因 | `npm run build:core:host && npm run build:electron` 后复跑 | 红 | 排除产物过期 |
+| 根因定位（只读代码） | 读 `electron/sidebar/main.ts` 的 `isSubExpanded` / `defaultSubExpanded` + `src/host/ui/conversationTreeDefaults.ts` | 绿 | 根因是用例期望写错，不是渲染缺陷：`SUBAGENT_AUTO_EXPAND_LIMIT = 5`，6 个子会话**默认折叠**只渲染父行 1 条；第二用例 4 个子会话 < 5 自动展开 → 5 条，所以它一直绿。`期望` 第一条「侧栏列出 7 条」在折叠态下不成立，产品行为与基线一致（阈值由 `src/test/conversationTreeDefaults.test.ts` 锁定） |
+| 修复后（RT-1 + RT-2） | `npx playwright test -c e2e/playwright.config.ts --project=electron-app subagentConcurrency` | 绿 | 2 passed（11.8s）：用例先断言默认折叠 1 条，再点父会话 `toggle-sub` 展开断言 7 条 |
+| 既有回归（阈值口径） | `node scripts/run-tests.mjs conversationTreeDefaults` | 绿 | 5 通过：默认展开阈值未改动 |
