@@ -108,6 +108,9 @@ const SKIP_DIRS = new Set([
   '.git', '.zcode', 'node_modules', 'out', 'dist', 'dist-electron', 'release',
   'coverage', 'test-results', 'playwright-report', '.vscode-test', 'target',
   'resources', projectConfig.configDir,
+  // `.agents/skills/` 是跨工具共享的技能文件（给模型读的 SKILL.md），不是项目文档：
+  // 与 `.zcode` 同口径跳过，否则它们的「AGENTS.md 第 N 节」写法会被当成文档引用校验。
+  '.agents',
 ]);
 
 const SCAN_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.md', '.mjs', '.cjs']);
@@ -1860,6 +1863,38 @@ function main(): void {
     for (const id of orphans) {
       console.log(`     ${id}（${[...(frDefFiles.get(id) ?? [])].join(' / ')}）`);
     }
+  }
+
+  // ---------- 29. 技能 frontmatter 字段名单与解析点一致 ----------
+  // 字段表是「可从代码推导的名单」：解析点增删字段而文档没跟上时这里红。
+  {
+    const skillsRs = readText('core-rs/src/skills.rs');
+    const parsedFields = new Set<string>();
+    // `frontmatter` 与 `.get(...)` 可能跨行（`when_to_use` / `version` 就是链式写法）
+    for (const m of skillsRs.matchAll(/frontmatter\s*\.get\("([^"]+)"\)/gs)) {
+      const key = m[1];
+      if (key !== undefined) parsedFields.add(key);
+    }
+    const skillsDoc = readText('docs/features/skills.md');
+    // 字段表挂在 H3 下，`sectionBody` 只认 H2，这里按行切出 3.2 小节
+    const docLines = skillsDoc.split(/\r?\n/);
+    const fieldStart = docLines.findIndex((line) => /^### 3\.2 /.test(line));
+    const fieldBody = fieldStart < 0 ? [] : docLines.slice(fieldStart + 1);
+    const fieldEnd = fieldBody.findIndex((line) => line.startsWith('#'));
+    const fieldTable = (fieldEnd < 0 ? fieldBody : fieldBody.slice(0, fieldEnd)).join('\n');
+    const documentedFields = new Set<string>();
+    for (const m of fieldTable.matchAll(/^\| `([^`]+)` \|/gm)) {
+      const key = m[1];
+      if (key !== undefined) documentedFields.add(key);
+    }
+    const missingInDoc = [...parsedFields].filter((key) => !documentedFields.has(key));
+    const missingInCode = [...documentedFields].filter((key) => !parsedFields.has(key));
+    checker.check(
+      `技能 frontmatter 字段名单与 skills.rs 解析点一致（代码 ${parsedFields.size} / 文档 ${documentedFields.size}）`,
+      parsedFields.size > 0 && missingInDoc.length === 0 && missingInCode.length === 0,
+    );
+    for (const key of missingInDoc) console.log(`     文档缺字段: ${key}`);
+    for (const key of missingInCode) console.log(`     代码无解析点: ${key}`);
   }
 
   checker.finish();

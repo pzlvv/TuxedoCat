@@ -108,6 +108,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/web-search.md` | 联网搜索与网页抓取（WebSearch / WebFetch 客户端工具） |
 | `docs/features/ask-user-question.md` | AskUserQuestion 逐题提问：入参 / 答案 / 逐页选择框 / 错误路径 |
 | `docs/features/todo-list.md` | 会话 Todo 清单：Core 持有与重建、索取与推送、输入区任务进度按钮 |
+| `docs/features/skills.md` | 技能系统：四个发现根与 rank、frontmatter 字段、两个调用开关、模型名单与注入路径、同名仲裁 |
 | `docs/features/cross-workspace-agent.md` | 跨工作区多 Agent 通信：工作区代理身份、`Agent.target`、占位父对话、跳转、中止与 `@` 补全 |
 | `docs/features/cross-workspace-transfer.md` | 跨工作区文件传输（`Transfer` 工具）：两端解析守卫、本地 / SFTP / 宿主中继传输语义、提示词简详双形态与派发 reminder、中止 |
 

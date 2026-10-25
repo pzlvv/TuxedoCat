@@ -23,6 +23,7 @@ last_reviewed: 2026-10-18
 | 内置 `web_search` 工具 | Core 的 Responses API 不下发内置 `web_search` 工具（[docs/core/standalone-core-boundaries.md 第 4 节](../core/standalone-core-boundaries.md#4-不覆盖范围)） | 迁入 |
 | 宿主侧直接读取的例外 | 例外表见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取) | 远程工作区落地时把例外迁到 `UiRequest` |
 | 工具命令的 tty 模式 | 工具命令一律非交互执行：stdin 接空设备、stdout / stderr 是管道，PATH 由一次登录 + 交互 shell 探测得到（[docs/core/standalone-core.md 第 3.2.1 节](../core/standalone-core.md#321-工具命令的-path)） | 需要 tty 的命令（密码提示、全屏编辑器、靠终端判断决定颜色的工具）：长驻会话的形态、完成检测、stdin 与超时语义 |
+| 技能目录的弱化 | 四个发现根里 `.<configDir>/skills` 仍被读取，作为既有用户与既有技能的兼容层（[docs/features/skills.md 第 2 节](../features/skills.md#2-功能需求)） | 何时停止读取产品私有目录、是否给迁移提示（改为只读 `.agents/skills`） |
 
 ## 2. 跨机器部署的传输形态
 

@@ -17,10 +17,14 @@ last_reviewed: 2026-10-20
 
 验收标准：
 
-1. 技能来自 bundled → 项目 `<configDir>/skills/` → 用户 `~/<configDir>/skills/`。
+1. 技能来自项目 `<cwd>/.agents/skills/` → 项目 `<cwd>/<configDir>/skills/` → 用户
+   `~/.agents/skills/` → 用户 `~/<configDir>/skills/` → bundled，rank 越靠前越优先；
+   同名只保留 rank 最小的一条，其余被忽略并给出 WARNING。
 2. 内置命令不进 LLM 上下文，执行后 UI 收到 `commandDispatched` 做客户端动作
    （如 `/spin design` 打开设计器）。
 3. 技能与内置命令同名时技能被忽略并给出 WARNING。
+4. `user-invocable: false` 的技能不出现在斜杠菜单、`/name` 不匹配，但仍对模型可见；
+   `disable-model-invocation: true` 的技能不进模型名单、模型调用被拒，但 `/name` 仍可触发。
 
 ### US-28 工具执行与结果回填
 

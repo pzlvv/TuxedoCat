@@ -130,9 +130,11 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   判不清取较高档；档位可升不可降（实施中发现越档即停、重新定档）。L0 允许新增文件——判据只看
   效果，不看文件数。merge 提交与纯文档提交不要求档位；`--no-verify` 仍能跳过一切，但那是例外
   而不是出口。入口：L1 走 `/fix`，L3 走 `/spec` → `/plan` → `/tasks` → `/implement` →
-  `/converge`（每个 skill 产出即停等人评审），L2 就地改，L0 直接改。ZCode 会话的技能入口是
-  `.zcode/skills`（入库，与 `.tuxedo-cat/skills` 内容一致——本机是指向后者的 junction，git 穿透它提交
-  同一份文件；编辑改 `.tuxedo-cat/skills`，提交时以 `.zcode/skills` 路径落库）。
+  `/converge`（每个 skill 产出即停等人评审），L2 就地改，L0 直接改。技能入库在
+  `.agents/skills/`（跨工具共享目录，产品运行时也优先读它）；ZCode 会话的技能入口是
+  `.zcode/skills`，它是**本机**指向 `.agents/skills` 的 junction，不入库——克隆后自行建一次
+  （Windows `cmd /c mklink /J .zcode\skills .agents\skills`，POSIX `ln -s ../../.agents/skills
+  .zcode/skills`）。编辑与提交都走 `.agents/skills`。
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
 - **文档同步是硬约束**：改 Core 行为 / 契约 / 事件词汇表时，同步受影响的规格
   （`docs/architecture/events.md` 事件表、对应 `docs/<topic>.md`），`npm run test:all -- docs-lint` 必须绿。
