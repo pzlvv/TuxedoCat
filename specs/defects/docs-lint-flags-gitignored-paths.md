@@ -73,3 +73,5 @@ status: 已修
 | 既有回归（文档守卫全量） | `node scripts/run-tests.mjs docs-lint` | 绿 | 49 项通过；第 9 组「行内代码里的仓库路径全部存在」失效 0 处（有 / 无本机文件两种情形都绿） |
 | 既有回归（打包链与边界） | `node scripts/run-tests.mjs packaging-chain pdb-packaging tray-sound` | 绿 | 3 + 3 + 4 项断言全通过 |
 | 静态检查 | `npm run check-types && npm run lint` | 绿 | 三份 tsconfig 与 eslint 均无输出 |
+| 干净克隆实跑（天然没有 e2e/environments.json 的 Linux 机器） | `node scripts/run-tests.mjs docs-lint docs-lint-local-only` | 绿 | 修复前该机 48 通过 / 1 失败（`行内代码里的仓库路径全部存在（失效 3 处）`，三处全指向该文件），修复后 `docs-lint` 49 通过 / 0 失败、`docs-lint-local-only` 5 通过；全程没有为了变绿而伪造该文件 |
+| 豁免边界反向探针 | 临时在 `docs/architecture/principles.md` 追加一行引用 e2e/definitely-missing.json，跑 `node out/src/test/docsLint.test.js` | 红 | 如期报 `路径不存在：e2e/definitely-missing.json`（48 通过 / 1 失败）——未入库且不存在的路径不被豁免；探针已 `git checkout --` 还原，工作树干净 |
