@@ -95,6 +95,14 @@ function revealLines(e: monaco.editor.IStandaloneCodeEditor, lines?: { start: nu
   e.setSelection(new monaco.Range(startLine, 1, endLine, 1));
 }
 
+// 整体关闭 Monaco 内建的 Unicode 混淆字符高亮：默认会把全角括号（U+FF08「（」）判为与
+// ASCII「(」同形而高亮并弹「Adjust settings」悬停提示；中文文案里全角标点是常态，属误报。
+const UNICODE_HIGHLIGHT_OFF: monaco.editor.IUnicodeHighlightOptions = {
+  nonBasicASCII: false,
+  invisibleCharacters: false,
+  ambiguousCharacters: false,
+};
+
 function initView(data: MonacoInitData): void {
   const lang = detectLanguage(data.filePath);
   const model = monaco.editor.createModel(data.content || '', lang);
@@ -109,6 +117,7 @@ function initView(data: MonacoInitData): void {
     readOnly: false,
     tabSize: 2,
     wordWrap: 'on',
+    unicodeHighlight: UNICODE_HIGHLIGHT_OFF,
   });
   if (data.selectedLines) {
     requestAnimationFrame(() => revealLines(editor as monaco.editor.IStandaloneCodeEditor, data.selectedLines));
@@ -130,6 +139,7 @@ function initDiff(data: MonacoInitData): void {
     readOnly: true,
     scrollBeyondLastLine: false,
     wordWrap: 'on',
+    unicodeHighlight: UNICODE_HIGHLIGHT_OFF,
   });
   (editor as monaco.editor.IStandaloneDiffEditor).setModel({ original, modified });
 }
@@ -147,6 +157,7 @@ function initContent(data: MonacoInitData): void {
     scrollBeyondLastLine: false,
     readOnly: true,
     wordWrap: 'on',
+    unicodeHighlight: UNICODE_HIGHLIGHT_OFF,
   });
 }
 
