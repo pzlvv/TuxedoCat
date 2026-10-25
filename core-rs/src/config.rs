@@ -79,7 +79,10 @@ pub fn extension_path() -> Result<String, String> {
 pub const DEFAULT_CONFIG_DIR_NAME: &str = env!("TC_CONFIG_DIR");
 
 /// 用户主目录（Windows 优先 `USERPROFILE`，其余用 `HOME`）
-fn home_dir() -> Result<PathBuf, String> {
+///
+/// 跨工具共享目录（如 `.agents/skills`）挂在主目录下，所以这个口径是 pub 的：
+/// 调用方拿主目录、再拼自己的子路径，不各自读 `USERPROFILE` / `HOME`。
+pub fn home_dir() -> Result<PathBuf, String> {
     if let Ok(profile) = std::env::var("USERPROFILE") {
         if !profile.is_empty() {
             return Ok(PathBuf::from(profile));

@@ -1201,6 +1201,65 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
     );
 }
 
+/// 斜杠菜单是用户侧入口：`user-invocable: false` 的技能不进去，
+/// `disable-model-invocation: true` 的技能照常进去，且同名只出现一次（ADR-0011）。
+#[test]
+fn skills_payload_excludes_model_only_skill() {
+    let sandbox = Sandbox::new("main-skills-user-invocable");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let skills_dir = sandbox.workspace.join(".agents").join("skills");
+
+    let model_only = skills_dir.join("model-only");
+    std::fs::create_dir_all(&model_only).unwrap();
+    std::fs::write(
+        model_only.join("SKILL.md"),
+        "---
+description: model only
+user-invocable: false
+---
+body
+",
+    )
+    .unwrap();
+
+    let manual_only = skills_dir.join("manual-only");
+    std::fs::create_dir_all(&manual_only).unwrap();
+    std::fs::write(
+        manual_only.join("SKILL.md"),
+        "---
+description: manual only
+disable-model-invocation: true
+---
+body
+",
+    )
+    .unwrap();
+
+    config::set_session_workspace("s1", Some(project));
+    let payload = dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "skillsRequested", "sessionId": "s1" }),
+    )
+    .unwrap();
+    let skills = payload["skills"].as_array().unwrap();
+
+    assert!(
+        !skills.iter().any(|skill| skill["name"] == "model-only"),
+        "user-invocable: false 的技能不进斜杠菜单：{skills:?}"
+    );
+    assert!(
+        skills.iter().any(|skill| skill["name"] == "manual-only"),
+        "disable-model-invocation: true 的技能仍可被用户触发：{skills:?}"
+    );
+
+    let names: Vec<&str> = skills
+        .iter()
+        .filter_map(|skill| skill["name"].as_str())
+        .collect();
+    let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+    assert_eq!(names.len(), unique.len(), "名单按 name 去重：{names:?}");
+}
+
 #[test]
 fn ui_request_spin_design_reads_and_saves_in_core_data_dir() {
     let sandbox = Sandbox::new("main-ui-request-spin-design");

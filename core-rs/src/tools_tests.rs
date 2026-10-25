@@ -3974,3 +3974,67 @@ fn agent_dispatch_appends_transfer_reminder() {
         other => panic!("本机派发应为纯 Success（不注入 reminder），得到 {other:?}"),
     }
 }
+
+// ==================== Skill 的两个调用开关（FR-001） ====================
+
+/// 造一个 `<workspace>/.agents/skills/<name>/SKILL.md`。
+fn write_workspace_skill(sandbox: &Sandbox, name: &str, frontmatter: &str) {
+    let dir = sandbox.workspace.join(".agents").join("skills").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---
+{frontmatter}
+---
+
+Body of {name}
+"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn validate_input_rejects_disable_model_invocation() {
+    let sandbox = Sandbox::new("tools-skill-disable-model");
+    crate::skills::reset_registries();
+    write_workspace_skill(&sandbox, "deploy", "description: Deploy
+disable-model-invocation: true");
+    let cwd = sandbox.workspace.to_string_lossy().to_string();
+
+    assert_eq!(
+        validate_input("Skill", &json!({ "skill": "deploy" }), &cwd),
+        Some(
+            "Skill 'deploy' cannot be invoked by the model (disable-model-invocation: true)"
+                .to_string()
+        ),
+        "模型侧调用被拒"
+    );
+    // 技能本身仍可解析：用户 `/name` 走注入路径，不经本函数
+    assert!(crate::skills::find_skill("deploy", &cwd).is_some());
+
+    crate::skills::reset_registries();
+}
+
+#[test]
+fn run_skill_executes_disable_model_invocation_skill() {
+    let sandbox = Sandbox::new("tools-skill-inject-disable-model");
+    crate::skills::reset_registries();
+    write_workspace_skill(&sandbox, "deploy", "description: Deploy
+disable-model-invocation: true");
+    let ctx = context(&sandbox);
+
+    // 执行层**不**看模型侧开关：用户 `/name` 的注入路径与模型调用共用本函数，
+    // 限制只在校验入口生效（`inject_skill_tool_use` 不调 `validate_input`）。
+    let outcome = execute("Skill", &json!({ "skill": "deploy" }), &ctx);
+    assert!(!outcome.is_error(), "执行不应因模型侧开关失败");
+    assert!(
+        text(&outcome).contains("has been loaded"),
+        "实际: {}",
+        text(&outcome)
+    );
+    let injected = outcome.new_messages();
+    assert_eq!(injected.len(), 1, "技能正文以 isMeta 消息注入");
+    assert_eq!(injected[0]["isMeta"], json!(true));
+
+    crate::skills::reset_registries();
+}

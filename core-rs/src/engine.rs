@@ -3307,6 +3307,9 @@ fn inject_skill_tool_use(
         }
     }
 
+    // 直接执行、**不**经过 `tools::validate_input`：注入来自用户主动的 `/name`，
+    // 不能被模型侧开关（`disable-model-invocation`）拦住。来源区分靠调用路径，
+    // 不往 tool input 里加标记（ADR-0011）。
     let outcome = execute_tool(
         core,
         session_id,

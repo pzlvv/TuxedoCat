@@ -6,9 +6,10 @@ use serde_json::{json, Map, Value};
 use super::*;
 use crate::test_support::{serial, Sandbox};
 
-/// 行为对照表（数据见 core-rs/fixtures/）。
+/// 行为对照表（数据见 core-rs/fixtures/skills.json）。
 ///
-/// 断言「Rust `skills::*` == 本表」。
+/// 断言「Rust `skills::*` == 本表」。该 JSON 是**手工维护**的期望值：原 Embedded
+/// （TS）实现与它的生成器已随 ADR-0007 退役，改行为时直接改表，不再有第二份实现可对跑。
 const FIXTURE: &str = include_str!("../fixtures/skills.json");
 
 fn fixture() -> Value {
@@ -69,6 +70,11 @@ mod parity_tests {
             assert_eq!(
                 parsed.user_invocable,
                 expected["userInvocable"].as_bool().unwrap()
+            );
+            assert_eq!(
+                parsed.disable_model_invocation,
+                expected["disableModelInvocation"].as_bool().unwrap(),
+                "disableModelInvocation 不一致: {frontmatter:?}"
             );
             assert_eq!(
                 parsed.argument_names,
@@ -230,7 +236,7 @@ mod parity_tests {
                     skill_root: None,
                     source: SkillSource::Bundled,
                     loaded_from: LoadedFrom::Bundled,
-                    is_hidden: item["isHidden"].as_bool().unwrap(),
+                    model_invocable: item["modelInvocable"].as_bool().unwrap(),
                     version: None,
                     get_prompt_for_command: Arc::new(|_| Vec::new()),
                 })
@@ -261,7 +267,7 @@ mod unit_tests {
             skill_root: None,
             source: SkillSource::Bundled,
             loaded_from: LoadedFrom::Bundled,
-            is_hidden: false,
+            model_invocable: true,
             version: None,
             get_prompt_for_command: Arc::new(|_| Vec::new()),
         }];
@@ -302,6 +308,7 @@ mod unit_tests {
             version: None,
             model: None,
             user_invocable: true,
+            model_invocable: true,
             source: SkillSource::Project,
             base_dir: Some("/tmp/skills/review".to_string()),
             loaded_from: LoadedFrom::Skills,
@@ -310,7 +317,8 @@ mod unit_tests {
         assert_eq!(command.source, SkillSource::Project);
         assert_eq!(command.loaded_from, LoadedFrom::Skills);
         assert_eq!(command.skill_root.as_deref(), Some("/tmp/skills/review"));
-        assert!(!command.is_hidden);
+        assert!(command.user_invocable);
+        assert!(command.model_invocable);
 
         let blocks = command.prompt_for_command("main.rs");
         let text = blocks[0]["text"].as_str().unwrap();
@@ -319,8 +327,9 @@ mod unit_tests {
         assert!(text.contains("Review main.rs in /tmp/skills/review"));
     }
 
+    /// `user-invocable: false` 只关用户侧：模型名单照常列它（ADR-0011）。
     #[test]
-    fn non_user_invocable_skill_is_hidden() {
+    fn user_invocable_false_is_listed_for_model() {
         let command = create_skill_command(CreateSkillCommandParams {
             skill_name: "internal".to_string(),
             description: "Internal".to_string(),
@@ -330,11 +339,38 @@ mod unit_tests {
             version: None,
             model: None,
             user_invocable: false,
+            model_invocable: true,
             source: SkillSource::User,
             base_dir: None,
             loaded_from: LoadedFrom::Skills,
         });
-        assert!(command.is_hidden);
+        assert!(!command.user_invocable);
+        assert!(command.model_invocable);
+        assert_eq!(
+            format_skill_listing(&[command]),
+            "- internal: Internal"
+        );
+    }
+
+    /// `disable-model-invocation: true` 只关模型侧：名单不列它，`user_invocable` 不受影响。
+    #[test]
+    fn disable_model_invocation_hidden_from_listing() {
+        let command = create_skill_command(CreateSkillCommandParams {
+            skill_name: "deploy".to_string(),
+            description: "Deploy".to_string(),
+            markdown_content: "Body".to_string(),
+            argument_names: Vec::new(),
+            when_to_use: None,
+            version: None,
+            model: None,
+            user_invocable: true,
+            model_invocable: false,
+            source: SkillSource::Project,
+            base_dir: None,
+            loaded_from: LoadedFrom::Skills,
+        });
+        assert!(command.user_invocable);
+        assert!(!command.model_invocable);
         assert_eq!(format_skill_listing(&[command]), "");
     }
 
@@ -365,6 +401,7 @@ mod unit_tests {
             when_to_use: None,
             model: None,
             user_invocable: None,
+            disable_model_invocation: None,
             files: Vec::new(),
             get_prompt_for_command: Arc::new(|_| Vec::new()),
         });
@@ -378,6 +415,7 @@ mod unit_tests {
             when_to_use: None,
             model: None,
             user_invocable: None,
+            disable_model_invocation: None,
             files: Vec::new(),
             get_prompt_for_command: Arc::new(|_| Vec::new()),
         });
@@ -399,6 +437,7 @@ mod unit_tests {
             when_to_use: None,
             model: None,
             user_invocable: None,
+            disable_model_invocation: None,
             files: vec![
                 ("refs/guide.md".to_string(), "guide body".to_string()),
                 ("top.md".to_string(), "top body".to_string()),
@@ -474,23 +513,27 @@ mod unit_tests {
 
         let skills = get_skill_dir_commands(&project_dir.to_string_lossy());
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["user-skill", "proj-skill"], "user 在前、project 在后");
+        assert_eq!(
+            names,
+            vec!["proj-skill", "user-skill"],
+            "project 在前、user 在后（rank 升序）"
+        );
 
-        let user_skill = &skills[0];
+        let project_skill = &skills[0];
+        assert_eq!(project_skill.source, SkillSource::Project);
+        // 无 description → 从正文首段提取
+        assert_eq!(project_skill.description, "Project body only");
+
+        let user_skill = &skills[1];
         assert_eq!(user_skill.source, SkillSource::User);
         assert_eq!(user_skill.description, "User level skill");
         assert_eq!(user_skill.when_to_use.as_deref(), Some("When user asks"));
         assert_eq!(user_skill.arg_names, Vec::<String>::new());
 
-        let project_skill = &skills[1];
-        assert_eq!(project_skill.source, SkillSource::Project);
-        // 无 description → 从正文首段提取
-        assert_eq!(project_skill.description, "Project body only");
-
-        // `get_all_skills` = 内置 + 文件系统
+        // `get_all_skills` = 文件系统（按 rank）+ bundled（rank 50 排最后）
         let all = get_all_skills(&project_dir.to_string_lossy());
         let all_names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(all_names, vec!["commit", "user-skill", "proj-skill"]);
+        assert_eq!(all_names, vec!["proj-skill", "user-skill", "commit"]);
 
         // 按名称 / 别名 / 前导 `/` 查找
         assert!(find_skill("commit", ".").is_some());
@@ -500,5 +543,215 @@ mod unit_tests {
         assert!(find_skill("nope", ".").is_none());
 
         reset_registries();
+    }
+
+    // ==================== 发现根（FR-002）与仲裁（FR-003） ====================
+
+    /// 在 `dir` 下造一个 `<name>/SKILL.md`。
+    fn write_skill(dir: &Path, name: &str, description: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---
+description: {description}
+---
+
+Body of {name}
+"),
+        )
+        .unwrap();
+    }
+
+    /// 只读断言用的最小 `SkillCommand`（不碰文件系统）。
+    fn fake_skill(name: &str, description: &str) -> SkillCommand {
+        SkillCommand {
+            name: name.to_string(),
+            description: description.to_string(),
+            aliases: Vec::new(),
+            arg_names: Vec::new(),
+            when_to_use: None,
+            model: None,
+            user_invocable: true,
+            skill_root: None,
+            source: SkillSource::User,
+            loaded_from: LoadedFrom::Skills,
+            model_invocable: true,
+            version: None,
+            get_prompt_for_command: Arc::new(|_| Vec::new()),
+        }
+    }
+
+    fn description_of<'a>(skills: &'a [SkillCommand], name: &str) -> Option<&'a str> {
+        skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .map(|skill| skill.description.as_str())
+    }
+
+    #[test]
+    fn agents_project_root_is_discovered() {
+        let sandbox = Sandbox::new("skills-agents-project");
+        reset_registries();
+        let project = sandbox.root.join("project");
+        write_skill(&project.join(".agents").join("skills"), "shared-skill", "From agents");
+
+        let skills = get_skill_dir_commands(&project.to_string_lossy());
+        let found = skills.iter().find(|skill| skill.name == "shared-skill");
+        let found = found.expect("`.agents/skills` 下的技能应被发现");
+        assert_eq!(found.source, SkillSource::Project);
+        assert_eq!(found.description, "From agents");
+
+        reset_registries();
+    }
+
+    #[test]
+    fn agents_user_root_is_discovered() {
+        let sandbox = Sandbox::new("skills-agents-user");
+        reset_registries();
+        write_skill(
+            &sandbox.home.join(".agents").join("skills"),
+            "user-agents-skill",
+            "From user agents",
+        );
+
+        let skills = get_skill_dir_commands(&sandbox.workspace.to_string_lossy());
+        let found = skills.iter().find(|skill| skill.name == "user-agents-skill");
+        let found = found.expect("`~/.agents/skills` 下的技能应被发现");
+        assert_eq!(found.source, SkillSource::User);
+
+        reset_registries();
+    }
+
+    #[test]
+    fn claude_skills_root_is_ignored() {
+        let sandbox = Sandbox::new("skills-claude-ignored");
+        reset_registries();
+        let project = sandbox.root.join("project");
+        // 项目级与用户级的 `.claude/skills` 都不读
+        write_skill(&project.join(".claude").join("skills"), "claude-project", "From claude");
+        write_skill(
+            &sandbox.home.join(".claude").join("skills"),
+            "claude-user",
+            "From claude home",
+        );
+
+        let skills = get_skill_dir_commands(&project.to_string_lossy());
+        let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert!(
+            !names.contains(&"claude-project") && !names.contains(&"claude-user"),
+            "不读 `.claude/skills`，实际: {names:?}"
+        );
+
+        reset_registries();
+    }
+
+    #[test]
+    fn agents_root_wins_over_product_root() {
+        let sandbox = Sandbox::new("skills-agents-over-product");
+        reset_registries();
+        let project = sandbox.root.join("project");
+        write_skill(&project.join(".agents").join("skills"), "dup", "From agents");
+        write_skill(
+            &project.join(&sandbox.config_dir_name).join("skills"),
+            "dup",
+            "From product",
+        );
+
+        let skills = get_skill_dir_commands(&project.to_string_lossy());
+        let hits: Vec<&SkillCommand> = skills.iter().filter(|skill| skill.name == "dup").collect();
+        assert_eq!(hits.len(), 1, "同名只留一条");
+        assert_eq!(hits[0].description, "From agents", "同层级内 .agents 优先");
+
+        reset_registries();
+    }
+
+    #[test]
+    fn same_name_project_wins_over_user() {
+        let sandbox = Sandbox::new("skills-project-over-user");
+        reset_registries();
+        let project = sandbox.root.join("project");
+        write_skill(&project.join(".agents").join("skills"), "dup", "Project one");
+        write_skill(&sandbox.home.join(".agents").join("skills"), "dup", "User one");
+
+        let skills = get_skill_dir_commands(&project.to_string_lossy());
+        assert_eq!(description_of(&skills, "dup"), Some("Project one"));
+        assert_eq!(
+            skills.iter().filter(|skill| skill.name == "dup").count(),
+            1,
+            "同名只留一条"
+        );
+
+        reset_registries();
+    }
+
+    #[test]
+    fn project_skill_shadows_bundled() {
+        let sandbox = Sandbox::new("skills-shadow-bundled");
+        reset_registries();
+        let project = sandbox.root.join("project");
+        write_skill(&project.join(".agents").join("skills"), "commit", "Project commit");
+
+        let all = get_all_skills(&project.to_string_lossy());
+        let hits: Vec<&SkillCommand> = all.iter().filter(|skill| skill.name == "commit").collect();
+        assert_eq!(hits.len(), 1, "bundled 与文件技能同名时只留一条");
+        assert_eq!(hits[0].description, "Project commit", "文件技能遮蔽 bundled");
+
+        reset_registries();
+    }
+
+    #[test]
+    fn arbitrate_reports_both_paths() {
+        let winner = RankedSkill {
+            rank: RANK_PROJECT_AGENTS,
+            skill: fake_skill("dup", "Winner"),
+            file_path: "/proj/.agents/skills/dup/SKILL.md".to_string(),
+        };
+        let loser = RankedSkill {
+            rank: RANK_USER_AGENTS,
+            skill: fake_skill("dup", "Loser"),
+            file_path: "/home/.agents/skills/dup/SKILL.md".to_string(),
+        };
+        // 故意打乱输入顺序：仲裁先按 rank 排序
+        let (kept, warnings) = arbitrate(vec![loser, winner]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].description, "Winner");
+        assert_eq!(warnings.len(), 1, "一条冲突一条 WARNING");
+        let warning = &warnings[0];
+        assert!(warning.contains("/proj/.agents/skills/dup/SKILL.md"), "{warning}");
+        assert!(warning.contains("/home/.agents/skills/dup/SKILL.md"), "{warning}");
+        assert!(warning.contains("ignored"), "{warning}");
+    }
+
+    #[test]
+    fn same_file_via_multiple_roots_dedupes_without_warning() {
+        // 同一个物理文件经两个根可见：只保留 rank 小的，且不产生同名 WARNING
+        let same_file = "/proj/.agents/skills/dup/SKILL.md".to_string();
+        let entries = vec![
+            (
+                Some(same_file.clone()),
+                RankedSkill {
+                    rank: RANK_PROJECT_AGENTS,
+                    skill: fake_skill("dup", "From agents"),
+                    file_path: same_file.clone(),
+                },
+            ),
+            (
+                Some(same_file),
+                RankedSkill {
+                    rank: RANK_PROJECT_PRODUCT,
+                    skill: fake_skill("dup", "From product"),
+                    file_path: "/proj/.config-dir/skills/dup/SKILL.md".to_string(),
+                },
+            ),
+        ];
+        let (kept, logs) = dedupe_by_file_identity(entries);
+        assert_eq!(kept.len(), 1, "同一物理文件只算一次");
+        assert_eq!(kept[0].rank, RANK_PROJECT_AGENTS);
+        assert_eq!(logs.len(), 1, "去重走独立日志通道");
+
+        let (kept, warnings) = arbitrate(kept);
+        assert_eq!(kept.len(), 1);
+        assert!(warnings.is_empty(), "去重不是同名冲突: {warnings:?}");
     }
 }

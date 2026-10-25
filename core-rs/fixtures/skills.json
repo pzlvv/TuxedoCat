@@ -1,5 +1,5 @@
 {
-  "note": "Skill 系统纯函数对照表（Embedded `skills/*` ↔ Standalone `core-rs/src/skills.rs`）。只覆盖 frontmatter 解析、变量替换与技能清单格式化；目录扫描 / 内置注册由各自单测覆盖。",
+  "note": "Skill 系统纯函数的期望值表（**手工维护**：原 Embedded `skills/*` 生成器已随 ADR-0007 退役，改行为时直接改这里）。覆盖 frontmatter 解析、变量替换与技能清单格式化；目录扫描 / 内置注册 / 同名仲裁由 `core-rs/src/skills_tests.rs` 的单测覆盖。",
   "frontmatter": [
     {
       "content": "plain text, no frontmatter",
@@ -159,7 +159,8 @@
         "description": "Body text here",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -171,7 +172,8 @@
         "description": "From frontmatter",
         "hasUserSpecifiedDescription": true,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -183,7 +185,8 @@
         "description": "First paragraph.",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -195,7 +198,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -209,7 +213,8 @@
         "description": "d",
         "hasUserSpecifiedDescription": true,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -222,7 +227,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -234,7 +240,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": false
+        "userInvocable": false,
+        "disableModelInvocation": false
       }
     },
     {
@@ -246,7 +253,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -258,7 +266,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": false
+        "userInvocable": false,
+        "disableModelInvocation": false
       }
     },
     {
@@ -270,7 +279,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -282,7 +292,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -295,7 +306,8 @@
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
         "model": "claude-sonnet-4-20250514",
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -307,7 +319,8 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -321,7 +334,8 @@
         "argumentNames": [
           "single"
         ],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -339,7 +353,8 @@
           "a",
           "b"
         ],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -354,7 +369,8 @@
         "argumentNames": [],
         "whenToUse": "When X",
         "version": "1.0.0",
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     },
     {
@@ -371,7 +387,8 @@
         "userInvocable": true,
         "paths": [
           "src/"
-        ]
+        ],
+        "disableModelInvocation": false
       }
     },
     {
@@ -385,7 +402,47 @@
         "description": "Body",
         "hasUserSpecifiedDescription": false,
         "argumentNames": [],
-        "userInvocable": true
+        "userInvocable": true,
+        "disableModelInvocation": false
+      }
+    },
+    {
+      "frontmatter": {
+        "disable-model-invocation": true
+      },
+      "markdown": "Body text",
+      "result": {
+        "description": "Body text",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true,
+        "disableModelInvocation": true
+      }
+    },
+    {
+      "frontmatter": {
+        "disable-model-invocation": false
+      },
+      "markdown": "Body text",
+      "result": {
+        "description": "Body text",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true,
+        "disableModelInvocation": false
+      }
+    },
+    {
+      "frontmatter": {
+        "disable-model-invocation": "no"
+      },
+      "markdown": "Body text",
+      "result": {
+        "description": "Body text",
+        "hasUserSpecifiedDescription": false,
+        "argumentNames": [],
+        "userInvocable": true,
+        "disableModelInvocation": false
       }
     }
   ],
@@ -857,7 +914,7 @@
           "name": "commit",
           "description": "Create a git commit",
           "userInvocable": true,
-          "isHidden": false
+          "modelInvocable": true
         }
       ],
       "result": "- commit: Create a git commit"
@@ -868,29 +925,29 @@
           "name": "commit",
           "description": "Create a git commit",
           "userInvocable": true,
-          "isHidden": false,
+          "modelInvocable": true,
           "whenToUse": "When asked"
         },
         {
-          "name": "hidden",
-          "description": "Hidden one",
+          "name": "deploy",
+          "description": "Deploy to prod",
           "userInvocable": true,
-          "isHidden": true
+          "modelInvocable": false
         },
         {
-          "name": "manual",
-          "description": "Manual only",
+          "name": "legacy-context",
+          "description": "Legacy system notes",
           "userInvocable": false,
-          "isHidden": false
+          "modelInvocable": true
         },
         {
           "name": "review",
           "description": "Review code",
           "userInvocable": true,
-          "isHidden": false
+          "modelInvocable": true
         }
       ],
-      "result": "- commit: Create a git commit - When asked\n- review: Review code"
+      "result": "- commit: Create a git commit - When asked\n- legacy-context: Legacy system notes\n- review: Review code"
     }
   ]
 }

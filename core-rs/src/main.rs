@@ -426,7 +426,10 @@ fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
     })
 }
 
-/// 斜杠命令与技能列表：内置命令（`isBuiltin=true`）+ 内置技能 + 工作目录下的技能。
+/// 斜杠命令与技能列表：内置命令（`isBuiltin=true`）+ 用户可主动触发的技能。
+///
+/// 技能侧走 `get_all_skills`（已按 rank 仲裁、同名只留一条），再按 `user_invocable`
+/// 过滤——菜单是用户侧入口，`user-invocable: false` 的技能只对模型可见（ADR-0011）。
 fn skills_payload(cwd: &str) -> Value {
     let mut skills: Vec<Value> = Vec::new();
     for command in commands::builtin_commands() {
@@ -436,21 +439,15 @@ fn skills_payload(cwd: &str) -> Value {
             "isBuiltin": true,
         }));
     }
-    for skill in skills::bundled_skills() {
+    for skill in skills::get_all_skills(cwd) {
+        if !skill.user_invocable {
+            continue;
+        }
         skills.push(json!({
             "name": skill.name,
             "description": skill.description,
             "isBuiltin": false,
         }));
-    }
-    if !cwd.is_empty() {
-        for skill in skills::get_skill_dir_commands(cwd) {
-            skills.push(json!({
-                "name": skill.name,
-                "description": skill.description,
-                "isBuiltin": false,
-            }));
-        }
     }
     json!({ "skills": skills })
 }
@@ -459,7 +456,7 @@ fn skills_payload(cwd: &str) -> Value {
 fn spin_design_skills(cwd: &str) -> Value {
     let skills: Vec<Value> = skills::get_all_skills(cwd)
         .into_iter()
-        .filter(|skill| !skill.is_hidden && skill.user_invocable)
+        .filter(|skill| skill.user_invocable)
         .map(|skill| json!({ "name": skill.name, "description": skill.description }))
         .collect();
     Value::Array(skills)

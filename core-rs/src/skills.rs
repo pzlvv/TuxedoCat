@@ -90,7 +90,11 @@ pub struct SkillCommand {
     /// 加载位置标记（数据契约字段，供对等测试断言）
     #[allow(dead_code)]
     pub loaded_from: LoadedFrom,
-    pub is_hidden: bool,
+    /// 模型是否可主动加载：`disable-model-invocation: true` 时置 false。
+    ///
+    /// 与 `user_invocable` 正交、互不推导——前者只决定「进不进模型名单、Skill 工具能否被
+    /// 模型调用」，后者只决定「进不进斜杠菜单、`/name` 能否匹配」（ADR-0011）。
+    pub model_invocable: bool,
     /// 版本号（仅由 frontmatter 解析出来，暂未消费）
     #[allow(dead_code)]
     pub version: Option<String>,
@@ -117,6 +121,8 @@ pub struct BundledSkillDefinition {
     pub when_to_use: Option<String>,
     pub model: Option<String>,
     pub user_invocable: Option<bool>,
+    /// 模型侧调用开关（`true` = 只能由用户触发）；缺省 false
+    pub disable_model_invocation: Option<bool>,
     /// 参考文件（key = 相对路径，value = 内容），首次调用时提取到磁盘
     pub files: Vec<(String, String)>,
     pub get_prompt_for_command: PromptFactory,
@@ -133,6 +139,8 @@ pub struct ParsedSkillFrontmatter {
     pub version: Option<String>,
     pub model: Option<String>,
     pub user_invocable: bool,
+    /// 模型侧调用开关（frontmatter `disable-model-invocation`，缺省 false）
+    pub disable_model_invocation: bool,
     pub paths: Option<Vec<String>>,
 }
 
@@ -146,6 +154,8 @@ pub struct CreateSkillCommandParams {
     pub version: Option<String>,
     pub model: Option<String>,
     pub user_invocable: bool,
+    /// 模型侧是否可加载（由 `disable_model_invocation` 取反传入）
+    pub model_invocable: bool,
     pub source: SkillSource,
     pub base_dir: Option<String>,
     pub loaded_from: LoadedFrom,
@@ -532,6 +542,11 @@ pub fn parse_skill_frontmatter_fields(
         None => true,
         Some(value) => parse_boolean_frontmatter(Some(value)),
     };
+    // 与 `user-invocable` 相反方向：缺省 false（默认允许模型主动加载）
+    let disable_model_invocation = match frontmatter.get("disable-model-invocation") {
+        None => false,
+        Some(value) => parse_boolean_frontmatter(Some(value)),
+    };
 
     let model = match frontmatter.get("model") {
         Some(Value::String(text)) if text == "inherit" => None,
@@ -554,6 +569,7 @@ pub fn parse_skill_frontmatter_fields(
             .map(str::to_string),
         model,
         user_invocable,
+        disable_model_invocation,
         paths: parse_skill_paths(frontmatter.get("paths")),
     }
 }
@@ -712,6 +728,7 @@ pub fn create_skill_command(params: CreateSkillCommandParams) -> SkillCommand {
         version,
         model,
         user_invocable,
+        model_invocable,
         source,
         base_dir,
         loaded_from,
@@ -735,7 +752,7 @@ pub fn create_skill_command(params: CreateSkillCommandParams) -> SkillCommand {
         skill_root: base_dir,
         source,
         loaded_from,
-        is_hidden: !user_invocable,
+        model_invocable,
         version,
         get_prompt_for_command: Arc::new(move |args: &str| {
             let mut final_content =
@@ -768,6 +785,7 @@ pub fn register_bundled_skill(definition: BundledSkillDefinition) {
     }
 
     let user_invocable = definition.user_invocable.unwrap_or(true);
+    let model_invocable = !definition.disable_model_invocation.unwrap_or(false);
     let mut skill_root: Option<String> = None;
     let mut get_prompt_for_command = definition.get_prompt_for_command;
 
@@ -807,7 +825,7 @@ pub fn register_bundled_skill(definition: BundledSkillDefinition) {
         skill_root,
         source: SkillSource::Bundled,
         loaded_from: LoadedFrom::Bundled,
-        is_hidden: !user_invocable,
+        model_invocable,
         version: None,
         get_prompt_for_command,
     };
@@ -918,50 +936,184 @@ struct SkillWithPath {
     file_path: String,
 }
 
-/// 从文件系统加载所有 Skill（`managed -> user -> project` 合并去重）
-pub fn get_skill_dir_commands(cwd: &str) -> Vec<SkillCommand> {
-    let Some(config_home) = config::config_home().ok() else {
-        return Vec::new();
-    };
-    let user_skills_dir = config_home.join("skills");
-    let project_skills_dir = Path::new(cwd).join(
-        config::host_environment()
-            .map(|env| env.config_dir_name)
-            .unwrap_or_else(|| config::DEFAULT_CONFIG_DIR_NAME.to_string()),
-    ).join("skills");
-
-    let mut all: Vec<SkillWithPath> = Vec::new();
-    all.extend(load_skills_from_skills_dir(&user_skills_dir, SkillSource::User));
-    all.extend(load_skills_from_skills_dir(&project_skills_dir, SkillSource::Project));
-
-    // 通过 realpath 去重
-    let mut seen: Vec<(String, SkillSource)> = Vec::new();
-    let mut deduplicated: Vec<SkillCommand> = Vec::new();
-    for entry in all {
-        let Some(file_id) = get_file_identity(&entry.file_path) else {
-            deduplicated.push(entry.skill);
-            continue;
-        };
-        if let Some((_, source)) = seen.iter().find(|(id, _)| *id == file_id) {
-            eprintln!(
-                "[core] skills: Skipping duplicate skill '{}' (already loaded from {})",
-                entry.skill.name,
-                source.as_str()
-            );
-            continue;
-        }
-        seen.push((file_id, entry.skill.source));
-        deduplicated.push(entry.skill);
-    }
-
-    deduplicated
+/// 一个技能发现根：`rank` 越小越优先。
+struct SkillRoot {
+    rank: u8,
+    path: PathBuf,
+    source: SkillSource,
 }
 
-/// 获取全部可用 Skill（内置 + 文件系统）
+/// 参与仲裁的技能：rank + 技能本体 + 来源（WARNING 要点名路径）。
+struct RankedSkill {
+    rank: u8,
+    skill: SkillCommand,
+    file_path: String,
+}
+
+// rank 表：项目级先于用户级；同层级内 `.agents`（跨工具共享）先于产品私有目录。
+// 产品私有目录是兼容层，方向是逐步弱化（ADR-0011）。
+const RANK_PROJECT_AGENTS: u8 = 10;
+const RANK_PROJECT_PRODUCT: u8 = 20;
+const RANK_USER_AGENTS: u8 = 30;
+const RANK_USER_PRODUCT: u8 = 40;
+const RANK_BUNDLED: u8 = 50;
+
+/// 技能发现根，按 `rank` 升序。
+///
+/// `cwd` 为空（无会话上下文）时跳过项目级根：`Path::new("")` 会退化成相对路径，
+/// 等于去扫 Core 进程自己的工作目录。
+fn skill_roots(cwd: &str) -> Vec<SkillRoot> {
+    let mut roots: Vec<SkillRoot> = Vec::new();
+    if !cwd.is_empty() {
+        let config_dir_name = config::host_environment()
+            .map(|env| env.config_dir_name)
+            .unwrap_or_else(|| config::DEFAULT_CONFIG_DIR_NAME.to_string());
+        roots.push(SkillRoot {
+            rank: RANK_PROJECT_AGENTS,
+            path: Path::new(cwd).join(".agents").join("skills"),
+            source: SkillSource::Project,
+        });
+        roots.push(SkillRoot {
+            rank: RANK_PROJECT_PRODUCT,
+            path: Path::new(cwd).join(&config_dir_name).join("skills"),
+            source: SkillSource::Project,
+        });
+    }
+    if let Ok(home) = config::home_dir() {
+        roots.push(SkillRoot {
+            rank: RANK_USER_AGENTS,
+            path: home.join(".agents").join("skills"),
+            source: SkillSource::User,
+        });
+    }
+    if let Ok(config_home) = config::config_home() {
+        roots.push(SkillRoot {
+            rank: RANK_USER_PRODUCT,
+            path: config_home.join("skills"),
+            source: SkillSource::User,
+        });
+    }
+    roots.sort_by_key(|root| root.rank);
+    roots
+}
+
+/// 两个技能是否同名：name 或 alias 任一方向命中。
+fn names_collide(a: &SkillCommand, b: &SkillCommand) -> bool {
+    a.name == b.name
+        || a.aliases.iter().any(|alias| alias == &b.name || b.aliases.contains(alias))
+        || b.aliases.iter().any(|alias| alias == &a.name)
+}
+
+/// 同名仲裁：按 `rank` 升序保留第一个，其余丢弃并产出一条点名两条路径的 WARNING。
+///
+/// 抽成纯函数是为了让「谁赢、几条 WARNING」可单测（不必抓 stderr）。
+fn arbitrate(mut candidates: Vec<RankedSkill>) -> (Vec<SkillCommand>, Vec<String>) {
+    // 稳定排序：同 rank 内保持收集顺序（同一根内目录名唯一，正常不会撞）
+    candidates.sort_by_key(|candidate| candidate.rank);
+    let mut kept: Vec<RankedSkill> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    for candidate in candidates {
+        match kept
+            .iter()
+            .find(|winner| names_collide(&winner.skill, &candidate.skill))
+        {
+            None => kept.push(candidate),
+            Some(winner) => warnings.push(format!(
+                "Skill '{}' at {} ignored (rank {}); using {} (rank {})",
+                candidate.skill.name,
+                candidate.file_path,
+                candidate.rank,
+                winner.file_path,
+                winner.rank
+            )),
+        }
+    }
+    (kept.into_iter().map(|entry| entry.skill).collect(), warnings)
+}
+
+/// 同一物理文件经多个根可见（junction / symlink）时只保留第一个（rank 最小）。
+///
+/// 返回 `(保留的候选, 去重日志)`——去重不是同名冲突，日志走独立通道，不进 WARNING。
+/// 输入是 `(realpath 结果, 候选)`：`None` 表示解析失败，按独立文件处理。
+fn dedupe_by_file_identity(
+    entries: Vec<(Option<String>, RankedSkill)>,
+) -> (Vec<RankedSkill>, Vec<String>) {
+    let mut kept: Vec<RankedSkill> = Vec::new();
+    let mut logs: Vec<String> = Vec::new();
+    let mut seen_files: Vec<(String, u8)> = Vec::new();
+    for (file_id, candidate) in entries {
+        if let Some(file_id) = &file_id {
+            if let Some((_, rank)) = seen_files.iter().find(|(id, _)| id == file_id) {
+                logs.push(format!(
+                    "deduped '{}' ({} from {} is the same file already loaded at rank {})",
+                    candidate.skill.name,
+                    candidate.file_path,
+                    candidate.skill.source.as_str(),
+                    rank
+                ));
+                continue;
+            }
+            seen_files.push((file_id.clone(), candidate.rank));
+        }
+        kept.push(candidate);
+    }
+    (kept, logs)
+}
+
+/// 按 rank 升序扫全部文件系统根，并做 realpath 去重。
+fn file_candidates(cwd: &str) -> Vec<RankedSkill> {
+    let mut entries: Vec<(Option<String>, RankedSkill)> = Vec::new();
+    for root in skill_roots(cwd) {
+        for entry in load_skills_from_skills_dir(&root.path, root.source) {
+            let file_id = get_file_identity(&entry.file_path);
+            entries.push((
+                file_id,
+                RankedSkill {
+                    rank: root.rank,
+                    skill: entry.skill,
+                    file_path: entry.file_path,
+                },
+            ));
+        }
+    }
+    let (kept, logs) = dedupe_by_file_identity(entries);
+    for log in logs {
+        eprintln!("[core] skills: {log}");
+    }
+    kept
+}
+
+/// 从文件系统加载所有 Skill（四个根按 rank 合并 + realpath 去重 + 同名仲裁）。
+///
+/// 只给测试用的「文件系统视图」：宿主侧的斜杠菜单与模型名单都走 `get_all_skills`
+/// （要带上 bundled 一起仲裁）。
+#[cfg(test)]
+pub fn get_skill_dir_commands(cwd: &str) -> Vec<SkillCommand> {
+    let (kept, warnings) = arbitrate(file_candidates(cwd));
+    for warning in warnings {
+        eprintln!("[core] skills: {warning}");
+    }
+    kept
+}
+
+/// 获取全部可用 Skill（文件系统 + 内置，一起仲裁）
+///
+/// bundled 以 rank 50 参与同一个仲裁，所以「项目技能遮蔽内置同名技能」和「名单只留一条」
+/// 是同一个机制的结果。
 pub fn get_all_skills(cwd: &str) -> Vec<SkillCommand> {
-    let mut all = bundled_skills();
-    all.extend(get_skill_dir_commands(cwd));
-    all
+    let mut candidates = file_candidates(cwd);
+    for skill in bundled_skills() {
+        candidates.push(RankedSkill {
+            rank: RANK_BUNDLED,
+            file_path: format!("bundled:{}", skill.name),
+            skill,
+        });
+    }
+    let (kept, warnings) = arbitrate(candidates);
+    for warning in warnings {
+        eprintln!("[core] skills: {warning}");
+    }
+    kept
 }
 
 /// 按名称 / 别名查找 Skill（对齐 `SkillTool.findSkill`：trim 后去掉**一个**前导 `/`）
@@ -1013,6 +1165,7 @@ fn load_skills_from_skills_dir(base_path: &Path, source: SkillSource) -> Vec<Ski
                 version: parsed.version,
                 model: parsed.model,
                 user_invocable: parsed.user_invocable,
+                model_invocable: !parsed.disable_model_invocation,
                 source,
                 base_dir: Some(skill_dir),
                 loaded_from: LoadedFrom::Skills,
@@ -1044,6 +1197,7 @@ pub fn commit_skill_definition() -> BundledSkillDefinition {
         ),
         model: None,
         user_invocable: None,
+        disable_model_invocation: None,
         files: Vec::new(),
         get_prompt_for_command: Arc::new(|args: &str| {
             let mut content = COMMIT_SKILL_PROMPT.to_string();
@@ -1128,9 +1282,10 @@ pub fn format_skill_listing(skills: &[SkillCommand]) -> String {
     if skills.is_empty() {
         return String::new();
     }
+    // 只看模型侧开关：`user-invocable: false` 的技能对模型照常可见（ADR-0011）
     skills
         .iter()
-        .filter(|skill| !skill.is_hidden && skill.user_invocable)
+        .filter(|skill| skill.model_invocable)
         .map(|skill| {
             let when_to_use = skill
                 .when_to_use

@@ -210,11 +210,14 @@ pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
     }
 
     // 2. 检查是否匹配 Skill 名称（非内置命令的 / 命令）
+    //
+    // 只匹配用户可主动触发的技能：`user-invocable: false` 的技能是给模型用的，
+    // `/name` 不认它，落到与未知 `/xxx` 相同的 passthrough（ADR-0011）。
     let all_skills = skills::get_all_skills(&context.cwd);
     let trimmed_name = cmd_name.trim_start_matches('/');
     if let Some(skill) = all_skills
         .into_iter()
-        .find(|skill| skill.matches(trimmed_name))
+        .find(|skill| skill.user_invocable && skill.matches(trimmed_name))
     {
         eprintln!(
             "[core] CommandDispatcher: Matched skill: /{cmd_name}, returning 'skill' result"

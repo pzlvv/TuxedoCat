@@ -772,8 +772,15 @@ pub fn validate_input(name: &str, input: &Value, cwd: &str) -> Option<String> {
             if trimmed.is_empty() {
                 return Some(format!("Invalid skill format: {trimmed}"));
             }
-            if crate::skills::find_skill(trimmed, cwd).is_none() {
-                return Some(format!("Unknown skill: {trimmed}"));
+            match crate::skills::find_skill(trimmed, cwd) {
+                None => return Some(format!("Unknown skill: {trimmed}")),
+                // 模型侧开关只在这里拦：`inject_skill_tool_use`（用户 `/name`）不经过本函数
+                Some(skill) if !skill.model_invocable => {
+                    return Some(format!(
+                        "Skill '{trimmed}' cannot be invoked by the model (disable-model-invocation: true)"
+                    ));
+                }
+                Some(_) => {}
             }
         }
         "Bash" => {
@@ -4462,6 +4469,10 @@ fn normalize_questions(input: &Value) -> Vec<Value> {
 /// 工作流程：`validateInput` 已保证 skill 可解析 → 取技能正文 → 替换
 /// `${SKILL_DIR}` / `${SESSION_ID}` → 包装成 `isMeta: true` 的 user 消息随
 /// `newMessages` 注入对话（UI 不直接展示，但模型能读到）。
+///
+/// 这里**不**校验 `disable-model-invocation`：用户 `/name` 的注入路径
+/// （`engine::inject_skill_tool_use`）与模型调用共用本函数，模型侧开关只在校验入口
+/// `validate_input` 生效。搬到这里会连带拦掉用户自己的触发（ADR-0011）。
 fn run_skill(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let skill = input.get("skill").and_then(Value::as_str).unwrap_or("");
     let args = input.get("args").and_then(Value::as_str).unwrap_or("");

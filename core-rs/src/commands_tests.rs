@@ -122,6 +122,40 @@ fn skill_command_returns_skill_with_name_and_args() {
     crate::skills::reset_registries();
 }
 
+/// `user-invocable: false` 的技能是给模型用的：`/name` 不认它，落到与未知 `/xxx`
+/// 相同的 passthrough（ADR-0011）。
+#[test]
+fn dispatch_skips_non_user_invocable_skill() {
+    let sandbox = Sandbox::new("commands-user-invocable");
+    crate::skills::reset_registries();
+
+    let skill_dir = sandbox
+        .workspace
+        .join(".agents")
+        .join("skills")
+        .join("model-only");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---
+description: model only
+user-invocable: false
+---
+body
+",
+    )
+    .unwrap();
+
+    let (context, _events) = make_context(&sandbox.workspace.to_string_lossy());
+    assert_eq!(
+        dispatch("/model-only", &context),
+        DispatchOutcome::Passthrough,
+        "user-invocable: false 的技能不该被 /name 匹配"
+    );
+
+    crate::skills::reset_registries();
+}
+
 /// 与 `src/test/commandDispatch.test.ts` 同一组用例（同一份输入 / 同一份期望），
 /// 防止「`.*` 匹配不到换行 → 多行 Skill 命令退化成普通消息」这类回归。
 #[test]
