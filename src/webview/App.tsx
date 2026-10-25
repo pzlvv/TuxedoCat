@@ -570,7 +570,7 @@ const App = () => {
     setCurrentSessionId, setParentSessionId, setCreator, setSubAgentRole, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
-    setDeleteConfirm, setMessages, setUserChoiceRequest,
+    setDeleteConfirm, setMessages, setUserChoiceRequest, setForceScrollKey,
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
     currentSessionIdRef, sessionStates, commandHistoryRef, cursorPositionRef,
     choiceCursorPositionRef, userChoiceRequestRef, userChoiceInputRef,

@@ -38,7 +38,7 @@ last_reviewed: 2026-10-20
 2. 点击后宿主收到 `abort`（携带会话 ID）。首次点击只中止前台查询，后台任务与子代理
    继续运行、按钮转为黄色；再次点击才中止它们。
 3. 中止时若该会话有排队中的消息，排队内容回填到输入框供编辑重发。
-4. 中止后 `*User Interrupted*` 以 once 通知显示（[webview-ui.md 第 11 节](../../hosts/webview-ui.md#11-消息区视图行为跳到底部发送模式与一次性通知)）：
+4. 中止后 `*User Interrupted*` 以 once 通知显示（[webview-ui.md 第 11 节](../../hosts/webview-ui.md#11-消息区视图行为)）：
    停在时间线末位、下一条消息出现即消失；core 把它记进 `meta.json` 的 `onceMessage`
    （一个对话至多一条），重开 / 刷新会话时恢复到末位。
 

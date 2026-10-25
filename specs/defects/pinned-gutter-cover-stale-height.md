@@ -15,7 +15,7 @@ status: 已修
 一块异常突起，且突起自带的底边框线悬在滚动条上，与任何消息都不对齐。基线是
 [docs/features/user-stories.md 的 US-16](docs/features/user-stories/messages.md#us-16-长消息折叠与用户消息置顶)
 验收 2「用户消息滚动到顶时吸附为整宽条」与
-[docs/hosts/webview-ui.md 第 11 节](docs/hosts/webview-ui.md#11-消息区视图行为跳到底部发送模式与一次性通知)
+[docs/hosts/webview-ui.md 第 11 节](docs/hosts/webview-ui.md#11-消息区视图行为)
 的「置顶背景延伸条」事实：延伸条与置顶消息拼成同一条整宽条，两者必须始终对齐。
 
 ## 现状

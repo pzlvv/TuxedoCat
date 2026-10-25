@@ -298,6 +298,111 @@ test('once 通知被更高新消息替换后仍贴底', async () => {
 });
 
 /**
+ * 选择框回底（docs/hosts/webview-ui.md 第 11 节「选择框回底」）：
+ * 应答提交是用户动作，与发送消息同权——提交时复位滚离抑制并强制回底，后续新内容
+ * 恢复自动跟随。答案 / 应答走工具结果路径、不产生用户消息，不能依赖「真正的用户
+ * 消息到达」入口复位，两条 RT 分别覆盖 AskUserQuestion 逐题提交与权限确认点选。
+ */
+test('滚离后提交 AskUserQuestion 答案恢复自动跟随', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await page.setViewportSize({ width: 1280, height: 500 });
+
+  // 撑高时间线并停在底部
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '第一轮' });
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: '段落内容，用于撑高消息列表。'.repeat(200),
+  });
+  await expect(page.getByText('第一轮')).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+
+  // AskUserQuestion 逐页选择框弹出（打开时已强制回底）
+  await host.send({
+    type: 'requestUserChoice', sessionId, choiceId: 'choice-ask-1', toolName: 'AskUserQuestion',
+    message: '',
+    questions: [{
+      id: 'q1', question: '选一个方案',
+      options: [{ label: '方案甲' }, { label: '方案乙' }],
+    }],
+  });
+  const overlay = page.locator('.user-choice-overlay');
+  await expect(overlay).toBeVisible({ timeout: 10_000 });
+
+  // 作答前向上滚离（回看上文是常态交互）：滚离抑制置位
+  await expect(async () => {
+    await page.mouse.move(640, 120);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await expectAwayFromBottom(page, 300);
+  }).toPass({ timeout: 20_000 });
+
+  // 提交答案：必须复位滚离抑制并强制回底
+  await overlay.getByRole('button', { name: '方案甲' }).click();
+  await overlay.getByRole('button', { name: '提交', exact: true }).click();
+  const resp = await host.waitForSent('respondUserChoice');
+  expect(resp.answers).toEqual([{ id: 'q1', selected: ['方案甲'] }]);
+  await expect(overlay).toBeHidden();
+  await expectAtBottom(page);
+
+  // 后续新内容到达继续自动跟随（不再需要用户手动回底）
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: `提交答案后的新回复\n\n${'这是新回复正文，用来撑高时间线。'.repeat(30)}`,
+  });
+  await expect(page.getByText('提交答案后的新回复')).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+});
+
+test('滚离后点击权限确认选项恢复自动跟随', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await page.setViewportSize({ width: 1280, height: 500 });
+
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '第一轮' });
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: '段落内容，用于撑高消息列表。'.repeat(200),
+  });
+  await expect(page.getByText('第一轮')).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+
+  await host.send({
+    type: 'requestUserChoice', sessionId, choiceId: 'choice-perm-1', toolName: 'Write',
+    message: 'Write 工具请求写入文件 notes.md，是否允许？',
+    choices: [
+      { label: '允许', description: '创建文件' },
+      { label: '拒绝', description: '取消操作' },
+    ],
+  });
+  const overlay = page.locator('.user-choice-overlay');
+  await expect(overlay).toBeVisible({ timeout: 10_000 });
+
+  // 点「允许」前向上滚离（查看将要写入的上下文是常态交互）
+  await expect(async () => {
+    await page.mouse.move(640, 120);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await expectAwayFromBottom(page, 300);
+  }).toPass({ timeout: 20_000 });
+
+  await overlay.getByRole('button', { name: /允许/ }).first().click();
+  const resp = await host.waitForSent('respondUserChoice');
+  expect(resp.index).toBe(0);
+  await expect(overlay).toBeHidden();
+  await expectAtBottom(page);
+
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: `允许后的新回复\n\n${'这是新回复正文，用来撑高时间线。'.repeat(30)}`,
+  });
+  await expect(page.getByText('允许后的新回复')).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+});
+
+/**
  * 自动滚动抑制（specs/defects/tiny-up-scroll-yanked-back-to-bottom.md）：
  * 用户从底部向上滚出 1px（仍在 2px 判定带内）也必须停住自动跟随——任何新内容到达
  * 都不得把视口拉回底部。两条 RT 分别覆盖滚轮输入（wheel 先置位、随后的 scroll 事件

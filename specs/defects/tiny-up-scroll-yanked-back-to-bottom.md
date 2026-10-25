@@ -9,7 +9,7 @@ status: 已修
 内容一刷新就弹回底部」，用户无法从底部脱身，只能一次滚出 2px 以上才停得住。影响面是所有
 正在流式输出 / 工具运行 / 有新消息到达的场景，即用户最需要向上翻阅的时刻。
 
-与 as-built 规格的差异：[docs/hosts/webview-ui.md 第 11 节](../../docs/hosts/webview-ui.md#11-消息区视图行为跳到底部发送模式与一次性通知)
+与 as-built 规格的差异：[docs/hosts/webview-ui.md 第 11 节](../../docs/hosts/webview-ui.md#11-消息区视图行为)
 声明「滚轮上滚仍抑制自动跟随」，[docs/features/user-stories.md](../../docs/features/user-stories.md)
 US-47 验收标准 1 声明「用户向上滚动（任意幅度）」。当前实现两条都不成立。
 

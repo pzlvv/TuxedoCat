@@ -133,7 +133,7 @@ export type CoreRequestHandlers = {
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 转成的 wire message |
 | --- | --- | --- | --- | --- | --- |
 | 0 | `coreReady` | 无 | `main.rs` 的 `hostEnvironmentProvided` 处理器（`apply_from_host_environment` 应用完配置快照后；每次重推快照都再发一次） | `markCoreReady`（映射表内联闩锁，`host/coreReadiness.ts`） | 无（不投递到 webview） |
-| 1 | `message` | `sessionId`, `data: MessageData`（`once: true` 即一次性通知——core 记进 `meta.json` 的 `onceMessage`（一个对话至多一条，重开对话时恢复到时间线末位）、不写 `<sid>.jsonl` 与 LLM 上下文、新节点追加前移除，渲染规则见 [docs/hosts/webview-ui.md 第 11 节](../hosts/webview-ui.md#11-消息区视图行为跳到底部发送模式与一次性通知)；LLM 失败回显 / `*User Interrupted*` / 压缩排队提示带此标记，宿主失联提示只当次显示不记 meta） | `engine.rs`（用户消息进上下文 / 轮次回执 / LLM 失败回显 / 中断与压缩排队通知）、`commands.rs`（命令输出）、`main.rs`（回滚结果的 system 消息）、`spin.rs` / `spin_host.rs`（spin 消息落盘）；宿主失联提示在 `bootstrapCore.ts`（`markConnectionSessionsFailed`） | `onMessage` | `addMessage` |
+| 1 | `message` | `sessionId`, `data: MessageData`（`once: true` 即一次性通知——core 记进 `meta.json` 的 `onceMessage`（一个对话至多一条，重开对话时恢复到时间线末位）、不写 `<sid>.jsonl` 与 LLM 上下文、新节点追加前移除，渲染规则见 [docs/hosts/webview-ui.md 第 11 节](../hosts/webview-ui.md#11-消息区视图行为)；LLM 失败回显 / `*User Interrupted*` / 压缩排队提示带此标记，宿主失联提示只当次显示不记 meta） | `engine.rs`（用户消息进上下文 / 轮次回执 / LLM 失败回显 / 中断与压缩排队通知）、`commands.rs`（命令输出）、`main.rs`（回滚结果的 system 消息）、`spin.rs` / `spin_host.rs`（spin 消息落盘）；宿主失联提示在 `bootstrapCore.ts`（`markConnectionSessionsFailed`） | `onMessage` | `addMessage` |
 | 2 | `streamMessage` | `sessionId`, `data: StreamMessageData` | `engine.rs` | `onStreamMessage` | `streamMessage` |
 | 3 | `streamEnd` | `sessionId`, `data: StreamEndData` | `engine.rs` | `onStreamEnd` | `streamEnd` |
 | 4 | `toolCall` | `sessionId`, `toolUseId`, `toolName` | `engine.rs` | `onToolCall` | `updateToolStatus`（`running`） |

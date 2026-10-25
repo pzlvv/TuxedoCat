@@ -41,7 +41,7 @@ once 通知总在时间线末位；下一条消息到达时，webview 先剥除 
 - 就地更新（工具状态推进 / 参数 / 流式增量）保留 once 节点，且不额外触发强制滚动。
 - 会话加载、真实用户消息、`forceScrollKey` 的强制回底语义不变。
 - once 通知的落盘 / 恢复 / `stripOnce` 渲染规则不变（见
-  [docs/hosts/webview-ui.md 第 11 节](../../docs/hosts/webview-ui.md#11-消息区视图行为跳到底部发送模式与一次性通知)）。
+  [docs/hosts/webview-ui.md 第 11 节](../../docs/hosts/webview-ui.md#11-消息区视图行为)）。
 - 流式跟随频率不增加：修复不得把每个流式帧变成额外的强制滚动。
 
 ## 回归测试

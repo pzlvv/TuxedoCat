@@ -537,6 +537,15 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     });
   }, []);
 
+  /**
+   * 应答提交是用户动作，与发送消息同权：复位滚离抑制并强制回底，后续新内容恢复
+   * 自动跟随（docs/hosts/webview-ui.md 第 11 节「选择框应答」）。应答走工具结果
+   * 路径、不产生用户消息，「真正的用户消息到达」入口不会触发，必须在这里显式复位。
+   */
+  const resumeFollowOnChoiceRespond = useCallback(() => {
+    props.setForceScrollKey((prev) => prev + 1);
+  }, []);
+
   const handleUserChoiceResponse = useCallback((index: number, reply?: string) => {
     // use ref to avoid stale closure over userChoiceRequest
     const currentRequest = props.userChoiceRequestRef.current;
@@ -554,6 +563,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     // 清空用户选择输入框
     props.userChoiceInputRef.current = '';
     props.setUserChoiceRequest(null);
+    resumeFollowOnChoiceRespond();
     // 同步清除 session 状态，避免切换对话后再次弹出
     if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
       props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
@@ -583,6 +593,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     // 清空用户选择输入框
     props.userChoiceInputRef.current = '';
     props.setUserChoiceRequest(null);
+    resumeFollowOnChoiceRespond();
+    resumeFollowOnChoiceRespond();
     // 同步清除 session 状态，避免切换对话后再次弹出
     if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
       props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
@@ -609,6 +621,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
 
     props.userChoiceInputRef.current = '';
     props.setUserChoiceRequest(null);
+    resumeFollowOnChoiceRespond();
     if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
       props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
     }
