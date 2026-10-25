@@ -124,9 +124,31 @@ test('US-16 用户消息滚出视口顶部时吸附置顶，点击回到原位',
   await expect(pinned).toBeVisible({ timeout: 5_000 });
   await expect(pinned).toContainText('第二条用户消息');
 
-  // 点击置顶条空白处：跳回原位、取消置顶（US-16 验收 2）
+  // 点击置顶条空白处：跳回原位（US-16 验收 2）。跳回后「第二条」不再置顶；上一条用户
+  // 消息此刻仍在视口之上，按 sticky 吸附规则会接替成为置顶条——所以断言「第二条不再是
+  // 置顶条」，而不是「完全没有置顶条」：后者只在 clearPinned 到下一次重算之间那一帧成立，
+  // CI（Linux headless）上必红（specs/defects/pinned-jump-repins-previous-message.md）。
   await pinned.click({ position: { x: 40, y: 8 } });
-  await expect(page.locator('[data-pinned="true"]')).toBeHidden({ timeout: 5_000 });
+  await expect
+    .poll(
+      async () => (await page.locator('[data-pinned="true"]').allTextContents())
+        .some((text) => text.includes('第二条用户消息')),
+      { timeout: 5_000 },
+    )
+    .toBe(false);
+
+  // 跳回原位：第二条消息的置顶包裹层回到内容区顶部（吸附偏移 = 容器上内边距 16px）
+  const restoredTop = await page.evaluate(() => {
+    const container = document.querySelector('.messages-container') as HTMLElement | null;
+    if (!container) return null;
+    const leaf = Array.from(container.querySelectorAll('*')).find((el) =>
+      el.childElementCount === 0 && el.textContent === '第二条用户消息');
+    const wrapper = leaf ? (leaf.closest('.user-msg-pin') as HTMLElement | null) : null;
+    return wrapper ? wrapper.getBoundingClientRect().top - container.getBoundingClientRect().top : null;
+  });
+  expect(restoredTop).not.toBeNull();
+  expect(restoredTop as number).toBeGreaterThanOrEqual(-1);
+  expect(restoredTop as number).toBeLessThan(60);
 });
 test('US-16 置顶条只铺内容区：不盖滚动条槽、无延伸层', async ({ browserName }) => {
   // US-16 验收 2（L2 改版）基线锁：置顶条是单层渲染——sticky 容器的负边距背景铺到
