@@ -147,6 +147,10 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   `electron-ssh`（真实 SSH 远端）是本地车道、不进 CI：它要一台可连的外部机器，runner 内
   临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。新增 e2e project 时同步该工作流与
   [e2e/README.md](e2e/README.md#ci-车道githubworkflowse2eyml)。
+- **发布产物走 Actions**（`.github/workflows/release.yml`）：手动 `workflow_dispatch`，
+  在 Windows runner 上跑 `npm run package` 后把 .vsix / NSIS x64+arm64 / TUI 安装器四平台
+  上传到 tag `v<version>` 的 GitHub Release（默认草稿）。版本号只从 `package.json` 取，
+  产物文件名与 tag 名都由它派生——本地打包与 CI 发布是同一条链。
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`
   （CI 会再跑一遍，本地跑只是提前暴露）。
 - **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`standalone*`

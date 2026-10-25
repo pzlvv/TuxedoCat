@@ -173,6 +173,17 @@ nightly + `-Zsanitizer=address` 的 asan 构建（本机平台 + Linux x64；Lin
 `release/asan/`，不覆盖正式发布物（见
 [docs/core/standalone-core.md 第 3.3 节](docs/core/standalone-core.md#33-构建与目标平台)）。
 
+### 在 GitHub 上发布
+
+发布走 [`.github/workflows/release.yml`](.github/workflows/release.yml)，手动触发：
+Actions → release → Run workflow，填版本号（留空则取 `package.json` 的 `version`），
+`draft` 默认开。
+
+它在一个 Windows runner 上跑 `npm run package`（与本地同一条链，不另写打包步骤），把
+`.vsix`、NSIS `x64` / `arm64` 安装包（含 blockmap 与 `latest.yml`）、TUI 安装器四平台
+上传到 tag `v<version>` 的 GitHub Release。版本号只从 `package.json` 取，产物文件名与
+tag 名都由它派生；同一版本重跑覆盖同名资产，不新建 Release。
+
 ## Git LFS
 
 `resources/` 目录下的文件使用 Git LFS 管理。提交前请确保已安装并初始化 Git LFS：

@@ -1,0 +1,140 @@
+# 发布产物（GitHub Release）。手动触发：Actions → release → Run workflow。
+#
+# 为什么在 Windows runner 上构建全部产物
+# --------------------------------------
+# NSIS 安装包只能在 Windows 宿主产出；Linux 的 TUI 安装器是纯 Rust + musl 交叉
+# （rust-lld 链接、C 部分由 zig 提供），Windows 宿主同样能建——判据是
+# scripts/build-tui-installer.mjs 的 buildableOnHost（linux 目标任意宿主可建）。
+# 所以一次 `npm run package` 就能出齐 .vsix / NSIS x64+arm64 / TUI 安装器四平台，
+# 与开发者本地打包走同一条链，CI 不另发明打包步骤。
+#
+# 为什么不并进 e2e.yml / docs.yml：发布要下载 electron 与全平台 Core 产物、跑完整
+# `npm run package`（分钟级且吃网络），放进 PR 关键路径没有收益；它只在人为触发时跑。
+#
+# 版本号只从 package.json 取（workflow 可覆盖），tag 名由它派生：产物文件名里的
+# ${version} 由 electron-builder / vsce 从 package.json 读取，两处必须是同一个值。
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 发布版本号（semver，如 0.0.2）；留空取 package.json 的 version
+        required: false
+        default: ''
+      draft:
+        description: 先建草稿 Release（人工核对后再点发布）
+        type: boolean
+        default: true
+
+# 同一时间只允许一个发布在跑：两个并发发布会在同名 Release 上互相覆盖资产
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建发布产物
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      # resources/** 走 LFS（Core 自带的 ripgrep 产物）：不开 lfs 时检出留下的是
+      # 指针桩，打进包的 Grep / Glob 拿到的不是可执行文件
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # vsce 打包后要跑 scripts/fix_vsix_permissions.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: npm ci
+      # build:core 默认构建全部四个携带目标：win32 x64 是本机，其余三个交叉
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      # Linux musl 的 ring（C / 汇编）与 mimalloc 要 C 编译器：build-core 用 zig cc 交叉
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+      - name: 定版本号
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          input='${{ inputs.version }}'
+          if [ -n "$input" ]; then
+            # tag 名与产物文件名都由它派生，形状不对后面全是脏数据：直接报错
+            if ! [[ "$input" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+              echo "::error::version 必须是 semver（如 0.0.2），收到：$input"
+              exit 1
+            fi
+            npm pkg set version="$input"
+          fi
+          version=$(node -p "require('./package.json').version")
+          echo "版本：$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      # 一条链出齐：.vsix、NSIS x64/arm64（含 blockmap 与 latest.yml）、TUI 安装器四平台。
+      # 打包前校验（verify-core-artifacts / verify-nsis-payload）已挂在链里，旧 Core 或
+      # 丢文件的安装包都会在这一步失败
+      - name: 打包
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            release/*.vsix
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+            release/tui-installer/*
+          retention-days: 7
+
+  publish:
+    name: 发布到 GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: artifacts
+      - name: 创建 / 更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DRAFT: ${{ inputs.draft }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # 产物名含空格（Tuxedo Cat-0.0.1-setup-x64.exe），按 NUL 分隔取文件名
+          mapfile -d '' files < <(find artifacts -type f -print0)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::没有可上传的产物，构建 job 的 artifact 是空的"
+            exit 1
+          fi
+          printf '待上传 %s 个文件：\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          draft_flag=()
+          if [ "$DRAFT" = "true" ]; then draft_flag=(--draft); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 同一版本重跑：覆盖同名资产，不动已写好的 Release 正文
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            # tag 指到本次触发的提交：发布物与它对应的源码在同一个 commit 上
+            gh release create "$TAG" "${files[@]}" \
+              --target "$TARGET_SHA" \
+              --title "$TAG" \
+              --generate-notes \
+              "${draft_flag[@]}"
+          fi
+          echo "完成：$(gh release view "$TAG" --json url --jq .url)"
