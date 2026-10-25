@@ -2249,6 +2249,16 @@ impl Core {
         // 在 manual 模式下打开宿主 diff），再按回传的 behavior 决定执行 / 拒绝 / 弹框。
         let (perm_result, display_args) =
             permission::resolve_tool_permission(tool_name, input, agent_mode, cwd, session_id);
+        // 权限决策留痕：allow/ask 不弹任何 UI 之外的可观测信号，宿主日志与 daemon 日志
+        // 都看不到「为什么没弹确认框」；排障时这条是唯一锚点（e2e 远程 manual 权限
+        // 排查即靠它定位——agent_mode 正确、behavior 却是 allow 的白名单路径）。
+        util::diag_line(&format!(
+            "[engine] resolve_permission: session={} tool={} agent_mode={} behavior={}",
+            session_id,
+            tool_name,
+            agent_mode,
+            perm_result.get("behavior").and_then(Value::as_str).unwrap_or("?")
+        ));
         let perm_result = self.request_tool_permission(
             session_id,
             tool_use_id,

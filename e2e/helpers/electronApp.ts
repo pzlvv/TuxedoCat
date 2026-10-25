@@ -50,7 +50,7 @@ export interface AppHandle {
    * 工作区预载），按「绑定工作区 + 自身会话 + 侧栏列表」组合解析；切换会话 /
    * 工作区 / 新建对话后应重新获取。
    */
-  chatPage(opts?: ChatPageOptions): Promise<Page>;
+  chatPage(opts?: ChatPageOptions, timeoutMs?: number): Promise<Page>;
   /** 标题栏视图 */
   titlebarPage(): Promise<Page>;
   /** 侧栏视图（悬浮窗模式下被移除，可能等待超时） */
@@ -417,8 +417,12 @@ export async function launchApp(options: {
     /**
      * 活动聊天视图。可选过滤：`workspaceIncludes`（视图绑定的工作区路径）、
      * `emptyState`（空会话视图）。切换会话/工作区/新建对话后应重新获取。
+     * `timeoutMs` 缺省 20s；远程工作区冷部署（SSH 引导上传产物）时给更长的预算。
      */
-    chatPage: (opts?: { workspaceIncludes?: string; emptyState?: boolean }) => waitForChatPage(opts ?? {}),
+    chatPage: (
+      opts?: { workspaceIncludes?: string; emptyState?: boolean },
+      timeoutMs?: number,
+    ) => waitForChatPage(opts ?? {}, timeoutMs),
     titlebarPage: () => waitForPage('dist/titlebar/index.html'),
     sidebarPage: () => waitForPage('dist/sidebar/index.html'),
     waitForPage,

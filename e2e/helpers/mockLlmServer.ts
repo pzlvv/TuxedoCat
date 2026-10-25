@@ -71,7 +71,19 @@ function hasToolResult(messages: Array<{ role: string; content: unknown }>): boo
   return messages.length > 0 && messages[messages.length - 1].role === 'tool';
 }
 
-export async function startMockLlm(options: { workspaceDir: string }): Promise<MockLlm> {
+export async function startMockLlm(options: {
+  workspaceDir: string;
+  /**
+   * 监听地址（缺省 127.0.0.1）。真实 SSH 远程工作区用例里 Core 跑在远端机器上，
+   * 服务器必须对外监听（0.0.0.0）远端才够得着。
+   */
+  listenHost?: string;
+  /**
+   * 写进 settings.json 的 baseURL 主机（缺省 127.0.0.1）。远程用例传本机 LAN IP
+   * （远端 Core 要从这里回连 mock）。端口以实际监听端口为准。
+   */
+  advertiseHost?: string;
+}): Promise<MockLlm> {
   const requests: RecordedRequest[] = [];
   let handler: ((req: RecordedRequest) => ScriptDecision) | null = null;
   /** `hang` 脚本挂住的响应：close() 时兜底销毁，避免服务器关不掉 */
@@ -241,12 +253,12 @@ export async function startMockLlm(options: { workspaceDir: string }): Promise<M
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
+    server.listen(0, options.listenHost ?? '127.0.0.1', () => resolve());
   });
   const port = (server.address() as AddressInfo).port;
 
   return {
-    baseURL: `http://127.0.0.1:${port}/v1`,
+    baseURL: `http://${options.advertiseHost ?? '127.0.0.1'}:${port}/v1`,
     requests,
     setHandler(h) { handler = h; },
     close() {
