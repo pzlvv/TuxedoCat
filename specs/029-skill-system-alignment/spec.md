@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：技能系统的调用语义、共享目录与优先级
@@ -12,14 +12,14 @@ status: 实施中
 `.agents` 优先于 `.<configDir>`，不读 `.claude`）；**优先级**（四个文件系统根 + bundled 按 rank 排序，
 同名只保留 rank 最小者并打一条 WARNING，名单按 name 去重）。
 
-顺带把本仓库自身的 9 个技能迁到 `.agents/skills`，并删掉 `src/shared/skills/` 那份零消费方的
+顺带把本仓库自身的 9 个技能迁到 `.agents/skills`，并删掉 `src/shared/` 下那份零消费方的
 遗留实现，让「技能怎么加载」只有一处事实。
 
 ## 影响基线
 
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
-| `docs/features/skills.md` | — | 新增 | 技能系统的 as-built 规格：发现根与 rank、frontmatter 字段、两个调用开关、模型名单、注入路径、同名仲裁与日志 |
+| [docs/features/skills.md](../../docs/features/skills.md) | — | 新增 | 技能系统的 as-built 规格：发现根与 rank、frontmatter 字段、两个调用开关、模型名单、注入路径、同名仲裁与日志 |
 | [docs/features/user-stories/tools.md](../../docs/features/user-stories/tools.md) | [US-27 斜杠命令与技能触发](../../docs/features/user-stories/tools.md#us-27-斜杠命令与技能触发) | 修改 | 验收标准 1 的来源链改为四个根 + rank；新增两个调用开关的验收标准 |
 | [docs/architecture/repo-map.md](../../docs/architecture/repo-map.md) | [目录布局](../../docs/architecture/repo-map.md#目录布局) | 修改 | `src/shared/` 一行去掉 `skills/`（实现只剩 `core-rs/src/skills.rs`） |
 | [docs/architecture/open-questions.md](../../docs/architecture/open-questions.md) | [第 1 节 Core（Rust）](../../docs/architecture/open-questions.md#1-corerust) | 修改 | 新增一行：弱化 `.<configDir>/skills` 的路线待定（现状 + 待定） |
@@ -51,7 +51,7 @@ status: 实施中
   - **AC-15**（FR-004）：GIVEN 本仓库 WHEN 查看 git 索引 THEN 9 个技能位于 `.agents/skills/<name>/SKILL.md`，`<configDir>/skills/` 与 `.zcode/skills/` 都不再入库。
   - **AC-16**（FR-004）：GIVEN 本机工作区 WHEN 打开 ZCode 会话 THEN `.zcode/skills` 是指向 `.agents/skills` 的 junction，可用技能清单与迁移前一致。
 - 场景 6：实现单一化
-  - **AC-17**（FR-005）：GIVEN 仓库 WHEN 查找技能加载实现 THEN 只有 `core-rs/src/skills.rs` 一份；`src/shared/skills/` 不存在，repo-map 的 `src/shared/` 一行不再列 `skills/`。
+  - **AC-17**（FR-005）：GIVEN 仓库 WHEN 查找技能加载实现 THEN 只有 `core-rs/src/skills.rs` 一份；`src/shared/` 下没有技能加载模块，repo-map 的 `src/shared/` 一行不再列 `skills/`。
 
 ## 功能需求
 
@@ -119,7 +119,7 @@ WARNING——这与「同名不同文件」是两类情况，必须分开。
 
 ### FR-005：技能实现只有一份
 
-删除 `src/shared/skills/`（1294 行、零消费方，ADR-0007 移除 Embedded Core 后的遗留），技能
+删除 `src/shared/` 下的技能加载实现（1294 行、零消费方，ADR-0007 移除 Embedded Core 后的遗留），技能
 加载、frontmatter 解析、变量替换只有 `core-rs/src/skills.rs` 一份实现。
 
 `core-rs/fixtures/skills.json` 保留为 Rust 测试的行为对照数据，并在 `skills_tests.rs` 注明它
@@ -158,8 +158,8 @@ AC-1～AC-17 由 core 侧单测覆盖，不新增 e2e 用例（斜杠菜单的�
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `core-rs/src/skills.rs`（frontmatter 字段与两个布尔）、`core-rs/src/commands.rs`（dispatch 只匹配 `userInvocable`）、`core-rs/src/prompt.rs`（名单按 `modelInvocable` 过滤）、`core-rs/src/main.rs`（`skills_payload` 只出 `userInvocable`）、`core-rs/src/tools.rs`（模型调用校验与注入路径区分来源） | `core-rs/src/skills_tests.rs`、`core-rs/src/commands_tests.rs`、`core-rs/src/prompt_tests.rs`、`core-rs/src/main_tests.rs`、`core-rs/src/tools_tests.rs` | 自动 |
-| FR-002 | `core-rs/src/skills.rs`（`get_skill_dir_commands` 的四个根） | `core-rs/src/skills_tests.rs` | 自动 |
+| FR-001 | `core-rs/src/skills.rs`（frontmatter 字段与两个布尔）、`core-rs/src/commands.rs`（dispatch 只匹配 `userInvocable`）、`core-rs/src/skills.rs`（`format_skill_listing` 按 `modelInvocable` 过滤）、`core-rs/src/prompt.rs`（把名单拼进 Environment 段）、`core-rs/src/main.rs`（`skills_payload` 只出 `userInvocable`）、`core-rs/src/tools.rs`（模型调用校验与注入路径区分来源） | `core-rs/src/skills_tests.rs`、`core-rs/src/commands_tests.rs`、`core-rs/src/main_tests.rs`、`core-rs/src/tools_tests.rs`、`core-rs/src/engine_tests.rs` | 自动 |
+| FR-002 | `core-rs/src/skills.rs`（`skill_roots` 的四个根） | `core-rs/src/skills_tests.rs` | 自动 |
 | FR-003 | `core-rs/src/skills.rs`（rank 常量、同名仲裁、realpath 去重、WARNING） | `core-rs/src/skills_tests.rs` | 自动 |
 | FR-004 | `.agents/skills/**`、`.gitignore`、[AGENTS.md 第 5 节](../../AGENTS.md#5-工作流) | 无自动覆盖 + 仓库内容迁移，由 `git ls-files` 与一次手工核对（AC-15 / AC-16）验证 | 无自动覆盖 + 属于仓库内容与本地环境约定 |
 | FR-005 | 删除 `src/shared/skills/**`、`docs/architecture/repo-map.md` | `npm run check-types` / `npm run lint` 绿 + `src/test/docsLint.test.ts` | 自动 |
@@ -171,8 +171,32 @@ AC-1～AC-17 由 core 侧单测覆盖，不新增 e2e 用例（斜杠菜单的�
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+### 已满足
 
-- 已满足：
-- 偏差：
-- 未做：
+- AC-1 → `engine_tests::slash_skill_command_injects_the_skill_tool_use`（`/commit` 注入 tool_use + 卡片事件）、`main_tests::skills_payload_excludes_model_only_skill`（默认 `user-invocable` 进菜单）。
+- AC-2 → `commands_tests::dispatch_skips_non_user_invocable_skill`（`/name` 落 passthrough）、`main_tests::skills_payload_excludes_model_only_skill`（不进菜单）。
+- AC-3 → `engine_tests::slash_skill_command_injects_model_disabled_skill`（用户 `/deploy staging` 注入成功且参数已替换）。
+- AC-4 → `skills_tests::user_invocable_false_is_listed_for_model`、`fixtures/skills.json` 的 `skillListing` 第三例（`legacy-context` 出现在名单）。
+- AC-5 → `tools_tests::validate_input_rejects_disable_model_invocation`（拒绝文案逐字断言）。
+- AC-6 → `skills_tests::both_switches_off_reports_unreachable`（保留在列表、两侧名单都不含、一条 `unreachable` WARNING）。
+- AC-7 / AC-8 / AC-9 → `skills_tests::agents_project_root_is_discovered` / `agents_user_root_is_discovered` / `claude_skills_root_is_ignored`。
+- AC-10 → `skills_tests::same_name_project_wins_over_user`。
+- AC-11 → `skills_tests::agents_root_wins_over_product_root`。
+- AC-12 → `skills_tests::project_skill_shadows_bundled`。
+- AC-13 → `skills_tests::arbitrate_reports_both_paths`（WARNING 同时含两条路径与 `ignored`）。
+- AC-14 → `skills_tests::same_file_via_multiple_roots_dedupes_without_warning`（去重走独立日志通道，`arbitrate` 不产 WARNING）。
+- AC-15 → `git ls-files .agents/skills` = 9、`git ls-files .zcode` = 0、`<configDir>/skills` 不在索引（手工核对）。
+- AC-16 → `cmd /c dir .zcode` 显示 `<JUNCTION> skills [<仓库根>\.agents\skills]`，`cat .zcode/skills/plan/SKILL.md` 可读（手工核对）。
+- AC-17 → `src/shared/` 下没有技能加载模块；`npm run check-types`、`npm run lint`、`npm run compile` 全绿。
+
+### 偏差
+
+1. **AC-6 实施阶段漏做，收敛时补齐**：`arbitrate` 增加「两个开关都关 → `unreachable` WARNING」，配套用例 `both_switches_off_reports_unreachable`。spec 未改，按 spec 补实现。
+2. **影响基线漏列三处**：`docs/README.md`（地图强制覆盖新增规格）、`docs/architecture/overview.md` 与 `docs/features/user-message-pipeline.md`（删 TS 遗留的连带修改）。三处均已随实施落地，此处留痕。
+3. **计划外的工程改动**：docsLint 把 `.agents` 加入 `SKIP_DIRS`（技能 `SKILL.md` 的「AGENTS.md 第 N 节」写法被当文档引用误报 14 处）；docsLint 新增「技能 frontmatter 字段名单与 skills.rs 解析点一致」组（[AGENTS.md 第 0 节](../../AGENTS.md#0-文档要求)要求新清单表挂 lint 组）；`brandLiteral` 不允许品牌字面量，规格与 ADR 改用 `<configDir>` 占位符，AC-11 / AC-15 措辞随之调整。
+4. **追溯矩阵两处虚指已修**：FR-001 的名单过滤实际落在 `skills.rs::format_skill_listing`（`prompt.rs` 只负责把名单拼进 Environment 段）；FR-002 的落点由 `get_skill_dir_commands` 改为 `skill_roots`（前者已降为 `#[cfg(test)]`）。
+5. **可观察但 spec 未声明的顺序变化**：斜杠菜单顺序为「内置命令 → 文件技能（rank 序）→ bundled」（实施前是「内置命令 → bundled → 文件技能」）。规格未承诺菜单顺序，UI 侧按名称匹配排序，不影响可用性。
+
+### 未做
+
+- 无。AC-15 / AC-16 按 spec 已登记「无自动覆盖 + 属于仓库内容与本地环境约定」，以手工核对作为证据。

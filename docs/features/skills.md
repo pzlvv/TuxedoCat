@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-26
+last_reviewed: 2026-10-25
 ---
 
 # 规格：技能系统
