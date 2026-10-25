@@ -78,7 +78,7 @@ T002–T004 是三个消费点、T005–T006 是根表与仲裁，可以依次�
       加「弱化 `.<configDir>/skills`」一行；依赖：T001–T008；完成判据：
       `npm run test:all -- docs-lint` 全绿，且 `docs/README.md` 地图含 `docs/features/skills.md`。
 
-- [ ] **T010**（FR-001、FR-002、FR-003、FR-004、FR-005）：收尾验证——`npm run build:core:host`
+- [x] **T010**（FR-001、FR-002、FR-003、FR-004、FR-005）：收尾验证——`npm run build:core:host`
       后跑 `npm run test:all`（standalone 系列必须真跑、不出现 skip）与 `npm run test:core`；
       手工核对 AC-15 / AC-16（索引里 9 个技能在 `.agents/skills`、ZCode 会话可用技能与迁移前一致）；
       依赖：T001–T009；完成判据：三条命令全绿、runner 汇总无「跳过」项、手工核对结果写进
