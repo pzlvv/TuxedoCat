@@ -1,0 +1,199 @@
+# e2e 场景级车道（Playwright）。六个 project 对应五层，按层拆成 job 并行：
+#   ui      —— webview-ui / remote-workspace-ui / terminal-ui（纯浏览器，不需要 Electron）
+#   electron —— electron-app（整应用：standalone core + mock LLM，跑在 xvfb 里）
+#   ssh     —— electron-ssh（真实 SSH 远端：job 内起 sshd 当「远端机器」）
+#   tui     —— tui-installer（自解压安装器：内嵌 Core / ripgrep / TUI bundle）
+# 产物在 prepare 里构建一次（前端 7 个 vite 产物 + 宿主平台 Core + Electron 主进程），
+# 其余 job 只下载、不再重复编译；四个车道互不阻塞，失败点直指具体层。
+#
+# 为什么不并进 docs.yml：那份工作流跑的是文档守卫与单测（分钟级），e2e 要构建全部产物
+# 并在 xvfb 里跑真实 Electron / SSH 链路，混在一起会把每次 PR 的关键路径拉长。
+name: e2e
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: 构建 e2e 产物
+    runs-on: ubuntu-latest
+    steps:
+      # resources/** 走 LFS（Core 自带的 ripgrep 产物）：不开 lfs 时 checkout 留下的是
+      # 指针桩，Grep / Glob 与远端部署拿到的不是可执行文件
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      # musl 目标的 ring（C / 汇编）与分配器 mimalloc 需要 C 编译器
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # playwright.config.ts 在配置加载期校验 Core 产物（Linux 宿主必查），先建
+      - run: npm run build:core:linux-x64
+      - run: npm run build:webview
+      - run: npm run copy-assets
+      - run: npm run build:electron
+      # e2e 车道自己的类型检查（src 的 check-types 在 docs.yml 的 tests job）
+      - run: npm run check-types:e2e
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            dist
+            dist-electron
+            resources/core
+          retention-days: 1
+
+  ui:
+    name: e2e-ui（webview / 远端目录选择器 / 终端页面）
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-artifacts
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test -c e2e/playwright.config.ts --project=webview-ui --project=remote-workspace-ui --project=terminal-ui
+      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-ui-trace
+          path: test-results
+          retention-days: 3
+
+  electron:
+    name: e2e-electron（整应用）
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-artifacts
+      # Electron 需要 X 显示与 Chromium 的运行时库：xvfb 提供前者，
+      # install-deps 提供后者（Ubuntu 24.04 的 t64 包名由 Playwright 自己处理）
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: npx playwright install-deps chromium
+      - run: xvfb-run -a npx playwright test -c e2e/playwright.config.ts --project=electron-app
+      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-electron-trace
+          path: test-results
+          retention-days: 3
+
+  ssh:
+    name: e2e-ssh（真实 SSH 远端）
+    needs: prepare
+    runs-on: ubuntu-latest
+    env:
+      # 只在 runner 内网可达的临时账号：sshd 监听 127.0.0.1，跑完随 runner 销毁
+      SSH_TEST_USER: e2e-ssh
+      SSH_TEST_PASSWORD: e2e-ssh-pass
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-artifacts
+      - run: sudo apt-get update && sudo apt-get install -y xvfb openssh-server
+      - run: npx playwright install-deps chromium
+      # 「远端机器」＝ 本 job 的 sshd：真实建链、真实上传 Core、真实 SFTP / exec
+      - name: 起本地 sshd 作为远端
+        run: |
+          sudo mkdir -p /run/sshd
+          sudo useradd -m -s /bin/bash "$SSH_TEST_USER"
+          echo "$SSH_TEST_USER:$SSH_TEST_PASSWORD" | sudo chpasswd
+          # 密码登录写进 drop-in 并让文件名排在云镜像自带的 60-* 之前：sshd 对同一
+          # 关键字取首个出现的值，写在 sshd_config 主文件里会被更早的 Include 覆盖
+          printf 'PasswordAuthentication yes\nKbdInteractiveAuthentication no\n' \
+            | sudo tee /etc/ssh/sshd_config.d/00-e2e.conf >/dev/null
+          sudo /usr/sbin/sshd -p 22
+          # 连通性自检：用例开头也会探一次，这里失败比在用例里失败更好读
+          sudo apt-get install -y sshpass
+          sshpass -p "$SSH_TEST_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 "$SSH_TEST_USER@127.0.0.1" 'uname -sm'
+      # 环境文件不入库（含凭证）：CI 里按 runner 的临时账号现写一份
+      - name: 写 e2e/environments.json
+        run: |
+          cat > e2e/environments.json <<JSON
+          {
+            "ssh": {
+              "host": "127.0.0.1",
+              "port": 22,
+              "user": "${SSH_TEST_USER}",
+              "password": "${SSH_TEST_PASSWORD}",
+              "llmAdvertiseHost": "127.0.0.1"
+            }
+          }
+          JSON
+      - run: xvfb-run -a npx playwright test -c e2e/playwright.config.ts --project=electron-ssh
+      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-ssh-trace
+          path: test-results
+          retention-days: 3
+
+  tui:
+    name: e2e-tui（安装程序）
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-artifacts
+      # 安装器在用例内用 cargo 构建（tui-rs + installer-rs 的 musl 产物）
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: npm run test:e2e:tui
+      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-tui-trace
+          path: test-results
+          retention-days: 3

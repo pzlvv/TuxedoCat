@@ -2,12 +2,14 @@
 
 以真实用户操作（输入、点击、悬停、快捷键）驱动的场景级端到端测试，需求基线是
 `docs/features/user-stories.md`（每条用例标题标注覆盖的 `US-xx`，`US ↔ 用例` 映射与
-未覆盖豁免段见该文件的附录）。五个 project 对应五层：
+未覆盖豁免段见该文件的附录）。六个 project 对应五层（`electron-app` 与 `electron-ssh`
+同属整应用层：后者要外部 SSH 环境，拆开是为了让没有远端机器的开发机与 CI 车道各自独立跑）：
 
 | project | 层级 | 驱动对象 | 宿主侧 |
 | --- | --- | --- | --- |
 | `webview-ui` | webview UI | Chromium 加载构建产物 `dist/webview/index.html` | 假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答 |
 | `electron-app` | 整应用 | 真实 Electron 应用（`dist-electron/main.cjs`） | **standalone core**（Rust，`dist/resources/core/`，先 `npm run build:core`）+ 本地 mock LLM SSE 服务器（`helpers/mockLlmServer.ts`） |
+| `electron-ssh` | 整应用（真实 SSH 远端） | 同上，工作区为 `ssh://` 远端（`e2e/environments.json` 的 ssh 段） | 远端机器上的 standalone core：SSH 建链 → 上传 Core / ripgrep → 远端 daemon 引导（`docs/core/core-remote.md`） |
 | `remote-workspace-ui` | 远端目录选择器页面 | Chromium 加载构建产物 `dist/remoteWorkspace/index.html`（`electron/remoteWorkspace/`） | 假 `window.remoteWorkspaceAPI`（内存目录树）：这一步要连真实 SSH 才走得到，整应用 e2e 覆盖不了 |
 | `terminal-ui` | 远程终端页面 | Chromium 加载构建产物 `dist/terminal/index.html`（`electron/terminal/`） | 假 `window.terminalAPI`（内存标签表 + 回显 shell）：同上，真实链路要连 SSH |
 | `tui-installer` | TUI 分发 | TUI 版安装程序（`release/tui-installer/`，用例内构建宿主平台） | 内嵌 Core / ripgrep / TUI bundle 的自解压安装与启动（`docs/features/tui-installer.md`） |
@@ -21,9 +23,10 @@
 npm run build:webview && npm run copy-assets && npm run build:electron
 npx playwright install chromium            # 网络受限时：PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
 
-npm run test:e2e            # 全部（五个 project，串行，workers=1）
+npm run test:e2e            # 全部（六个 project，串行，workers=1）
 npm run test:e2e:webview    # 仅 webview UI 级
-npm run test:e2e:electron   # 仅 Electron 整应用
+npm run test:e2e:electron   # 仅 Electron 整应用（不需要 SSH 环境）
+npm run test:e2e:ssh        # 仅真实 SSH 远端车道（需要 e2e/environments.json）
 npm run test:e2e:remoteWorkspace   # 仅远端目录选择器页面
 npm run test:e2e:terminal   # 仅远程终端页面
 npm run test:e2e:tui        # 仅 TUI 安装程序
@@ -33,6 +36,22 @@ Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modu
 
 排查：`E2E_DEBUG=1 npm run test:e2e:electron` 会把应用主进程日志透传到测试输出；
 失败时 Playwright 输出 trace（`npx playwright show-trace <zip>`）。
+
+## CI 车道（`.github/workflows/e2e.yml`）
+
+`prepare` job 构建一次产物（7 个前端产物 + 宿主平台 Core + Electron 主进程），并跑
+`npm run check-types:e2e`；四个车道并行下载产物后各跑一层：
+
+| job | project | 车道额外前置 |
+| --- | --- | --- |
+| `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
+| `electron` | `electron-app` | xvfb（Linux 无显示）+ Chromium 运行时库（`playwright install-deps`） |
+| `ssh` | `electron-ssh` | job 内起 sshd 充当「远端机器」，现写 `e2e/environments.json`（不入库） |
+| `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
+
+失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
+`electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，CI 与开发机都能直接跑；
+后者缺 `environments.json` 时在收集期报错（无效直接报错，不做兜底）。
 
 ## 测试环境配置（environments.json）
 
@@ -58,7 +77,7 @@ Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modu
 
 ```
 e2e/
-├── playwright.config.ts        # 四个 project，串行执行（workers=1）
+├── playwright.config.ts        # 六个 project，串行执行（workers=1）
 ├── helpers/
 │   ├── fakeHost.ts             # webview 级假宿主：注入 window.vscode / __hostInfo 等全局，
 │   │                           # 自动应答启动序列，sendMessage 播放脚本化流式轮次

@@ -6,12 +6,14 @@ import { assertEnvironmentFileIfPresent } from './helpers/testEnvironment';
 /**
  * 场景级 e2e 配置（`e2e/README.md`）。
  *
- * 五个 project 对应五层用例：
+ * 六个 project 对应五层用例（`electron-app` 与 `electron-ssh` 同属整应用层：后者要外部
+ * SSH 环境，拆开是为了让没有远端机器的开发机与 CI 车道都能各自独立跑）：
  * - `webview-ui`：Chromium 直接加载构建产物 `dist/webview/index.html`，宿主侧以
  *   假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答，
  *   驱动「webview UI 在真实浏览器里的用户操作」。
- * - `electron-app`：`_electron.launch` 拉起完整桌面应用（standalone core + 假 LLM
- *   SSE 服务器），驱动「整应用的真实用户链路」。
+ * - `electron-app`：拉起完整桌面应用（standalone core + 假 LLM SSE 服务器），
+ *   驱动「整应用的真实用户链路」。
+ * - `electron-ssh`：同一套整应用，连真实 SSH 远端（`e2e/environments.json`）。
  * - `remote-workspace-ui`：`electron/remoteWorkspace/` 的选择器页面（要连真实 SSH
  *   才走得到，整应用 e2e 覆盖不了）：Chromium 加载构建产物 + 假远端目录树。
  * - `terminal-ui`：`electron/terminal/` 的远程终端页面（同上的假通道手法）。
@@ -67,7 +69,15 @@ export default defineConfig({
   },
   projects: [
     { name: 'webview-ui', testMatch: /webview[\\/].+\.spec\.ts/ },
-    { name: 'electron-app', testMatch: /electron[\\/].+\.spec\.ts/ },
+    // 整应用：不需要外部 SSH 环境。真实 SSH 远端单独一个 project（`electron-ssh`）——
+    // 它依赖 `e2e/environments.json`，缺文件时在收集期就报错，不该把整个车道拖下水。
+    {
+      name: 'electron-app',
+      testMatch: /electron[\\/].+\.spec\.ts/,
+      testIgnore: /remoteSshExecution\.spec\.ts/,
+    },
+    // 真实 SSH 远端（CI 里由 job 内起的 sshd 充当「远端机器」，见 .github/workflows/e2e.yml）
+    { name: 'electron-ssh', testMatch: /electron[\\/]remoteSshExecution\.spec\.ts/ },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道
     { name: 'terminal-ui', testMatch: /terminal[\\/].+\.spec\.ts/ },
