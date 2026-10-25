@@ -574,6 +574,34 @@ body.sidebar-resizing { cursor: col-resize; }
 }
 .files-section.expanded .files-refresh { display: flex; }
 .files-refresh:hover { background: rgba(255, 255, 255, 0.12); color: #e4e4e7; }
+/* 文档视图开关（specs/030）：与刷新按钮同款，仅在展开后出现；激活态高亮 */
+.files-doc-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 2px;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+.files-section.expanded .files-doc-toggle { display: flex; }
+.files-doc-toggle:hover { background: rgba(255, 255, 255, 0.12); color: #e4e4e7; }
+.files-doc-toggle.active { color: #7dd3fc; background: rgba(125, 211, 252, 0.14); }
+/* 文档视图行尾的增删行数徽标（仅 git 口径显示；行是 flex 布局，margin-left:auto 顶到右缘） */
+.doc-count {
+  margin-left: auto;
+  padding-right: 8px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+.doc-plus { color: #4ade80; margin-right: 5px; }
+.doc-minus { color: #f87171; }
 
 .files-tree {
   padding: 4px 0 8px;

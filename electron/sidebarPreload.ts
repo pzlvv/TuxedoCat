@@ -93,6 +93,18 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   filesOpen: (workspaceId: string, relPath: string): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-open', { workspaceId, path: relPath });
   },
+  /** 文档视图取数（specs/030）：git 行数口径或非 git 记录口径，主进程分流 */
+  filesDocList: (workspaceId: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-doc-list', { workspaceId });
+  },
+  /** 文档视图开关状态上报：主进程据此挂 / 摘 git 哨兵监听 */
+  filesDocWatch: (workspaceId: string, enabled: boolean): void => {
+    ipcRenderer.send('sidebar:files-doc-watch', { workspaceId, enabled });
+  },
+  /** 主进程推送的失效信号（Write 新建 → 树重读、git 哨兵 → 文档重取） */
+  onFilesInvalidated: (callback: (payload: unknown) => void): void => {
+    ipcRenderer.on('sidebar:files-invalidate', (_event, payload) => callback(payload));
+  },
   // ── 侧栏宽度（US-44） ──
   // 拖拽过程高频 send（不落盘），final: true（松手 / 双击恢复）才落盘一次
   setSidebarWidth: (width: number | null, final: boolean): void => {

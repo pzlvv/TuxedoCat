@@ -360,6 +360,196 @@ pub fn workspace_meta_workspace_path(project_dir: &std::path::Path) -> Option<St
         .map(str::to_string)
 }
 
+// ==================== md 修改记录（specs/030 FR-004） ====================
+
+/// 记录写盘的进程内串行锁（并行工具线程同时改多个 md 时串行合并写盘）
+static MD_RECORD_LOCK: Mutex<()> = Mutex::new(());
+
+/// 「工作区是否 git 仓」的进程级缓存（失败结果同样入表，写法照 prompt.rs 的 GIT_CACHE）
+static GIT_WORKSPACE_CACHE: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+
+/// 工作区根是否位于 git 仓内（含祖先目录）。探测失败的口径是「非 git」：
+/// 连 git 都找不到的机器上没有可用的 git 口径，记录语义按非 git 走。
+fn workspace_is_git(root: &str) -> bool {
+    {
+        let cache = GIT_WORKSPACE_CACHE.lock().unwrap();
+        if let Some(hit) = cache.as_ref().and_then(|table| table.get(root)) {
+            return *hit;
+        }
+    }
+    let mut command = std::process::Command::new("git");
+    command
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(root);
+    crate::util::hide_console(&mut command);
+    let inside = crate::shell_env::apply_native(&mut command)
+        .ok()
+        .and_then(|()| command.output().ok())
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "true")
+        .unwrap_or(false);
+    GIT_WORKSPACE_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(root.to_string(), inside);
+    inside
+}
+
+/// 绝对路径 → 工作区根相对的 posix 路径；非 md 文档或不在根内时返回 None。
+/// 两侧 canonicalize 后再比较（`D:/a` 与 `D:\a` 两种写法解析到同一条记录）。
+fn workspace_relative_doc(root: &str, abs_path: &std::path::Path) -> Option<String> {
+    let name = abs_path.file_name()?.to_string_lossy().to_lowercase();
+    if !(name.ends_with(".md") || name.ends_with(".markdown")) {
+        return None;
+    }
+    let root_canon = std::fs::canonicalize(root).ok()?;
+    let path_canon = std::fs::canonicalize(abs_path).ok()?;
+    let rel = path_canon.strip_prefix(&root_canon).ok()?;
+    let mut out = String::new();
+    for component in rel.components() {
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(&component.as_os_str().to_string_lossy());
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// 工具成功修改工作区内 md 文档后登记进项目对话目录的 `workspace.meta.json`
+/// （specs/030 FR-004，仅非 git 工作区；宿主侧只读，格式见 `src/shared/workspaceMeta.ts`）。
+///
+/// 前置条件任一不满足（非 md / 根外 / git 仓）直接返回——「不记录」是口径本身，不是
+/// 错误。写盘遵循共享文件写安全：进程内串行 + 锁文件跨进程互斥 + 持锁重读合并（集合
+/// 并集语义）+ 临时文件 rename 原子替换 + 无新增条目不落盘；读得出但解析失败时拒绝
+/// 写入（不覆盖原文件）。
+pub fn record_md_modification(root: &str, abs_path: &std::path::Path) {
+    let Some(rel) = workspace_relative_doc(root, abs_path) else {
+        return;
+    };
+    if workspace_is_git(root) {
+        return;
+    }
+    let _guard = MD_RECORD_LOCK.lock().unwrap();
+    let project_dir = match ensure_project_conversation_dir(root) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("[core] record md modification: ensure project dir failed: {err}");
+            return;
+        }
+    };
+    if let Err(err) = append_modified_doc(&project_dir, &rel) {
+        eprintln!("[core] record md modification failed: {err}");
+    }
+}
+
+/// 读取 `workspace.meta.json` 为 JSON 对象；文件缺失返回空对象，读得出但解析失败 /
+/// 非对象返回 Err（记录写入侧据此拒绝覆盖——「读不出拒绝写」）。
+fn read_settings_file_strict(path: &std::path::Path) -> Result<Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Value>(&sanitize_json_surrogates(&text))
+            .ok()
+            .filter(Value::is_object)
+            .ok_or_else(|| format!("{} is not a valid JSON object", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
+        Err(err) => Err(format!("read {}: {err}", path.display())),
+    }
+}
+
+/// 持锁守卫：Drop 时先关句柄再摘锁文件——任何路径（含错误返回）都不留陈旧锁
+struct MetaLockGuard {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+}
+
+impl Drop for MetaLockGuard {
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 锁文件独占创建（跨进程互斥）。约 1 秒拿不到时：锁龄超过 30 秒视为持锁方崩溃的
+/// 陈旧锁，摘除后重试一轮；仍拿不到返回 None（放弃本次登记——集合并集语义下不破坏
+/// 口径，该文件的下一次修改会重新合并写入）。
+fn acquire_meta_lock(project_dir: &std::path::Path) -> Result<Option<MetaLockGuard>, String> {
+    let lock_path = project_dir.join("workspace.meta.json.lock");
+    for attempt in 0..2 {
+        for _ in 0..50 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(file) => {
+                    return Ok(Some(MetaLockGuard { file: Some(file), path: lock_path }));
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => return Err(format!("open {}: {err}", lock_path.display())),
+            }
+        }
+        if attempt == 0 {
+            let stale = std::fs::metadata(&lock_path)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .map(|age| age.as_secs() > 30)
+                .unwrap_or(true);
+            if !stale {
+                break;
+            }
+            let _ = std::fs::remove_file(&lock_path);
+        }
+    }
+    eprintln!("[core] record md modification: meta lock busy, skip");
+    Ok(None)
+}
+
+/// 持锁读-合并-原子写：把一条相对路径并进 `modifiedDocs`（数组、去重、字典序稳定输出）。
+fn append_modified_doc(project_dir: &std::path::Path, rel: &str) -> Result<(), String> {
+    let Some(_lock) = acquire_meta_lock(project_dir)? else {
+        return Ok(());
+    };
+    let path = project_dir.join("workspace.meta.json");
+    let mut settings = read_settings_file_strict(&path)?;
+    let existing_docs = match settings.get("modifiedDocs") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut docs = Vec::with_capacity(items.len());
+            for item in items {
+                let doc = item
+                    .as_str()
+                    .ok_or_else(|| format!("modifiedDocs in {} is corrupt", path.display()))?;
+                docs.push(doc.to_string());
+            }
+            docs
+        }
+        Some(_) => return Err(format!("modifiedDocs in {} is corrupt", path.display())),
+    };
+    if existing_docs.iter().any(|doc| doc == rel) {
+        return Ok(()); // 无新增条目不落盘（幂等）
+    }
+    let mut docs = existing_docs;
+    docs.push(rel.to_string());
+    docs.sort();
+    docs.dedup();
+    settings["modifiedDocs"] = json!(docs);
+    let text = serde_json::to_string_pretty(&settings).map_err(|err| err.to_string())?;
+    let tmp = project_dir.join(format!("workspace.meta.json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, &text).map_err(|err| format!("write {}: {err}", tmp.display()))?;
+    if let Err(err) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {} failed: {err}", path.display()));
+    }
+    Ok(())
+}
+
 // ==================== LLM 配置解析 ====================
 
 /// 一次 LLM 调用所需的连接信息

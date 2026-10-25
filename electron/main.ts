@@ -101,7 +101,19 @@ import {
   retainRemoteFilesClient,
   releaseRemoteFilesClient,
   disposeAllRemoteFilesClients,
+  sharedClientFor,
 } from './sidebarFilesRemote.js';
+import {
+  buildDocRows,
+  collectGitEntries,
+  collectRecordEntries,
+  localGitRunner,
+  probeGitWorkspace,
+  type GitCommandRunner,
+} from './sidebarDocView.js';
+import { readModifiedDocs, readRemoteModifiedDocs, type RemoteMetaAccess } from '../src/shared/workspaceMeta.js';
+import { CONFIG_DIR_NAME } from '../src/config/project.js';
+import type { SshClient } from '../src/host/standalone/sshClient.js';
 import {
   applyTerminalShortcuts,
   closeAllTerminalWindows,
@@ -339,6 +351,8 @@ let openWorkspaces: WorkspaceRef[] = [];
 let workspacePath: WorkspaceRef | undefined;
 /** 会话 → 工作目录 索引：按对话解析工作目录（打开某个对话时用它注入 --workspace=） */
 const sessionWorkspaces = new Map<string, string>();
+/** 宿主实例（initCore 创建后回填；侧栏哨兵启停等工作区生命周期挂点用，specs/030） */
+let electronHost: ElectronUIHost | null = null;
 /** 工作区打开 / 关闭 / 激活的订阅者（ElectronUIHost 的 WorkspaceProvider 契约） */
 const workspaceChangeListeners = new Set<(change: { type: 'opened' | 'closed' | 'activated'; ref: WorkspaceRef }) => void>();
 
@@ -391,6 +405,8 @@ function sameRef(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): bool
 
 /** 通知工作区变化（Client 据此建立 / 销毁 Connection） */
 function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', ref: WorkspaceRef): void {
+  // 工作区关闭连带摘掉文档视图的 git 哨兵（specs/030 FR-003：监听随工作区生命周期）
+  if (type === 'closed') void electronHost?.stopDocSentinelFor(ref);
   for (const listener of [...workspaceChangeListeners]) {
     try {
       listener({ type, ref });
@@ -4474,18 +4490,21 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   const rawSessionId = (message as { sessionId?: unknown }).sessionId;
   const sessionId = typeof rawSessionId === 'string' ? rawSessionId : undefined;
 
-  // 用户发出了新对话的第一条消息：该会话开始落盘，不再是「新建但还没发过消息」的对话。
-  // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
-  if (message.type === 'sendMessage' && sessionId) {
-    chatViews?.markSessionUsed(sessionId);
-  }
-
   // 视图的会话身份变化时，把临时 new- 视图转为正式会话条目。
-  // 只有这两条消息表达「这个视图现在是哪个会话」：
+  // 表达「这个视图现在是哪个会话」的消息：
   // - startNewConversation：webview 新建对话（含预热视图激活）
   // - loadConversation：webview 请求加载某个会话（用户手动切换 / 打开某对话）
+  // - sendMessage 且来源视图还是临时 new- 键：首条消息可能抢在挂载后 500ms 的
+  //   startNewConversation 上报之前发出（发送路径自己生成 session id，
+  //   useAppHandlers.ts）——视图身份在这一刻同样确立。不晋升的话该会话永远进不了
+  //   「已打开会话」集合，UserChoiceQueue 判 open=false，manual 模式的权限确认
+  //   停在 pending 不投递（不弹框、回合挂死）。
   // 对「key 已经等于 sessionId」的调用，registerSession 是提前返回的空操作。
-  if (message.type === 'startNewConversation' || message.type === 'loadConversation') {
+  const sourceViewKey = chatViews?.getKeyByWebContents(sender) ?? null;
+  const establishesViewSession = message.type === 'startNewConversation'
+    || message.type === 'loadConversation'
+    || (message.type === 'sendMessage' && !!sessionId && sourceViewKey?.startsWith('new-') === true);
+  if (establishesViewSession) {
     if (sessionId) {
       // 该视图自己的工作区是权威来源（新建对话继承它；加载对话本就属于它）；
       // 视图归属按稳定 id 登记，这里取路径用于 sessionWorkspaces（会话 → 目录索引）
@@ -4498,6 +4517,14 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
         void registerCoreSessionWorkspace(sessionId, p);
       }
     }
+  }
+
+  // 用户发出了新对话的第一条消息：该会话开始落盘，不再是「新建但还没发过消息」的对话。
+  // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
+  // 必须放在上面的晋升之后：registerSession 会把临时键的「未发送」标记迁移到正式 id，
+  // 先标记会漏删、视图被误判为仍可复用的新对话。
+  if (message.type === 'sendMessage' && sessionId) {
+    chatViews?.markSessionUsed(sessionId);
   }
 
   // webview 内点击子代理/回复/From 链接等跳转到指定会话：新起一个 webview 加载该对话
@@ -4997,6 +5024,109 @@ function setupIpc(): void {
     }
   });
 
+  // 文档视图（specs/030 FR-003 / FR-004）：git 口径（本地直跑 / 远程 SSH exec——git
+  // 输出永远产生在文件所在的那台机器上）与非 git 记录口径（workspace.meta.json，
+  // 本地 fs / 远程 SFTP，只读）分流取数
+  const remoteGitRunner = (client: SshClient, root: string): GitCommandRunner => {
+    const shQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+    const posixJoin = (a: string, b: string): string => `${a.replace(/\/+$/, '')}/${b}`;
+    return {
+      run: async (args) => {
+        // 参数逐个单引号转义：不经 shell 展开（*.md pathspec 必须原样到达 git）
+        const out = await client.exec(`git -C ${shQuote(root)} ${args.map(shQuote).join(' ')}`);
+        if (out.code === null) throw new Error('远端 git 命令超时或未给出退出码');
+        return { code: out.code, stdout: out.stdout, stderr: out.stderr };
+      },
+      readFile: async (rel) => {
+        try {
+          return (await client.readFileBuffer(posixJoin(root, rel))).toString('utf8');
+        } catch {
+          return null;
+        }
+      },
+      exists: async (rel) => {
+        try {
+          return (await client.stat(posixJoin(root, rel))).exists;
+        } catch {
+          return false;
+        }
+      },
+    };
+  };
+
+  const remoteMetaAccess = (client: SshClient): RemoteMetaAccess => ({
+    homeDir: () => client.homeDir(),
+    readFile: async (remotePath) => {
+      try {
+        return (await client.readFileBuffer(remotePath)).toString('utf8');
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/no such file/i.test(message)) return null;
+        throw err;
+      }
+    },
+    stat: async (remotePath) => {
+      try {
+        return (await client.stat(remotePath)).exists;
+      } catch {
+        return false;
+      }
+    },
+  });
+
+  ipcMain.handle('sidebar:files-doc-list', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-doc-list');
+    const p = (payload ?? {}) as { workspaceId?: unknown };
+    const ref = resolveFilesRef(p.workspaceId);
+    if (!ref) return { ok: false, error: 'workspace-unavailable' };
+    try {
+      if (ref.endpoint) {
+        const client = await sharedClientFor(ref.endpoint, fileOpLog);
+        const runner = remoteGitRunner(client, ref.path);
+        const probe = await probeGitWorkspace(runner);
+        if (probe === 'yes') {
+          const result = await collectGitEntries(runner);
+          return result.ok
+            ? { ok: true, mode: result.mode, rows: buildDocRows(result.entries) }
+            : result;
+        }
+        if (probe === 'no') {
+          const paths = await readRemoteModifiedDocs(remoteMetaAccess(client), CONFIG_DIR_NAME, ref.path);
+          const entries = await collectRecordEntries(paths, runner.exists);
+          return { ok: true, mode: 'record', rows: buildDocRows(entries) };
+        }
+        return { ok: false, error: probe.error };
+      }
+      const runner = localGitRunner(ref.path);
+      const probe = await probeGitWorkspace(runner);
+      if (probe === 'yes') {
+        const result = await collectGitEntries(runner);
+        return result.ok
+          ? { ok: true, mode: result.mode, rows: buildDocRows(result.entries) }
+          : result;
+      }
+      if (probe === 'no') {
+        const paths = await readModifiedDocs(ref.path);
+        const entries = await collectRecordEntries(paths, runner.exists);
+        return { ok: true, mode: 'record', rows: buildDocRows(entries) };
+      }
+      return { ok: false, error: probe.error };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      fileLogger.warn('sidebar-files', `doc-list failed (${refDisplay(ref)}): ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
+  // 文档视图开关上报（specs/030 FR-003）：主进程据此挂 / 摘 git 哨兵监听；
+  // host 在 initCore 创建，侧栏 handler 注册先于它——经模块级回填引用解耦时序
+  ipcMain.on('sidebar:files-doc-watch', (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) return;
+    const p = (payload ?? {}) as { workspaceId?: unknown; enabled?: unknown };
+    if (typeof p.workspaceId !== 'string' || typeof p.enabled !== 'boolean') return;
+    void electronHost?.setDocSentinel(p.workspaceId, p.enabled);
+  });
+
   ipcMain.handle('sidebar:files-reveal', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-reveal');
     // 单项语义用单项契约：preload 发 `{ workspaceId, path }`（此前借复数 paths 数组
@@ -5232,6 +5362,7 @@ function initCore(): void {
   const { bootstrapCore, bootstrapSnapshot, shutdownCore, onWorkspaceConnectionState } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
 
   const host = new ElectronUIHost();
+  electronHost = host;
   // 工作区事实来源：Client 按打开集合建立 Connection，并订阅打开 / 关闭 / 激活
   host.setWorkspaceSource({
     // 启动期判定不可用的工作区不建立 Connection（本地目录缺失 / 远程已标记连不上）
@@ -5242,6 +5373,8 @@ function initCore(): void {
       return () => workspaceChangeListeners.delete(listener);
     },
   });
+  // 会话 → 工作目录索引的宿主侧查询口（specs/030 FR-001：toolResult 相对路径解析）
+  host.setSessionWorkspaceLookup((sessionId) => sessionWorkspaces.get(sessionId) ?? null);
   const spinDesign = new ElectronSpinDesign(host);
   const conversationsMgr = new ElectronConversationManager(
     host,

@@ -466,3 +466,99 @@ fn ensure_project_conversation_dir_writes_the_manifest() {
         json!({ "workspacePath": project })
     );
 }
+
+// ==================== md 修改记录（specs/030 FR-004） ====================
+
+fn read_modified_docs(dir: &std::path::Path) -> Vec<String> {
+    let meta: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("workspace.meta.json")).unwrap())
+            .unwrap();
+    meta["modifiedDocs"]
+        .as_array()
+        .map(|items| items.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn record_md_modification_unions_and_is_idempotent() {
+    let sandbox = Sandbox::new("config-md-record");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let dir = ensure_project_conversation_dir(&project).unwrap();
+
+    let a = sandbox.workspace.join("notes/a.md");
+    std::fs::create_dir_all(a.parent().unwrap()).unwrap();
+    std::fs::write(&a, "hello").unwrap();
+    record_md_modification(&project, &a);
+    let b = sandbox.workspace.join("b.md");
+    std::fs::write(&b, "b").unwrap();
+    record_md_modification(&project, &b);
+    record_md_modification(&project, &a); // 重复登记幂等（无新增不落盘）
+
+    assert_eq!(read_modified_docs(&dir), vec!["b.md".to_string(), "notes/a.md".to_string()]);
+    let meta: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("workspace.meta.json")).unwrap())
+            .unwrap();
+    assert_eq!(meta["workspacePath"], project, "workspacePath 字段不动");
+    assert!(!dir.join("workspace.meta.json.lock").exists(), "锁文件用完即摘");
+}
+
+#[test]
+fn record_md_modification_skips_non_md_and_outside_root() {
+    let sandbox = Sandbox::new("config-md-skip");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let dir = ensure_project_conversation_dir(&project).unwrap();
+
+    let txt = sandbox.workspace.join("a.txt");
+    std::fs::write(&txt, "x").unwrap();
+    record_md_modification(&project, &txt);
+    let markdown_ext = sandbox.workspace.join("b.markdown");
+    std::fs::write(&markdown_ext, "x").unwrap();
+    record_md_modification(&project, &markdown_ext);
+    let outside = sandbox.root.join("outside.md");
+    std::fs::write(&outside, "x").unwrap();
+    record_md_modification(&project, &outside);
+
+    assert_eq!(read_modified_docs(&dir), vec!["b.markdown".to_string()]);
+}
+
+#[test]
+fn record_md_modification_skips_git_workspace() {
+    let sandbox = Sandbox::new("config-md-git");
+    let repo = sandbox.workspace.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut init = std::process::Command::new("git");
+    init.arg("init").current_dir(&repo);
+    crate::util::hide_console(&mut init);
+    if !init.output().map(|out| out.status.success()).unwrap_or(false) {
+        return; // 环境无 git：本用例无从构造真实 git 仓，跳过
+    }
+    let doc = repo.join("a.md");
+    std::fs::write(&doc, "x").unwrap();
+    let project = repo.to_string_lossy().to_string();
+    record_md_modification(&project, &doc);
+    let dir = project_conversation_dir(&project).unwrap();
+    assert!(
+        !dir.join("workspace.meta.json").exists() || read_modified_docs(&dir).is_empty(),
+        "git 仓不记录"
+    );
+}
+
+#[test]
+fn record_md_modification_rejects_corrupt_meta() {
+    let sandbox = Sandbox::new("config-md-corrupt");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let dir = ensure_project_conversation_dir(&project).unwrap();
+    let meta_path = dir.join("workspace.meta.json");
+    std::fs::write(&meta_path, "{ not json").unwrap();
+
+    let a = sandbox.workspace.join("a.md");
+    std::fs::write(&a, "x").unwrap();
+    record_md_modification(&project, &a);
+
+    assert_eq!(
+        std::fs::read_to_string(&meta_path).unwrap(),
+        "{ not json",
+        "解析失败拒绝写入，不覆盖原文件"
+    );
+    assert!(!dir.join("workspace.meta.json.lock").exists(), "错误路径同样摘锁");
+}

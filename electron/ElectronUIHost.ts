@@ -15,7 +15,8 @@ import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import type { CoreEvent } from '../src/shared/AssistantEventBus.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
-import type { WorkspaceRef, WorkspaceEndpoint } from '../src/host/workspaceRef.js';
+import { workspaceRefKey, type WorkspaceRef, type WorkspaceEndpoint } from '../src/host/workspaceRef.js';
+import { parseCreatedFilePath, resolveToolWorkspace } from './toolResultSideEffects.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { getMarkdownPreviewBodyHtml, getMarkdownPreviewHtml } from '../src/host/markdownHtml.js';
@@ -26,7 +27,9 @@ import { writeSettingsJson } from '../src/host/settingsFile.js';
 import { watchWorkspaceFile, unwatchWorkspaceFile } from '../src/host/coreFacts.js';
 import { tt } from '../src/host/i18n.js';
 import { imageMimeFor } from './fileTypes.js';
-import { remoteFileReaderFor } from './sidebarFilesRemote.js';
+import { remoteFileReaderFor, sharedClientFor } from './sidebarFilesRemote.js';
+import { localGitRunner } from './sidebarDocView.js';
+import { DocSentinelManager } from './sidebarDocWatch.js';
 import { createLocalFileWatcher } from './localFileWatch.js';
 import {
   ViewerWatchController,
@@ -84,6 +87,8 @@ export class ElectronUIHost implements UIHost {
     getActiveWorkspaceRef: () => WorkspaceRef | undefined;
     subscribe: (listener: (change: WorkspaceChange) => void) => () => void;
   } | null = null;
+  /** 会话 → 工作区根的查询（main 进程注入；main.ts `sessionWorkspaces` 索引的投影） */
+  private sessionWorkspaceLookup: ((sessionId: string) => string | null) | null = null;
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
   /**
@@ -111,6 +116,11 @@ export class ElectronUIHost implements UIHost {
 
   setSidebarView(view: WebContentsView): void {
     this.sidebarView = view;
+  }
+
+  /** 会话 → 工作区根查询接线（specs/030 FR-001：toolResult 相对路径的展开基准） */
+  setSessionWorkspaceLookup(lookup: (sessionId: string) => string | null): void {
+    this.sessionWorkspaceLookup = lookup;
   }
 
   setChatViewManager(m: ChatViewManager): void {
@@ -374,7 +384,91 @@ export class ElectronUIHost implements UIHost {
    * 查看器监听控制器在 T007 接入；接入前保持可编译的显式出口，不做静默分支。
    */
   onWorkspaceFileChanged(event: Extract<CoreEvent, { type: 'workspaceFileChanged' }>): void {
+    // 哨兵优先分流（specs/030 文档视图刷新）：命中的 watchId 不进查看器路由
+    if (this.docSentinels?.handleWatchEvent(event.watchId) === true) return;
     this.viewerWatch?.handleCoreEvent(event);
+  }
+
+  /**
+   * Core 上报工具执行结果（specs/030 FR-001）。
+   * 只观察「Write 成功新建文件」这一个形态：解析输出首行路径（相对路径按会话工作区
+   * 根展开），落在某个打开工作区内时向侧栏推 `sidebar:files-invalidate` 刷新该工作区
+   * 的文件树。文档视图的自动刷新不经此链（git 哨兵监听承担，
+   * `electron/sidebarDocWatch.ts`）。解析不到归属（集合外 / 索引查不到的相对路径）
+   * 是设计允许的 no-op。
+   */
+  onToolResult(event: Extract<CoreEvent, { type: 'toolResult' }>): void {
+    const pathText = parseCreatedFilePath(event.toolName, event.status, event.output);
+    if (pathText === null) return;
+    const refs = this.getOpenWorkspaceRefs();
+    const openRoots = refs.map((ref) => ({ root: ref.path, remote: ref.endpoint !== null }));
+    const sessionRoot = this.sessionWorkspaceLookup?.(event.sessionId) ?? null;
+    const hit = resolveToolWorkspace(pathText, sessionRoot, openRoots);
+    if (!hit) return;
+    this.pushFilesInvalidate(workspaceRefKey(refs[openRoots.indexOf(hit)]), ['tree']);
+  }
+
+  /** 侧栏失效信号推送（specs/030）：Write 新建（tree）与 git 哨兵（doc）共用一个出口 */
+  private pushFilesInvalidate(workspaceId: string, reasons: string[]): void {
+    const webContents = this.sidebarView?.webContents;
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('sidebar:files-invalidate', { workspaceId, reasons });
+    }
+  }
+
+  // ── 文档视图 git 哨兵（specs/030 FR-003）───────────────────────────────────
+
+  private docSentinels: DocSentinelManager | undefined;
+
+  private getDocSentinels(): DocSentinelManager {
+    this.docSentinels ??= new DocSentinelManager({
+      resolveGitDir: async (workspacePath, endpoint) => {
+        const shQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+        try {
+          if (endpoint !== null) {
+            const client = await sharedClientFor(endpoint, (...args) => this.writeLog(...args));
+            const out = await client.exec(`git -C ${shQuote(workspacePath)} rev-parse --absolute-git-dir`);
+            return out.code === 0 ? out.stdout.trim() : null;
+          }
+          const out = await localGitRunner(workspacePath).run(['rev-parse', '--absolute-git-dir']);
+          return out.code === 0 ? out.stdout.trim() : null;
+        } catch (err) {
+          this.writeLog('doc sentinel: resolve git dir failed:', err);
+          return null;
+        }
+      },
+      watchDir: (dir, onChange) =>
+        new Promise((resolve) => {
+          try {
+            const watcher = fs.watch(dir, () => onChange());
+            resolve(() => watcher.close());
+          } catch (err) {
+            this.writeLog(`doc sentinel: watch failed (${dir}):`, err);
+            resolve(null);
+          }
+        }),
+      watchRemote: (request) => watchWorkspaceFile(request),
+      unwatchRemote: (request) => unwatchWorkspaceFile(request),
+      onInvalidate: (workspaceId) => this.pushFilesInvalidate(workspaceId, ['doc']),
+      log: (...args) => this.writeLog(...args),
+    });
+    return this.docSentinels;
+  }
+
+  /** 文档视图开关状态（渲染层经 IPC 上报；workspaceId 是 refKey） */
+  async setDocSentinel(workspaceId: string, enabled: boolean): Promise<void> {
+    if (!enabled) {
+      await this.docSentinels?.disable(workspaceId);
+      return;
+    }
+    const hit = this.getOpenWorkspaceRefs().find((ref) => workspaceRefKey(ref) === workspaceId);
+    if (!hit) return; // 工作区不在打开集合：不监听（渲染层状态会在集合变化时丢弃）
+    await this.getDocSentinels().enable(workspaceId, hit.path, hit.endpoint);
+  }
+
+  /** 工作区关闭：哨兵随之摘除（main 的 emitWorkspaceChange 订阅调用） */
+  async stopDocSentinelFor(ref: WorkspaceRef): Promise<void> {
+    await this.docSentinels?.disable(workspaceRefKey(ref));
   }
 
   /**

@@ -74,13 +74,24 @@ export async function listDirectory(absDir: string): Promise<DirectoryEntry[]> {
     if (d.isSymbolicLink()) {
       try {
         const target = await fs.promises.stat(path.join(absDir, d.name));
-        entries.push({ name: d.name, kind: target.isDirectory() ? 'directory' : 'file' });
+        entries.push({
+          name: d.name,
+          kind: target.isDirectory() ? 'directory' : 'file',
+          mtimeMs: target.mtimeMs,
+        });
       } catch {
         // 断链：无法分类的条目不进树（渲染层没有「未知类型」的图标位）
       }
       continue;
     }
-    entries.push({ name: d.name, kind: d.isDirectory() ? 'directory' : 'file' });
+    try {
+      // 修改时间随条目下发（specs/030 FR-002，悬停提示用）；stat 失败不丢条目，
+      // 时间用 null——渲染层对 null 不显示时间（不猜值）
+      const info = await fs.promises.stat(path.join(absDir, d.name));
+      entries.push({ name: d.name, kind: d.isDirectory() ? 'directory' : 'file', mtimeMs: info.mtimeMs });
+    } catch {
+      entries.push({ name: d.name, kind: d.isDirectory() ? 'directory' : 'file', mtimeMs: null });
+    }
   }
   return entries.sort(compareEntries);
 }

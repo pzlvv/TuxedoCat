@@ -51,7 +51,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 22 个：`UIHost` 自身 17 个 + 继承 `WorkspaceProvider` 的 5 个）：
+成员清单（全部必选，共 23 个：`UIHost` 自身 18 个 + 继承 `WorkspaceProvider` 的 5 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -72,6 +72,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | | `showDiff(options: ShowDiffOptions): Promise<void>` | 显示一次改动的 before / after（仅 manual 模式，见下） |
 | | `openMermaidPreview(code: string): Promise<void>` | 打开 Mermaid 预览 |
 | | `onWorkspaceFileChanged(event: Extract<CoreEvent, { type: 'workspaceFileChanged' }>): void` | Core 上报远程工作区文件变化；VS Code no-op，Electron 路由到查看器窗口（specs/018 FR-002） |
+| | `onToolResult(event: Extract<CoreEvent, { type: 'toolResult' }>): void` | 工具结果的宿主旁路观察（specs/030 FR-001）：webview 渲染照常，Electron 解析 Write 新建文件后刷新侧栏文件树；VS Code no-op（无侧栏文件浏览器） |
 | | `closePreview(): void` | 关闭当前预览（diff / 虚拟文档 / 预览窗口）；句柄由宿主自己持有 |
 | | `openExternalUrl(url: string): Promise<void>` | 用系统默认浏览器打开外部链接 |
 | | `saveTextFile(content: string, options: SaveFileOptions): Promise<SaveFileResult>` | 弹出「另存为」对话框并写入文本文件 |
@@ -103,9 +104,10 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 | `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / uiFontSize / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
 
 项目对话目录清单 `<conversations>/<project>/workspace.meta.json` **不在这里**：它归 core，
-由 core 在建目录时自己写（Core 进程 `core-rs/src/config.rs`；宿主侧共享读写库
-`src/shared/history/Config.ts` 的 `ensureProjectConversationDir` 服务同一格式的宿主
-读写），宿主不参与写盘。
+由 core 写——建目录时写 `workspacePath`，工具成功修改非 git 工作区内的 md 文档后把相对
+路径并入 `modifiedDocs`（specs/030 FR-004；`core-rs/src/config.rs`，锁文件 + 原子替换）。
+宿主不参与写盘；侧栏文档视图经只读库 `src/shared/workspaceMeta.ts` 读取（目录推导复用
+`src/shared/history/Config.ts` 的同一份编码函数，格式由两侧测试对照锁定）。
 
 `theme` / `shortcut` 不属于这份文件：它们是 Electron 宿主本地偏好，落
 `userData/workspace-state.json`（`electron/workspaceStateStore.ts`，临时文件 + rename 原子落盘、内容未变不落盘），core 不读不写（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）。
@@ -141,7 +143,7 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 与 `UIHost` 分开的理由：
 
 1. 独立面板 / 窗口，生命周期与消息协议都与对话 webview 无关；
-2. `UIHost` 已承载 17 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
+2. `UIHost` 已承载 18 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
 3. 拆出后 Spin 的整块（HTML 生成 + 导出 + 面板管理）可整体替换或搬走。
 
 接口只有两个成员：

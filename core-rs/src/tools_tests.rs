@@ -4038,3 +4038,39 @@ disable-model-invocation: true");
 
     crate::skills::reset_registries();
 }
+
+// ==================== md 修改登记（specs/030 FR-004） ====================
+
+#[test]
+fn write_and_edit_record_modified_md_docs() {
+    let sandbox = Sandbox::new("tools-md-record");
+    let ctx = context(&sandbox);
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let dir = crate::config::ensure_project_conversation_dir(&project).unwrap();
+    let meta_path = dir.join("workspace.meta.json");
+
+    // Write 新建 md / 覆盖既有 md 都登记
+    assert!(!execute("Write", &json!({ "file_path": "a.md", "content": "hello" }), &ctx).is_error());
+    sandbox.write_file("b.md", "old");
+    assert!(!execute("Write", &json!({ "file_path": "b.md", "content": "new" }), &ctx).is_error());
+    // Edit 修改 md 也登记
+    assert!(
+        !execute(
+            "Edit",
+            &json!({ "file_path": "a.md", "old_string": "hello", "new_string": "hi" }),
+            &ctx
+        )
+        .is_error()
+    );
+    // 非 md 不登记
+    assert!(!execute("Write", &json!({ "file_path": "c.txt", "content": "x" }), &ctx).is_error());
+
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    assert_eq!(
+        meta["modifiedDocs"],
+        serde_json::json!(["a.md", "b.md"]),
+        "只登记 md 且按字典序稳定输出"
+    );
+    assert_eq!(meta["workspacePath"], json!(project));
+}

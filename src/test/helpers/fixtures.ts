@@ -206,6 +206,7 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     showDiff: async () => undefined,
     openMermaidPreview: async () => undefined,
     onWorkspaceFileChanged: () => undefined,
+    onToolResult: () => undefined,
     closePreview: () => undefined,
     openExternalUrl: async () => undefined,
     saveTextFile: async () => ({ success: false, canceled: true }),

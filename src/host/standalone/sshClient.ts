@@ -32,6 +32,9 @@ export interface SshTarget {
 export interface DirectoryEntry {
   name: string;
   kind: 'file' | 'directory';
+  /** 修改时间（毫秒时间戳；SFTP attrs 的秒级 mtime × 1000，specs/030 FR-002）。
+   *  「取不到」用 null（本地 stat 失败的条目同形），不用可选成员 */
+  mtimeMs: number | null;
 }
 
 /** 一次远端命令的执行结果 */
@@ -301,12 +304,18 @@ export class SshClient {
     });
     const entries: DirectoryEntry[] = [];
     for (const entry of list) {
+      // mtime 一律取 readdir attrs（秒 → 毫秒）；符号链接取链接自身的时间
+      const mtimeMs = entry.attrs.mtime * 1000;
       if (entry.attrs.isSymbolicLink()) {
         const kind = await this.statKind(`${target.replace(/\/+$/, '')}/${entry.filename}`);
-        if (kind) entries.push({ name: entry.filename, kind });
+        if (kind) entries.push({ name: entry.filename, kind, mtimeMs });
         continue;
       }
-      entries.push({ name: entry.filename, kind: entry.attrs.isDirectory() ? 'directory' : 'file' });
+      entries.push({
+        name: entry.filename,
+        kind: entry.attrs.isDirectory() ? 'directory' : 'file',
+        mtimeMs,
+      });
     }
     return entries;
   }

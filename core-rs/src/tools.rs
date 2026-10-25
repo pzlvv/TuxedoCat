@@ -2945,6 +2945,8 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     }
     match std::fs::write(&path, content) {
         Ok(()) => {
+            // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
+            config::record_md_modification(&ctx.cwd, &path);
             let line_count = content.split('\n').count();
             let bytes_written = content.len();
             let verb = if action == "create" { "Created" } else { "Updated" };
@@ -3562,6 +3564,8 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     match std::fs::write(&path, updated) {
         Ok(()) => {
+            // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
+            config::record_md_modification(&ctx.cwd, &path);
             let replacement = if replacements_made == 1 { "replacement" } else { "replacements" };
             let line_note = if start_line == end_line {
                 format!("Edited line {start_line}")

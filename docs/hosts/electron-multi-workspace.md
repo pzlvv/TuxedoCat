@@ -256,6 +256,11 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   列表要等 core 连接就绪才能读到，等待态不猜空值。
 - 活动工作目录变化时，对话列表随之切换。
 - 新对话按钮在活动工作目录下创建对话。
+- 底部文件浏览器分区（US-42 / US-43）：条目悬停显示修改时间、文档视图开关与
+  Write 新建自动刷新（US-61 / US-62 / US-63，specs/030）——数据走 Electron 私有 IPC
+  （`sidebar:files-list` / `sidebar:files-doc-list` / `sidebar:files-doc-watch` /
+  `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与文档记录读取
+  复用 §14.5 的共享连接池。
 
 ### 9.1 空态
 
@@ -406,7 +411,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 
 ### 14.5 连接复用与鉴权
 
-- shell 通道开在与侧栏文件浏览器同一 endpoint 连接池上（`sharedClientFor`，按
+- shell 通道开在与侧栏文件浏览器（含文档视图的 git 探测与记录读取，specs/030）同一
+  endpoint 连接池上（`sharedClientFor`，按
   `sshTargetKey` 缓存）：同一条 SSH 连接多路复用，口令鉴权与主机密钥 TOFU 不重复发生。
 - 终端窗口打开期间对该连接登记一份租约（`retainRemoteFilesClient`），与工作区租约独立
   计数，全部归零才真正断开。

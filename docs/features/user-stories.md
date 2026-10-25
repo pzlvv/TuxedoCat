@@ -23,7 +23,7 @@ last_reviewed: 2026-10-20
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
-| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57 |
+| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～63 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
 
 ---
@@ -51,8 +51,9 @@ last_reviewed: 2026-10-20
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
+| `e2e/electron/remoteSshExecution.spec.ts` | US-37、US-42 | Electron 整应用 |
 | `e2e/remoteWorkspace/picker.spec.ts` | US-36（远端目录选择器：路径框编辑 / 选中项 / Tab 补全 / 焦点常驻） | 远端目录选择器页面 |
-| `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44 | Electron 整应用 |
+| `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44、US-61、US-62、US-63 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39、US-53（录制改键与菜单展示） | Electron 整应用 |
 | `e2e/electron/preview.spec.ts` | US-14、US-38（文件 Monaco 预览） | Electron 整应用 |
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
@@ -71,7 +72,10 @@ last_reviewed: 2026-10-20
 矩形校验由 `src/test/viewerWindows.test.ts` 锁定，窗口行为人工验证；US-39 的 spin 输入
 禁用——需要真实 spin 执行链，禁用 / placeholder 决策由 `src/test/inputAreaState.test.ts` 与
 `src/test/abortButtonState.test.ts` 锁定，落盘与恢复由 core-rs `engine_tests` 锁定；
-US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端；US-43 的「在文件资源管理器中
+US-42 的远程（SSH）工作区文件浏览——需要真实 SSH/SFTP 远端；US-63 的远程文档视图与
+远端 git 哨兵——同一远程口径（US-42 同口径豁免），git 行数口径由
+`src/test/sidebarDocViewGit.test.ts`（临时真实 git 仓）与 `src/test/sidebarDocWatch.test.ts`
+锁定；US-43 的「在文件资源管理器中
 打开」——会弹出真实资源管理器窗口；US-48 的标签页右键菜单——原生 OS 菜单无法被 Playwright
 驱动，「关闭」与「打开命令行」复用既有动作实现，批量关闭的判定（候选＝该工作区已打开的会话
 视图含子代理对话 / 空闲可关含当前选中的对话 / 忙碌不动 / 汇总确认）由

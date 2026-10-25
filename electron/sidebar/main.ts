@@ -113,6 +113,23 @@ type FilesListResult = { ok: true; entries: DirectoryEntry[] } | { ok: false; er
 /** 文件操作回执（判别联合）；'cancelled' = 用户在删除确认框点了取消 */
 type FilesOpResult = { ok: true } | { ok: false; error: string };
 
+/** 文档视图渲染行（specs/030 FR-003；主进程铺平：目录在前、深度已算好、全部层级展开） */
+interface DocViewRow {
+  name: string;
+  /** 相对路径（'/' 分隔） */
+  rel: string;
+  kind: 'directory' | 'file';
+  depth: number;
+  /** 仅 git 口径有值（记录口径为 null，渲染层不显示行数） */
+  plus: number | null;
+  minus: number | null;
+}
+
+/** 文档视图取数回执（判别联合）：失败带 error 文案 */
+type DocListResult =
+  | { ok: true; mode: 'git' | 'record'; rows: DocViewRow[] }
+  | { ok: false; error: string };
+
 interface SidebarAPI {
   getConversations: () => Promise<ConversationMeta[]>;
   getLoadedSessions: () => Promise<string[]>;
@@ -152,6 +169,12 @@ interface SidebarAPI {
   filesDelete: (workspaceId: string, relPaths: string[]) => Promise<FilesOpResult>;
   /** 双击打开（US-42 验收 6）：主进程按类型分流——文本 / 图片进内置窗口，二进制调系统应用 */
   filesOpen: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
+  /** 文档视图取数（specs/030 FR-003 / FR-004）：git 行数口径或非 git 记录口径，主进程分流 */
+  filesDocList: (workspaceId: string) => Promise<DocListResult>;
+  /** 文档视图开关状态上报：主进程据此挂 / 摘 git 哨兵监听 */
+  filesDocWatch: (workspaceId: string, enabled: boolean) => void;
+  /** 主进程推送的失效信号（specs/030：Write 新建 → 树重读、git 哨兵 → 文档重取） */
+  onFilesInvalidated: (cb: (payload: { workspaceId: string; reasons: string[] }) => void) => void;
   // ── 侧栏宽度（US-44） ──
   /** 拖拽手柄改宽度；width 为 null 恢复默认。final 为 true 时主进程把值落盘 */
   setSidebarWidth: (width: number | null, final: boolean) => void;
@@ -172,6 +195,7 @@ const filesSectionEl = document.getElementById('filesSection')!;
 const filesHeaderEl = document.getElementById('filesHeader')!;
 const filesBodyEl = document.getElementById('filesBody')!;
 const filesRefreshBtn = document.getElementById('filesRefresh') as HTMLButtonElement;
+const filesDocToggleBtn = document.getElementById('filesDocToggle') as HTMLButtonElement;
 const filesTreeEl = document.getElementById('filesTree')!;
 // 侧栏宽度拖拽手柄（US-44，吸附在侧栏右缘）
 const resizeHandleEl = document.getElementById('resizeHandle')!;
@@ -948,10 +972,20 @@ interface WorkspaceFilesState {
    * 为止；用户在期间主动滚动（滚轮 / 按键 / 指针）即放弃回填。
    */
   pendingScrollTop: number | null;
+  /** 文档视图开关（specs/030 FR-003；按工作区记忆，localStorage） */
+  docView: boolean;
+  /** 文档视图数据（rows 由主进程铺平；mode 决定空态文案） */
+  docListing: { state: 'loading' | 'loaded' | 'error'; mode: 'git' | 'record'; rows: DocViewRow[]; error?: string };
+  /** 文档取数代次：作废在途回包（与目录读取的 generation 同一口径） */
+  docGeneration: number;
+  /** 是否已发起过取数（false = 渲染时才发起首取，避免给从未开过文档视图的工作区预取） */
+  docRequested: boolean;
 }
 
 /** 折叠状态落 localStorage 的键（值是「工作区 id → 是否展开」的 JSON 表，US-42 验收 1） */
 const FILES_EXPANDED_KEY = 'tuxedo.sidebar.filesExpanded';
+/** 文档视图开关落 localStorage 的键（值是「工作区 id → 是否开启」的 JSON 表，specs/030） */
+const FILES_DOCVIEW_KEY = 'tuxedo.sidebar.filesDocView';
 /** 行缩进：基础留白 + 每层目录一格（与 .file-row 的行高共同决定层级观感） */
 const FILE_ROW_BASE_INDENT = 8;
 const FILE_ROW_INDENT = 14;
@@ -998,6 +1032,29 @@ function storeExpandedMap(map: Record<string, boolean>): void {
   } catch { /* 存不了就每次启动按各工作区默认折叠 */ }
 }
 
+/** 文档视图开关的 localStorage 读写（与折叠状态同一份容错口径） */
+function readStoredDocViewMap(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(FILES_DOCVIEW_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const map: Record<string, boolean> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'boolean') map[id] = value;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+function storeDocViewMap(map: Record<string, boolean>): void {
+  try {
+    window.localStorage.setItem(FILES_DOCVIEW_KEY, JSON.stringify(map));
+  } catch { /* 存不了就每次启动默认普通树 */ }
+}
+
 /** 取（或按需创建）某工作区的文件树状态；新状态从 localStorage 读折叠偏好 */
 function filesStateFor(id: string): WorkspaceFilesState {
   let state = filesStateByWorkspace.get(id);
@@ -1010,6 +1067,10 @@ function filesStateFor(id: string): WorkspaceFilesState {
       selected: new Set(),
       anchor: null,
       pendingScrollTop: null,
+      docView: readStoredDocViewMap()[id] === true,
+      docListing: { state: 'loading', mode: 'git', rows: [] },
+      docGeneration: 0,
+      docRequested: false,
     };
     filesStateByWorkspace.set(id, state);
   }
@@ -1026,6 +1087,13 @@ function persistFilesExpanded(): void {
   const map: Record<string, boolean> = {};
   for (const [id, state] of filesStateByWorkspace) map[id] = state.expanded;
   storeExpandedMap(map);
+}
+
+/** 把各工作区的文档视图开关写进 localStorage（只在变化时调用） */
+function persistFilesDocView(): void {
+  const map: Record<string, boolean> = {};
+  for (const [id, state] of filesStateByWorkspace) map[id] = state.docView;
+  storeDocViewMap(map);
 }
 
 /* ── 图标（lucide，与既有 ICON_* 常量同一来源与描边风格；不用 emoji） ── */
@@ -1074,7 +1142,17 @@ function fileLoadingRowHtml(depth: number): string {
   return `<div class="file-row file-hint" style="padding-left:${indent}px"><span class="spinner file-hint-spinner"></span>加载中…</div>`;
 }
 
-function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind: 'file' | 'directory', depth: number, expanded: boolean): string {
+/** mtime → Host 系统时区的 `YYYY/MM/DD HH:mm`（24 小时制，specs/030 FR-002）。
+ * 渲染层跑在宿主机上，本地 Date 即 Host 系统时区——本地与远程条目是同一绝对时刻
+ * 的同一呈现。null / 非法值返回 null（不猜值，悬停只显示相对路径）。 */
+function formatMtimeMs(mtimeMs: number | null): string | null {
+  if (mtimeMs === null || !Number.isFinite(mtimeMs)) return null;
+  const date = new Date(mtimeMs);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind: 'file' | 'directory', depth: number, expanded: boolean, mtimeMs: number | null): string {
   const indent = FILE_ROW_BASE_INDENT + depth * FILE_ROW_INDENT;
   // 目录才占折叠箭头位：文件用等宽空位占住，图标与名称在两层间对齐
   const chevron = kind === 'directory'
@@ -1083,8 +1161,24 @@ function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind
   const icon = kind === 'directory'
     ? { cls: expanded ? 'ficon-folder-open' : 'ficon-folder', svg: expanded ? FICON_FOLDER_OPEN : FICON_FOLDER }
     : fileIconFor(name);
-  return `<div class="file-row${files.selected.has(rel) ? ' selected' : ''}" data-path="${escapeHtml(rel)}" data-kind="${kind}" style="padding-left:${indent}px" title="${escapeHtml(rel)}">` +
+  const mtime = formatMtimeMs(mtimeMs);
+  const title = mtime === null ? rel : `${rel}\n修改时间：${mtime}`;
+  return `<div class="file-row${files.selected.has(rel) ? ' selected' : ''}" data-path="${escapeHtml(rel)}" data-kind="${kind}" style="padding-left:${indent}px" title="${escapeHtml(title)}">` +
     `${chevron}<span class="file-icon ${icon.cls}">${icon.svg}</span><span class="file-name">${escapeHtml(name)}</span></div>`;
+}
+
+/** 文档视图行（specs/030 FR-003）：行尾 +N/-M 徽标（仅 git 口径）；目录行无折叠箭头
+ * （全部层级默认展开，点击只选中、不动普通树的展开记忆） */
+function docRowHtml(files: WorkspaceFilesState, row: DocViewRow): string {
+  const indent = FILE_ROW_BASE_INDENT + row.depth * FILE_ROW_INDENT;
+  const icon = row.kind === 'directory'
+    ? { cls: 'ficon-folder', svg: FICON_FOLDER }
+    : fileIconFor(row.name);
+  const counts = row.kind === 'file' && row.plus !== null
+    ? `<span class="doc-count"><span class="doc-plus">+${row.plus}</span><span class="doc-minus">-${row.minus}</span></span>`
+    : '';
+  return `<div class="file-row${files.selected.has(row.rel) ? ' selected' : ''}" data-path="${escapeHtml(row.rel)}" data-kind="${row.kind}" style="padding-left:${indent}px" title="${escapeHtml(row.rel)}">` +
+    `<span class="file-chevron leaf"></span><span class="file-icon ${icon.cls}">${icon.svg}</span><span class="file-name">${escapeHtml(row.name)}</span>${counts}</div>`;
 }
 
 function renderFiles(): void {
@@ -1092,9 +1186,21 @@ function renderFiles(): void {
   const files = activeFilesState();
   // 分区折叠时不渲染也不读目录：折叠期渲染会经 renderDirRows 触发根目录的懒加载，
   // 把「启动时刻」的目录内容缓存下来，用户之后展开时命中陈旧缓存（US-42 的懒加载
-  // 语义是「点开才读该层」，根目录的第一个读取点必须是首次展开）。
+  // 语义是「点开才读这层」，根目录的第一个读取点必须是首次展开）。
   if (!files || id === null || !files.expanded) {
     filesTreeEl.innerHTML = '';
+    return;
+  }
+  filesDocToggleBtn.classList.toggle('active', files.docView);
+  filesDocToggleBtn.setAttribute('aria-pressed', files.docView ? 'true' : 'false');
+  // 文档视图（specs/030 FR-003）：只渲染命中文档的行集；切回普通树时原展开状态
+  // 原样恢复（文档视图从未动过 expandedDirs / tree 缓存）
+  if (files.docView) {
+    renderDocFiles(files, id);
+    if (files.pendingScrollTop !== null) {
+      filesBodyEl.scrollTop = files.pendingScrollTop;
+      if (filesBodyEl.scrollTop >= files.pendingScrollTop - 1) files.pendingScrollTop = null;
+    }
     return;
   }
   const rows: string[] = [];
@@ -1105,6 +1211,23 @@ function renderFiles(): void {
     filesBodyEl.scrollTop = files.pendingScrollTop;
     if (filesBodyEl.scrollTop >= files.pendingScrollTop - 1) files.pendingScrollTop = null;
   }
+}
+
+/** 文档视图渲染：loading / error（点击重试）/ 空态提示（口径区分文案）/ 行集 */
+function renderDocFiles(files: WorkspaceFilesState, workspaceId: string): void {
+  if (!files.docRequested) loadDocList(workspaceId);
+  const listing = files.docListing;
+  const rows: string[] = [];
+  if (listing.state === 'loading') {
+    rows.push(fileLoadingRowHtml(0));
+  } else if (listing.state === 'error') {
+    rows.push(`<div class="file-row file-hint file-error" data-retry-doc="1" style="padding-left:${FILE_ROW_BASE_INDENT}px" title="${escapeHtml(listing.error || '')}">读取失败，点击重试</div>`);
+  } else if (listing.rows.length === 0) {
+    rows.push(fileHintRowHtml(listing.mode === 'git' ? '没有变更的 Markdown 文档' : '没有记录的修改文档', 0));
+  } else {
+    for (const row of listing.rows) rows.push(docRowHtml(files, row));
+  }
+  filesTreeEl.innerHTML = rows.join('');
 }
 
 /**
@@ -1142,7 +1265,7 @@ function renderDirRows(files: WorkspaceFilesState, workspaceId: string, rel: str
   for (const entry of listing.entries) {
     const childRel = rel ? `${rel}/${entry.name}` : entry.name;
     const expandedDir = entry.kind === 'directory' && files.expandedDirs.has(childRel);
-    rows.push(fileRowHtml(files, childRel, entry.name, entry.kind, depth, expandedDir));
+    rows.push(fileRowHtml(files, childRel, entry.name, entry.kind, depth, expandedDir, entry.mtimeMs));
     if (expandedDir) renderDirRows(files, workspaceId, childRel, depth + 1, rows);
   }
 }
@@ -1208,6 +1331,9 @@ function setFilesWorkspace(state: WorkspacesState | null): void {
   // 展开且根目录还没读过（新工作区 / 重启后恢复展开）才补一次读取；切回已浏览过的
   // 工作区直接命中缓存，不打断它的树
   if (files.expanded && !files.tree.has('')) loadDir(active.id, '');
+  // 文档视图开启的工作区重挂哨兵（重载 / 重开后渲染层状态从 localStorage 恢复，
+  // 主进程侧的监听需要重新上报；enable 幂等，重复上报无害——specs/030 FR-003）
+  if (files.docView) window.sidebarAPI?.filesDocWatch(active.id, true);
   if (changed) {
     closeFilesMenu();
     renderFiles();
@@ -1241,18 +1367,69 @@ function setFilesExpanded(expanded: boolean): void {
   renderFiles();
 }
 
-/** 整树刷新（刷新按钮 / 删除后）：丢弃该工作区的全部缓存，重读根与已展开目录，保留展开状态与滚动位置 */
-function refreshFiles(): void {
-  const id = activeFilesId;
-  const files = activeFilesState();
-  if (!id || !files) return;
+/**
+ * 指定工作区的整树刷新（手动刷新按钮 / 删除后 / 自动刷新推送，specs/030 FR-001）：
+ * 丢弃该工作区的全部缓存，重读根与已展开目录，保留展开状态；可见工作区记录滚动
+ * 位置（内容重铺后回填），后台工作区静默重读（loadDir 的回包本就写回各自状态）。
+ * 文档视图开启时连带重取数据。
+ */
+function refreshWorkspaceFiles(id: string): void {
+  const files = filesStateByWorkspace.get(id);
+  if (!files) return;
   // 刷新会清空并重读整棵树，DOM 高度先塌后涨：记下当前位置，等内容重新铺满后回填
   // （内容不足时保持待回填，见 renderFiles）
-  files.pendingScrollTop = filesBodyEl.scrollTop;
+  if (id === activeFilesId) files.pendingScrollTop = filesBodyEl.scrollTop;
   files.generation += 1;
   files.tree.clear();
   loadDir(id, '');
   for (const dir of files.expandedDirs) loadDir(id, dir);
+  if (files.docView) loadDocList(id);
+  if (id === activeFilesId) renderFiles();
+}
+
+/** 刷新按钮 / 删除后的整树刷新（当前工作区的便捷入口） */
+function refreshFiles(): void {
+  if (activeFilesId === null) return;
+  refreshWorkspaceFiles(activeFilesId);
+}
+
+/**
+ * 取文档视图数据（specs/030 FR-003）：回包写回该工作区自己的状态，代次作废在途回包
+ * （与目录读取同一口径），只有正在显示的工作区才触发重渲染。
+ */
+function loadDocList(workspaceId: string): void {
+  const files = filesStateByWorkspace.get(workspaceId);
+  if (!files) return;
+  files.docGeneration += 1;
+  const generation = files.docGeneration;
+  files.docRequested = true;
+  files.docListing = { state: 'loading', mode: files.docListing.mode, rows: [] };
+  window.sidebarAPI?.filesDocList(workspaceId)
+    .then((res) => {
+      if (filesStateByWorkspace.get(workspaceId) !== files || files.docGeneration !== generation) return;
+      if (res.ok) files.docListing = { state: 'loaded', mode: res.mode, rows: res.rows };
+      else files.docListing = { state: 'error', mode: files.docListing.mode, rows: [], error: res.error || '读取失败' };
+      if (workspaceId === activeFilesId) renderFiles();
+    })
+    .catch((err) => {
+      if (filesStateByWorkspace.get(workspaceId) !== files || files.docGeneration !== generation) return;
+      files.docListing = { state: 'error', mode: files.docListing.mode, rows: [], error: String(err) };
+      if (workspaceId === activeFilesId) renderFiles();
+    });
+}
+
+/** 文档视图开关（specs/030 FR-003）：按工作区记忆；开启即重取数据，关闭回普通树
+ * （普通树的展开状态未被文档视图动过，原样恢复）。开关状态同时上报主进程，
+ * 主进程据此挂 / 摘 git 哨兵监听。 */
+function toggleDocView(): void {
+  const id = activeFilesId;
+  if (!id) return;
+  const files = filesStateFor(id);
+  files.docView = !files.docView;
+  persistFilesDocView();
+  closeFilesMenu();
+  window.sidebarAPI?.filesDocWatch(id, files.docView);
+  if (files.docView) loadDocList(id);
   renderFiles();
 }
 
@@ -1420,6 +1597,11 @@ function bindFilesEvents(): void {
     e.stopPropagation();
     refreshFiles();
   });
+  filesDocToggleBtn.addEventListener('click', (e) => {
+    // 文档视图开关（specs/030 FR-003）：与刷新按钮同一处置，阻止冒泡到分区条
+    e.stopPropagation();
+    toggleDocView();
+  });
 
   filesTreeEl.addEventListener('click', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('.file-row');
@@ -1430,11 +1612,15 @@ function bindFilesEvents(): void {
     }
     const files = activeFilesState();
     if (!files) return;
-    // 读取失败的目录行：点击重试
+    // 读取失败的目录行：点击重试；文档视图的错误行同理（data-retry-doc）
     const retryDir = row.dataset.retryDir;
     if (retryDir !== undefined) {
       files.tree.delete(retryDir);
       if (activeFilesId !== null) loadDir(activeFilesId, retryDir);
+      return;
+    }
+    if (row.dataset.retryDoc !== undefined) {
+      if (activeFilesId !== null) loadDocList(activeFilesId);
       return;
     }
     const path = row.dataset.path;
@@ -1442,8 +1628,9 @@ function bindFilesEvents(): void {
     // 双击的第二下不再翻转目录（e.detail >= 2）：否则目录双击 = 展开 + 折叠来回抖。
     // 双击的第一下已经翻过一次，净效果仍是「展开」。
     if (e.detail >= 2 && row.dataset.kind === 'directory') return;
-    // 折叠箭头只切换目录展开，不改选中（与 VS Code 资源管理器一致）
-    if (row.dataset.kind === 'directory' && (e.target as HTMLElement).closest('.file-chevron')) {
+    // 折叠箭头只切换目录展开，不改选中（与 VS Code 资源管理器一致）；
+    // 文档视图全部层级默认展开，目录行没有折叠语义（specs/030 FR-003）
+    if (!files.docView && row.dataset.kind === 'directory' && (e.target as HTMLElement).closest('.file-chevron')) {
       toggleDirExpanded(path);
       return;
     }
@@ -1470,8 +1657,9 @@ function bindFilesEvents(): void {
       files.selected.add(path);
       files.anchor = path;
       // 目录单击即展开 / 折叠（US-42：单展开，不要双击）；Ctrl / Shift 多选不触发。
-      // 双击的第二下不再翻转（上面已整体 return），目录双击不会来回抖
-      if (row.dataset.kind === 'directory') toggleDirExpanded(path);
+      // 双击的第二下不再翻转（上面已整体 return），目录双击不会来回抖。
+      // 文档视图里目录行只选中不折叠（specs/030 FR-003）。
+      if (row.dataset.kind === 'directory' && !files.docView) toggleDirExpanded(path);
     }
     applyFileSelectionClasses();
   });
@@ -1540,6 +1728,19 @@ function bindFilesEvents(): void {
   filesBodyEl.addEventListener('scroll', closeFilesMenu, true);
   window.addEventListener('blur', closeFilesMenu);
   window.addEventListener('resize', closeFilesMenu);
+
+  // 主进程失效信号（specs/030 FR-001 / FR-003）：Write 新建 → 树重读（工作区可见或
+  // 后台都重读，后台回包静默入缓存）；git 哨兵 → 文档视图重取（仅开启时）
+  window.sidebarAPI?.onFilesInvalidated((payload) => {
+    const id = typeof payload?.workspaceId === 'string' ? payload.workspaceId : null;
+    if (id === null) return;
+    const reasons = Array.isArray(payload.reasons) ? payload.reasons : [];
+    if (reasons.includes('tree')) refreshWorkspaceFiles(id);
+    if (reasons.includes('doc')) {
+      const files = filesStateByWorkspace.get(id);
+      if (files?.docView) loadDocList(id);
+    }
+  });
 }
 
 /* ── 侧栏宽度拖拽（US-44） ── */

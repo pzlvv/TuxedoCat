@@ -202,6 +202,15 @@ export interface UIHost extends WorkspaceProvider {
   onWorkspaceFileChanged(event: Extract<CoreEvent, { type: 'workspaceFileChanged' }>): void;
 
   /**
+   * Core 上报工具执行结果（specs/030 FR-001）。
+   *
+   * 事件由 `WebViewUI` 的 `toolResult` handler 在投递 webview 渲染之外旁路转交；
+   * Electron 据此解析 Write 新建文件并刷新侧栏文件树，VS Code 无侧栏文件浏览器，
+   * 实现为 no-op。渲染链路（ToolHandler / wire 消息）不受该成员影响。
+   */
+  onToolResult(event: Extract<CoreEvent, { type: 'toolResult' }>): void;
+
+  /**
    * 关闭当前预览（diff / 虚拟文档 / 预览窗口）。
    * 预览句柄由宿主自己持有，共享模块不再保存任何宿主句柄。
    */

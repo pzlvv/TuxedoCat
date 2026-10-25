@@ -137,7 +137,7 @@ export type CoreRequestHandlers = {
 | 2 | `streamMessage` | `sessionId`, `data: StreamMessageData` | `engine.rs` | `onStreamMessage` | `streamMessage` |
 | 3 | `streamEnd` | `sessionId`, `data: StreamEndData` | `engine.rs` | `onStreamEnd` | `streamEnd` |
 | 4 | `toolCall` | `sessionId`, `toolUseId`, `toolName` | `engine.rs` | `onToolCall` | `updateToolStatus`（`running`） |
-| 5 | `toolResult` | `sessionId`, `toolUseId`, `toolName`, `output`, `status` | `engine.rs`（`emit_tool_outcome`） | `onToolResult` | `updateToolStatus`（Edit 失败时追加 `updateToolArgs`） |
+| 5 | `toolResult` | `sessionId`, `toolUseId`, `toolName`, `output`, `status` | `engine.rs`（`emit_tool_outcome`） | `onToolResult`（webview 渲染 + 宿主旁路转发 `UIHost.onToolResult`，specs/030 FR-001） | `updateToolStatus`（Edit 失败时追加 `updateToolArgs`） |
 | 6 | `toolArgsUpdated` | `sessionId`, `toolUseId`, `args` | `engine.rs`（流式 tool input 累积） | `onToolArgsUpdated` | `updateToolArgs` |
 | 7 | `toolProgress` | `sessionId`, `toolUseId`, `progress: ToolProgressData` | `engine.rs` | `onToolProgress` | `toolProgress` |
 | 8 | `aiBegin` | `sessionId` | `engine.rs`（每轮 LLM 调用开始） | `onAIBegin` | `aiBegin` + `showThinkingAnimation` |

@@ -216,6 +216,14 @@ export class VSCodeUIHost implements UIHost {
     // 有意 no-op：VS Code 宿主没有独立查看器窗口。
   }
 
+  /**
+   * VS Code 宿主没有侧栏文件浏览器，没有「Write 新建 → 刷新文件树」的消费方。
+   * 该成员存在是为了让 `WebViewUI` 的 CoreEvent 处理器有统一出口（specs/030）。
+   */
+  onToolResult(_event: Extract<CoreEvent, { type: 'toolResult' }>): void {
+    // 有意 no-op：VS Code 宿主没有侧栏文件浏览器。
+  }
+
   closePreview(): void {
     this.documentManager.closePreview();
   }

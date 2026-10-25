@@ -34,12 +34,42 @@ export function getConversationDir(): string {
 }
 
 /**
- * Windows 下同一目录的分隔符两种写法（`D:\a\b` 与 `D:/a/b`）会各自编码成不同的
+ * Windows 下同一目录的分隔符两种写法（`D:\a\b` 与 `D:/a\b`）会各自编码成不同的
  * 对话空间目录，同一项目裂成两条统计。统一成反斜杠（与资源管理器一致）后再编码；
  * 非 Windows 平台分隔符就是 `/`，原样保留（远程 Linux core 的路径不动）。
+ *
+ * `posix: true` 用于**远程工作区路径**：路径属于远端机器，按远端 POSIX 语义恒等
+ * 归一（与 `electron/sidebarFiles.ts` `resolveWithinRoot` 的 `posix` 选项同一约定）
+ * ——宿主是 Windows 时也不能把远端 `/srv/app` 归一成 `\srv\app`。
  */
-function normalizeWorkspacePath(projectPath: string): string {
-  return process.platform === 'win32' ? projectPath.replace(/\//g, '\\') : projectPath;
+function normalizeWorkspacePath(projectPath: string, posix = false): string {
+  return process.platform === 'win32' && !posix ? projectPath.replace(/\//g, '\\') : projectPath;
+}
+
+/** 超长路径的哈希形态目录名：SHA256 前 16 位 + 末级路径编码前 32 字符 */
+function encodeHashedProjectDir(projectPath: string): string {
+  const hash = createHash('sha256').update(projectPath).digest('hex').substring(0, 16);
+  const normalizedPath = projectPath.replace(/[\\/]+$/, '');
+  const lastSegment = normalizedPath.split(/[\\/]/).pop() || '';
+  const encodedLast = encodeURIComponent(lastSegment).substring(0, 32);
+  return `${hash}_${encodedLast}`;
+}
+
+/**
+ * 项目对话目录的编码候选（纯函数、不读盘）：归一形态优先，分隔符历史写法次之，
+ * 全部超长（>255）时收敛为单个哈希形态。
+ *
+ * 本地（`getProjectConversationDir` 的 existsSync 探测）与远程（SFTP stat 探测，
+ * specs/030 宿主读 `workspace.meta.json`）共用同一份候选顺序。
+ */
+export function projectDirCandidates(projectPath: string, options: { posix?: boolean } = {}): string[] {
+  const normalized = normalizeWorkspacePath(projectPath, options.posix === true);
+  const primary = normalized === projectPath ? [normalized] : [normalized, projectPath];
+  const direct = primary.filter((candidate) => encodeURIComponent(candidate).length <= 255);
+  if (direct.length > 0) {
+    return direct.map((candidate) => encodeURIComponent(candidate));
+  }
+  return [encodeHashedProjectDir(normalized)];
 }
 
 /**
@@ -51,33 +81,16 @@ function normalizeWorkspacePath(projectPath: string): string {
  * 不再为分隔符写法的差异新建第二个空间）。
  */
 export function getProjectConversationDir(projectPath: string): string {
-  const normalized = normalizeWorkspacePath(projectPath);
-  const candidates = normalized === projectPath ? [normalized] : [normalized, projectPath];
-  for (const candidate of candidates) {
-    const existing = join(getConversationDir(), encodeURIComponent(candidate));
-    if (existsSync(existing) && encodedPathLength(candidate) <= 255) {
+  const candidates = projectDirCandidates(projectPath);
+  for (const encoded of candidates) {
+    const existing = join(getConversationDir(), encoded);
+    if (existsSync(existing)) {
       return existing;
     }
   }
-  // URL 编码项目路径（Windows 路径中的 \ 会被编码为 %5C）
-  const encodedPath = encodeURIComponent(candidates[0]);
-  // 单级目录名不能超过 255 字符（Windows NTFS 限制），超长则使用哈希
-  if (encodedPath.length <= 255) {
-    return join(getConversationDir(), encodedPath);
-  }
-  // 超长路径：SHA256 哈希前 16 位 + 路径最后一级的简短编码名称（取前 32 字符），
-  // 组合后约 49 字符，远低于 255 限制
-  const hash = createHash('sha256').update(candidates[0]).digest('hex').substring(0, 16);
-  // 提取最后一级路径组件（如 "CA_TA"），便于人眼识别
-  const normalizedPath = candidates[0].replace(/[\\/]+$/, '');
-  const lastSegment = normalizedPath.split(/[\\/]/).pop() || '';
-  const encodedLast = encodeURIComponent(lastSegment).substring(0, 32);
-  return join(getConversationDir(), `${hash}_${encodedLast}`);
-}
-
-/** 编码后目录名的长度（候选目录的 255 限制判据） */
-function encodedPathLength(projectPath: string): number {
-  return encodeURIComponent(projectPath).length;
+  // 单级目录名不能超过 255 字符（Windows NTFS 限制）：候选里有超长的都没建过目录，
+  // 兜底用首个候选（projectDirCandidates 在全部超长时已收敛为哈希形态）
+  return join(getConversationDir(), candidates[0]);
 }
 
 /**

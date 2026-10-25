@@ -1,10 +1,14 @@
 import { test, expect, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace, waitForMessageBox, clickMessageBoxButton, messageBoxText, mainEval } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
+
+const execFile = promisify(execFileCb);
 
 /**
  * US-42 侧栏文件浏览器（折叠 / 展开 50% / 懒加载树 / 刷新 / 跟随活动工作目录）
@@ -558,4 +562,134 @@ test('US-42 刷新后保留文件树的滚动位置', async () => {
     Math.abs(after.scrollTop - before.scrollTop),
     `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,
   ).toBeLessThanOrEqual(2);
+});
+
+/* ═══ specs/030：Write 新建自动刷新 / 悬停修改时间 / 文档视图 ═══ */
+
+async function gitExec(cwd: string, ...args: string[]): Promise<void> {
+  await execFile('git', ['-C', cwd, ...args], { windowsHide: true });
+}
+
+/** 把 beforeEach 的工作区初始化成真实 git 仓并提交基线（docs/deep.md 入库供层级断言） */
+async function initGitRepo(): Promise<void> {
+  await gitExec(workspaceDir, 'init', '-q');
+  await gitExec(workspaceDir, 'config', 'user.email', 'e2e@t');
+  await gitExec(workspaceDir, 'config', 'user.name', 'e2e');
+  await fs.promises.mkdir(path.join(workspaceDir, 'docs'), { recursive: true });
+  await fs.promises.writeFile(path.join(workspaceDir, 'docs', 'deep.md'), 'base\n');
+  await gitExec(workspaceDir, 'add', '-A');
+  await gitExec(workspaceDir, 'commit', '-q', '-m', 'base');
+}
+
+/** 经聊天页让真实 Core 执行一次 Write 工具（mock LLM 的「写入文件 <名>」路由） */
+async function runWriteTool(fileName: string): Promise<void> {
+  const chatPage = await app.chatPage();
+  await chatPage.fill('textarea.input-textarea', `写入文件 ${fileName}`);
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  const overlay = chatPage.locator('.user-choice-overlay');
+  await expect(overlay).toBeVisible({ timeout: 30_000 });
+  await overlay.getByRole('button', { name: /允许/ }).first().click();
+  await expect
+    .poll(() => fs.existsSync(path.join(workspaceDir, fileName)), { timeout: 15_000 })
+    .toBe(true);
+}
+
+test('US-62 specs/030 AC-4/AC-6 悬停提示在相对路径后显示修改时间（文件与目录）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+  const fileTitle = await sb.locator(`${FILE_ROWS}[data-path="readme.md"]`).getAttribute('title');
+  expect(fileTitle).toContain('readme.md');
+  expect(fileTitle).toMatch(/修改时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/);
+  const dirTitle = await sb.locator(`${FILE_ROWS}[data-path="src"]`).getAttribute('title');
+  expect(dirTitle).toMatch(/修改时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/);
+});
+
+test('US-61 specs/030 AC-1 Write 新建文件自动进树（不点刷新按钮）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible();
+  await runWriteTool('born-by-tool.ts');
+  await expect(sb.locator(`${FILE_ROWS}[data-path="born-by-tool.ts"]`)).toBeVisible({ timeout: 15_000 });
+});
+
+test('US-63 specs/030 AC-7/AC-8 文档视图：git 口径列出变更 md、增删行数、未跟踪计全文、层级默认全展开', async () => {
+  await initGitRepo();
+  // readme.md：'# demo'（1 行）→ 3 行 = +3/-1；docs/deep.md 追加一行 = +1/-0；fresh.md 未跟踪 3 行
+  await fs.promises.writeFile(path.join(workspaceDir, 'readme.md'), 'l1\nl2\nl3\n');
+  await fs.promises.writeFile(path.join(workspaceDir, 'docs', 'deep.md'), 'base\nmore\n');
+  await fs.promises.writeFile(path.join(workspaceDir, 'fresh.md'), 'x\ny\nz\n');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible({ timeout: 15_000 });
+
+  const readmeCounts = await sb.locator(`${FILE_ROWS}[data-path="readme.md"] .doc-count`).innerText();
+  expect(readmeCounts).toContain('+3');
+  expect(readmeCounts).toContain('-1');
+  const deepCounts = await sb.locator(`${FILE_ROWS}[data-path="docs/deep.md"] .doc-count`).innerText();
+  expect(deepCounts).toContain('+1');
+  const freshCounts = await sb.locator(`${FILE_ROWS}[data-path="fresh.md"] .doc-count`).innerText();
+  expect(freshCounts).toContain('+3');
+  expect(freshCounts).toContain('-0');
+  // 层级默认全展开：docs 目录行与深层文件同时可见，未点过任何目录
+  await expect(sb.locator(`${FILE_ROWS}[data-path="docs"][data-kind="directory"]`)).toBeVisible();
+  // 未变更条目不出现
+  await expect(sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`)).toHaveCount(0);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toHaveCount(0);
+
+  // 再点一次回普通树：未变更条目回来了
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`)).toBeVisible();
+});
+
+test('US-63 specs/030 AC-14 外部终端 commit 后文档视图自动刷新（git 哨兵；会话内 commit 同一触发源）', async () => {
+  await initGitRepo();
+  await fs.promises.writeFile(path.join(workspaceDir, 'readme.md'), 'l1\nl2\nl3\n');
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible({ timeout: 15_000 });
+
+  // 测试进程直接执行 git（等价用户在产品外的终端 commit）：哨兵捕获 → 视图自动刷新
+  await gitExec(workspaceDir, 'add', '-A');
+  await gitExec(workspaceDir, 'commit', '-q', '-m', 'second');
+  await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toHaveCount(0, { timeout: 15_000 });
+  await expect(sb.getByText('没有变更的 Markdown 文档')).toBeVisible({ timeout: 15_000 });
+});
+
+test('US-63 specs/030 AC-15/16 非 git 记录口径：工具写入的 md 自动列出（无行数徽标）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.getByText('没有记录的修改文档')).toBeVisible({ timeout: 15_000 });
+
+  await runWriteTool('story.md');
+  await expect(sb.locator(`${FILE_ROWS}[data-path="story.md"]`)).toBeVisible({ timeout: 15_000 });
+  await expect(sb.locator(`${FILE_ROWS}[data-path="story.md"] .doc-count`)).toHaveCount(0);
+});
+
+test('US-63 specs/030 AC-11 文档视图开关按工作区记忆（切走再切回原样恢复）', async () => {
+  const secondDir = await makeWorkspace({ 'other.md': '# two' });
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  // W1 开文档视图（非 git 仓走记录口径空态）
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.locator('#filesDocToggle.active')).toHaveCount(1);
+
+  // 添加 W2（会切换活动工作区）：显式落在 W2 上并展开分区，断言它是普通树
+  await sb.evaluate((p) => {
+    (window as unknown as { sidebarAPI?: { addWorkspaces: (paths?: string[]) => void } })
+      .sidebarAPI?.addWorkspaces([p as string]);
+  }, secondDir);
+  await openWorkspaceByPath(sb, secondDir);
+  await sb.locator('#filesHeader').click();
+  // 展开后按钮 class 才同步目标工作区的开关状态（折叠期按钮整体隐藏）
+  await expect(sb.locator('#filesDocToggle.active')).toHaveCount(0);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="other.md"]`)).toBeVisible({ timeout: 15_000 });
+
+  // 切回 W1：分区仍展开、仍是文档视图（按工作区记忆）
+  await openWorkspaceByPath(sb, workspaceDir);
+  await expect(sb.locator('#filesDocToggle.active')).toHaveCount(1);
 });

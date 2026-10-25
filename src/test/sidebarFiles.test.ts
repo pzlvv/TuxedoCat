@@ -64,21 +64,28 @@ runTests('sidebarFiles', async () => {
       })());
 
     // listDirectory / deleteEachPath 是异步的：先跑完拿到布尔结果再 check
-    const dirListing = await (async (): Promise<boolean> => {
-      const entries = await listDirectory(root);
-      const names = entries.map((e) => e.name);
-      // 断链不进树（样本建不了时该分支未验证，上方已登记跳过）；目录（dirB、src）排在文件（readme.md）之前
-      return (!brokenLinkCreated || !names.includes('broken-link'))
-        && names.indexOf('dirB') < names.indexOf('readme.md')
-        && names.indexOf('src') < names.indexOf('readme.md')
-        && entries.every((e) => e.kind === 'file' || e.kind === 'directory');
-    })();
+    const listedEntries = await listDirectory(root);
+    const names = listedEntries.map((e) => e.name);
+    // 断链不进树（样本建不了时该分支未验证，上方已登记跳过）；目录（dirB、src）排在文件（readme.md）之前
+    const dirListing = (!brokenLinkCreated || !names.includes('broken-link'))
+      && names.indexOf('dirB') < names.indexOf('readme.md')
+      && names.indexOf('src') < names.indexOf('readme.md')
+      && listedEntries.every((e) => e.kind === 'file' || e.kind === 'directory');
     check('listDirectory：目录优先 + 断链跳过', dirListing);
 
+    // 条目携带修改时间（specs/030 FR-002）：文件与目录都是毫秒时间戳（stat 失败的条目
+    // 会是 null，本用例的样本都 stat 得到）
+    const byName = new Map(listedEntries.map((e) => [e.name, e]));
+    const mtimeFile = byName.get('readme.md');
+    const mtimeDir = byName.get('src');
+    check('条目携带修改时间（文件与目录，毫秒时间戳）',
+      mtimeFile !== undefined && typeof mtimeFile.mtimeMs === 'number' && mtimeFile.mtimeMs! > 0
+      && mtimeDir !== undefined && typeof mtimeDir.mtimeMs === 'number');
+
     const sorted = sortSidebarEntries([
-      { name: 'file10', kind: 'file' },
-      { name: 'file2', kind: 'file' },
-      { name: 'file2', kind: 'directory' },
+      { name: 'file10', kind: 'file', mtimeMs: null },
+      { name: 'file2', kind: 'file', mtimeMs: null },
+      { name: 'file2', kind: 'directory', mtimeMs: null },
     ]);
     check('sortSidebarEntries：同名目录排前 + 数字感知',
       sorted[0].name === 'file2' && sorted[0].kind === 'directory'

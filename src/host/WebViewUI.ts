@@ -328,7 +328,12 @@ export class WebViewUI implements WebViewUiPort {
       streamMessage: (e) => this.onStreamMessage(e.sessionId, e.data),
       streamEnd: (e) => this.onStreamEnd(e.sessionId, e.data),
       toolCall: (e) => this.onToolCall(e.sessionId, e.toolUseId, e.toolName),
-      toolResult: (e) => this.onToolResult(e.sessionId, e.toolUseId, e.toolName, e.output, e.status),
+      toolResult: (e) => {
+        this.onToolResult(e.sessionId, e.toolUseId, e.toolName, e.output, e.status);
+        // 宿主旁路观察（specs/030 FR-001）：webview 渲染照常，Electron 侧解析
+        // Write 新建文件后刷新侧栏文件树
+        this.host.onToolResult(e);
+      },
       toolArgsUpdated: (e) => this.onToolArgsUpdated(e.sessionId, e.toolUseId, e.args),
       toolProgress: (e) => this.onToolProgress(e.sessionId, e.toolUseId, e.progress),
       aiBegin: (e) => this.onAIBegin(e.sessionId),
