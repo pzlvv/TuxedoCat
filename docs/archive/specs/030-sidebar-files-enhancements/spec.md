@@ -19,12 +19,12 @@ VS Code 宿主无侧栏文件浏览器，本次不涉及。
 
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
-| [docs/hosts/electron-multi-workspace.md](../../docs/hosts/electron-multi-workspace.md) | [第 9 节 侧栏](../../docs/hosts/electron-multi-workspace.md#9-侧栏) | 修改 | 文档视图开关与展示（含远程：远端 git 判定 / 行数统计与记录读取走共享 SSH 连接池）、Write 新建后的自动刷新推送、git 哨兵监听（commit / stage / checkout 自动刷新，会话内外一致，远程复用文件监听通道）、条目携带修改时间；新增 / 变更的 IPC 频道清单 |
-| [docs/architecture/contracts.md](../../docs/architecture/contracts.md) | workspace.meta.json 归属段 | 修改 | `workspace.meta.json` 增加 md 修改记录字段；声明宿主侧只读入口（写仍归 Core）；`UIHost` 新增 `onToolResult` 成员（宿主转发，不投递 webview） |
-| [docs/architecture/core-ui-separation.md](../../docs/architecture/core-ui-separation.md) | [第 4.1 节 归属](../../docs/architecture/core-ui-separation.md#41-归属) | 修改 | 清单写入时机从「目录首次创建写一次」扩到「工具修改 md 后更新记录」，仍由 Core 独占写 |
-| [docs/architecture/repo-map.md](../../docs/architecture/repo-map.md) | 目录布局 | 修改 | 新增文件条目：侧栏文档视图逻辑、宿主侧记录读库、相关测试 |
-| [docs/features/user-stories/desktop.md](../../docs/features/user-stories/desktop.md) | [EP-12 侧栏文件浏览器（桌面端）](../../docs/features/user-stories/desktop.md#ep-12-侧栏文件浏览器桌面端) | 修改 | 新增 US-61 / US-62 / US-63 |
-| [docs/features/user-stories.md](../../docs/features/user-stories.md) | 附录 US ↔ e2e 映射 | 修改 | 三条新 US 的映射与豁免登记 |
+| [docs/hosts/electron-multi-workspace.md](../../../docs/hosts/electron-multi-workspace.md) | [第 9 节 侧栏](../../../docs/hosts/electron-multi-workspace.md#9-侧栏) | 修改 | 文档视图开关与展示（含远程：远端 git 判定 / 行数统计与记录读取走共享 SSH 连接池）、Write 新建后的自动刷新推送、git 哨兵监听（commit / stage / checkout 自动刷新，会话内外一致，远程复用文件监听通道）、条目携带修改时间；新增 / 变更的 IPC 频道清单 |
+| [docs/architecture/contracts.md](../../../docs/architecture/contracts.md) | workspace.meta.json 归属段 | 修改 | `workspace.meta.json` 增加 md 修改记录字段；声明宿主侧只读入口（写仍归 Core）；`UIHost` 新增 `onToolResult` 成员（宿主转发，不投递 webview） |
+| [docs/architecture/core-ui-separation.md](../../../docs/architecture/core-ui-separation.md) | [第 4.1 节 归属](../../../docs/architecture/core-ui-separation.md#41-归属) | 修改 | 清单写入时机从「目录首次创建写一次」扩到「工具修改 md 后更新记录」，仍由 Core 独占写 |
+| [docs/architecture/repo-map.md](../../../docs/architecture/repo-map.md) | 目录布局 | 修改 | 新增文件条目：侧栏文档视图逻辑、宿主侧记录读库、相关测试 |
+| [docs/features/user-stories/desktop.md](../../../docs/features/user-stories/desktop.md) | [EP-12 侧栏文件浏览器（桌面端）](../../../docs/features/user-stories/desktop.md#ep-12-侧栏文件浏览器桌面端) | 修改 | 新增 US-61 / US-62 / US-63 |
+| [docs/features/user-stories.md](../../../docs/features/user-stories.md) | 附录 US ↔ e2e 映射 | 修改 | 三条新 US 的映射与豁免登记 |
 
 总线事件与 wire 消息无新增；宿主契约 `UIHost` 新增一个成员（`toolResult` 的宿主
 转发，照 `workspaceFileChanged` 先例，见 plan.md），`docs/architecture/events.md`
@@ -145,7 +145,7 @@ Core 独占写）。远程（SSH）工作区：记录由远端 Core 写入其数
 ## 对需求基线的影响
 
 新增三条 US，登记进
-[EP-12 侧栏文件浏览器（桌面端）](../../docs/features/user-stories/desktop.md#ep-12-侧栏文件浏览器桌面端)：
+[EP-12 侧栏文件浏览器（桌面端）](../../../docs/features/user-stories/desktop.md#ep-12-侧栏文件浏览器桌面端)：
 
 - US-61 Write 新建文件自动刷新文件树（FR-001）
 - US-62 条目悬停显示修改时间——文件与目录（FR-002）

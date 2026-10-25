@@ -162,22 +162,22 @@ core 执行工具（engine.rs emit_tool_outcome → toolResult 事件）
 
 ## 宪章检查
 
-- [x] 分层与依赖（[AGENTS.md 第 1 节](../../AGENTS.md#1-分层与依赖评审必查)）：`src/shared/workspaceMeta.ts` 只依赖 node
+- [x] 分层与依赖（[AGENTS.md 第 1 节](../../../AGENTS.md#1-分层与依赖评审必查)）：`src/shared/workspaceMeta.ts` 只依赖 node
       内建与 `src/shared/` / `src/config/`（配置目录常量既有依赖面）；`src/host/`
       不 import 宿主 API（`onToolResult` 只是接口成员）；`electron/sidebarDocView.ts`
       被 electron 持有、不反向进入 `src/`；无宿主嗅探（差异经 `WorkspaceRef.endpoint`
       判别，非 `host.kind`）。
-- [x] 架构铁律（[AGENTS.md 第 4 节](../../AGENTS.md#4-架构铁律docsarchitectureprinciplesmddocsarchitectureprinciplesmd)）：git 失败显式错误态、不降级到记录口径（不过度
+- [x] 架构铁律（[AGENTS.md 第 4 节](../../../AGENTS.md#4-架构铁律docsarchitectureprinciplesmddocsarchitectureprinciplesmd)）：git 失败显式错误态、不降级到记录口径（不过度
       fallback；VS Code 的 no-op 属「该宿主无消费方」的设计允许 no-op，带注释）；
       `DirectoryEntry.mtimeMs` 与 `DocListResult.plus/minus` 全必选、缺失语义用
       `null`（铁律 4.2）；记录唯一写入方是 core、宿主只读（一份事实一个写入点）；
       无新增配置默认值；渲染层 loading 转圈 / error 显式，不猜值。
-- [x] Core 行为与落盘格式同步义务（[AGENTS.md 第 1 节](../../AGENTS.md#1-分层与依赖评审必查)第 9 条、[第 5 节](../../AGENTS.md#5-工作流)）：Core 改动
+- [x] Core 行为与落盘格式同步义务（[AGENTS.md 第 1 节](../../../AGENTS.md#1-分层与依赖评审必查)第 9 条、[第 5 节](../../../AGENTS.md#5-工作流)）：Core 改动
       全在 `core-rs/` 并带 Rust 测试；`workspace.meta.json` 变更双侧同步——Rust 写
       侧测试锁定字段与行为，TS 读库测试锁定同一形状（对照表口径），`npm run test:core`
       与 `npm run test:all` 都过。仅 standalone Core 一套实现，无第二侧 Core 需要
       parity。
-- [x] 文档同步义务（[AGENTS.md 第 0 节](../../AGENTS.md#0-文档要求)）：实施同批更新上表文档清单；`UIHost` 成员数、
+- [x] 文档同步义务（[AGENTS.md 第 0 节](../../../AGENTS.md#0-文档要求)）：实施同批更新上表文档清单；`UIHost` 成员数、
       IPC 频道、`DirectoryEntry` 字段、事件表 `toolResult` 行说明均挂 docsLint 对照，
       `npm run test:all -- docs-lint` 必须绿。
 
