@@ -96,4 +96,4 @@ status: 已修
 | 既有回归（打包边界） | `node scripts/run-tests.mjs pdb-packaging tray-sound` | 绿 | 3 + 4 项断言全通过 |
 | 既有回归（文档守卫） | `node scripts/run-tests.mjs docs-lint` | 绿 | 49 项通过 |
 | 静态检查 | `npm run check-types && npm run lint` | 绿 | 三份 tsconfig 与 eslint 均无输出 |
-| 端到端实跑（Linux 宿主，提交后 `npm run package` 全链） | `npm run package` | not-run | 待提交后在 Linux 打包机实跑：确认 exit 0、双架构安装包与 `package:tui` 三段全绿 |
+| 端到端实跑（Linux 宿主，提交后 `npm run package` 全链） | `npm run package` | 绿 | exit 0（1m49s），三段全跑（`package:tui` 未被 `&&` 短路）；新产双架构 NSIS（`verify-nsis-payload` 2 包 × 34 文件通过）+ `.vsix` + 两个 tui installer；无 `AppImage` / `snap` / `deb` / `rpm`；`win-unpacked` 为 x86-64、`win-arm64-unpacked` 为 ARM64；日志两条 `skipped dependencies rebuild`、无 `executing @electron/rebuild`；与修复前的 Windows 侧产物比对 `win-unpacked` 文件集合完全一致 |
