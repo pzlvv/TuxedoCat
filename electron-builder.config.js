@@ -69,6 +69,16 @@ module.exports = {
     'package.json',
     '!node_modules/**',
   ],
+  // 关闭原生模块重建（`@electron/rebuild`）：上面的 `!node_modules/**` 让 node_modules
+  // 整个不进包，重建出来的二进制一个都不进产物，这一步纯属空转；代价却是非 Windows
+  // 宿主上打 win32 包时，目标 `platform` 与宿主 `process.platform` 不等，一旦某个依赖
+  // 没有预编译产物（`ssh2` 的可选依赖 `cpu-features` 就是这样）就撞
+  // `node-gyp does not support cross-compiling native modules from source` 的守卫，
+  // 整个架构直接打包失败（见 specs/defects/package-app-installer-missing-win-target.md）。
+  //
+  // 反过来说：哪天有依赖必须**以原生模块形式**随包发布，这里必须改回 true 并重做平台
+  // 矩阵，否则未重建 / 异架构的二进制会被静默打进产物。
+  npmRebuild: false,
   // 打包后的 app 入口指向 Electron 主进程
   extraMetadata: {
     main: project.build.electronMainOut,

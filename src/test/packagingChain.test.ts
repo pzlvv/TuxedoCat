@@ -61,5 +61,15 @@ runTests('packagingChain', () => {
     installerScript.trimEnd().endsWith('node scripts/verify-nsis-payload.mjs'),
   );
 
+  // RT-3：node_modules 不进包时，原生模块重建是纯副作用，且在非 Windows 宿主上必然失败
+  const builderConfig = require(path.join(REPO_ROOT, 'electron-builder.config.js')) as {
+    files: string[];
+    npmRebuild?: boolean;
+  };
+  check(
+    'node_modules 不进包时关闭原生模块重建',
+    !builderConfig.files.includes('!node_modules/**') || builderConfig.npmRebuild === false,
+  );
+
   finish();
 });
