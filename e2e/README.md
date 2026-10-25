@@ -30,6 +30,26 @@ Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modu
 排查：`E2E_DEBUG=1 npm run test:e2e:electron` 会把应用主进程日志透传到测试输出；
 失败时 Playwright 输出 trace（`npx playwright show-trace <zip>`）。
 
+## 测试环境配置（environments.json）
+
+依赖真实外部环境（当前：真实 SSH 远端，`e2e/electron/remoteSshExecution.spec.ts`）的用例
+从 `e2e/environments.json` 读取环境信息；该文件**不入库**（gitignore，内容含 SSH 凭证）。
+首次使用：复制 `e2e/environments.example.json` 为同目录的 `e2e/environments.json` 并填入
+本机可用的环境。各段字段与含义以 `e2e/helpers/testEnvironment.ts` 的类型与校验为准。
+
+有效性判断分三层，**无效直接报错，不做任何修复**（不补默认值、不从 example 兜底、
+不换凭证重试、不清远端状态）——与产品代码同一原则
+（[不过度 fallback](../docs/architecture/principles.md)）：
+
+| 层 | 时机 | 覆盖 | 无效时的表现 |
+| --- | --- | --- | --- |
+| 产物层 | 配置加载期（`assertArtifact`） | 全部用例 | 缺构建产物 / Core 二进制即整车道报错，附构建命令 |
+| 配置层 | 配置加载期（`assertEnvironmentFileIfPresent`） + 用例文件加载期（`require*`） | 文件存在但形状非法 → 全部用例；依赖的段缺失 / 字段非法 → 该文件用例 | 收集期即失败，错误列出全部问题与复制指引 |
+| 连通层 | 依赖外部环境的用例的 `beforeEach` | 该用例 | 用例开头探测（SSH `uname -sm`），失效立即失败并指明恢复责任在使用者 |
+
+报错信息只描述「缺什么、去哪补」，环境本身永远由使用者恢复；用例不做任何修复动作
+（测试内的清场与场景预置是 arrange，不是修复）。
+
 ## 结构
 
 ```

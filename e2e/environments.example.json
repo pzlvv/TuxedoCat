@@ -1,0 +1,8 @@
+{
+  "ssh": {
+    "host": "填测试机的 IP 或主机名",
+    "port": 22,
+    "user": "填 SSH 用户",
+    "password": "填 SSH 口令"
+  }
+}

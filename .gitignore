@@ -24,6 +24,10 @@ exp/
 test-results/
 playwright-report/
 
+# E2E 测试环境配置（真实 SSH 等外部环境信息，含凭证）：从 environments.example.json
+# 复制并填写，只留本地不入库
+e2e/environments.json
+
 # ZCode 本地会话状态（规划稿等）与本地忽略文件不入库。技能入库在 .agents/skills；
 # .zcode/skills 只是本机指向它的 junction，不穿透提交（避免同一份技能两份 blob）
 .zcode/*

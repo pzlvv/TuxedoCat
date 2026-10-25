@@ -57,7 +57,8 @@ manual 模式的权限确认请求登入 pending 后**永不投递**（open=fals
   「manual 权限模式：远程 Bash 弹确认、允许后在远端执行」——真实 SSH 远程工作区上，
   Playwright 以自动化速度在视图挂载后 ~200ms 发出首条消息（稳定踩中竞态窗口），
   断言确认框出现、点击允许后命令在远端执行（tool_result 含 `uname -s` 的 Linux 输出）。
-  门控 `E2E_SSH_HOST/E2E_SSH_USER/E2E_SSH_PASSWORD`，无环境时跳过，不进常规车道。
+  SSH 环境从 `e2e/environments.json` 读取（`e2e/README.md`「测试环境配置」）；配置缺失
+  / 形状非法或连不上时用例**直接报错**（每用例开头的环境有效性判断），不跳过、不进常规车道。
 - **RT-2**：本地回归——`e2e/electron/backgroundBash.spec.ts` 的 manual 权限流不受晋升
   顺序调整影响（修复后整文件绿）。
 
@@ -65,5 +66,5 @@ manual 模式的权限确认请求登入 pending 后**永不投递**（open=fals
 
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
-| 修复前（manual 用例） | `E2E_SSH_HOST=… npm run test:e2e:electron -- remoteSshExecution` | 红 | 60s 等不到 `.user-choice-overlay`；diag 扫描全部页面无确认框，第二轮 LLM 请求照常到达（read-only 白名单命令）或挂起（非白名单命令） |
+| 修复前（manual 用例） | `npm run test:e2e:electron -- remoteSshExecution` | 红 | 60s 等不到 `.user-choice-overlay`；diag 扫描全部页面无确认框，第二轮 LLM 请求照常到达（read-only 白名单命令）或挂起（非白名单命令） |
 | 修复后（2026-10-25，真实 SSH 172.20.56.28 Arch Linux x86_64） | 同上；另 `npm run test:e2e:electron -- backgroundBash` | 绿 | `remoteSshExecution.spec.ts` 9/9（含冷部署 / 强杀清理 / 陈旧状态文件 / manual 权限）；`backgroundBash.spec.ts` 本地 manual 权限绿 |

@@ -1,6 +1,5 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Client } from 'ssh2';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
@@ -25,44 +24,26 @@ const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1
  * **远端机器**上执行。mock LLM 对外监听（远端 Core 从目标机器回连本机），断言三分：
  * UI 可见终轮、第二轮 LLM 上下文里的 tool_result、经 SSH/SFTP 直接在远端核实的副作用。
  *
- * 门控：必须设 E2E_SSH_HOST / E2E_SSH_USER / E2E_SSH_PASSWORD（可选 E2E_SSH_PORT、
- * E2E_LLM_ADVERTISE_HOST），未设即整文件跳过——CI 与常规本地跑不依赖外部机器。
- * 运行（示例）：
- *   E2E_SSH_HOST=172.20.56.28 E2E_SSH_USER=pz E2E_SSH_PASSWORD=… \
- *     npm run test:e2e:electron -- remoteSshExecution
+ * 环境：从 `e2e/environments.json` 的 ssh 段读取（该文件不入库，从
+ * `e2e/environments.example.json` 复制填写，见 e2e/README.md「测试环境配置」）。
+ * 环境有效性判断分两层，**无效直接报错、不做任何修复**（不换凭证重试、不清远端状态）：
+ * - 配置层（模块加载期）：文件缺失 / ssh 段形状非法 → 本文件用例在收集期即失败；
+ * - 连通层（每个用例开头的 beforeEach）：SSH 可达且远端是 Linux → 无效该用例立即失败。
  * 前置：`npm run build:core:linux-x64`（远端是 Linux 时本机必须携带对应产物）。
+ * 运行：
+ *   npm run test:e2e:electron -- remoteSshExecution
  */
 
-const SSH_HOST = process.env.E2E_SSH_HOST ?? '';
-const SSH_PORT = Number(process.env.E2E_SSH_PORT ?? 22);
-const SSH_USER = process.env.E2E_SSH_USER ?? '';
-const SSH_PASSWORD = process.env.E2E_SSH_PASSWORD ?? '';
-const ENABLED = SSH_HOST !== '' && SSH_USER !== '' && SSH_PASSWORD !== '';
+import { requireSshEnvironment, detectLlmAdvertiseHost } from '../helpers/testEnvironment';
 
-test.skip(!ENABLED, '需要真实 SSH 环境：E2E_SSH_HOST / E2E_SSH_USER / E2E_SSH_PASSWORD');
+const SSH = requireSshEnvironment();
+const ADVERTISE_HOST = SSH.llmAdvertiseHost ?? detectLlmAdvertiseHost();
 
 test.setTimeout(300_000);
 
-/** 本机对外（LAN）地址：mock LLM 的 baseURL 用它，远端 Core 才回连得上 */
-function detectAdvertiseHost(): string {
-  const forced = process.env.E2E_LLM_ADVERTISE_HOST;
-  if (forced) return forced;
-  const all: string[] = [];
-  for (const nets of Object.values(os.networkInterfaces())) {
-    for (const net of nets ?? []) {
-      if (net.family !== 'IPv4' || net.internal) continue;
-      // 优先 192.168.*（物理网卡；172.20.48.1 这类虚拟网关地址远端未必可达）
-      if (net.address.startsWith('192.168.')) return net.address;
-      all.push(net.address);
-    }
-  }
-  if (all.length === 0) throw new Error('E2E_LLM_ADVERTISE_HOST 未设且找不到本机 IPv4 地址');
-  return all[0];
-}
-
 function sshConnect(): Client {
   const client = new Client();
-  client.connect({ host: SSH_HOST, port: SSH_PORT, username: SSH_USER, password: SSH_PASSWORD, readyTimeout: 20_000 });
+  client.connect({ host: SSH.host, port: SSH.port, username: SSH.user, password: SSH.password, readyTimeout: 20_000 });
   return client;
 }
 
@@ -102,8 +83,8 @@ function sshReadFile(remotePath: string): Promise<string | null> {
           client.end();
           if (readErr) {
             // sftp 状态码 2 = NO_SUCH_FILE（不存在按 null 返回，配合 expect.poll 重试）
-            const code = (readErr as NodeJS.ErrnoException).code;
-            if (code === 2 || /No such file/i.test(String(readErr.message))) resolve(null);
+            const code = (readErr as { code?: unknown }).code;
+            if (String(code) === '2' || /No such file/i.test(String(readErr.message))) resolve(null);
             else reject(readErr);
           } else {
             resolve(String(data));
@@ -115,7 +96,6 @@ function sshReadFile(remotePath: string): Promise<string | null> {
   });
 }
 
-const ADVERTISE_HOST = ENABLED ? detectAdvertiseHost() : '127.0.0.1';
 let remoteHome = '';
 let remoteWs = '';
 let remoteRef: SerializedWorkspaceRef;
@@ -136,8 +116,28 @@ test.beforeAll(async () => {
   remoteRef = {
     scheme: 'ssh',
     path: remoteWs,
-    endpoint: { host: SSH_HOST, port: SSH_PORT, user: SSH_USER, auth: { kind: 'sshPassword', password: SSH_PASSWORD } },
+    endpoint: { host: SSH.host, port: SSH.port, user: SSH.user, auth: { kind: 'sshPassword', password: SSH.password } },
   };
+});
+
+test.beforeEach(async () => {
+  // 环境有效性判断（每个用例开头）：SSH 可达且远端是携带产物支持的平台。
+  // 无效直接报错——不换凭证重试、不清远端状态、不做任何修复；恢复环境是使用者的事
+  //（检查 e2e/environments.json 或目标机器）。
+  const probe = await sshExec('uname -sm');
+  if (probe.code !== 0) {
+    throw new Error(
+      `SSH 测试环境无效（${SSH.user}@${SSH.host}:${SSH.port}）：uname 失败（exit=${probe.code}）：`
+      + `${probe.stderr.trim() || 'no output'}。不做修复，请先恢复环境或修正 e2e/environments.json。`,
+    );
+  }
+  const [system] = probe.stdout.trim().split(/\s+/);
+  if (system !== 'Linux') {
+    throw new Error(
+      `SSH 测试环境无效：远端平台 "${system ?? 'unknown'}" 不被支持（本机携带的 Core 产物只覆盖 Linux）。`
+      + '不做修复，请换 Linux 远端或在 e2e/environments.json 改指其它环境。',
+    );
+  }
 });
 
 test.afterAll(async () => {

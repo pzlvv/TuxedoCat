@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertEnvironmentFileIfPresent } from './helpers/testEnvironment';
 
 /**
  * 场景级 e2e 配置（`e2e/README.md`）。
@@ -30,6 +31,24 @@ assertArtifact(path.join('dist', 'webview', 'index.html'));
 assertArtifact(path.join('dist-electron', 'main.cjs'));
 assertArtifact(path.join('dist', 'remoteWorkspace', 'index.html'));
 assertArtifact(path.join('dist', 'terminal', 'index.html'));
+
+// Core 二进制（electron-app 用例驱动真实 Core）：缺失时在配置加载期即报错，
+// 不等用例跑到一半才在 spawn 处失败。目录 / 文件名口径同 src/host/standalone/coreBinary.ts
+//（`<arch>-<platform>` / binaryName[.exe]），名字取自工程配置不写死。
+const coreArch = process.arch === 'x64' || process.arch === 'arm64' ? process.arch : null;
+if (coreArch && (process.platform === 'win32' || process.platform === 'linux')) {
+  const project = require('../project.config.cjs') as { core: { binaryName: string; resourceDir: string } };
+  assertArtifact(path.join(
+    'dist', 'resources', project.core.resourceDir,
+    `${coreArch}-${process.platform}`,
+    project.core.binaryName + (process.platform === 'win32' ? '.exe' : ''),
+  ));
+}
+
+// 环境文件存在但形状非法（非 JSON / 顶层不是对象）：整个车道立即报错——配置坏了
+// 不该等用到它的用例才发现。文件缺失放行：大多数用例不依赖外部环境（依赖方各自
+// 在用例开头校验并向使用者报错）。见 e2e/README.md「测试环境配置」。
+assertEnvironmentFileIfPresent();
 
 export default defineConfig({
   testDir: '.',
