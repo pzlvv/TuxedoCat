@@ -143,8 +143,9 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   tests job 跑 check-types / lint / 全部测试 / `test:core`，并先构建 Linux Core 让
   `standalone*` 系列测试驱动真实二进制而不是 skip）。
 - **e2e 也进 CI**（`.github/workflows/e2e.yml`）：`prepare` 构建产物 + `check-types:e2e`，
-  之后 `ui` / `electron` / `ssh` / `tui` 四个车道并行（electron 与 ssh 车道跑在 `xvfb-run`
-  里，ssh 车道由 job 内的 sshd 充当远端）。新增 e2e project 时同步该工作流与
+  之后 `ui` / `electron` / `tui` 三个车道并行（electron 车道跑在 `xvfb-run` 里）。
+  `electron-ssh`（真实 SSH 远端）是本地车道、不进 CI：它要一台可连的外部机器，runner 内
+  临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。新增 e2e project 时同步该工作流与
   [e2e/README.md](e2e/README.md#ci-车道githubworkflowse2eyml)。
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`
   （CI 会再跑一遍，本地跑只是提前暴露）。

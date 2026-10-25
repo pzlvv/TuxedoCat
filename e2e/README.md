@@ -40,18 +40,22 @@ Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modu
 ## CI 车道（`.github/workflows/e2e.yml`）
 
 `prepare` job 构建一次产物（7 个前端产物 + 宿主平台 Core + Electron 主进程），并跑
-`npm run check-types:e2e`；四个车道并行下载产物后各跑一层：
+`npm run check-types:e2e`；三个车道并行下载产物后各跑一层：
 
 | job | project | 车道额外前置 |
 | --- | --- | --- |
 | `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
 | `electron` | `electron-app` | xvfb（Linux 无显示）+ Chromium 运行时库（`playwright install-deps`） |
-| `ssh` | `electron-ssh` | job 内起 sshd 充当「远端机器」，现写 `e2e/environments.json`（不入库） |
 | `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
 
 失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
 `electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，CI 与开发机都能直接跑；
 后者缺 `environments.json` 时在收集期报错（无效直接报错，不做兜底）。
+
+`electron-ssh` **不进 CI**：它要求一台可连的真实远端机器，runner 内临时起的 sshd 与真实
+远端在服务配置 / 网络 / 权限模型上差异太大，判定为本地车道——本地跑
+`npm run test:e2e:ssh`（前置见下节）。要接回 CI 时，在 `.github/workflows/e2e.yml` 里加回
+job 并同步本表。
 
 ## 测试环境配置（environments.json）
 

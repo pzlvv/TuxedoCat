@@ -1,13 +1,17 @@
-# e2e 场景级车道（Playwright）。六个 project 对应五层，按层拆成 job 并行：
+# e2e 场景级车道（Playwright）。按层拆成 job 并行：
 #   ui      —— webview-ui / remote-workspace-ui / terminal-ui（纯浏览器，不需要 Electron）
 #   electron —— electron-app（整应用：standalone core + mock LLM，跑在 xvfb 里）
-#   ssh     —— electron-ssh（真实 SSH 远端：job 内起 sshd 当「远端机器」）
 #   tui     —— tui-installer（自解压安装器：内嵌 Core / ripgrep / TUI bundle）
 # 产物在 prepare 里构建一次（前端 7 个 vite 产物 + 宿主平台 Core + Electron 主进程），
-# 其余 job 只下载、不再重复编译；四个车道互不阻塞，失败点直指具体层。
+# 其余 job 只下载、不再重复编译；三个车道互不阻塞，失败点直指具体层。
+#
+# electron-ssh（真实 SSH 远端）不进 CI：它需要一台可连的外部机器，runner 内的 sshd 与
+# 真实远端差异太大（SSH 服务配置 / 网络 / 权限模型），按现状判定为本地车道
+# （npm run test:e2e:ssh，需要 e2e/environments.json）。接回 CI 前先在
+# e2e/README.md 的 CI 车道表里补回对应 job。
 #
 # 为什么不并进 docs.yml：那份工作流跑的是文档守卫与单测（分钟级），e2e 要构建全部产物
-# 并在 xvfb 里跑真实 Electron / SSH 链路，混在一起会把每次 PR 的关键路径拉长。
+# 并在 xvfb 里跑真实 Electron 链路，混在一起会把每次 PR 的关键路径拉长。
 name: e2e
 
 on:
@@ -106,65 +110,6 @@ jobs:
         if: failure()
         with:
           name: e2e-electron-trace
-          path: test-results
-          retention-days: 3
-
-  ssh:
-    name: e2e-ssh（真实 SSH 远端）
-    needs: prepare
-    runs-on: ubuntu-latest
-    env:
-      # 只在 runner 内网可达的临时账号：sshd 监听 127.0.0.1，跑完随 runner 销毁
-      SSH_TEST_USER: e2e-ssh
-      SSH_TEST_PASSWORD: e2e-ssh-pass
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - uses: actions/download-artifact@v4
-        with:
-          name: e2e-artifacts
-      - run: sudo apt-get update && sudo apt-get install -y xvfb openssh-server
-      - run: npx playwright install-deps chromium
-      # 「远端机器」＝ 本 job 的 sshd：真实建链、真实上传 Core、真实 SFTP / exec
-      - name: 起本地 sshd 作为远端
-        run: |
-          sudo mkdir -p /run/sshd
-          sudo useradd -m -s /bin/bash "$SSH_TEST_USER"
-          echo "$SSH_TEST_USER:$SSH_TEST_PASSWORD" | sudo chpasswd
-          # 密码登录写进 drop-in 并让文件名排在云镜像自带的 60-* 之前：sshd 对同一
-          # 关键字取首个出现的值，写在 sshd_config 主文件里会被更早的 Include 覆盖
-          printf 'PasswordAuthentication yes\nKbdInteractiveAuthentication no\n' \
-            | sudo tee /etc/ssh/sshd_config.d/00-e2e.conf >/dev/null
-          sudo /usr/sbin/sshd -p 22
-          # 连通性自检：用例开头也会探一次，这里失败比在用例里失败更好读
-          sudo apt-get install -y sshpass
-          sshpass -p "$SSH_TEST_PASSWORD" ssh -o StrictHostKeyChecking=no -p 22 "$SSH_TEST_USER@127.0.0.1" 'uname -sm'
-      # 环境文件不入库（含凭证）：CI 里按 runner 的临时账号现写一份
-      - name: 写 e2e/environments.json
-        run: |
-          cat > e2e/environments.json <<JSON
-          {
-            "ssh": {
-              "host": "127.0.0.1",
-              "port": 22,
-              "user": "${SSH_TEST_USER}",
-              "password": "${SSH_TEST_PASSWORD}",
-              "llmAdvertiseHost": "127.0.0.1"
-            }
-          }
-          JSON
-      - run: xvfb-run -a npx playwright test -c e2e/playwright.config.ts --project=electron-ssh
-      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: e2e-ssh-trace
           path: test-results
           retention-days: 3
 
