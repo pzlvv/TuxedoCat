@@ -6259,6 +6259,82 @@ fn slash_skill_command_injects_the_skill_tool_use() {
     crate::skills::reset_registries();
 }
 
+/// `disable-model-invocation: true` 只拦模型：用户 `/name` 照样注入并执行（AC-3）。
+#[test]
+fn slash_skill_command_injects_model_disabled_skill() {
+    let sandbox = Sandbox::new("engine-skill-user-only");
+    crate::skills::reset_registries();
+
+    let skill_dir = sandbox
+        .workspace
+        .join(".agents")
+        .join("skills")
+        .join("deploy");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---
+description: Deploy
+disable-model-invocation: true
+---
+
+Deploy $ARGUMENTS now.
+",
+    )
+    .unwrap();
+
+    let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "/deploy staging", "u-1");
+
+    assert!(
+        harness.wait_for(
+            |sink| sink
+                .events_of("toolResult")
+                .iter()
+                .any(|event| event["toolName"] == "Skill"),
+            Duration::from_secs(30),
+        ),
+        "用户 `/deploy` 应当注入技能: {:?}",
+        harness.sink.event_types()
+    );
+    let skill_result = harness
+        .sink
+        .events_of("toolResult")
+        .into_iter()
+        .find(|event| event["toolName"] == "Skill")
+        .expect("Skill toolResult");
+    assert_eq!(skill_result["status"], "success");
+    assert_eq!(
+        skill_result["output"],
+        "Skill \"deploy\" has been loaded. Follow the instructions in the skill content above."
+    );
+
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "消费循环应当收尾: {:?}",
+        harness.sink.event_types()
+    );
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let messages = crate::history::load_messages("s1", &project);
+    let injected = messages
+        .iter()
+        .find(|message| message.get("isMeta").and_then(Value::as_bool) == Some(true))
+        .unwrap_or_else(|| panic!("应当有 isMeta 的注入消息，实际: {messages:?}"));
+    let injected_text = injected["message"]["content"].as_str().unwrap_or("");
+    assert!(
+        injected_text.contains("Deploy staging now."),
+        "参数已替换进正文: {injected_text}"
+    );
+
+    crate::skills::reset_registries();
+}
+
 /// `/commit` 延迟回显（`deferEcho`）：命令消息真正进入上下文时补发用户 `message`
 /// （宿主不乐观回显），且 `_needsUINotification` 是 UI 专用标记、不落盘。
 #[test]

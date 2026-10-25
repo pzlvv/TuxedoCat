@@ -1017,7 +1017,17 @@ fn arbitrate(mut candidates: Vec<RankedSkill>) -> (Vec<SkillCommand>, Vec<String
             .iter()
             .find(|winner| names_collide(&winner.skill, &candidate.skill))
         {
-            None => kept.push(candidate),
+            None => {
+                // 两个开关都关：用户调不到（不进菜单、`/name` 不匹配），模型也调不到
+                // （不进名单、工具校验拒绝）。不是错误，但必须可诊断，否则「我明明放了这个技能」。
+                if !candidate.skill.user_invocable && !candidate.skill.model_invocable {
+                    warnings.push(format!(
+                        "Skill '{}' at {} is unreachable (user-invocable: false + disable-model-invocation: true)",
+                        candidate.skill.name, candidate.file_path
+                    ));
+                }
+                kept.push(candidate)
+            }
             Some(winner) => warnings.push(format!(
                 "Skill '{}' at {} ignored (rank {}); using {} (rank {})",
                 candidate.skill.name,

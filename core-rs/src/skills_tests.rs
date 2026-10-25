@@ -724,6 +724,25 @@ Body of {name}
     }
 
     #[test]
+    fn both_switches_off_reports_unreachable() {
+        let mut skill = fake_skill("dead", "Nobody can call me");
+        skill.user_invocable = false;
+        skill.model_invocable = false;
+        let (kept, warnings) = arbitrate(vec![RankedSkill {
+            rank: RANK_PROJECT_AGENTS,
+            skill,
+            file_path: "/proj/.agents/skills/dead/SKILL.md".to_string(),
+        }]);
+        assert_eq!(kept.len(), 1, "技能仍在列表里，只是不可达");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("unreachable"), "{}", warnings[0]);
+        assert!(warnings[0].contains("dead"), "{}", warnings[0]);
+        // 两侧名单都不含它
+        assert_eq!(format_skill_listing(&kept), "");
+        assert!(!kept[0].user_invocable);
+    }
+
+    #[test]
     fn same_file_via_multiple_roots_dedupes_without_warning() {
         // 同一个物理文件经两个根可见：只保留 rank 小的，且不产生同名 WARNING
         let same_file = "/proj/.agents/skills/dup/SKILL.md".to_string();
