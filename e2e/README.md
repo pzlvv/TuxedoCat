@@ -45,7 +45,7 @@ Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modu
 | job | project | 车道额外前置 |
 | --- | --- | --- |
 | `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
-| `electron` | `electron-app` | xvfb（Linux 无显示）+ Chromium 运行时库（`playwright install-deps`） |
+| `electron` | `electron-app` | xvfb + openbox（Linux 无显示；裸 X 没有窗口管理器）+ Chromium 运行时库（`playwright install-deps`）+ artifact 下载后补可执行位（已知坑 6） |
 | `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
 
 失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
@@ -100,9 +100,11 @@ e2e/
 
 ## 隔离策略（electron-app）
 
-- `USERPROFILE` / `HOME` / `APPDATA` 指向临时目录：`~/<configDir>/`（settings.json、
-  会话落盘）与 Electron userData（workspace-state.json）全部进沙箱，用例结束删除。
-  注意 `APPDATA` 必须一并指向沙箱并预建目录，否则 Electron 解析不出 `appData` 路径。
+- `USERPROFILE` / `HOME` / `APPDATA` / `XDG_CONFIG_HOME` 指向临时目录：`~/<configDir>/`
+  （settings.json、会话落盘）与 Electron userData（workspace-state.json）全部进沙箱，
+  用例结束删除。Electron 的 appData 按平台解析：Windows 读 `%APPDATA%`，Linux 走
+  `$XDG_CONFIG_HOME` 或 `~/.config`（不认 APPDATA，见已知坑 7）——启动器按平台选
+  同一基目录（`electronApp.ts` 的 `roamingDir`），预置与断言才和应用读写同一份状态。
 - settings.json 预写 mock provider（manual 询问模式让写操作弹权限确认），
   LLM 指向本地 mock SSE 服务器，全程无外网请求。
 - Core 为 Rust 独立进程（standalone，产品唯一形态），多 Connection / daemon / SSH 链路与
@@ -134,3 +136,16 @@ e2e/
    上一轮的 Electron 实例可能残留并持有全局热键，新实例启动注册静默失败（现会落
    日志）。US-34 预置独占组合键（`Ctrl+Alt+8`）断言，不依赖默认 `Ctrl+Alt+X` 是否
    空闲；跑套件前可用 `tasklist | findstr "Tuxedo"` 检查残留实例。
+6. **CI 的 artifact 不保留可执行位**：`actions/upload-artifact` 的 zip 把所有文件落成
+   644（官方 Limitations「Permission Loss」）。electron 车道下载后必须
+   `chmod -R u+x dist/resources/core resources/core`，否则宿主 spawn Core 直接 EACCES，
+   `CoreProcess` 按重启策略试满 5 次后 fatal——凡过 core 的用例全部超时，纯宿主 / UI
+   用例照常通过（首次 CI 实证的失败面）。
+7. **Linux 上 Electron 的 appData 不认 `APPDATA`**：Windows 读 `%APPDATA%` 环境变量，
+   Linux 走 `$XDG_CONFIG_HOME` 或 `~/.config`。沙箱只把 workspace-state.json 预置到
+   `AppData/Roaming` 时，Linux 上应用读不到——打开集合恢复 / 快捷键 / 最近 SSH 等
+   预置全部静默失效，落盘断言读到 ENOENT。启动器按平台选基目录并显式钉住
+   `XDG_CONFIG_HOME`（`electronApp.ts`）。
+8. **裸 Xvfb 没有窗口管理器**：`win.maximize()` / `isMaximized()` 这类窗口管理语义在
+   只有显示没有 WM 的 X 里不成立（`_NET_WM_STATE` 无人响应）。electron 车道在
+   `xvfb-run` 里先拉起 openbox 再跑用例。

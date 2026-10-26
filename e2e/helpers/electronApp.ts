@@ -154,7 +154,12 @@ async function spawnApp(options: {
   // 实例后缀必须与 main.ts 的过滤规则一致（[^A-Za-z0-9_-] 剔除 + 截断 32），
   // 预置 workspace-state.json 的目录名要和它完全相同
   const instanceId = randomUUID().replace(/-/g, '').slice(0, 12);
-  const roamingDir = path.join(homeDir, 'AppData', 'Roaming');
+  // Electron 的 appData 按平台解析：Windows 读 %APPDATA%，Linux 走 $XDG_CONFIG_HOME
+  // （下面显式钉住）或 ~/.config，不认 APPDATA——那是 Windows 专属环境变量。沙箱里
+  // 预置 / 断言的 workspace-state.json 必须落应用真正读写的那个 appData 之下
+  const roamingDir = process.platform === 'win32'
+    ? path.join(homeDir, 'AppData', 'Roaming')
+    : path.join(homeDir, '.config');
   await fs.promises.mkdir(roamingDir, { recursive: true });
   const userDataDir = path.join(roamingDir, `${EXTENSION_NAME}-multi-` + instanceId);
   const stateFile = path.join(userDataDir, 'workspace-state.json');
@@ -183,6 +188,9 @@ async function spawnApp(options: {
     USERPROFILE: homeDir,
     HOME: homeDir,
     APPDATA: roamingDir,
+    // Electron 在 Linux 上从 XDG_CONFIG_HOME 推 appData：显式钉住，不受开发机
+    // 全局变量影响（Windows 不读它，无副作用）
+    XDG_CONFIG_HOME: path.join(homeDir, '.config'),
     DISABLE_AUTO_COMPACT: '1',
     // 整应用用例在开发机上跑，会话结束会触发托盘提醒音——关掉它，
     // 免得与开发机上真实运行的应用（或用户正在听的其它声音）撞在一起
