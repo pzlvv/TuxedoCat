@@ -68,3 +68,59 @@ test('非活动标签页任务完成 → 标签页亮绿色未读完成灯', asy
   await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
 });
+
+test('窗口失焦期间任务完成 → 绿灯当场挂上，不等回窗聚焦', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({}, 'e2e-ws-blur-a');
+  const bDir = await makeWorkspace({}, 'e2e-ws-blur-b');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: bDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: bDir,
+  });
+
+  // B（活动）里发起慢速查询，切到 A 后把主窗口失焦（模拟用户在别的应用里等结果）：
+  // 完成发生在失焦期间，可见但未聚焦的窗口此刻就要亮灯，不回窗不补亮
+  mockLlm.setHandler(() => ({
+    kind: 'slow', text: '失焦完成输出'.repeat(30), chunkDelayMs: 500,
+  }));
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+  await tabs.nth(1).click();
+  const chatPage = await app.chatPage({ workspaceIncludes: 'e2e-ws-blur-b', emptyState: true });
+  await chatPage.fill('textarea.input-textarea', '失焦完成探针');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  // 查询确实在跑（abort 按钮可用）：排除「消息没发出」的脚手架噪音
+  await expect(chatPage.locator('button[title="终止"]')).toBeEnabled({ timeout: 30_000 });
+  await expect(tabs.nth(1)).toHaveClass(/activity-running/, { timeout: 30_000 });
+
+  await tabs.nth(0).click();
+  await app.evaluateInMain(`(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    const focused = e.BrowserWindow.getAllWindows().find(function(win){ return !win.isDestroyed() && win.isFocused(); });
+    if (!focused) return 'none-focused';
+    // blur() 对前台窗口直接调用在 Windows 下可能无效（前台锁）：
+    // minimize → restore 打散焦点状态后 blur() 可靠生效，窗口保持可见（不最小化）
+    focused.minimize();
+    focused.restore();
+    focused.blur();
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  // 失焦必须真实生效（否则完成落在聚焦窗口里，用例测不到失焦链路）：
+  // 全部窗口都不持焦点才算失焦成立
+  await expect.poll(async () => {
+    const raw = await app.evaluateInMain(`(function(){try{
+      const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+      return String(e.BrowserWindow.getAllWindows().some(function(win){
+        return !win.isDestroyed() && win.isFocused();
+      }));
+    } catch (err) { return 'ERR ' + err.message; }})()`);
+    return (raw as { result?: { result?: { value?: string } } })?.result?.result?.value;
+  }, { timeout: 30_000 }).toBe('false');
+
+  // 不再聚焦窗口：查询结束时 B 的绿灯必须当场挂上（失焦即推送，不等回窗）
+  await expect(tabs.nth(1)).toHaveClass(/activity-completed/, { timeout: 90_000 });
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});

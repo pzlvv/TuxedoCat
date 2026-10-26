@@ -265,9 +265,10 @@ function normalizeWorkspaceActivity(activity: unknown): WorkspaceActivity {
  * 未读完成的标签页集合（「任务完成」绿色呼吸）。
  *
  * 主进程推的是**全量集合快照**（幂等）：会话在用户看不到时完成（窗口失焦 /
- * 标签页未激活 / 非当前对话）就记为未读，回到窗口后灯条挂上——呼吸一次后保持
- * 常亮，直到激活该标签页（主进程清除并重推，class 随之摘掉）。集合要在本地持有：
- * 标签页区重建（renderWorkspaces）时按它恢复 class，不依赖推送时序。
+ * 标签页未激活 / 非当前对话）就记为未读，武装即推——可见但未聚焦的窗口当场
+ * 挂灯，不回窗不补亮——呼吸一次后保持常亮，直到激活该标签页（主进程清除并重推，
+ * class 随之摘掉）。集合要在本地持有：标签页区重建（renderWorkspaces）时按它
+ * 恢复 class，不依赖推送时序。
  */
 const completionAttention = new Set<string>();
 

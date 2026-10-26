@@ -1137,11 +1137,11 @@ function createMainWindow(): void {
   mainWindow.on('show', cancelAttention);
   mainWindow.on('restore', cancelAttention);
   mainWindow.on('focus', cancelAttention);
-  // 回到窗口后播放攒下的「任务完成」绿色呼吸（完成发生在窗口失焦期间）；
-  // 先按当前画面事实清「已读」（聚焦即已读，正看着的对话不亮灯）再推剩余未读
+  // 回窗聚焦只做「已读」清理（聚焦即已读，正看着的对话不亮灯）；
+  // 未读完成本身在武装时刻就已推送（失焦即推），这里补推是幂等快照
   mainWindow.on('focus', () => {
     reconcileCompletionAttention();
-    pumpCompletionAttention();
+    syncCompletionAttention();
   });
 
   mainWindow.on('closed', () => {
@@ -1290,12 +1290,14 @@ let traySessionLevels = new Map<string, SessionBusyRecord>();
  * 「任务完成」绿色呼吸（`completionAttention.ts` + `syncCompletionAttention`）：
  * 会话 running → idle 且用户当时看不到（窗口失焦 / 标签页未激活 / 非当前对话）时
  * 对对话项记「未读完成」（标签页只在完成时该标签页未激活才记——激活中的标签页
- * 视为已读）；等用户回到现场（窗口聚焦）推给各渲染层——灯条呼吸一次后**保持
- * 常亮**，直到用户阅读：激活该标签页清掉标签页项，把该对话切为当前对话清掉对话项；
- * 回窗聚焦那一刻正看着的对话（聚焦 + 激活标签页 + 当前对话）直接视为已读，
- * 播放前由 `reconcileCompletionAttention` 清掉——聚焦即已读，切到别的对话不补亮。
- * 未读集合归主进程独有——焦点 / 激活 / 当前对话是宿主本地事实，webview / 侧栏 /
- * 标题栏只吃全量集合快照（幂等，重复推送不重复呼吸）。
+ * 视为已读）；武装即推（失焦也推，见 `updateCompletionAttentionFromStates`）——
+ * 可见但未聚焦的窗口（分屏 / 副屏）当场亮灯，不回窗不补亮；窗口最小化 / 隐藏时
+ * 推送无可见效果，恢复后灯条以常亮呈现。灯条呼吸一次后**保持常亮**，直到用户阅读：
+ * 激活该标签页清掉标签页项，把该对话切为当前对话清掉对话项；回窗聚焦那一刻正看着
+ * 的对话（聚焦 + 激活标签页 + 当前对话）直接视为已读，由 `reconcileCompletionAttention`
+ * 清掉——聚焦即已读，切到别的对话不补亮。未读集合归主进程独有——焦点 / 激活 /
+ * 当前对话是宿主本地事实，webview / 侧栏 / 标题栏只吃全量集合快照（幂等，重复推送
+ * 不重复呼吸）。
  */
 let completionAttentionLevels = new Map<string, SessionLevel>();
 /** 未读完成的标签页（工作区稳定 id）：激活该标签页即视为阅读 */
@@ -1513,10 +1515,11 @@ function cancelAttention(): void {
 }
 
 /**
- * 主窗口是否持有焦点。「任务完成」绿色呼吸的武装 / 播放判据，与托盘的
- * `isWindowInBackground` 分开：这里只看主窗口（偏好设置窗口聚焦时主窗口
- * 失焦，但那个窗口盖在主窗口上，聊天区是否可见无法一概而论——完成呼吸等
- * 主窗口真正拿到 focus 事件再播，语义与「窗口获取到焦点后」一致）。
+ * 主窗口是否持有焦点。「任务完成」绿色呼吸的武装 / 回窗已读清理判据（武装即推，
+ * 焦点不再是推送门控），与托盘的 `isWindowInBackground` 分开：这里只看主窗口
+ * （偏好设置窗口聚焦时主窗口失焦，但那个窗口盖在主窗口上，聊天区是否可见无法
+ * 一概而论——回窗已读清理等主窗口真正拿到 focus 事件，语义与「窗口获取到焦点后」
+ * 一致）。
  */
 function isMainWindowFocused(): boolean {
   return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
@@ -1560,7 +1563,7 @@ function updateCompletionAttentionFromStates(
   }
   for (const key of arm.tabs) unreadCompletionTabs.add(key);
   for (const sessionId of arm.sessions) unreadCompletionSessions.add(sessionId);
-  pumpCompletionAttention();
+  syncCompletionAttention();
   // 清除也要同步出去：让渲染层把已消失会话的灯条熄掉（与推送同一幂等快照）
   if (removed) syncCompletionAttention();
 }
@@ -1569,7 +1572,7 @@ function updateCompletionAttentionFromStates(
  * 回窗已读清理：从未读对话集合移除此刻完全可见（聚焦 + 激活标签页 + 当前对话，
  * `pickReadCompletions`）的条目。清除原本只挂「成为当前对话」「激活标签页」两个
  * 迁移事件；完成发生在窗口失焦期间、而该对话**本来就是**当前对话时迁移永远不来
- * ——聚焦是它唯一的已读时机。focus 处理器先调这里再 `pumpCompletionAttention`：
+ * ——聚焦是它唯一的已读时机。focus 处理器先调这里再 `syncCompletionAttention`：
  * 正看着的对话不亮灯，切到别的对话后也不会补亮。
  */
 function reconcileCompletionAttention(): void {
@@ -1587,24 +1590,17 @@ function reconcileCompletionAttention(): void {
  * - 侧栏 / webview：会话集合。渲染层按 sessionId 匹配自己的列表，列表里没有的
  *   id 自然不亮；集合里已有的 id 保留原到达时刻（不重复呼吸），新 id 以到达时刻
  *   起算呼吸一个周期后转常亮。
+ *
+ * 推送时机 = 武装即推（失焦也推：可见但未聚焦的窗口当场亮灯；最小化 / 隐藏窗口
+ * 推送无可见效果，恢复后以常亮呈现）+ 回窗聚焦（focus 处理器先经
+ * `reconcileCompletionAttention` 清掉已读再推）+ 切换标签页 / 切换窗口模式后的
+ * 新可见表面补齐（集合未变，已亮的不重播呼吸）。
  */
 function syncCompletionAttention(): void {
   const sessions = [...unreadCompletionSessions];
   sendToTitlebar('titlebar:workspace-completion', [...unreadCompletionTabs]);
   sidebarView?.webContents.send('sidebar:session-completion', sessions);
   uiHost?.broadcastToWebviews({ type: 'sessionCompletionAttention', sessionIds: sessions });
-}
-
-/**
- * 用户回到现场时推送未读完成集合（只推不请——集合要等用户阅读才清除；focus 事件
- * 先经 `reconcileCompletionAttention` 清掉已读再推）：
- * - 主窗口聚焦（focus 事件 / 武装时正聚焦）：灯条此刻挂上并呼吸一次，之后常亮；
- * - 切换标签页 / 切换窗口模式后：新可见表面的灯条补齐（集合未变，已亮的不重播呼吸）。
- * 窗口失焦期间不推送：呼吸留给用户回来后第一眼（不可见的呼吸等于没呼吸）。
- */
-function pumpCompletionAttention(): void {
-  if (!isMainWindowFocused()) return;
-  syncCompletionAttention();
 }
 
 /** 创建系统托盘（只创建一次），提供“显示主窗口”和“退出”入口 */
@@ -2201,7 +2197,7 @@ async function applyWindowMode(mode: WindowMode): Promise<void> {
     pushTitlebarModeState();
     // 模式切换改变了可见表面（浮窗没有侧栏与标签页，完整模式相反）：
     // 补推一次未读完成，让新可见表面的灯条挂上（集合未变，已亮的不重播呼吸）
-    pumpCompletionAttention();
+    syncCompletionAttention();
   } finally {
     windowModeSwitching = false;
   }
