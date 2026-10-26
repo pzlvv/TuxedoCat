@@ -4414,6 +4414,132 @@ fn exact_context_tokens_falls_back_to_metadata_total_context_tokens() {
     assert_eq!(exact_context_tokens(&state, "s1", &project), Some(15));
 }
 
+// ==================== 下一轮上下文占用估算（存量取 usage，增量才估算） ====================
+
+#[test]
+fn estimate_next_context_tokens_counts_stock_from_usage_and_estimates_only_the_tail() {
+    let sandbox = Sandbox::new("engine-estimate-next-tokens");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
+
+    {
+        let mut state = state.lock().unwrap();
+        // 存量：超长文本 + 锚点 usage（1_000 + 200）。若实现重复估算存量，结果会被
+        // 这 30_000 字符的文本估算（约 1 万 token）主导而暴露。
+        state.messages.push(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "x".repeat(30_000) },
+        }));
+        state.messages.push(assistant_with_usage(1_000, json!(200)));
+        // 增量：锚点之后的无 usage assistant、tool_result、压缩边界标记（不进请求）
+        // 与新用户消息
+        state.messages.push(json!({
+            "type": "assistant",
+            "message": { "role": "assistant", "content": [] },
+            "uuid": "a-no-usage",
+        }));
+        state.messages.push(json!({
+            "type": "user",
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1", "content": "done" },
+            ] },
+        }));
+        state.messages.push(json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "content": "[Auto compaction boundary]",
+        }));
+        state.messages.push(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "hi" },
+        }));
+    }
+
+    // 期望值 = 锚点 usage + 锚点之后消息的 LLM 形态估算。system prompt / tools 已含在
+    // 存量的 `input_tokens` 里，传非空值验证不被重复计入。
+    let expected_tail = {
+        let messages = state.lock().unwrap().messages.clone();
+        let tail = build_llm_messages_from(&messages[2..]);
+        util::estimate_request_tokens(Some(&Value::Array(tail)), "", None)
+    };
+    assert_eq!(
+        estimate_next_context_tokens(
+            &state,
+            "s1",
+            &project,
+            "SUPER LONG SYSTEM PROMPT",
+            Some(&json!([{ "name": "Bash" }]))
+        ),
+        1_200 + expected_tail
+    );
+
+    // 反向验证：整体估算远大于增量口径——存量确实没有被重复估算
+    let full = {
+        let messages = state.lock().unwrap().messages.clone();
+        util::estimate_request_tokens(
+            Some(&Value::Array(build_llm_messages_from(&messages))),
+            "",
+            None,
+        )
+    };
+    assert!(
+        full > 1_200 + expected_tail,
+        "整体估算 {full} 应大于增量口径合计",
+    );
+}
+
+#[test]
+fn estimate_next_context_tokens_falls_back_to_full_estimate_without_usage_anchor() {
+    let sandbox = Sandbox::new("engine-estimate-next-tokens-fallback");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
+
+    // 无任何消息：整体估算空请求
+    assert_eq!(
+        estimate_next_context_tokens(&state, "s1", &project, "abc", None),
+        util::estimate_request_tokens(Some(&json!([])), "abc", None)
+    );
+
+    // 有消息但都没有 usage：整体估算全部消息
+    state.lock().unwrap().messages.push(json!({
+        "type": "user",
+        "message": { "role": "user", "content": "hello" },
+    }));
+    // 压缩后 usage 被清成 null（`clear_message_usage`）：不构成锚点，仍走整体估算
+    {
+        let mut state = state.lock().unwrap();
+        let mut assistant = assistant_with_usage(0, json!(0));
+        assistant["message"]["usage"] = json!(null);
+        state.messages.push(assistant);
+    }
+    let expected = {
+        let messages = state.lock().unwrap().messages.clone();
+        util::estimate_request_tokens(
+            Some(&Value::Array(build_llm_messages_from(&messages))),
+            "abc",
+            None,
+        )
+    };
+    assert_eq!(
+        estimate_next_context_tokens(&state, "s1", &project, "abc", None),
+        expected
+    );
+
+    // meta.json 兜底更大时取 max（旧口径保持）
+    history::create_conversation("s1", &project, json!({ "sessionId": "s1", "project": project }))
+        .expect("create conversation");
+    history::update_context(
+        "s1",
+        &project,
+        &[json!({ "key": "totalContextTokens", "value": 999_999 })],
+    )
+    .expect("write metadata");
+    assert_eq!(
+        estimate_next_context_tokens(&state, "s1", &project, "abc", None),
+        999_999
+    );
+}
+
 // ==================== pendingReminder（对齐 QueryEngine 的收尾提醒） ====================
 
 /// 构造一条「本轮刚产出」的 assistant 消息

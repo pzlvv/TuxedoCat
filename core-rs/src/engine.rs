@@ -4213,17 +4213,11 @@ fn run_query_loop(
         // 手动触发压缩时会话若非空闲会登记「待压缩」，这里把它当作「已达到需要压缩
         // 的条件」，与自动压缩走同一条安全路径。
         //
-        // 上下文占用口径同样对齐：`max(exactTokenCount ?? 0, estimate(messages, systemPrompt))`
-        // —— 注意**不含** tools。
+        // 上下文占用不含 tools 的增量估算（`tools` 传 `None`）；存量 / 增量口径见
+        // `estimate_next_context_tokens`。
         {
-            let estimate = util::estimate_request_tokens(
-                Some(&Value::Array(build_llm_messages(state))),
-                &system_prompt,
-                None,
-            );
-            let context_token_count = exact_context_tokens(state, session_id, project)
-                .unwrap_or(0)
-                .max(estimate);
+            let context_token_count =
+                estimate_next_context_tokens(state, session_id, project, &system_prompt, None);
             let pending_compact = compact::is_pending_compact(session_id);
             let tracking = state.lock().unwrap().auto_compact_tracking.clone();
             let should_compact = pending_compact
@@ -4294,20 +4288,18 @@ fn run_query_loop(
         // 的 `getAvailableOutputTokens`）。输出预留不能超过上下文窗口的剩余空间，
         // 否则「输入 + 输出」会超出窗口导致请求失败。
         //
-        // 当前上下文占用取 `Math.max(exactTokenCount ?? 0, 估算值)`：
-        // - `exactTokenCount` 是上一轮 API 返回的真实用量（最近一条带 usage 的 assistant
-        //   消息的 input + output），没有时回退 `meta.json` 的 `context.totalContextTokens`；
-        // - 估算值覆盖本轮新增的消息 / system prompt / 工具 schema，口径见 `tokenEstimate.ts`。
-        // 只取估算值时，真实上下文大于估算值的场景（多模态图片等）会把输出空间留大，
-        // 导致 `input + max_tokens` 超出窗口被服务端拒绝。
-        let estimate = util::estimate_request_tokens(
-            Some(&Value::Array(llm_messages.clone())),
+        // 当前上下文占用见 `estimate_next_context_tokens`：存量是上一轮 API 返回的真实
+        // 用量（已含当轮 system prompt 与 tools），只对锚点之后的新增消息做文本估算；
+        // 没有 usage 锚点时（首轮 / 压缩后）退回整体估算并取 max。只信文本估算的旧实现
+        // 会在真实上下文大于估算值时（多模态图片等）把输出空间留大，导致
+        // `input + max_tokens` 超出窗口被服务端拒绝。
+        let current_context_tokens = estimate_next_context_tokens(
+            state,
+            session_id,
+            project,
             &system_prompt,
             Some(&Value::Array(tools.clone())),
         );
-        let current_context_tokens = exact_context_tokens(state, session_id, project)
-            .unwrap_or(0)
-            .max(estimate);
         let available_output = available_output_tokens(
             provider.context_window as u64,
             provider.max_tokens as u64,
@@ -6071,8 +6063,7 @@ fn available_output_tokens(
 /// 当前上下文占用的「精确」token 数（对齐 `Query.ts` 的 `exactTokenCount`）。
 ///
 /// 取最近一条带 `usage` 的 assistant 消息的 `input_tokens + output_tokens`
-/// （判定口径：`usage.input_tokens > 0 && usage.output_tokens !== undefined`，
-/// 从后往前找第一条命中的）；内存里找不到时回退 `meta.json` 的
+/// （锚点判定见 [`last_usage_anchor`]）；内存里找不到时回退 `meta.json` 的
 /// `context.totalContextTokens`（> 0 才算），两者都没有返回 `None`。
 fn exact_context_tokens(
     state: &Arc<Mutex<SessionState>>,
@@ -6081,18 +6072,7 @@ fn exact_context_tokens(
 ) -> Option<u64> {
     let from_messages = {
         let state = state.lock().unwrap();
-        state.messages.iter().rev().find_map(|message| {
-            if message.get("type").and_then(Value::as_str) != Some("assistant") {
-                return None;
-            }
-            let usage = message.get("message").and_then(|inner| inner.get("usage"))?;
-            let input = usage.get("input_tokens").and_then(Value::as_u64)?;
-            if input == 0 {
-                return None;
-            }
-            let output = usage.get("output_tokens").and_then(Value::as_u64)?;
-            Some(input + output)
-        })
+        last_usage_anchor(&state.messages).map(|(_, total)| total)
     };
     from_messages.or_else(|| {
         history::load_metadata(session_id, project)
@@ -6106,13 +6086,80 @@ fn exact_context_tokens(
     })
 }
 
+/// 最近一条带有效 `usage` 的 assistant 消息：返回（消息下标，`input + output`）。
+///
+/// 判定口径与 `exact_context_tokens` 一致：`usage.input_tokens > 0` 且
+/// `usage.output_tokens` 存在，从后往前找第一条命中的。压缩后保留区消息的 `usage`
+/// 被清成 `null`（`compact.rs` 的 `clear_message_usage`），不会误当锚点。
+/// 下标同时是「存量 / 增量」分界：该请求已把此前全部消息计入 `input_tokens`。
+fn last_usage_anchor(messages: &[Value]) -> Option<(usize, u64)> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            if message.get("type").and_then(Value::as_str) != Some("assistant") {
+                return None;
+            }
+            let usage = message.get("message").and_then(|inner| inner.get("usage"))?;
+            let input = usage.get("input_tokens").and_then(Value::as_u64)?;
+            if input == 0 {
+                return None;
+            }
+            let output = usage.get("output_tokens").and_then(Value::as_u64)?;
+            Some((index, input + output))
+        })
+}
+
+/// 下一轮请求的上下文占用估算：**存量用模型返回的真实值，只对增量做文本估算**。
+///
+/// 最近一条带 `usage` 的 assistant 消息（[`last_usage_anchor`]）是上一轮请求的真实
+/// token 数：`input_tokens` 已含当轮 system prompt / tools 与此前全部消息（缓存命中
+/// 部分在 `llm.rs` 组装 usage 时已合并回 `input_tokens`），`output_tokens` 含本轮
+/// 回复——锚点及之前的内容不再重复估算，只对锚点之后新增的消息（tool_result、排队
+/// 用户消息等）走 `estimate_request_tokens` 文本估算后累加。长会话里每轮对全部历史
+/// 做 JSON 序列化 + 逐字扫描既慢，精度又低于 API 返回值。
+///
+/// 内存里找不到锚点时（首轮、压缩后 `usage` 被清空、旧格式历史）退回整体估算，
+/// 并保持与 `exact_context_tokens`（meta 兜底）取 max 的旧口径。
+fn estimate_next_context_tokens(
+    state: &Arc<Mutex<SessionState>>,
+    session_id: &str,
+    project: &str,
+    system_prompt: &str,
+    tools: Option<&Value>,
+) -> u64 {
+    let messages = {
+        let state = state.lock().unwrap();
+        state.messages.clone()
+    };
+    if let Some((anchor_index, exact)) = last_usage_anchor(&messages) {
+        let tail = build_llm_messages_from(&messages[anchor_index + 1..]);
+        return exact + util::estimate_request_tokens(Some(&Value::Array(tail)), "", None);
+    }
+    let estimate = util::estimate_request_tokens(
+        Some(&Value::Array(build_llm_messages_from(&messages))),
+        system_prompt,
+        tools,
+    );
+    exact_context_tokens(state, session_id, project)
+        .unwrap_or(0)
+        .max(estimate)
+}
+
 /// 内部消息 → LLM 消息（Anthropic 风格：`{role, content}`）
 fn build_llm_messages(state: &Arc<Mutex<SessionState>>) -> Vec<Value> {
     let messages = {
         let state = state.lock().unwrap();
         state.messages.clone()
     };
-    let mut raw = build_raw_api_messages(&messages);
+    build_llm_messages_from(&messages)
+}
+
+/// 同 [`build_llm_messages`]，但直接吃调用方已持有的消息切片：
+/// 估算路径（`estimate_next_context_tokens`）只需转换锚点之后的尾部增量。
+fn build_llm_messages_from(messages: &[Value]) -> Vec<Value> {
+    let mut raw = build_raw_api_messages(messages);
     ensure_thinking_blocks(&mut raw);
     merge_consecutive_same_role(raw)
 }

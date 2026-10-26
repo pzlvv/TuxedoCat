@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-26
 ---
 
 # 规格：对话压缩
@@ -39,6 +39,12 @@ last_reviewed: 2026-10-18
 自动压缩阈值按 `contextWindow - min(50K, 0.3 * maxOutputTokens)` 计算
 （`core-rs/src/compact.rs` 的 `get_auto_compact_threshold`），
 为输出预留缓冲。前端进度条与本函数共用同一套规则，保证 UI 与触发条件一致。
+
+触发判定的上下文占用按「存量 + 增量」计（`core-rs/src/engine.rs` 的
+`estimate_next_context_tokens`，同一估算也用于本轮输出预留）：存量取最近一条带
+`usage` 的 assistant 消息返回的真实用量（`input + output`，已含当轮 system prompt
+与 tools），只对其后新增的消息做文本估算；没有 usage 锚点时（首轮、压缩后 usage
+被清空）退回整体估算，并与 `meta.json` 的 `context.totalContextTokens` 取 max。
 
 - **自动压缩**：在 `aiBegin` 之前判断，超过阈值即触发（`engine.rs` 的消费循环）。
 - 压缩是否可行由 `has_compactable_messages` 判定：压缩边界之后的消息数必须**严格大于**
