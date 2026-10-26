@@ -13,6 +13,7 @@ import {
   workspaceMentionCandidates,
 } from '../host/workspaceIdentity';
 import { localWorkspaceRef, remoteWorkspaceRef, type WorkspaceEndpoint } from '../host/workspaceRef';
+import { normalizeWorkspacePath } from '../host/workspacePaths';
 import { createChecker, runTests } from './helpers/harness';
 
 function endpoint(host: string, port: number, user = 'root'): WorkspaceEndpoint {
@@ -53,7 +54,12 @@ async function run(): Promise<void> {
 
   // ===== 身份 =====
   const local = localWorkspaceRef('D:/repo');
-  check('本地身份 = 机器名:规范化路径', workspaceAgentId(local, 'DEV-PC') === 'DEV-PC:D:\\repo');
+  // 本地路径按宿主口径规范化（path.resolve 的平台语义）：期望值经同一份派生函数构造，
+  // 手写路径形态（如 'DEV-PC:D:\repo'）在 Linux 上与 resolve 结果对不上
+  check(
+    '本地身份 = 机器名:规范化路径',
+    workspaceAgentId(local, 'DEV-PC') === `DEV-PC:${normalizeWorkspacePath('D:/repo')}`,
+  );
 
   const remote = remoteWorkspaceRef(endpoint('192.168.1.10', 22), '/srv/app');
   check('远程身份用 SSH 目标主机', workspaceAgentId(remote, 'DEV-PC') === '192.168.1.10:/srv/app');
