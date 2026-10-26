@@ -175,14 +175,16 @@ test('US-34 全局唤醒快捷键：按配置注册、改键后立即换绑', as
   await expect(dialogPage.locator('#shortcut-wake')).toHaveText('请按下新的组合键…', { timeout: 5_000 });
   await mainExpr(
     "e.BrowserWindow.getAllWindows().forEach(w=>{if(w.getTitle()==='偏好设置')"
-    + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl','alt'],keyCode:'Y'})})",
+    // 目标组合与初始预置同一选法（避开本机已占用的组合）：Ctrl+Alt+Y 在部分开发机上
+    // 被其它程序持有，注册静默失败会让换绑断言假红
+    + "w.webContents.sendInputEvent({type:'keyDown',modifiers:['ctrl','alt'],keyCode:'9'})})",
   );
-  await expect(dialogPage.locator('#shortcut-wake')).toHaveText('Ctrl+Alt+Y', { timeout: 5_000 });
+  await expect(dialogPage.locator('#shortcut-wake')).toHaveText('Ctrl+Alt+9', { timeout: 5_000 });
 
   // 关闭窗口后按最新偏好重新注册：新组合注册、旧组合注销（US-34 验收 2）
   await dialogPage.locator('#close').click();
   await pollMain<boolean>(
-    "e.globalShortcut.isRegistered('Ctrl+Alt+Y')",
+    "e.globalShortcut.isRegistered('Ctrl+Alt+9')",
     (v) => v === true,
   );
   await pollMain<boolean>(

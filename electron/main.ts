@@ -1959,7 +1959,10 @@ function openPreferenceDialog(): void {
   win.once('ready-to-show', () => win.show());
 
   const html = getPreferenceDialogHtml({
-    locale: app.getLocale().startsWith('zh') ? 'zh' : 'en',
+    // 与菜单 / 托盘 / Spin 设计器同源：消费启动期收敛的宿主 locale（uiLanguage 显式
+    // zh / en 覆盖系统语言），不直接看 app.getLocale()——否则英文系统的用户即使选了
+    // 中文，这个窗口仍是英文（specs/defects/preference-dialog-ignores-ui-language.md）
+    locale: getHostLocale(),
   });
   void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
