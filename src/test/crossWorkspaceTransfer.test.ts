@@ -7,6 +7,7 @@
  */
 
 import { resolveTransferEnds } from '../host/crossWorkspaceRouting';
+import { workspaceAgentId } from '../host/workspaceIdentity';
 import { localWorkspaceRef, remoteWorkspaceRef, type WorkspaceEndpoint } from '../host/workspaceRef';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -23,7 +24,11 @@ async function run(): Promise<void> {
   const otherRemote = remoteWorkspaceRef(endpoint('192.168.1.11', 22), '/srv/other');
   const refs = [origin, sibling, remote, otherRemote];
   const machine = 'DEV-PC';
-  const siblingId = 'DEV-PC:D:\\repo\\b';
+  // 本地身份经 workspaceAgentId 派生（生产调用方同一口径）：本地路径按宿主口径规范化，
+  // 平台相关——夹具不能手写路径形态（Windows 上规范化成反斜杠、Linux 保持原样）
+  const originId = workspaceAgentId(origin, machine);
+  const siblingId = workspaceAgentId(sibling, machine);
+  const missingId = workspaceAgentId(localWorkspaceRef('D:/repo/nope'), machine);
   const remoteId = '192.168.1.10:/srv/app';
   const otherRemoteId = '192.168.1.11:/srv/other';
 
@@ -42,7 +47,7 @@ async function run(): Promise<void> {
   );
 
   // ── 合法形态：显式源 = 来源身份（等价缺省）──
-  const explicitSelf = resolveTransferEnds(refs, origin, 'DEV-PC:D:\\repo\\a', siblingId, machine);
+  const explicitSelf = resolveTransferEnds(refs, origin, originId, siblingId, machine);
   check(
     '显式源 = 来源身份 → 按缺省处理',
     explicitSelf.kind === 'ends' && explicitSelf.sourceRef === origin && explicitSelf.destRef === sibling,
@@ -56,7 +61,7 @@ async function run(): Promise<void> {
   );
 
   // ── 守卫：显式同工作区 ──
-  const sameEnds = resolveTransferEnds(refs, origin, siblingId, 'DEV-PC:D:\\repo\\b', machine);
+  const sameEnds = resolveTransferEnds(refs, origin, siblingId, siblingId, machine);
   check(
     '两端显式同一工作区 → 错误',
     sameEnds.kind === 'error' && sameEnds.error.includes('two different workspaces'),
@@ -71,10 +76,10 @@ async function run(): Promise<void> {
   );
 
   // ── 守卫：身份未命中 / 歧义（AC-10）──
-  const missing = resolveTransferEnds(refs, origin, null, 'DEV-PC:D:\\repo\\nope', machine);
+  const missing = resolveTransferEnds(refs, origin, null, missingId, machine);
   check(
     '目标未打开 → not open 错误',
-    missing.kind === 'error' && missing.error === 'target workspace is not open: DEV-PC:D:\\repo\\nope',
+    missing.kind === 'error' && missing.error === `target workspace is not open: ${missingId}`,
   );
   const ambiguousRefs = [
     remote,
@@ -87,7 +92,7 @@ async function run(): Promise<void> {
   );
 
   // ── 守卫：显式目标 = 来源身份 + 缺省另一端 → 同工作区错误 ──
-  const selfTarget = resolveTransferEnds(refs, origin, 'DEV-PC:D:\\repo\\a', null, machine);
+  const selfTarget = resolveTransferEnds(refs, origin, originId, null, machine);
   check(
     '目标显式为来源 + 源缺省 → 同工作区错误',
     selfTarget.kind === 'error' && selfTarget.error.includes('two different workspaces'),

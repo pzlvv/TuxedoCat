@@ -6,6 +6,7 @@
  */
 
 import { resolveCrossWorkspaceTarget } from '../host/crossWorkspaceRouting';
+import { workspaceAgentId } from '../host/workspaceIdentity';
 import { localWorkspaceRef, remoteWorkspaceRef, type WorkspaceEndpoint } from '../host/workspaceRef';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -20,14 +21,19 @@ async function run(): Promise<void> {
   const sibling = localWorkspaceRef('D:/repo/b');
   const remote = remoteWorkspaceRef(endpoint('192.168.1.10', 22), '/srv/app');
   const refs = [origin, sibling, remote];
+  // 本地身份经 workspaceAgentId 派生（生产调用方同一口径）：本地路径按宿主口径规范化，
+  // 平台相关——夹具不能手写路径形态（Windows 上规范化成反斜杠、Linux 保持原样）
+  const originId = workspaceAgentId(origin, 'DEV-PC');
+  const siblingId = workspaceAgentId(sibling, 'DEV-PC');
+  const missingId = workspaceAgentId(localWorkspaceRef('D:/repo/nope'), 'DEV-PC');
 
   check(
     'target 等于来源工作区 → local',
-    resolveCrossWorkspaceTarget(refs, origin, 'DEV-PC:D:\\repo\\a', 'DEV-PC').kind === 'local',
+    resolveCrossWorkspaceTarget(refs, origin, originId, 'DEV-PC').kind === 'local',
   );
   check(
     'target 未打开 → missing',
-    resolveCrossWorkspaceTarget(refs, origin, 'DEV-PC:D:\\repo\\nope', 'DEV-PC').kind === 'missing',
+    resolveCrossWorkspaceTarget(refs, origin, missingId, 'DEV-PC').kind === 'missing',
   );
 
   const ambiguousRefs = [
@@ -44,7 +50,7 @@ async function run(): Promise<void> {
     ).kind === 'ambiguous',
   );
 
-  const hit = resolveCrossWorkspaceTarget(refs, origin, 'DEV-PC:D:\\repo\\b', 'DEV-PC');
+  const hit = resolveCrossWorkspaceTarget(refs, origin, siblingId, 'DEV-PC');
   check('唯一命中 → 目标工作区', hit.kind === 'target' && hit.ref === sibling);
 
   const remoteHit = resolveCrossWorkspaceTarget(refs, origin, '192.168.1.10:/srv/app', 'DEV-PC');
