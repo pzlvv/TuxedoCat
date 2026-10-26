@@ -45,7 +45,9 @@ runTests('sidebarFiles', async () => {
     check('`..` 上跳与绝对路径越界返回 null',
       resolveWithinRoot(root, '../x') === null
       && resolveWithinRoot(root, '..') === null
-      && resolveWithinRoot(root, 'C:\\Windows') === null
+      // 盘符绝对路径只在 win32 语义下越界：posix 上 `C:\Windows` 是 root 内的普通
+      // 相对文件名（反斜杠不是分隔符），越界的绝对路径形态由 /etc/passwd 覆盖
+      && (process.platform !== 'win32' || resolveWithinRoot(root, 'C:\\Windows') === null)
       && resolveWithinRoot(root, '/etc/passwd') === null);
 
     check('根目录本身只在 allowRoot 下放行',
