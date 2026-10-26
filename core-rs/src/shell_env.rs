@@ -32,7 +32,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::shell::{self, ShellInfo};
@@ -46,7 +46,7 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SHELL_FORM_MARKER: &str = "__TC_PATH__";
 
 /// 用户终端里的 PATH，两种形式同一份来源。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ShellPath {
     /// shell 自己的形式：Windows 上的 Git Bash / MSYS2 / Cygwin 是 POSIX 列表
     shell: OsString,
@@ -77,17 +77,36 @@ impl ShellPath {
 
 static RESOLVED: OnceLock<Result<ShellPath, String>> = OnceLock::new();
 
-/// 用户终端里的 PATH（首次调用时探测并缓存；失败结果同样缓存，不反复重试）
-pub fn path() -> Result<&'static ShellPath, String> {
+/// 测试钉的覆盖值（`force_path_for_test` 写入，`apply` 系列优先于 `RESOLVED`）。
+///
+/// 独立于 `RESOLVED` 存在且随沙箱存亡（`clear_forced_path_for_test` 在 Sandbox::drop
+/// 清除）：OnceLock 只能设一次，进程里先建的沙箱会把 PATH 永久钉死，后续沙箱自己
+/// 的钉定被静默忽略——用例断言的是「本沙箱目录出现在子进程 $PATH 里」，能否通过
+/// 就变成了测试调度的抽签（smoke 车道在 ubuntu 上两次实证）。生产路径不写这个槽，
+/// 语义不变。
+#[cfg(test)]
+static TEST_FORCED: Mutex<Option<ShellPath>> = Mutex::new(None);
+
+/// 当前生效的 PATH：测试覆盖优先，其后是探测缓存。
+fn current() -> Result<ShellPath, String> {
+    #[cfg(test)]
+    if let Some(forced) = TEST_FORCED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
+        return Ok(forced);
+    }
     RESOLVED
         .get_or_init(|| probe(&shell::shell()))
         .as_ref()
         .map_err(|error| error.clone())
+        .cloned()
 }
 
 /// 把解析出的 PATH 注入 shell 子进程（`$SHELL -c` 拉起的工具命令 / 后台任务）。
 pub fn apply(command: &mut Command) -> Result<(), String> {
-    apply_value(command, path()?.shell());
+    apply_value(command, &current()?.shell);
     Ok(())
 }
 
@@ -95,7 +114,7 @@ pub fn apply(command: &mut Command) -> Result<(), String> {
 ///
 /// 原生进程不认 POSIX 列表：Windows 上用逐条派生出来的 Windows 形式。
 pub fn apply_native(command: &mut Command) -> Result<(), String> {
-    apply_value(command, path()?.native());
+    apply_value(command, &current()?.native());
     Ok(())
 }
 
@@ -105,11 +124,19 @@ fn apply_value(command: &mut Command, path: &OsStr) {
 
 /// 测试专用：把解析结果钉死，用例不去跑真实的用户 shell。
 ///
-/// `test_support::Sandbox::new` 在串行闸门内调用（`RESOLVED` 是进程级静态状态，
-/// 只有第一次生效）；不这么做的话每个跑命令的用例都要先执行用户的启动文件。
+/// `test_support::Sandbox::new` 在串行闸门内调用；重复调用以后一次为准——每个
+/// 沙箱钉的都是自己的 PATH。不这么做的话每个跑命令的用例都要先执行用户的启动文件。
 #[cfg(test)]
 pub fn force_path_for_test(shell: OsString, native: OsString) {
-    let _ = RESOLVED.set(Ok(ShellPath { shell, native }));
+    *TEST_FORCED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(ShellPath { shell, native });
+}
+
+/// 测试专用：清除钉定（`Sandbox::drop` 调用）——覆盖只随沙箱存亡，沙箱销毁后
+/// 恢复探测语义，沙箱外的用例看到的是真实探测结果。
+#[cfg(test)]
+pub fn clear_forced_path_for_test() {
+    *TEST_FORCED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 // ==================== 探测 ====================

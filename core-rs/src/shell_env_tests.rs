@@ -128,22 +128,19 @@ fn parse_shell_form_rejects_output_that_is_not_a_path() {
 
 #[test]
 fn apply_and_apply_native_write_their_own_form() {
-    // `RESOLVED` 是进程级状态，先让沙箱把它钉死（同一进程内只有第一次生效），再验两个
-    // 注入点各取自己那份形式（`docs/core/standalone-core.md` 第 3.2.1 节）。
-    let _sandbox = crate::test_support::Sandbox::new("shell-env-forms");
-    let resolved = path().expect("PATH 已由 Sandbox 钉死");
+    // 沙箱把 PATH 钉成「<root>/bin + 继承 PATH」且两种形式同一份（Sandbox::new），
+    // 钉定随沙箱存亡（drop 即清除，恢复探测语义）——这里断言两个注入点写出的一致、
+    // 都以沙箱 bin 目录开头。
+    let sandbox = crate::test_support::Sandbox::new("shell-env-forms");
     let mut shell_command = Command::new("noop");
     apply(&mut shell_command).expect("PATH 已由 Sandbox 钉死");
     let mut native_command = Command::new("noop");
     apply_native(&mut native_command).expect("PATH 已由 Sandbox 钉死");
-    assert_eq!(
-        child_path(&shell_command),
-        Some(resolved.shell().to_string_lossy().to_string())
-    );
-    assert_eq!(
-        child_path(&native_command),
-        Some(resolved.native().to_string_lossy().to_string())
-    );
+    let shell_path = child_path(&shell_command).expect("apply 应写入 PATH");
+    let native_path = child_path(&native_command).expect("apply_native 应写入 PATH");
+    assert_eq!(shell_path, native_path, "钉定是同一份，两个注入点应写出一致");
+    let bin_prefix = sandbox.root.join("bin").to_string_lossy().to_string();
+    assert!(shell_path.starts_with(&bin_prefix), "got {shell_path}");
 }
 
 fn child_path(command: &Command) -> Option<String> {

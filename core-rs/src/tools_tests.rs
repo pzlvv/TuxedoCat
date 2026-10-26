@@ -181,13 +181,14 @@ fn expand_path_handles_multibyte_paths_without_panicking() {
 
 #[test]
 fn node_is_absolute_treats_a_leading_separator_as_absolute_on_windows() {
-    // 与 Node `path.isAbsolute` 同口径：Linux 上 `/tmp/x` 是普通绝对路径；
-    // Windows 上它是「当前盘根路径」，也必须是绝对（Glob 的绝对模式分支据此拆分基准目录）。
+    // 与 Node `path.isAbsolute` 同口径（按宿主平台的 path 模块）：`/tmp/x` 在两个
+    // 平台都是绝对；`\tmp\x` 只有 win32 语义下是绝对（当前盘根路径），posix 上
+    // 反斜杠是普通文件名字符、它是相对路径（Glob 的绝对模式分支据此拆分基准目录）。
     assert!(is_absolute_like_node("/tmp/x"));
-    assert!(is_absolute_like_node("\\tmp\\x"));
     assert!(!is_absolute_like_node("a/b"));
     assert!(!is_absolute_like_node(""));
     if cfg!(windows) {
+        assert!(is_absolute_like_node("\\tmp\\x"));
         assert!(is_absolute_like_node("C:/tmp/x"));
         assert!(is_absolute_like_node("\\\\server\\share\\x"));
         // 相对 glob 不能误判成绝对
