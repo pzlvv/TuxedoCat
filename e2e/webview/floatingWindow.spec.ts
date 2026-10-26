@@ -37,18 +37,49 @@ test('浮窗窄窗口：历史对话下拉不越出窗口左缘（bottomRight �
   const historyBtn = page.locator('button[title="对话历史"]');
   const popup = page.locator('.ant-dropdown:has(.conversation-dropdown)').first();
   // 弹层几何：左缘 >= 0（不越出窗口左缘）、右缘贴历史按钮右缘（bottomRight）、
-  // 宽度 = min(400, 视口 - 96)（96 = 顶栏右缘固定 chrome，见 App.tsx dropdownRender）
+  // 宽度 = min(400, 视口 - 96)（96 = 顶栏右缘固定 chrome，见 App.tsx dropdownRender）。
+  //
+  // headless 下 setViewportSize 的视口度量（100vw / clientWidth）立即生效，而
+  // LayoutView 的实际 resize 随帧节流落地（实测滞后 ~250ms）：resize 事件先到，
+  // antd 在「度量新 / 布局旧」的混合态里对齐，autoAdjustOverflow 还会因 bottomRight
+  // 左越界翻成 bottomLeft，弹层停在越界 48px 的位置；按钮布局随后落地但位置平移
+  // 不改尺寸，ResizeObserver 不触发，错位永不自愈（CI 上 Expected <= 385 /
+  // Received 704 即过渡态样本）。真实浮窗拖拽缩放是连续 resize 事件流，最后一个
+  // 事件必然落在布局稳定之后，产品里不存在该状态。因此每个样本在同一 JS 任务里
+  // 强制同步布局 + 补发一次 resize（@rc-component/trigger 的 useWatch 监听 window
+  // resize 同步 onAlign），等价于拖拽流最后一个事件的口径，再读几何快照；
+  // 布局未落地的样本断言不过由轮询重采兜住。
   const expectGeometry = async (width: number) => {
     const expectedMax = Math.min(400, width - 96);
-    await expect.poll(async () => {
-      const box = await popup.boundingBox();
-      return box ? Math.round(box.x) : -1;
-    }, { message: `viewport=${width} 左缘` }).toBeGreaterThanOrEqual(0);
-    const btnBox = await historyBtn.boundingBox();
-    const box = await popup.boundingBox();
-    expect(Math.round(box!.x + box!.width))
-      .toBeLessThanOrEqual(Math.round(btnBox!.x + btnBox!.width) + 1);
-    expect(Math.round(box!.width)).toBe(expectedMax);
+    // toPass 而不是 expect.poll：poll 只在「返回值匹配失败」时重试，回调内抛错
+    // （含断言失败）会立即终止；toPass 对回调内任何错误都重试直到超时。
+    await expect(async () => {
+      const geo = await page.evaluate(() => {
+        document.body.getBoundingClientRect();
+        window.dispatchEvent(new Event('resize'));
+        const btn = document.querySelector<HTMLButtonElement>('button[title="对话历史"]');
+        const dropdown = document.querySelector<HTMLElement>(
+          '.ant-dropdown:has(.conversation-dropdown) .conversation-dropdown',
+        );
+        if (!btn || !dropdown) {
+          return null;
+        }
+        const btnRect = btn.getBoundingClientRect();
+        const popupRect = dropdown.getBoundingClientRect();
+        return {
+          left: Math.round(popupRect.x),
+          right: Math.round(popupRect.right),
+          width: Math.round(popupRect.width),
+          btnRight: Math.round(btnRect.right),
+        };
+      });
+      if (!geo) {
+        throw new Error(`viewport=${width} 几何目标未渲染（弹层未打开）`);
+      }
+      expect(geo.left, `viewport=${width} 左缘`).toBeGreaterThanOrEqual(0);
+      expect(geo.right, `viewport=${width} 右缘收口`).toBeLessThanOrEqual(geo.btnRight + 1);
+      expect(geo.width, `viewport=${width} 宽度`).toBe(expectedMax);
+    }).toPass();
   };
 
   await page.setViewportSize({ width: 480, height: 640 });
