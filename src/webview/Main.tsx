@@ -5,6 +5,7 @@ import App from './App';
 import { getInjectedSessionId } from './webviewEnv';
 import { rotatePlaceholderLogo } from './placeholderLogo';
 import { setupAppViewportHeight } from './viewport';
+import { setupResizeFreeze } from './resizeFreeze';
 import { applyUiFontOffset } from './fontSize';
 import './styles/index.css';
 // CSS mask 图标形状表（由 scripts/gen-icons.mjs 从 lucide 生成）
@@ -28,6 +29,9 @@ if (typeof (window as { electronAPI?: unknown }).electronAPI !== 'undefined') {
 
 // 移动端视口高度适配（地址栏显隐由 CSS dvh 处理；软键盘遮挡在此兜底）
 setupAppViewportHeight();
+
+// 拖拽期宽度冻结：改尺寸过程中内容不重排，事件停歇后一次性重排
+setupResizeFreeze();
 
 // 界面字号档位：把宿主注入的 `__uiFontSize` 写成根元素 CSS 变量，首帧即按档位渲染
 applyUiFontOffset();

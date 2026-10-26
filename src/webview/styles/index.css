@@ -89,6 +89,20 @@ body {
   height: var(--app-vh, 100dvh);
 }
 
+/*
+ * 拖拽期宽度冻结（resizeFreeze.ts）：resize 开始时内容根锁在起点宽度，
+ * 文本不折行、观察器不逐帧重测；事件停歇后解锁，一次性重排到最终尺寸。
+ * 视口缩小时锁宽内容溢出，由 html 已有的 overflow: clip 裁掉、不出滚动条；
+ * hidden 一行是旧引擎不识别 clip 时的等价回退。
+ */
+html.resize-freeze {
+  overflow: hidden;
+  overflow: clip;
+}
+.resize-freeze .app-viewport {
+  width: var(--resize-freeze-width);
+}
+
 /* 用户选择面板的选项列表不设高度上限：高度随内容自然增长，由上方消息区让位 */
 
 /* 独立窗口宿主（多视图：Electron / 浏览器端）：强制深色背景，
