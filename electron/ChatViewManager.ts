@@ -836,6 +836,13 @@ export class ChatViewManager {
    * 引用跟会话走，由空闲回收（releaseSessionResources）/ 删除对话
    * （deleteConversation → MCPHost.onSessionClosed）驱动，不随视图销毁释放。
    *
+   * 卸内存与视图关闭都不许打断本条目的清理：会话归属的 Connection 可能已被
+   * 摘除（多工作区宿主里标红清理与本方法重叠时），conversationClosed 的路由
+   * 抛错若逃逸，views / lru 的清理会被跳过——孤儿视图此后每次 LRU 淘汰都重新
+   * 抛错，主进程没有 uncaughtException 处理，异常直接杀死进程（见
+   * specs/defects/workspace-unavailable-teardown-strands-orphan-views）。被跳过
+   * 卸内存的会话，其资源随随后的 Connection 销毁一并消亡，无泄漏。
+   *
    * 差异点通过参数表达：
    * - removeFromLru：trim 已把目标 shift 出 lru，无需再过滤；closeView 需要。
    * - closeIfAlive：closeView 在「视图已销毁但引用残留」分支不做 close，
@@ -850,17 +857,25 @@ export class ChatViewManager {
   ): void {
     // 销毁视图前先卸内存（core：abort + 引擎出池 + MCP 释放），
     // 再做纯视图销毁（不再依赖视图层内部 abort/release，见 docs/hosts/host-matrix.md 第 6 节）
-    if (this.closeConversation) {
-      this.closeConversation(key);
-    } else {
-      this.abortSession(key);
-    }
-    const view = this.views.get(key);
-    if (view && !view.webContents.isDestroyed()) {
-      this.opts.win.contentView.removeChildView(view);
-      if (opts?.closeIfAlive !== false) {
-        view.webContents.close();
+    try {
+      if (this.closeConversation) {
+        this.closeConversation(key);
+      } else {
+        this.abortSession(key);
       }
+    } catch (err) {
+      console.error(`[chat-view] release before destroy failed (${key}):`, err);
+    }
+    try {
+      const view = this.views.get(key);
+      if (view && !view.webContents.isDestroyed()) {
+        this.opts.win.contentView.removeChildView(view);
+        if (opts?.closeIfAlive !== false) {
+          view.webContents.close();
+        }
+      }
+    } catch (err) {
+      console.error(`[chat-view] view close failed (${key}):`, err);
     }
     this.views.delete(key);
     this.viewWorkspaces.delete(key);

@@ -637,3 +637,125 @@ test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行�
 
   await sshExec(`rm -rf ${repo}`).catch(() => undefined);
 });
+
+// ==================== SSH 断连 → 标红 → 重连后发送对话无反应（RT 落点） ====================
+// SIGSTOP 远端 daemon 制造链路沉默（Host 沉默判死 ≤10s 内 fatal）→ 标红 → SIGCONT
+// 复活 daemon 并点「重新连接」→ 断言孤儿视图清零、恢复后立即与就绪后的发送都正常
+// 往返。specs/defects/workspace-unavailable-teardown-strands-orphan-views（RT-1 / RT-2）
+// 与 specs/defects/ssh-reconnect-send-dropped-before-connection-ready（RT-1）共用本用例。
+
+test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返', async () => {
+  test.setTimeout(600_000);
+  // 三工作区（远程活动 + 两个本地）：远程死亡标红时其余两个 Connection 仍在
+  // （Client 无「唯一连接」退路），旧会话释放路由必抛——孤儿视图滞留 + 恢复后
+  // 旧会话的每次发送都持续抛「No Connection owns session」，对应真实用户
+  // 「必须关闭对话重新打开」的形态（specs/defects/ 两份缺陷规格共用本场景）
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const localDirA = await fs.promises.mkdtemp(pathMod.join(os.tmpdir(), 'e2e-ws-local-a-'));
+  const localDirB = await fs.promises.mkdtemp(pathMod.join(os.tmpdir(), 'e2e-ws-local-b-'));
+  // 清场：杀残留 daemon / 删状态文件——上一轮用例的 daemon 可能还在空闲退出倒计时里，
+  // 复用半死的 daemon 会让本轮建链挂起（对齐冷部署用例的清场做法）
+  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
+  const fingerprint = localFingerprint();
+  await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`);
+  mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  app = await launchApp({
+    repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
+    mockLlm,
+    workspaceDir: remoteWs,
+    openWorkspaces: [remoteRef, localDirA, localDirB],
+    agentMode: 'auto',
+  });
+  const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 180_000);
+  await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
+
+  // 1) 链路健康基线：一轮纯文本往返
+  mockLlm!.setHandler(() => ({ kind: 'text', text: 'LINK-OK' }));
+  await chatPage.fill('textarea.input-textarea', '链路握手');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('LINK-OK').first()).toBeVisible({ timeout: 90_000 });
+
+  // 2) 长轮次：远端 Bash sleep 保持查询进行中（贴近真实断连场景：查询中链路死亡）
+  mockLlm!.setHandler((req) => {
+    if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'LONG-ROUND-DONE' };
+    }
+    return {
+      kind: 'tool',
+      name: 'Bash',
+      args: { command: 'sleep 45', description: 'keep-round-busy' },
+    };
+  });
+  await chatPage.fill('textarea.input-textarea', '长查询探针');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  // 第二个 LLM 请求（tool_result 回传前）已发出 = 查询在途
+  await expect
+    .poll(() => mockLlm!.requests.length, { timeout: 30_000, intervals: [500, 1_000] })
+    .toBeGreaterThan(1);
+
+  // 3) SIGSTOP 远端 daemon → Host 沉默判死（≤10s）→ 远程标签标红
+  await sshExec(`pkill -STOP -f 'start-daemo[n]' || true`);
+  const titlebar0 = await app!.titlebarPage();
+  const remoteTab0 = titlebar0.locator('#workspaceTabs [role="tab"]').filter({ hasText: 'tuxedo-e2e-ssh' });
+  await expect(remoteTab0.locator('.ws-tab-dot')).toBeVisible({ timeout: 60_000 });
+
+  // 4) SIGCONT 复活 daemon（避免 30s 空闲退出）；点红标签激活 → 占位页「重新连接」
+  await sshExec(`pkill -CONT -f 'start-daemo[n]' || true`);
+  await remoteTab0.click();
+  const placeholder = await app!.waitForPage('data:text/html', 60_000);
+  await expect(placeholder.locator('#reconnectBtn')).toBeVisible({ timeout: 30_000 });
+  await placeholder.locator('#reconnectBtn').click();
+
+  // 5) 等真实用户的恢复时点：建链中黄点（呼吸点）收掉 = 聊天区同批恢复可交互
+  //（Playwright 能隔着占位页对被遮挡视图输入，必须显式等恢复，不能复用旧的聊天页对象）
+  const titlebar = await app!.titlebarPage();
+  const remoteTab = titlebar.locator('#workspaceTabs [role="tab"]').filter({ hasText: 'tuxedo-e2e-ssh' });
+  await expect(remoteTab).toBeVisible({ timeout: 60_000 });
+  await expect(remoteTab.locator('.ws-tab-loading')).toHaveCount(0, { timeout: 120_000 });
+
+  // 6) 现状（缺陷）下孤儿视图被复用：旧对话内容还在、恢复后立即发送（真实用户的第一反应）
+  const restored = await app!.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 60_000);
+  await restored.waitForSelector('textarea.input-textarea', { timeout: 60_000 });
+  const oldContentVisible = await restored
+    .getByText('LINK-OK')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  console.log(`[复现] 重连后旧对话内容可见（孤儿视图被复用）: ${oldContentVisible}`);
+  console.log(`[复现] 重连前 LLM 请求数: ${mockLlm!.requests.length}`);
+
+  // 7) 发送 #1（紧接恢复）：现状（孤儿 + 无唯一连接退路）预期路由抛错丢弃（无响应）
+  mockLlm!.setHandler(() => ({ kind: 'text', text: 'RECONNECT-OK-1' }));
+  await restored.fill('textarea.input-textarea', '重连后握手1');
+  await restored.press('textarea.input-textarea', 'Enter');
+  const earlyOutcome = await restored
+    .getByText('RECONNECT-OK-1')
+    .first()
+    .waitFor({ state: 'visible', timeout: 30_000 })
+    .then(() => '响应到达')
+    .catch(() => '无响应（死信）');
+  console.log(`[复现] 紧接发送的结果: ${earlyOutcome}，LLM 请求数: ${mockLlm!.requests.length}`);
+
+  // 8) 发送 #2（20s 后，Connection 必已就绪）：现状预期仍无响应（持续死信，
+  // 对应「必须关开对话」）；修复后两次都正常往返
+  await new Promise((r) => setTimeout(r, 20_000));
+  mockLlm!.setHandler(() => ({ kind: 'text', text: 'RECONNECT-OK-2' }));
+  await restored.fill('textarea.input-textarea', '重连后握手2');
+  await restored.press('textarea.input-textarea', 'Enter');
+  const lateOutcome = await restored
+    .getByText('RECONNECT-OK-2')
+    .first()
+    .waitFor({ state: 'visible', timeout: 60_000 })
+    .then(() => '响应到达')
+    .catch(() => '无响应（死信）');
+  console.log(`[复现] 就绪后发送的结果: ${lateOutcome}，LLM 请求数: ${mockLlm!.requests.length}`);
+
+  // 正式断言（RT）：现状红（孤儿复活旧对话 + 持续死信）；修复后绿
+  expect(oldContentVisible, '重连后不得复活旧对话视图（孤儿清理，orphan-views RT-1）').toBe(false);
+  expect(earlyOutcome, '恢复后立即发送的对话必须正常往返（reconnect RT-1）').toBe('响应到达');
+  expect(lateOutcome, '就绪后发送的对话必须正常往返（reconnect RT-1）').toBe('响应到达');
+  await fs.promises.rm(localDirA, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(localDirB, { recursive: true, force: true }).catch(() => undefined);
+});

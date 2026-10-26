@@ -3786,17 +3786,19 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: ChatPlaceholderReas
   // 会话释放路径）吞掉了整段推送，标签页黄点一直挂到用户点击标签页才刷新
   syncTitlebarWorkspaces();
   broadcastWorkspaces();
-  // 该工作区的 Connection 已无法建立：让 Client 销毁（含仍在长超时里挂着的建链尝试），
-  // 不留半开的死连接（尚未建立 Connection 的项是空操作）
-  emitWorkspaceChange('closed', ref);
-  // 该目录下的对话视图一并销毁：会话所属的 Core 已不存在，视图内容不再有效
-  // （侧栏「已打开会话」与活动会话随之清空，由 ChatViewManager 推送）
+  // 该目录下的对话视图**先于** Connection 销毁：此时会话归属映射还在，视图释放的
+  // conversationClosed 正常路由；反过来先摘 Connection，释放时路由必抛
+  // 「No Connection owns session」，把整批清理炸断留孤儿视图（此后 LRU 淘汰重新
+  // 抛错会杀死主进程，见 specs/defects/workspace-unavailable-teardown-strands-orphan-views）
   try {
     chatViews?.closeWorkspace(refKey(ref));
   } catch (err) {
     // 清理失败不阻断状态收敛（上面已推送）；只留诊断日志
     fileLogger.error('workspace-tab', `closeWorkspace(${refDisplay(ref)}) failed: ${String(err)}`);
   }
+  // 该工作区的 Connection 已无法建立：让 Client 销毁（含仍在长超时里挂着的建链尝试），
+  // 不留半开的死连接（尚未建立 Connection 的项是空操作）
+  emitWorkspaceChange('closed', ref);
   if (sameRef(workspacePath, ref)) {
     syncChatAreaForActiveWorkspace();
   }
@@ -3805,9 +3807,13 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: ChatPlaceholderReas
 /**
  * 重连一个不可用的工作区（占位页「重新连接」按钮触发）：红点先变黄色呼吸点
  * （建链中），经 `openRemoteWorkspaceAfterProbe`（3 秒建链超时，远端引导不计入）
- * 重新建链——成功则撤销不可用判定、重新走 opened 建立 Connection 并把聊天区切回
- * 对话视图；失败回到红点，原因落盘并留给占位页。主机密钥变更是例外流程：弹比对
- * 告警，用户确认即重建信任并立刻重试一次。本地项的重试只校验目录是否重新存在。
+ * 重新建链——建链中保持到 Connection 就绪（coreReady）才收场：绿点与聊天区由
+ * `onWorkspaceConnectionState` 的 ready 信号恢复，不在 opened 时刻就撤掉占位页
+ * （daemon 通道异步建立，Connection 注册滞后于 opened；窗口期内恢复可输入会让
+ * 输入在 Client 路由层被静默丢弃，见
+ * specs/defects/ssh-reconnect-send-dropped-before-connection-ready）。失败回到
+ * 红点，原因落盘并留给占位页。主机密钥变更是例外流程：弹比对告警，用户确认即
+ * 重建信任并立刻重试一次。本地项的重试只校验目录是否重新存在。
  * 建链中重复触发忽略；标签页被关闭则中止。
  */
 async function reconnectWorkspace(id: string): Promise<void> {
@@ -3838,10 +3844,12 @@ async function reconnectWorkspace(id: string): Promise<void> {
     // 失败原因必须落盘：只进 console 时，日志文件里重连为什么失败无据可查
     fileLogger.info('workspace-tab', `reconnect failed (${refDisplay(ref)}): ${reasonTextOf(reason)}`);
     console.warn(`[main] workspace reconnect failed: ${refDisplay(ref)}:`, err);
-  } finally {
-    // 先落定状态再刷新：成功 → 可用；失败 → 回到红点。
-    // 占位页必须与标签页同批刷新，否则会停留在「正在连接」（tab 已是红点）
+    // 失败收场：回到红点。成功路径的建链中不在 finally 里无条件清掉——
+    // 保持到 Connection 就绪，由 onWorkspaceConnectionState 的 ready 收尾
     workspaceAvailabilityState.clearConnecting(key);
+  } finally {
+    // 失败 → 红点；成功 → 建链中黄点保持（ready 收尾）。两条路都刷新一次：
+    // 占位页与标签页同批画出落定后的状态
     syncTitlebarWorkspaces();
     if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
   }
@@ -3861,10 +3869,32 @@ async function openRemoteWorkspaceAfterProbe(ref: WorkspaceRef): Promise<void> {
   }
   // 等待期间标签页可能已被关闭：不再补建 Connection
   if (!openWorkspaces.some((candidate) => refKey(candidate) === refKey(ref))) return;
-  workspaceAvailabilityState.clearAll(refKey(ref));
+  // 只撤销不可用判定；建链中保持到 Connection 就绪（coreReady）——聊天区与绿点都由
+  // ready 信号收尾，不在 opened 时刻恢复可输入（窗口期内的输入会被 Client 路由层
+  // 静默丢弃，见 specs/defects/ssh-reconnect-send-dropped-before-connection-ready）
+  workspaceAvailabilityState.revokeUnavailable(refKey(ref));
   unavailableReasons.delete(refKey(ref));
   emitWorkspaceChange('opened', ref);
   activateWorkspace(ref);
+  // 复用仍存活的已就绪 Connection（opened 未新建而是激活）时 ready 信号不会再来：
+  // 就地收尾建链中，不让黄点挂死
+  recoverConnectingIfReady(ref);
+}
+
+/**
+ * Connection 已就绪而建链中标记还在时就地收尾：登记 ready、清掉建链中并刷新
+ * 标签页与聊天区。opened 走「激活已有 Connection」分支时 coreReady 不会重发，
+ * 没有这一步黄点会挂死（新建 Connection 的常规路径由 ready 事件收尾，不走这里）。
+ */
+function recoverConnectingIfReady(ref: WorkspaceRef): void {
+  const key = refKey(ref);
+  if (!workspaceAvailabilityState.hasConnecting(key)) return;
+  const connection = coreClient?.connectionForWorkspace(ref);
+  if (!connection || !connection.isReady()) return;
+  workspaceAvailabilityState.markReady(key);
+  workspaceAvailabilityState.clearConnecting(key);
+  syncTitlebarWorkspaces();
+  if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
 }
 
 /**
@@ -4011,13 +4041,16 @@ function probeStartupRemoteWorkspaces(): void {
         for (const ref of group.refs) {
           const key = refKey(ref);
           if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) continue;
-          workspaceAvailabilityState.clearConnecting(key);
           unavailableReasons.delete(key);
-          // 探测期间 Connection 先死了一步（lost → 已标红）：endpoint 事实上可达，恢复并补建
+          // 探测期间 Connection 先死了一步（lost → 已标红）：endpoint 事实上可达，恢复并补建。
+          // 建链中保持到 Connection 就绪（coreReady）——绿点与聊天区由 ready 信号收尾，
+          // 不在 opened 时刻恢复可输入（窗口期内的输入会被 Client 路由层静默丢弃）
           if (workspaceAvailabilityState.revokeUnavailable(key)) {
             workspaceAvailabilityState.clearReady(key);
             emitWorkspaceChange('opened', ref);
           }
+          // opened 激活的是仍就绪的存量 Connection 时 ready 不会重发，就地收尾
+          recoverConnectingIfReady(ref);
         }
         // loading → 可用（红点撤销同理）：标题栏重渲染；活动项落在其上时占位页切回对话视图
         syncTitlebarWorkspaces();
@@ -5438,7 +5471,18 @@ function initCore(): void {
     if (!openWorkspaces.some((candidate) => refKey(candidate) === key)) return;
     fileLogger.info('workspace-tab', `connection ${state}: ${refDisplay(ref)} (${reason || 'ready'})`);
     if (state === 'ready') {
+      // Connection 就绪才收掉建链中：绿点与聊天区此刻恢复。opened 时刻不恢复——
+      // daemon 通道异步建立，Connection 注册滞后于 opened，窗口期内恢复可输入
+      // 会让输入在 Client 路由层被静默丢弃（No Connection owns session）。
+      // 恢复只属于「建链中」的路径（重连 / 启动恢复）：普通 ready（如本地 Core
+      // 重启）不带 connecting，不做聊天区切换——否则会把用户拽到最近使用的对话
+      const wasConnecting = workspaceAvailabilityState.hasConnecting(key);
       workspaceAvailabilityState.markReady(key);
+      if (wasConnecting) {
+        workspaceAvailabilityState.clearConnecting(key);
+        syncTitlebarWorkspaces();
+        if (sameRef(workspacePath, ref)) syncChatAreaForActiveWorkspace();
+      }
       // Core 重启 / Connection 重建后重新注册查看器文件监听（specs/018 FR-003）。
       uiHost?.onWorkspaceConnectionReady(ref);
     } else if (ref.endpoint) {
