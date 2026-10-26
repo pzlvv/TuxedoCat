@@ -107,34 +107,27 @@ jobs:
         with:
           name: release-artifacts
           path: artifacts
+      # 发布走业界标准 action（API 直连），不手写 gh 脚本：本 job 不 checkout，工作目录
+      # 没有 .git，gh 不带 -R 时靠 git remote 推断仓库，在这里必挂（曾导致发布失败）。
+      # 旧脚本的语义逐条落进 action 输入：
+      # - tag 已有 Release 时走更新、overwrite_files 默认覆盖同名资产（等价 --clobber），
+      #   同一版本重跑幂等；正文按同一 tag 重新生成，内容不变
+      # - target_commitish 把 tag 指到本次触发的提交，发布物与源码在同一个 commit 上
+      # - 复用已有草稿时保持草稿态，不悄悄发布
+      # - fail_on_unmatched_files 兜底「构建产物为空」：任一 glob 落空即失败；
+      #   产物名含空格（Tuxedo Cat-0.0.1-setup-x64.exe）由 glob 匹配，无 shell 分词问题
       - name: 创建 / 更新 Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.build.outputs.tag }}
-          VERSION: ${{ needs.build.outputs.version }}
-          DRAFT: ${{ inputs.draft }}
-          TARGET_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # 产物名含空格（Tuxedo Cat-0.0.1-setup-x64.exe），按 NUL 分隔取文件名
-          mapfile -d '' files < <(find artifacts -type f -print0)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::没有可上传的产物，构建 job 的 artifact 是空的"
-            exit 1
-          fi
-          printf '待上传 %s 个文件：\n' "${#files[@]}"
-          printf '  %s\n' "${files[@]}"
-          draft_flag=()
-          if [ "$DRAFT" = "true" ]; then draft_flag=(--draft); fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # 同一版本重跑：覆盖同名资产，不动已写好的 Release 正文
-            gh release upload "$TAG" "${files[@]}" --clobber
-          else
-            # tag 指到本次触发的提交：发布物与它对应的源码在同一个 commit 上
-            gh release create "$TAG" "${files[@]}" \
-              --target "$TARGET_SHA" \
-              --title "$TAG" \
-              --generate-notes \
-              "${draft_flag[@]}"
-          fi
-          echo "完成：$(gh release view "$TAG" --json url --jq .url)"
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ inputs.draft }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.vsix
+            artifacts/*.exe
+            artifacts/*.blockmap
+            artifacts/latest.yml
+            artifacts/tui-installer/*
