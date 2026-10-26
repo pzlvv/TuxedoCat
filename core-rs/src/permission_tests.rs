@@ -539,6 +539,11 @@ fn permission_policy_matches_the_fixture() {
         if let Some(map) = expect_display.as_object_mut() {
             map.remove("diffHunks");
         }
+        // displayArgs 的 file_path 由宿主 fs 拼接（Windows 反斜杠 / posix 正斜杠），
+        // 夹具与实际各自生成——比较前把两边的 file_path 分隔符归一到 '/'，其余字段
+        // 原样（内容里的反斜杠有正当语义，不做全局替换）
+        normalize_file_path(&mut display_args);
+        normalize_file_path(&mut expect_display);
         if perm_result != expect_perm || display_args != expect_display {
             failures.push(format!(
                 "{}\n  permResult 实际: {perm_result}\n  permResult 期望: {expect_perm}\n  displayArgs 实际: {display_args}\n  displayArgs 期望: {expect_display}",
@@ -552,6 +557,16 @@ fn permission_policy_matches_the_fixture() {
         "与对照表不一致：\n\n{}",
         failures.join("\n\n")
     );
+}
+
+/// 把 displayArgs 里的 `file_path` 分隔符归一到 '/'（仅该字段；内容里的反斜杠有
+/// 正当语义，不做全局替换——比较口径见 edit 用例处的注释）
+fn normalize_file_path(value: &mut Value) {
+    if let Some(map) = value.as_object_mut() {
+        if let Some(Value::String(path)) = map.get_mut("file_path") {
+            *path = path.replace('\\', "/");
+        }
+    }
 }
 
 /// 把对照表里的 `__CWD__` 占位替换为当前测试的会话工作目录

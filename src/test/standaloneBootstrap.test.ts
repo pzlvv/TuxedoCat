@@ -71,8 +71,12 @@ async function run(): Promise<void> {
 
 
   const logs: string[] = [];
+  // 工作区路径按宿主口径派生（localWorkspaceRef 内部走 path.resolve，平台语义）：
+  // 写死 'D:/repo' 在 Linux 上是相对路径，会被解析成 <cwd>/D:/repo，归属断言必挂——
+  // 先 resolve 成本机绝对形态，断言与同一派生值比对
+  const workspaceDir = path.resolve('D:/repo');
   const host = createTestHost({
-    getWorkspacePath: () => 'D:/repo',
+    getWorkspacePath: () => workspaceDir,
   });
   const conversations = new StubConversationManager(host);
 
@@ -118,7 +122,7 @@ async function run(): Promise<void> {
   check('启动快照报告 Connection 数', snapshot.connectionCount === 1);
   const connection = bootstrapped.client.listConnections()[0];
   check('Connection 已就绪', await waitFor(() => connection?.isReady() === true));
-  check('Connection 归属当前工作区', connection?.workspaceRef.path.replace(/\\/g, '/') === 'D:/repo');
+  check('Connection 归属当前工作区', connection?.workspaceRef.path === workspaceDir);
 
   await shutdownCore();
   check('shutdownCore() 之后 Connection 全部销毁', bootstrapped.client.listConnections().length === 0);

@@ -673,12 +673,10 @@ pub fn substitute_builtin_variables(
     let mut result = content.to_string();
 
     if let Some(dir) = skill_dir {
-        // Windows 上统一成正斜杠
-        let normalized = if cfg!(windows) {
-            dir.replace('\\', "/")
-        } else {
-            dir.to_string()
-        };
+        // SKILL_DIR 进 prompt 的形态统一成正斜杠（对照表契约：core-rs/fixtures/skills.json
+        // 的 builtinVariables 用例与平台无关地期望归一；平台门控会让 Linux 上反斜杠
+        // 原样透出，parity 即红——smoke 车道在 ubuntu 实证）
+        let normalized = dir.replace('\\', "/");
         result = js_replace_all(&result, "${SKILL_DIR}", &normalized);
     }
 

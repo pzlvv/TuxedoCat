@@ -57,5 +57,8 @@ jobs:
       - run: npm run check-types
       - run: npm run lint
       - run: npm run test:unit
+      # 偶发失败的后台线程 panic（如子代理槽位配对）需要完整回溯定位
       - run: npm run test:core
+        env:
+          RUST_BACKTRACE: 1
       - run: npm run check-types:e2e

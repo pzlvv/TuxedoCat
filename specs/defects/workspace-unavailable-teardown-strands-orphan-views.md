@@ -32,7 +32,7 @@ uncaughtException 处理，异常直接杀死主进程（整应用崩溃）。
   该视图滞留；外层 for 中断，本批剩余视图全部滞留。
 - 单工作区宿主（`connections.size === 0`）必抛；多工作区宿主若仅存一个其它 Connection，
   唯一连接退路把会话误登记到**别的**工作区连接上（不抛，但属于跨工作区误路由）。
-- 复现（真实 SSH，`e2e/electron/remoteSshExecution.spec.ts` 临时复现用例，SIGSTOP 远端
+- 复现（真实 SSH，`e2e/electron/remoteSshExecution.spec.ts` 的「SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返」，SIGSTOP 远端
   daemon 制造沉默判死）：标红后重连成功，`setActiveWorkspace` 从 lru 找到孤儿视图直接
   show——重连后旧对话内容可见（复现日志
   `[复现] 重连后旧对话内容可见（孤儿视图被复用）: true`）。

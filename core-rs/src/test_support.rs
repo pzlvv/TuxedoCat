@@ -224,6 +224,9 @@ impl Drop for Sandbox {
                 None => std::env::remove_var(key),
             }
         }
+        // PATH 钉定只随沙箱存亡：不清理的话覆盖槽粘住本沙箱的目录，
+        // 沙箱外跑 apply 的用例（如 shell_env 的探测用例）会读到它
+        crate::shell_env::clear_forced_path_for_test();
         settings::reset_settings_snapshot();
         config::set_active_workspace(None);
         config::reset_session_workspaces();

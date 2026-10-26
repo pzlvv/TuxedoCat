@@ -71,7 +71,10 @@ fn core_exits_when_parent_process_disappears() {
         wait_for_pid(&pid_file, Duration::from_secs(5)).expect("core pid file was not written");
     assert!(process_alive(pid), "core did not start");
 
-    let exited = wait_until_dead(pid, Duration::from_secs(5));
+    // 看门狗 1s 轮询 + exit(0)，名义上孤儿化后 ~1s 内退出；窗口给到 15s 是为
+    // CI 负载下的启动与调度抖动留余量（5s 窗口在 runner 上实证会偶发超窗，
+    // 看门狗本身没毛病）——真回归（看门狗没开火）在 15s 内照样红。
+    let exited = wait_until_dead(pid, Duration::from_secs(15));
     if !exited {
         // 红阶段不留下孤儿：用例失败后清理。
         kill(pid);

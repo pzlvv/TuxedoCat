@@ -5633,9 +5633,13 @@ fn agent_tool_spawns_a_sub_agent_that_replies_to_the_creator() {
         .expect("agent message");
     assert_eq!(reply_event["sessionId"], "s1");
     assert_eq!(reply_event["data"]["content"], "子代理已完成任务");
-    // From 头：`host:agent:<sub session id>`
+    // From 头：`host:agent:<sub session id>`；HOSTNAME / COMPUTERNAME 在 CI 环境
+    // 可能缺失，契约允许退化为 `#<id>`（`agent_source_info` 的兜底分支）
     let param = reply_event["data"]["param"].as_str().unwrap_or("");
-    assert!(param.contains(":agent:sub_"), "got {param}");
+    assert!(
+        param.contains(":agent:sub_") || param.starts_with("#sub_"),
+        "got {param}"
+    );
     assert_eq!(reply_event["data"]["meta"]["type"], "from");
 
     // Agent 工具的 tool_result 文案（对齐 `AgentTool.mapToolResultToToolResultBlockParam`）

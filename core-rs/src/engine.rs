@@ -1326,7 +1326,9 @@ impl Core {
 
         // 预建 meta.json：parentSessionId / role / model 必须落盘，
         // 否则对话树关联不上、点进子会话也拿不到「返回主对话」。
-        let _ = history::create_sub_agent_metadata(
+        // 失败必须传播（铁律 1，不静默降级）：静默吞掉会让子会话在对话树里失踪，
+        // 且没有任何错误可查。
+        history::create_sub_agent_metadata(
             &sub_session_id,
             &project,
             &request.description,
@@ -1334,7 +1336,8 @@ impl Core {
             &request.role,
             model.as_deref(),
             provider.as_deref(),
-        );
+        )
+        .map_err(|error| format!("create sub agent metadata: {error}"))?;
         // 同步把继承来的 agent mode 落进子会话 meta.json 的 context：
         // 重启后重新打开子会话，UI 仍显示继承自主对话的模式。
         self.persist_context(&sub_session_id, json!({ "key": "agentMode", "value": agent_mode }));

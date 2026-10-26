@@ -59,10 +59,16 @@ runTests('workspaceMeta', async () => {
     })());
 
   // —— 远端读取（注入 fs 访问口，临时目录当「远端」） ——
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-meta-test-'));
-  try {
-    const configDirName = '.test-core';
-    const projectPath = '/home/user/proj';
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-meta-test-'));
+    try {
+      const configDirName = '.test-core';
+      const projectPath = '/home/user/proj';
+      // 远端路径 → 临时目录的映射：SUT 拼出的远端路径恒以 homeDir() 开头，剥掉前缀后
+      // 按远端 posix 段落回本地（Windows / Linux 都成立）
+      const toLocalPath = (remotePath: string): string => {
+        const rel = remotePath.startsWith(home) ? remotePath.slice(home.length) : remotePath;
+        return path.join(home, ...rel.split('/').filter((p) => p !== ''));
+      };
     const projectDir = path.join(
       home, configDirName, 'conversations', projectDirCandidates(projectPath, { posix: true })[0],
     );
@@ -74,12 +80,13 @@ runTests('workspaceMeta', async () => {
 
     const access: RemoteMetaAccess = {
       homeDir: async () => home,
+      // 远端路径以 homeDir() 为根（SUT 用 posixJoin 拼出）：剥掉 home 前缀后映射进
+      // 临时目录。不能用「已是 posix 形态就用原路径」的判别——Linux 宿主上远端与本地
+      // 同为 posix 形态，原样使用 / 把绝对路径拆段重拼（首段空串被 join 丢弃）都会
+      // 读到 cwd 下的相对路径，stat 恒 false
       readFile: async (remotePath) => {
         try {
-          return await fs.promises.readFile(
-            remotePath.split('/').join(path.sep) === remotePath ? remotePath : path.join(...remotePath.split('/')),
-            'utf8',
-          );
+          return await fs.promises.readFile(toLocalPath(remotePath), 'utf8');
         } catch (err) {
           const code = (err as NodeJS.ErrnoException).code;
           if (code === 'ENOENT') return null;
@@ -88,7 +95,7 @@ runTests('workspaceMeta', async () => {
       },
       stat: async (remotePath) => {
         try {
-          await fs.promises.stat(path.join(...remotePath.split('/')));
+          await fs.promises.stat(toLocalPath(remotePath));
           return true;
         } catch {
           return false;

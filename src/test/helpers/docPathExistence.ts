@@ -25,15 +25,26 @@ const cache = new Map<string, boolean>();
  *
  * `git check-ignore` 的退出码就是答案：0 命中规则、1 未命中、其余（不在仓库里 / git 不可用）
  * 按「不是本机专属」处理——**失败关闭**，宁可让检查多报，也不让豁免退化成静默放行。
+ *
+ * 目录专属模式（如 `resources/core/`，带尾斜杠）只命中「已知是目录」的查询：路径在本机
+ * 不存在（干净克隆 / CI）时 git 把无斜杠查询当文件，永不命中——豁免判定会随本机有没有
+ * 构建过而翻转。因此无斜杠未命中时补一次带尾斜杠的查询（specs/defects/
+ * docs-lint-flags-gitignored-paths-2.md）；文件形态的查询带斜杠不影响非目录模式的匹配，
+ * 两次都未命中仍按失败关闭处理。
  */
 export function isLocalOnlyPath(relPath: string): boolean {
   const cached = cache.get(relPath);
   if (cached !== undefined) return cached;
+  const localOnly = checkIgnore(relPath) || checkIgnore(`${relPath}/`);
+  cache.set(relPath, localOnly);
+  return localOnly;
+}
+
+/** 单次 check-ignore 查询；非 0 / 1 的异常退出（git 不可用等）按未命中处理（失败关闭） */
+function checkIgnore(relPath: string): boolean {
   const result = spawnSync('git', ['check-ignore', '--quiet', '--no-index', '--', relPath], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
   });
-  const localOnly = result.status === 0;
-  cache.set(relPath, localOnly);
-  return localOnly;
+  return result.status === 0;
 }
