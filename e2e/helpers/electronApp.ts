@@ -489,7 +489,19 @@ export async function messageBoxText(page: Page): Promise<{ message: string; det
 
 /** 点击消息框按钮（0 = 第一个按钮；点击后窗口关闭） */
 export async function clickMessageBoxButton(page: Page, index: number): Promise<void> {
-  await page.locator(`.actions button[data-index="${index}"]`).click();
+  const button = page.locator(`.actions button[data-index="${index}"]`);
+  try {
+    await button.click();
+  } catch (error) {
+    // 按钮的 click 处理器同步经 page-title-updated 结算并关窗：负载下窗口可能在
+    // CDP input 应答回来前就没了，Playwright 对已关目标抛 "Target page has been
+    // closed"。点击本身的语义是「把选择交给消息框」，点击期间窗口关闭即视为已
+    // 送达（没有其它关闭方：settle 只由按钮 / Enter / Esc 触发，这里不发键盘事件），
+    // 实际效果由调用方的行为断言兜底；其余错误原样抛出。
+    if (!/Target page[^\n]*has been closed/.test(String(error))) {
+      throw error;
+    }
+  }
 }
 
 /** 造一个临时工作区；name 用于固定目录名（工作区标签页显示目录名） */

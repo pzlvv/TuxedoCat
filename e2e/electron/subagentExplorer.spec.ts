@@ -44,16 +44,28 @@ function toolNames(req: RecordedRequest): string[] {
  * 按会话 id 确定性等待聊天视图页面（App 在会话切换时写 `__currentSessionId`）。
  * 多视图宿主下 `app.chatPage()` 在新视图尚未完成启动时可能解析回旧视图，
  * 侧栏切换后要用本函数拿到子会话自己的视图。
+ *
+ * 额外要求 rAF 活着：会话 id 可能先落在尚未挂载的视图上（宿主还没把它 setBounds
+ * 进窗口），未挂载视图的 rAF 暂停但仍报 visible，Playwright 点击的 stable 检查
+ * 要两帧 rAF、永远等不到（CI 慢机上挂满 120s 的机制）。rAF 活着的才是已挂载、
+ * 可交互的那个视图。
  */
 async function waitForSessionPage(sessionId: string): Promise<import('@playwright/test').Page> {
   let found: import('@playwright/test').Page | null = null;
+  const rafAlive = (page: import('@playwright/test').Page): Promise<boolean> =>
+    Promise.race([
+      page.evaluate(() => new Promise<boolean>((resolve) => {
+        requestAnimationFrame(() => resolve(true));
+      })),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+    ]).catch(() => false);
   await expect
     .poll(async () => {
       for (const page of app.context.pages()) {
         if (!page.url().includes('dist/webview/index.html')) continue;
         try {
           const sid = await page.evaluate(() => (window as any).__currentSessionId ?? null);
-          if (sid === sessionId) {
+          if (sid === sessionId && await rafAlive(page)) {
             found = page;
             return true;
           }

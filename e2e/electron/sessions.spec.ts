@@ -51,6 +51,29 @@ function items(page: Page): Locator {
   return page.locator(SIDEBAR_ITEM);
 }
 
+/**
+ * 等侧栏列表停止变化再交互。会话推送（忙闲 / 消息数 / 标题）触发的是 innerHTML
+ * 全量重建：重建撞上 hover→click 之间，点击会按坐标落到行内容上变成「打开对话」
+ * 而不是进入目标操作（CI 慢机上 US-21 重命名两连挂的机制）。列表无常驻定时器，
+ * 静默窗口一定可达。
+ */
+async function waitForSidebarQuiet(sb: Page, quietMs = 600, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last = '';
+  let changedAt = Date.now();
+  while (Date.now() < deadline) {
+    const html = await sb.evaluate(() => document.querySelector('#list')?.innerHTML ?? '');
+    if (html !== last) {
+      last = html;
+      changedAt = Date.now();
+    } else if (Date.now() - changedAt >= quietMs) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error('侧栏列表持续变化，等不到平静窗口（是否有常驻推送？）');
+}
+
 test('US-19 发送消息后侧栏出现会话条目并显示消息数', async () => {
   const sb = await sidebar();
   await sendMessage('创建第一个会话');
@@ -91,6 +114,7 @@ test('US-21 侧栏重命名会话（行内输入，Enter 提交）', async () =>
   await sendMessage('即将被重命名的会话');
   const item = items(sb).first();
   await expect(item).toBeVisible({ timeout: 30_000 });
+  await waitForSidebarQuiet(sb);
 
   await item.hover();
   await item.locator('[data-action="rename"]').click();
