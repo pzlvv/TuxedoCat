@@ -69,8 +69,10 @@ test('US-38 Read 卡片路径点击打开 Monaco 预览窗口', async () => {
     /* 免确认路径 */
   }
 
-  // Read 卡片上架，路径为可点击链接（US-14 验收 3 / US-38 入口）
-  const pathLink = chatPage.locator('.hover\\:underline').first();
+  // Read 卡片上架，路径为可点击链接（US-14 验收 3 / US-38 入口）。
+  // 用 title 精确锁定 Read 卡片的路径按钮：聊天页里 .hover\:underline 有多处
+  // （上下文进度条、思考块展开行……），按类名取 first 会点错元素
+  const pathLink = chatPage.locator('button[title*="README.md"]');
   await expect(pathLink).toBeVisible({ timeout: 30_000 });
 
   // 点击路径 → Monaco 预览窗口打开（US-38 验收 1）
@@ -187,6 +189,32 @@ const PNG_ONE_PIXEL = Buffer.from(
   'base64',
 );
 
+/**
+ * 矩形近似相等：尺寸允许 ±4px、位置允许 ±2px 的 OS/DPI 取整偏差。
+ * Windows 高分屏（如 ARM64 150% 缩放）上 setBounds 与实际 bounds 之间
+ * 实测出现过 ±2px 的整窗取整（520 → 522），精确相等断言会把取整当回归。
+ */
+function rectNear(
+  actual: { x: number; y: number; width: number; height: number } | null | undefined,
+  target: { x: number; y: number; width: number; height: number },
+): boolean {
+  return actual != null
+    && Math.abs(actual.x - target.x) <= 2
+    && Math.abs(actual.y - target.y) <= 2
+    && Math.abs(actual.width - target.width) <= 4
+    && Math.abs(actual.height - target.height) <= 4;
+}
+
+function expectRectNear(
+  actual: { x: number; y: number; width: number; height: number } | null | undefined,
+  target: { x: number; y: number; width: number; height: number },
+): void {
+  expect(
+    rectNear(actual, target),
+    `矩形应为 ${JSON.stringify(target)}，实得 ${JSON.stringify(actual)}（允许 DPI 取整偏差 ±2/±4）`,
+  ).toBe(true);
+}
+
 test('US-38 查看器单实例顶替：再开一张图沿用同一窗口，旧窗口被销毁', async () => {
   await fs.promises.writeFile(path.join(workspaceDir, 'pic-a.png'), PNG_ONE_PIXEL);
   await fs.promises.writeFile(path.join(workspaceDir, 'pic-b.png'), PNG_ONE_PIXEL);
@@ -200,12 +228,18 @@ test('US-38 查看器单实例顶替：再开一张图沿用同一窗口，旧�
 
   // 再开第二张：名额被顶替，不叠开第二个查看器窗口
   await sb.locator('.file-row[data-path="pic-b.png"]').dblclick();
+  // 轮询「存活窗口的标题」而不是窗口数——顶替发生前后窗口数都是 1，
+  // 对「旧窗口尚未销毁」的采样窗口不敏感，直接数窗口会过早放行读到旧图
+  await expect.poll(async () => (await viewerWindow())?.title, { timeout: 15_000 }).toBe('pic-b.png');
+  // 标题已是新图后再等旧窗口销毁完（数量收敛到 1）：两件事不同步，得分别等
   await expect.poll(viewerWindowCount, { timeout: 15_000 }).toBe(1);
-  const survivor = await viewerWindow();
-  expect(survivor?.title).toBe('pic-b.png');
   // 旧页面已被销毁：上下文里只剩一个查看器页面，且是新的那张图
+  // （窗口销毁与页面列表更新不同步，数量也用轮询收敛）
+  await expect.poll(
+    () => app.context.pages().filter((p) => p.url().includes('imageViewer')).length,
+    { timeout: 15_000 },
+  ).toBe(1);
   const viewerPages = app.context.pages().filter((p) => p.url().includes('imageViewer'));
-  expect(viewerPages).toHaveLength(1);
   await expect(viewerPages[0].locator('#image')).toBeVisible({ timeout: 20_000 });
   await expect(viewerPages[0]).toHaveTitle('pic-b.png', { timeout: 10_000 });
 });
@@ -230,10 +264,11 @@ test('US-38 查看器窗口位置记忆：移动后关闭，再开沿用上次�
     w.setBounds(rect);
     return JSON.stringify(rect);
   } catch (err) { return 'ERR ' + err.message; }})()`)) as { x: number; y: number; width: number; height: number };
-  expect(await viewerWindow()).toMatchObject({ bounds: target });
+  expectRectNear((await viewerWindow())?.bounds, target);
 
-  // 矩形落盘有 2s 防抖：等状态文件里出现同一矩形
-  await expect.poll(savedViewerRect, { timeout: 15_000 }).toEqual(target);
+  // 矩形落盘有 2s 防抖：等状态文件里出现同一矩形（轮询谓词本身，
+  // 不能用 toBeDefined——savedViewerRect 无矩形时返回 null，会立即放行）
+  await expect.poll(() => rectNear(savedViewerRect(), target), { timeout: 15_000 }).toBe(true);
 
   // 关闭查看器（close 时补记一次最终矩形），再打开同一张图
   const closed = await mainEval<string>(app, `(function(){try{
@@ -249,7 +284,8 @@ test('US-38 查看器窗口位置记忆：移动后关闭，再开沿用上次�
   await expect.poll(viewerWindowCount, { timeout: 15_000 }).toBe(0);
 
   await sb.locator('.file-row[data-path="pic.png"]').dblclick();
-  await expect.poll(viewerWindowCount, { timeout: 20_000 }).toBe(1);
-  const reopened = await viewerWindow();
-  expect(reopened?.bounds).toEqual(target);
+  // 轮询「重开窗口的矩形与记忆一致」这一个谓词：先数窗口再取窗口是两次独立
+  // mainEval 采样，之间窗口仍可能在创建/销毁（实测出现过计数=1、取窗口=null
+  // 的互相矛盾），拆开采样会让断言采到两个不同的窗口
+  await expect.poll(async () => rectNear((await viewerWindow())?.bounds, target), { timeout: 20_000 }).toBe(true);
 });

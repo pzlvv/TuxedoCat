@@ -281,10 +281,22 @@ export async function launchApp(options: {
   // loadURL 异步提交，给渲染器一点拉起时间再连接
   await new Promise((r) => setTimeout(r, 800));
 
-  const browser = await chromium.connectOverCDP(spawned.devtoolsWs, { timeout: 30_000 });
-  const context = browser.contexts()[0];
+  // CDP 握手在负载下可能远超 30s（ws 已连上但 DevTools 协议层响应慢，实测超时）：
+  // 连接建立是纯环境环节，超时后重连重试（3 次 × 60s）不掩盖任何产品缺陷，
+  // 只把「慢」与「挂死」区分开
+  let browser: import('playwright').Browser | undefined;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      browser = await chromium.connectOverCDP(spawned.devtoolsWs, { timeout: 60_000 });
+      break;
+    } catch (error) {
+      if (attempt >= 3) throw error;
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+  }
+  const context = browser!.contexts()[0];
 
-  const waitForPage = (urlIncludes: string, timeout = 20_000): Promise<Page> =>
+  const waitForPage = (urlIncludes: string, timeout = 45_000): Promise<Page> =>
     new Promise<Page>((resolve, reject) => {
       const started = Date.now();
       const poll = (): void => {
@@ -320,7 +332,7 @@ export async function launchApp(options: {
    */
   const waitForChatPage = (
     opts: ChatPageOptions = {},
-    timeout = 20_000,
+    timeout = 45_000,
   ): Promise<Page> =>
     new Promise<Page>((resolve, reject) => {
       const started = Date.now();
@@ -430,7 +442,7 @@ export async function launchApp(options: {
     /**
      * 活动聊天视图。可选过滤见 `ChatPageOptions`（工作区路径 / 会话 id / 空会话态）。
      * 切换会话 / 工作区 / 新建对话后应重新获取。
-     * `timeoutMs` 缺省 20s；远程工作区冷部署（SSH 引导上传产物）时给更长的预算。
+     * `timeoutMs` 缺省 45s（慢机器余量）；远程工作区冷部署（SSH 引导上传产物）时给更长的预算。
      */
     chatPage: (opts?: ChatPageOptions, timeoutMs?: number) => waitForChatPage(opts ?? {}, timeoutMs),
     titlebarPage: () => waitForPage('dist/titlebar/index.html'),
@@ -463,7 +475,7 @@ const MESSAGE_BOX_PAGE_TITLE = 'tc-message-box';
  * 可以直接驱动它的页面），返回其 Page。按「data URL + 固定页面标题」识别——
  * 应用里只有消息框用 data URL 载入且标题固定。
  */
-export async function waitForMessageBox(app: AppHandle, timeout = 10_000): Promise<Page> {
+export async function waitForMessageBox(app: AppHandle, timeout = 30_000): Promise<Page> {
   const startedAt = Date.now();
   for (;;) {
     const candidates = app.context.pages().filter((p) => p.url().startsWith('data:text/html'));

@@ -108,13 +108,14 @@ async function clickMenuItem(index: number): Promise<void> {
   if (result !== 'ok') throw new Error(`菜单条目 ${index} 无点击回调（${result}）`);
 }
 
-/** 发一条消息并等到助手回复落屏（把会话推进到「有对话且空闲」的稳定态） */
+/** 发一条消息并等到助手回复落屏（把会话推进到「有对话且空闲」的稳定态）。
+ * 60s：一轮完整轮次（core → mock LLM → 流式渲染）在慢机器负载下可超 30s */
 async function sendOneTurn(workspaceIncludes: string, text: string): Promise<void> {
   const chat = await app!.chatPage({ workspaceIncludes });
   await expect(chat.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
   await chat.fill('textarea.input-textarea', text);
   await chat.press('textarea.input-textarea', 'Enter');
-  await expect(chat.getByText(/收到：/).first()).toBeVisible({ timeout: 30_000 });
+  await expect(chat.getByText(/收到：/).first()).toBeVisible({ timeout: 60_000 });
 }
 
 test('US-48 单工作区本地：条目集合、置灰终态与「打开命令行」快捷键同源展示', async () => {

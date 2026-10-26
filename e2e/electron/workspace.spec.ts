@@ -80,7 +80,8 @@ test('US-35 多工作区标签页：恢复打开集合、切换活动工作区�
   // 工作区 B 里发消息，会话落盘归属 B 的会话目录（US-35 验收 3：独立对话上下文）
   await betaChat.fill('textarea.input-textarea', '工作区 B 的消息');
   await betaChat.press('textarea.input-textarea', 'Enter');
-  await expect(betaChat.getByText(/收到：工作区 B/).first()).toBeVisible({ timeout: 30_000 });
+  // 60s：一轮完整轮次在慢机器负载下可超 30s（实测）
+  await expect(betaChat.getByText(/收到：工作区 B/).first()).toBeVisible({ timeout: 60_000 });
 
   const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDirs = fs.readdirSync(conversationsRoot);
@@ -166,13 +167,14 @@ test('US-35 标签页流水灯：按工作目录归并会话运行时状态（�
   await chatPage.fill('textarea.input-textarea', '写入文件 light.md');
   await chatPage.press('textarea.input-textarea', 'Enter');
   const overlay = chatPage.locator('.user-choice-overlay');
-  await expect(overlay).toBeVisible({ timeout: 30_000 });
+  // 60s：从 Enter 到权限确认弹层隔着完整工具链路，慢机器负载下可超 30s
+  await expect(overlay).toBeVisible({ timeout: 60_000 });
   await expect(tabA).toHaveClass(/activity-waiting/, { timeout: 30_000 });
   await expect(tabB).not.toHaveClass(/activity-running|activity-waiting/);
 
   // 放行 → 工具执行 → 终轮收尾：等待态结束，标签回到不点亮
   await overlay.getByRole('button', { name: /允许/ }).first().click();
-  await expect(chatPage.getByText('这是最终答复').first()).toBeVisible({ timeout: 30_000 });
+  await expect(chatPage.getByText('这是最终答复').first()).toBeVisible({ timeout: 60_000 });
   await expect(tabA).not.toHaveClass(/activity-running|activity-waiting/, { timeout: 30_000 });
 
   // 运行中（蓝）：慢速查询让该目录进入非 idle，只有 A 亮蓝灯——状态按会话归属的

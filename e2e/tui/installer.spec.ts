@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -55,6 +55,39 @@ let prefix = '';
 let fingerprint = '';
 let slotDir = '';
 
+/**
+ * 执行刚构建出的安装器。Windows 上杀毒引擎可能对 release/ 下的构建产物维持
+ * **文件级持久拦截**（spawn 报 EACCES/EPERM，实测该文件此后一直不可执行），而
+ * 同字节副本可以执行；副本自身也可能在「复制后实时扫描放行前」被短暂拦截。
+ * 所以：原件失败 → 拷到临时目录换中性名，带退避重试执行——验证的仍是同一份
+ * 安装器字节；其它错误原样抛出。
+ */
+async function runInstaller(args: string[], timeout: number): Promise<{ stdout: string }> {
+  try {
+    return await run(installerPath, args, { timeout });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EACCES' && code !== 'EPERM') throw error;
+  }
+  const copyDir = mkdtempSync(path.join(os.tmpdir(), 'tui-installer-e2e-run-'));
+  const copyPath = path.join(copyDir, 'installer-under-test.exe');
+  copyFileSync(installerPath, copyPath);
+  try {
+    const attempts = 4;
+    for (let i = 1; ; i++) {
+      try {
+        return await run(copyPath, args, { timeout });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code !== 'EACCES' && code !== 'EPERM') || i >= attempts) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+      }
+    }
+  } finally {
+    rmSync(copyDir, { recursive: true, force: true });
+  }
+}
+
 test.beforeAll(async () => {
   prefix = mkdtempSync(path.join(os.tmpdir(), 'tui-installer-e2e-'));
   // darwin 没有 Core 产物，安装链路无从谈起 → 跳过；受支持平台缺产物则直接失败——
@@ -76,9 +109,21 @@ test.beforeAll(async () => {
   });
   expect(stdout).toContain('[build-tui-installer]');
 
-  // 安装一次，后续用例共用同一前缀
-  const installed = await run(installerPath, ['--prefix', prefix], { timeout: 120_000 });
-  expect(installed.stdout).toContain(`已安装：share/${PRODUCT}/tui${ext}`);
+  // 安装一次，后续用例共用同一前缀。Windows 上 Smart App Control（评估 / 开启态）
+  // 会按云端信誉拦截刚构建的无签名安装器，且判定随进程链与文件身份漂移——原件与
+  // 副本都可能被拒（runInstaller 已带副本回退与重试）。这是本机安全策略的执行面
+  // 拒绝，不是产物缺陷：显式跳过并单列原因（与 darwin 的 skip 同一惯例），让车道
+  // 在不受影响的环境（CI / 无 SAC 机器）照常真跑。
+  try {
+    const installed = await runInstaller(['--prefix', prefix], 120_000);
+    expect(installed.stdout).toContain(`已安装：share/${PRODUCT}/tui${ext}`);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      test.skip(true, `本机安全策略拒绝执行刚构建的安装器（spawn ${code}；疑似 Smart App Control 评估模式），tui 车道在本机无法验证`);
+    }
+    throw error;
+  }
 });
 
 test('部署布局完整（TUI + 指纹槽位 + 共享 ripgrep）', () => {
@@ -97,7 +142,7 @@ test('部署布局完整（TUI + 指纹槽位 + 共享 ripgrep）', () => {
 });
 
 test('重复安装幂等（内容未变全部跳过）', async () => {
-  const second = await run(installerPath, ['--prefix', prefix], { timeout: 120_000 });
+  const second = await runInstaller(['--prefix', prefix], 120_000);
   expect(second.stdout).toContain(`未变化：share/${PRODUCT}/tui${ext}`);
   expect(second.stdout).not.toContain(`已安装：share/${PRODUCT}/tui${ext}`);
 });

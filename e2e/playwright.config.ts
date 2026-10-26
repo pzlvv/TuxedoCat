@@ -56,8 +56,12 @@ assertEnvironmentFileIfPresent();
 
 export default defineConfig({
   testDir: '.',
-  timeout: 120_000,
-  expect: { timeout: 15_000 },
+  // 超时档位按「慢机器可用」取值（Windows ARM64 / 低配 runner 实测轮次可达数十秒）：
+  // 单测 180s（整应用用例一轮真实 core + mock LLM 链路在负载下可超 2 分钟），
+  // 单断言 30s（15s 档在这类机器上会随机把「慢」误判成「坏」）。只放宽失败路径的
+  // 感知，不改变成功路径的行为；CI 快机器不受影响。
+  timeout: 180_000,
+  expect: { timeout: 30_000 },
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,

@@ -131,7 +131,10 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
       type: 'streamEnd', sessionId, role: 'assistant', accumulated: cfg.text, streamId,
       usage: cfg.usage ?? { input_tokens: 100, output_tokens: 20 },
     });
-    send({ type: 'addMessage', sessionId, role: 'assistant', content: cfg.text });
+    // 不补发 assistant 的 addMessage：as-built 契约里 core 的 message 事件只发
+    // 用户消息回执 / system / 失败回显（docs/architecture/events.md 第 2.1 节事件表
+    // 的触发点列；engine.rs 流式收尾后不再发 message），webview 因此对 assistant
+    // 的 addMessage 没有去重逻辑——这里多发一条会把同一段回复渲染成两份。
 
     active.delete(sessionId);
     send({ type: 'sessionRuntimeStates', states: [idleState(sessionId)] });
@@ -414,8 +417,8 @@ export const FAKE_HOST_INIT_FLOATING = fakeHostInit({ conversationView: 'multi',
 export class FakeHostDriver {
   constructor(private readonly page: Page) {}
 
-  /** 等待某类上行消息出现并返回（首个匹配） */
-  async waitForSent(type: string, timeout = 10_000): Promise<any> {
+  /** 等待某类上行消息出现并返回（首个匹配）。缺省 30s：慢机器上交互到上行之间隔着完整的 UI 处理链 */
+  async waitForSent(type: string, timeout = 30_000): Promise<any> {
     try {
       await this.page.waitForFunction(
         (t) => (window as any).__fakeHost.sent.some((m: any) => m.type === t),
@@ -435,7 +438,7 @@ export class FakeHostDriver {
   }
 
   /** 等待某类上行消息中出现满足谓词的一条（跳过启动期回显，返回首个匹配） */
-  async waitForSentWhere(type: string, pred: (msg: any) => boolean, timeout = 10_000): Promise<any> {
+  async waitForSentWhere(type: string, pred: (msg: any) => boolean, timeout = 30_000): Promise<any> {
     await this.page.waitForFunction(
       ({ t, src }) => {
         const code = new Function('m', `return (${src})(m);`);
@@ -559,6 +562,10 @@ export class FakeHostDriver {
 
   /** 等待 webview 完成启动初始化（主题已下发、输入框可用） */
   async waitReady(): Promise<void> {
-    await expect(this.page.locator('textarea.input-textarea')).toBeVisible({ timeout: 15_000 });
+    await expect(this.page.locator('textarea.input-textarea')).toBeVisible({ timeout: 30_000 });
+    // 设置装载完成的 UI 信标：上下文进度条只在 maxContextTokens 到达后渲染
+    // （webview 不猜值，铁律 7）。配置装载期间 sendDisabled 会丢弃 Enter
+    // （InputArea 的 configBusy 分支），不等到这一刻就交互是用例级 flake 的来源。
+    await expect(this.page.locator('span[title="点击压缩"]')).toBeVisible({ timeout: 30_000 });
   }
 }
