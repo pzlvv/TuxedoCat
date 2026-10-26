@@ -59,6 +59,18 @@ runTests('docsLintLocalOnlyPaths', () => {
     check('本机专属判定只认 .gitignore 覆盖的路径', isLocalOnlyPath(LOCAL_ONLY));
     check('入库文件不判为本机专属', !isLocalOnlyPath('e2e/environments.example.json'));
     check('不存在的普通路径不判为本机专属', !isLocalOnlyPath('e2e/does-not-exist.json'));
+    // RT-3：目录专属 gitignore 模式（`resources/core/`，build-core.mjs 的产物落点）在
+    // 路径本机缺失时仍豁免——git 对「不存在的无斜杠路径」按文件解读，目录专属模式
+    // 永不命中，干净克隆与 CI 上会误报失效引用（smoke 车道首跑实证）
+    const dirFixture = path.join(REPO_ROOT, 'resources', 'core');
+    const dirBackup = `${dirFixture}.docs-lint-bak`;
+    const dirPresent = fs.existsSync(dirFixture);
+    if (dirPresent) fs.renameSync(dirFixture, dirBackup);
+    try {
+      check('目录专属 gitignore 模式在本机缺失时仍豁免', isLocalOnlyPath('resources/core'));
+    } finally {
+      if (dirPresent) fs.renameSync(dirBackup, dirFixture);
+    }
   }
 
   finish();
