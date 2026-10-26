@@ -33,3 +33,16 @@
   正文再灌一遍。方向：按比例预算 + 单项上限、压缩时按 token 预算重挂最近调用的技能、内容相同时只加
   一句「已加载」。验收判据：预算与上限可配置且有单测；压缩后技能指令仍可被模型读到；重复调用不重复
   注入正文。
+
+- **标题栏最大化/还原图标与窗口实际状态脱同步**（用户报告 + 代码走读定位，偶发非阻塞）：
+  图标是单向投影——只由初始 `getState()` 拉取与 `maximize` / `unmaximize` / `enter-full-screen` /
+  `leave-full-screen` 四事件的 fire-and-forget 推送（`electron/main.ts` `pushTitlebarWindowState`）
+  驱动，无对账；Windows 上该事件族不可靠（electron #27851 / #35223 / #19934），且 snap 排列、显示器
+  变更、托盘 hide/show 往返天然不发事件，一条推送丢失图标就永久错（实测：窗口已还原、图标仍为
+  「还原」）。伴生缺陷：`frame: false` + 标题栏空白区 `-webkit-app-region: drag` 让 Windows 原生
+  双击切换与页面自绘 `dblclick → toggleMaximize`（`electron/titlebar/main.ts`）双触发，一次双击切换
+  两次（窗口闪动、双击看似无效），并放大丢事件竞态的暴露面。方向：投影加对账——`resize` /
+  `restore` / `show` / `hide` 等信号也重推 `isMaximized()`，或推送改拉取并给初始回包加 workspaces
+  快照同款 version 防护；双击二选一（删自绘处理器交原生，或标题栏改 `no-drag` 自行实现拖动）。
+  验收判据：snap / 托盘往返 / 最小化还原后图标与 `isMaximized()` 一致且能自愈；双击标题栏空白区
+  恰好切换一次最大化；electron 车道 e2e 锁定两条行为。
