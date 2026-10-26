@@ -71,5 +71,18 @@ runTests('packagingChain', () => {
     !builderConfig.files.includes('!node_modules/**') || builderConfig.npmRebuild === false,
   );
 
+  // RT-4：打包只落盘，不上传。发布由 .github/workflows/release.yml 的 publish job
+  // 用 gh CLI 完成；不显式禁止时，electron-builder 在 CI 环境里隐式发布
+  // （publish 未指定 + isCI → onTagOrDraft），github provider 不会因「当前提交不是 tag」
+  // 跳过，缺 GH_TOKEN 就整段构建失败（specs/defects/release-workflow-implicit-publish.md）。
+  for (const scriptName of ['package:app:installer', 'package:app:installer:x64']) {
+    const args = electronBuilderArgs(scriptName);
+    const publishIndex = args.indexOf('--publish');
+    check(
+      `${scriptName} 显式禁止 electron-builder 发布`,
+      publishIndex !== -1 && args[publishIndex + 1] === 'never',
+    );
+  }
+
   finish();
 });
