@@ -1,28 +1,30 @@
-# e2e 场景级车道（Playwright）。按层拆成 job 并行：
-#   ui      —— webview-ui / remote-workspace-ui / terminal-ui（纯浏览器，不需要 Electron）
-#   electron —— electron-app（整应用：standalone core + mock LLM，跑在 xvfb 里）
-#   tui     —— tui-installer（自解压安装器：内嵌 Core / ripgrep / TUI bundle）
-# 产物在 prepare 里构建一次（前端 7 个 vite 产物 + 宿主平台 Core + Electron 主进程），
-# 其余 job 只下载、不再重复编译；三个车道互不阻塞，失败点直指具体层。
+# 全量回归车道：冒烟（复用 smoke.yml）+ e2e 三车道，合入 main 后整点定时执行，
+# 是 PR 冒烟闸门之外的全量回归网；workflow_dispatch 供手动补跑。
+#
+# 不挂 pull_request：MR 的合入闸门是 smoke.yml（分钟级出结果），全量要构建全部产物
+# 并在 xvfb 里跑真实 Electron 链路，放不进 PR 关键路径——合入后的回归由定时车道兜底。
 #
 # electron-ssh（真实 SSH 远端）不进 CI：它需要一台可连的外部机器，runner 内的 sshd 与
 # 真实远端差异太大（SSH 服务配置 / 网络 / 权限模型），按现状判定为本地车道
 # （npm run test:e2e:ssh，需要 e2e/environments.json）。接回 CI 前先在
 # e2e/README.md 的 CI 车道表里补回对应 job。
-#
-# 为什么不并进 docs.yml：那份工作流跑的是文档守卫与单测（分钟级），e2e 要构建全部产物
-# 并在 xvfb 里跑真实 Electron 链路，混在一起会把每次 PR 的关键路径拉长。
-name: e2e
+name: all
 
 on:
-  pull_request:
+  schedule:
+    - cron: '0 * * * *' # 每小时整点
   workflow_dispatch:
 
 concurrency:
-  group: e2e-${{ github.ref }}
-  cancel-in-progress: true
+  group: all-${{ github.ref }}
+  # 定时车道不取消在跑实例：上一轮超时就在下一轮排队等，回归结果不被新触发冲掉
+  cancel-in-progress: false
 
 jobs:
+  # 冒烟内容只有一份定义：直接复用 smoke.yml（PR 闸门跑的就是这几个 job）
+  smoke:
+    uses: ./.github/workflows/smoke.yml
+
   prepare:
     name: 构建 e2e 产物
     runs-on: ubuntu-latest
@@ -47,8 +49,7 @@ jobs:
       - run: npm run build:webview
       - run: npm run copy-assets
       - run: npm run build:electron
-      # e2e 车道自己的类型检查（src 的 check-types 在 docs.yml 的 tests job）
-      - run: npm run check-types:e2e
+      # e2e 源码的类型检查在 smoke.yml 的 tests job，PR 闸门与这里共用同一步
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-artifacts

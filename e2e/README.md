@@ -42,10 +42,13 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 排查：`E2E_DEBUG=1 npm run test:e2e:electron` 会把应用主进程日志透传到测试输出；
 失败时 Playwright 输出 trace（`npx playwright show-trace <zip>`）。
 
-## CI 车道（`.github/workflows/e2e.yml`）
+## CI 车道（`.github/workflows/all.yml`）
 
-`prepare` job 构建一次产物（7 个前端产物 + 宿主平台 Core + Electron 主进程），并跑
-`npm run check-types:e2e`；三个车道并行下载产物后各跑一层：
+e2e 在全量回归工作流 `all.yml` 里跑：合入 main 后整点定时（每小时）+ 手动 dispatch。
+MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检查 + 单测 + Rust 测试 +
+`check-types:e2e`，不含 e2e 用例；`all.yml` 直接复用它的两个 job）。`prepare` job 构建
+一次产物（7 个前端产物 + 宿主平台 Core + Electron 主进程），三个车道并行下载产物后
+各跑一层：
 
 | job | project | 车道额外前置 |
 | --- | --- | --- |
@@ -59,7 +62,7 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 
 `electron-ssh` **不进 CI**：它要求一台可连的真实远端机器，runner 内临时起的 sshd 与真实
 远端在服务配置 / 网络 / 权限模型上差异太大，判定为本地车道——本地跑
-`npm run test:e2e:ssh`（前置见下节）。要接回 CI 时，在 `.github/workflows/e2e.yml` 里加回
+`npm run test:e2e:ssh`（前置见下节）。要接回 CI 时，在 `.github/workflows/all.yml` 里加回
 job 并同步本表。
 
 ## 测试环境配置（environments.json）

@@ -8,7 +8,7 @@
 # 所以一次 `npm run package` 就能出齐 .vsix / NSIS x64+arm64 / TUI 安装器四平台，
 # 与开发者本地打包走同一条链，CI 不另发明打包步骤。
 #
-# 为什么不并进 e2e.yml / docs.yml：发布要下载 electron 与全平台 Core 产物、跑完整
+# 为什么不并进 all.yml / smoke.yml：发布要下载 electron 与全平台 Core 产物、跑完整
 # `npm run package`（分钟级且吃网络），放进 PR 关键路径没有收益；它只在人为触发时跑。
 #
 # 版本号只从 package.json 取（workflow 可覆盖），tag 名由它派生：产物文件名里的

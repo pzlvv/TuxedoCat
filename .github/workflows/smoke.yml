@@ -1,12 +1,23 @@
-# 文档一致性守卫 + 全量单测。docsLint 的输入不止 markdown——事件表对照
-# AssistantEventBus 的类型联合，代码注释里的章节引用也参与校验，因此不做
-# paths 过滤：只改 .ts / .rs 注释的 PR 同样要跑。tests job 把 check-types /
-# lint / 单测（test:unit）/ Rust 测试搬进 CI：AGENTS.md 第 5 节工作流
-# 靠它强制，不靠本地纪律；e2e 由 e2e.yml 的专用车道负责，不在这里重复。
-name: docs
+# 冒烟车道（MR 合入闸门）。跑文档守卫 + 编译类检查 + 单测 + Rust 测试——e2e 之外的
+# 全部测试，分钟级出结果。MR 必须两个 job 全绿才可合入：分支保护里把 docs-lint /
+# tests 设为必填 check。
+#
+# docsLint 的输入不止 markdown——事件表对照 AssistantEventBus 的类型联合，代码注释
+# 里的章节引用也参与校验，因此不做 paths 过滤：只改 .ts / .rs 注释的 PR 同样要跑。
+#
+# 本文件同时是可复用工作流（workflow_call）：all.yml 的整点全量回归直接调用它，
+# 冒烟内容全仓库只有这一份定义。e2e 用例不在这里跑（归 all.yml 的整点车道），但
+# check-types:e2e 是纯类型检查、不是跑 e2e：收进 tests job 保证 MR 上就拦下会让
+# 定时车道在编译期变红的类型漂移。
+name: smoke
 
 on:
   pull_request:
+  workflow_call:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   docs-lint:
@@ -47,3 +58,4 @@ jobs:
       - run: npm run lint
       - run: npm run test:unit
       - run: npm run test:core
+      - run: npm run check-types:e2e

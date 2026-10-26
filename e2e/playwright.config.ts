@@ -80,7 +80,8 @@ export default defineConfig({
       testMatch: /electron[\\/].+\.spec\.ts/,
       testIgnore: /remoteSshExecution\.spec\.ts/,
     },
-    // 真实 SSH 远端（CI 里由 job 内起的 sshd 充当「远端机器」，见 .github/workflows/e2e.yml）
+    // 真实 SSH 远端（本地车道：要 e2e/environments.json，不进 CI——runner 内临时起的
+    // sshd 替代不了真实远端，见 e2e/README.md 的 CI 车道表）
     { name: 'electron-ssh', testMatch: /electron[\\/]remoteSshExecution\.spec\.ts/ },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道

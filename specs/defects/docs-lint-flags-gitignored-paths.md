@@ -33,7 +33,7 @@ status: 已修
 
   同一份代码在本机（有该文件）上是 49 通过 / 0 失败 —— 红绿由本机是否准备了凭证决定，
   与仓库内容无关。
-- 影响面：CI 的 docs-lint job 在干净检出上必红（`.github/workflows/docs.yml` 的 docs job），
+- 影响面：CI 的 docs-lint job 在干净检出上必红（`.github/workflows/smoke.yml` 的 docs-lint job），
   任何新克隆的本地守卫同样红；而且这条红是「假红」，会把真实的失效引用淹掉。
 
 ## 期望

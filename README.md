@@ -126,7 +126,7 @@ daemon 只监听回环，访问边界就是承载它的 SSH 通道：不需要�
 - `docs/architecture/` —— 架构规格：总览、分层规则、事件词汇表、架构原则、待定事项
 - `AGENTS.md` —— AI 协作约定（也适用于人类贡献者）
 - `docs/adr/` —— 架构决策记录（ADR）
-- 文档一致性守卫 `src/test/docsLint.test.ts`：CI 在每个 PR 上运行（`.github/workflows/docs.yml`），本地 `npm run test:unit -- docs-lint`
+- 文档一致性守卫 `src/test/docsLint.test.ts`：CI 在每个 PR 上运行（`.github/workflows/smoke.yml`），本地 `npm run test:unit -- docs-lint`
 
 ## 打包
 

@@ -139,17 +139,19 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
 - **文档同步是硬约束**：改 Core 行为 / 契约 / 事件词汇表时，同步受影响的规格
   （`docs/architecture/events.md` 事件表、对应 `docs/<topic>.md`），`npm run test:unit -- docs-lint` 必须绿。
-  新增 / 移动文档要更新 `docs/README.md` 的地图；守卫进 CI（`.github/workflows/docs.yml`，
-  docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节引用，
-  tests job 跑 check-types / lint / `test:unit` / `test:core`，并先构建 Linux Core 让
-  `standalone*` 系列测试驱动真实二进制而不是 skip）。
-- **e2e 也进 CI**（`.github/workflows/e2e.yml`）：`prepare` 构建产物 + `check-types:e2e`，
-  之后 `ui` / `electron` / `tui` 三个车道并行（electron 车道跑在 `xvfb-run` 里）。
+  新增 / 移动文档要更新 `docs/README.md` 的地图；守卫进 CI（`.github/workflows/smoke.yml`
+  的冒烟闸门，docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节
+  引用，tests job 跑 check-types / lint / `test:unit` / `test:core` / `check-types:e2e`，
+  并先构建 Linux Core 让 `standalone*` 系列测试驱动真实二进制而不是 skip）。MR 必须冒烟
+  全绿才可合入：分支保护里把 docs-lint / tests 设为必填 check。
+- **全量回归进 CI**（`.github/workflows/all.yml`）：main 整点定时（每小时）+ 手动
+  dispatch，复用 smoke.yml 的两个 job，另跑 e2e 三车道：`prepare` 构建产物，之后
+  `ui` / `electron` / `tui` 并行（electron 车道跑在 `xvfb-run` 里）。
   `electron-ssh`（真实 SSH 远端）是本地车道、不进 CI：它要一台可连的外部机器，runner 内
   临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。本地 `npm run test:all` 已把
   `test:e2e:local`（除 `electron-ssh` 外的全部车道，与 CI 三车道同集）收进最大入口。
-  新增 e2e project 时同步该工作流、`test:e2e:local` 的 project 清单与
-  [e2e/README.md](e2e/README.md#ci-车道githubworkflowse2eyml)。
+  新增 e2e project 时同步 all.yml、`test:e2e:local` 的 project 清单与
+  [e2e/README.md](e2e/README.md#ci-车道githubworkflowsallyml)。
 - **发布产物走 Actions**（`.github/workflows/release.yml`）：手动 `workflow_dispatch`，
   在 Windows runner 上跑 `npm run package` 后把 .vsix / NSIS x64+arm64 / TUI 安装器四平台
   上传到 tag `v<version>` 的 GitHub Release（默认草稿）。版本号只从 `package.json` 取，
