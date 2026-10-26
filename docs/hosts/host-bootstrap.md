@@ -327,7 +327,7 @@ daemon 侧任一连接的 shutdown 是全局停机，SSH 引导的 daemon 自带
   Core 可执行文件）外，成员全部必选，不出现其它 `?`。
 - 骨架函数的形参顺序固定：三个契约在前，宿主参数在后。
 
-**测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:all -- bootstrap-wiring`）断言：
+**测试期**：`src/test/bootstrapWiring.test.ts`（`npm run test:unit -- bootstrap-wiring`）断言：
 
 1. 骨架执行完毕后，`bootstrapSnapshot()` 的各字段如实反映本次装配（`locale` 保留宿主
    传入的原始值、`logToConsole` 保留宿主传入值——VS Code 恒为 `false`）；

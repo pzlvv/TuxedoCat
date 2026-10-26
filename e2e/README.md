@@ -24,6 +24,7 @@ npm run build:webview && npm run copy-assets && npm run build:electron
 npx playwright install chromium            # 网络受限时：PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
 
 npm run test:e2e            # 全部（六个 project，串行，workers=1）
+npm run test:e2e:local      # 除真实 SSH 远端外的五个 project（= CI 三车道同集，test:all 收的就是它）
 npm run test:e2e:webview    # 仅 webview UI 级
 npm run test:e2e:electron   # 仅 Electron 整应用（不需要 SSH 环境）
 npm run test:e2e:ssh        # 仅真实 SSH 远端车道（需要 e2e/environments.json）
@@ -33,6 +34,10 @@ npm run test:e2e:tui        # 仅 TUI 安装程序
 ```
 
 Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modules/electron`。
+
+Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道会被本机安全策略
+拦下刚构建的无签名安装器（spawn EACCES）：车道按环境前置显式跳过并单列原因，
+在 CI 与不受影响的机器上照常真跑。
 
 排查：`E2E_DEBUG=1 npm run test:e2e:electron` 会把应用主进程日志透传到测试输出；
 失败时 Playwright 输出 trace（`npx playwright show-trace <zip>`）。

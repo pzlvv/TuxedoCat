@@ -8,7 +8,7 @@ user-invocable: true
 产物：spec 的「收敛记录」三分类 + delta 并入 `docs/` + 整目录归档。收敛不绿不归档。
 
 **前置闸门（不过即拒绝）**：tasks.md 全部勾选；`npm run check-types`、`npm run lint`、
-`npm run test:all -- docs-lint` 全绿（涉及 core 的改动加 `npm run test:core`，且先
+`npm run test:unit -- docs-lint` 全绿（涉及 core 的改动加 `npm run test:core`，且先
 `npm run build:core:host` 让 parity 测试真实运行）。
 
 步骤：
@@ -27,10 +27,10 @@ user-invocable: true
    事件表等），新增文档登记 `docs/README.md` 地图；影响基线里的行内代码改为链接。
 5. 落地时同步需求基线：spec 承诺的新增 US 进 `docs/features/user-stories.md` 并配 e2e 用例或
    登记豁免。
-6. 跑 `npm run docs:freshness` 看一眼报告（只提示，不阻塞）；`npm run test:all --
+6. 跑 `npm run docs:freshness` 看一眼报告（只提示，不阻塞）；`npm run test:unit --
    docs-lint` 必须绿。
 7. 归档：先把 spec 的 status 改「已收敛」（放弃的改「放弃」）——收敛态 spec 的落点存活
-   检查在此时生效，再跑 `npm run test:all -- docs-lint` 必须绿，然后
+   检查在此时生效，再跑 `npm run test:unit -- docs-lint` 必须绿，然后
    `git mv specs/<NNN>-<slug> docs/archive/specs/<NNN>-<slug>`；编号不复用。停：报告
    归档位置与遗留项。
 

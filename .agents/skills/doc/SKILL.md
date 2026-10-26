@@ -22,4 +22,4 @@ user-invocable: true
 - 含 `export` / 顶层声明的代码块必须标 `src=<路径>`，纯示意块在 info 里写「示意」。
 - 同一事实只写一处：第二份文档只放链接，不复述。
 - 主题规格（`docs/*.md` 顶层）带 owner / last_reviewed frontmatter（docsLint 校验）。
-- 改完跑 `npm run test:all -- docs-lint`，红在哪同步哪。
+- 改完跑 `npm run test:unit -- docs-lint`，红在哪同步哪。

@@ -89,9 +89,9 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | --- | --- | --- |
 | Rust 单元测试 | `core-rs/src/<模块>_tests.rs`（行为对照表数据在 `core-rs/fixtures/`） | `npm run test:core` |
 | Rust 覆盖率 | `scripts/coverage-core.mjs` | `npm run coverage:core`（`--html` / `--check 80`） |
-| 协议冒烟（真实产物） | `src/test/standaloneBootstrap.test.ts`、`standaloneCoreEngine.test.ts` | `npm run test:all` |
-| 工具与权限（真实产物） | `src/test/standaloneCoreTools.test.ts`、`standaloneCorePermission.test.ts` | `npm run test:all` |
-| 远程 daemon（真实 TCP） | `core-rs/src/remote_tests.rs`（服务端）、`src/test/remoteCoreDaemon.test.ts`（Host 侧） | `npm run test:core` / `npm run test:all` |
+| 协议冒烟（真实产物） | `src/test/standaloneBootstrap.test.ts`、`standaloneCoreEngine.test.ts` | `npm run test:unit` |
+| 工具与权限（真实产物） | `src/test/standaloneCoreTools.test.ts`、`standaloneCorePermission.test.ts` | `npm run test:unit` |
+| 远程 daemon（真实 TCP） | `core-rs/src/remote_tests.rs`（服务端）、`src/test/remoteCoreDaemon.test.ts`（Host 侧） | `npm run test:core` / `npm run test:unit` |
 | 真实宿主 | `src/test/vscodeHost/` | `npm test`（VS Code）/ Electron 手测 |
 
 ### 约定

@@ -110,7 +110,8 @@ npm run check-types   # tsc（含 webview / electron 三份配置）
 npm run lint          # eslint src
 npm run compile       # check-types + lint + esbuild
 npm run build:all     # TS + Rust core + electron
-npm run test:all      # 编译并跑全部测试
+npm run test:all      # 最大测试入口：单测 + e2e 本地车道（真实 SSH 远端另跑 test:e2e:ssh）
+npm run test:unit     # 只跑单测（docs-lint 等过滤式跑法用它：test:unit -- docs-lint）
 npm run test:core     # cargo test（core-rs）
 npm run build:core:host # 只重建当前平台 Core（真实双端测试的本地前置）
 npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electron:debug）
@@ -137,15 +138,17 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   .zcode/skills`）。编辑与提交都走 `.agents/skills`。
 - 测试在 `src/test/*.test.ts`；Rust 在 `core-rs/src/*_tests.rs`。
 - **文档同步是硬约束**：改 Core 行为 / 契约 / 事件词汇表时，同步受影响的规格
-  （`docs/architecture/events.md` 事件表、对应 `docs/<topic>.md`），`npm run test:all -- docs-lint` 必须绿。
+  （`docs/architecture/events.md` 事件表、对应 `docs/<topic>.md`），`npm run test:unit -- docs-lint` 必须绿。
   新增 / 移动文档要更新 `docs/README.md` 的地图；守卫进 CI（`.github/workflows/docs.yml`，
   docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节引用，
-  tests job 跑 check-types / lint / 全部测试 / `test:core`，并先构建 Linux Core 让
+  tests job 跑 check-types / lint / `test:unit` / `test:core`，并先构建 Linux Core 让
   `standalone*` 系列测试驱动真实二进制而不是 skip）。
 - **e2e 也进 CI**（`.github/workflows/e2e.yml`）：`prepare` 构建产物 + `check-types:e2e`，
   之后 `ui` / `electron` / `tui` 三个车道并行（electron 车道跑在 `xvfb-run` 里）。
   `electron-ssh`（真实 SSH 远端）是本地车道、不进 CI：它要一台可连的外部机器，runner 内
-  临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。新增 e2e project 时同步该工作流与
+  临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。本地 `npm run test:all` 已把
+  `test:e2e:local`（除 `electron-ssh` 外的全部车道，与 CI 三车道同集）收进最大入口。
+  新增 e2e project 时同步该工作流、`test:e2e:local` 的 project 清单与
   [e2e/README.md](e2e/README.md#ci-车道githubworkflowse2eyml)。
 - **发布产物走 Actions**（`.github/workflows/release.yml`）：手动 `workflow_dispatch`，
   在 Windows runner 上跑 `npm run package` 后把 .vsix / NSIS x64+arm64 / TUI 安装器四平台
@@ -156,7 +159,8 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 - **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`standalone*`
   系列测试直接驱动真实 Core 二进制，产物缺失时走 `markSkipped()`——runner 单列「跳过」并
   打印原因，不再算通过（CI 的 tests job 先 `build:core:linux-x64` 所以真实在跑；本地 Windows
-  不补这一步，帧协议类漂移在本地发现不了）。
+  不补这一步，帧协议类漂移在本地发现不了）。e2e 车道另有产物前置（`dist/webview` /
+  `dist-electron` / Core 二进制），缺失时 playwright 配置加载期直接报错并给出构建命令。
 
 ## 6. 常见改动清单
 
@@ -165,7 +169,7 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 **新增启动期注入点**（[docs/hosts/host-bootstrap.md 第 6 节](docs/hosts/host-bootstrap.md#6-新增启动期注入点检查清单)）：core 定写入入口 + 读取入口（未写入抛错）→ 分类（宿主环境走同步 `UiEvent` 注册，进程内进 `bootstrapCore`）→ 登记 `CoreBootstrapOptions` 与 `bootstrapSnapshot` → 更新 `bootstrapWiring.test.ts` → 同步文档。
 
 **重构 / 挪动 emit 位点**：docsLint 把 2.1 触发点列与真实 emit 位点逐事件对照、把契约成员数 /
-名单与文档数字对照——重构后先跑 `npm run test:all -- docs-lint`，红在哪一项就同步哪一处文档。
+名单与文档数字对照——重构后先跑 `npm run test:unit -- docs-lint`，红在哪一项就同步哪一处文档。
 新增可选契约成员会被「可选成员冻结」拦下（铁律 4.2：可选语义用 `null` / 判别联合；存量豁免
 清单在 `docsLint.test.ts`，只减不增）。
 

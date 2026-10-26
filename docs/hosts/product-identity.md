@@ -62,7 +62,7 @@ crate / 二进制名（`core-rs`、`tui-rs`、`installer-rs`）保持中性：ca
 1. 改 `src/config/project.json` 的身份字段；
 2. 同步改 `package.json` 的身份字段与 `contributes` 里的 id；
 3. `npm install --package-lock-only` 重新生成 `package-lock.json`；
-4. 跑 `npm run check-types && npm run lint`，再跑 `npm run test:all -- brand-literal`。
+4. 跑 `npm run check-types && npm run lint`，再跑 `npm run test:unit -- brand-literal`。
 
 三步之外不需要动任何源码：Core 二进制名、部署目录、TUI 安装器分发名、配置目录、
 环境变量前缀都由构建脚本从定义处派生。
