@@ -1,7 +1,7 @@
 //! OpenAI Responses API 适配器。
 //!
 //! 把内部统一的 Anthropic 风格消息 / 工具格式转成 Responses API 格式并调用：
-//!   `POST {baseURL}/responses`（baseURL 以 `/v1` 结尾时用 `{baseURL}/v1/responses`）
+//!   `POST {baseURL}/v1/responses`（baseURL 已带 `/v1`、`/v4` 等版本段时用 `{baseURL}/responses`）
 //!
 //! 产出的 `LlmEvent` 与 Anthropic / Chat Completions 两条适配器**完全一致**，
 //! 因此引擎（`engine.rs`）与上层无需任何改动。
@@ -34,10 +34,10 @@ pub fn assistant_max_text_chars() -> usize {
 
 // ==================== 纯函数（对等面） ====================
 
-/// `{base}/v1/responses`；base 已以 `/v1` 结尾时用 `{base}/responses`（`joinV1Path`）
+/// `{base}/v1/responses`；base 已带版本段时用 `{base}/responses`（`joinV1Path`）
 pub fn build_responses_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
-    if base.ends_with("/v1") {
+    if crate::llm::base_has_version_segment(base) {
         format!("{base}/responses")
     } else {
         format!("{base}/v1/responses")

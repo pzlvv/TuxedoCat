@@ -270,6 +270,33 @@ fn protocol_urls_handle_v1_suffixed_bases() {
 }
 
 #[test]
+fn protocol_urls_reuse_any_numeric_version_segment() {
+    // 智谱的 baseURL 自带 `/v4`：不能再补 `/v1`
+    assert_eq!(
+        chat_completions_url("https://open.bigmodel.cn/api/paas/v4"),
+        "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    );
+    assert_eq!(
+        messages_url("https://open.bigmodel.cn/api/paas/v4/"),
+        "https://open.bigmodel.cn/api/paas/v4/messages"
+    );
+    // 未来版本（v5 / v6 / v12）按数字匹配同样成立
+    assert_eq!(
+        chat_completions_url("https://api.example.com/v5"),
+        "https://api.example.com/v5/chat/completions"
+    );
+    assert_eq!(
+        messages_url("https://api.example.com/v12"),
+        "https://api.example.com/v12/messages"
+    );
+    // 非纯数字版本（v1beta）不算版本段，仍补 /v1
+    assert_eq!(
+        chat_completions_url("https://api.example.com/v1beta"),
+        "https://api.example.com/v1beta/v1/chat/completions"
+    );
+}
+
+#[test]
 fn chat_messages_pass_through_plain_text() {
     let messages = vec![
         json!({ "role": "user", "content": "你好" }),

@@ -7,6 +7,7 @@ import { cancelTransfersForSession } from '../workspaceTransfer.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../../shared/Logger.js';
 import { getProbeDispatcher } from '../../shared/llm/httpDispatcher.js';
+import { joinV1Path } from '../../shared/llm/urlJoin.js';
 import {
   apiTypeRegistry,
   type ApiTypeDefinition,
@@ -1264,7 +1265,7 @@ export class WebviewMessageHandler {
       'x-session-id': probeSessionId,
     };
     const candidateUrls = [
-      `${trimmed}/v1/models`,
+      joinV1Path(trimmed, 'models'),
       `${trimmed}/models`,
     ];
     for (const url of candidateUrls) {

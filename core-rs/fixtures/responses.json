@@ -24,6 +24,14 @@
     {
       "baseURL": "https://opencode.ai/zen/go",
       "result": "https://opencode.ai/zen/go/v1/responses"
+    },
+    {
+      "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+      "result": "https://open.bigmodel.cn/api/paas/v4/responses"
+    },
+    {
+      "baseURL": "https://api.example.com/v1beta",
+      "result": "https://api.example.com/v1beta/v1/responses"
     }
   ],
   "tools": [

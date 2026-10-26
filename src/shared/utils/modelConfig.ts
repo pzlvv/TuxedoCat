@@ -43,6 +43,7 @@ export interface ModelConfig extends ModelParams {
  * - 'Responses'  OpenAI Responses API      POST {baseURL}/v1/responses
  * - 'OpenAI'     OpenAI Chat Completions   POST {baseURL}/v1/chat/completions
  * - 'Anthropic'  Anthropic Messages API    POST {baseURL}/v1/messages
+ * baseURL 已带版本段（`/v1`、智谱的 `/v4` 等）时不再补 `/v1`，见 `joinV1Path`。
  */
 export type ApiType = 'Anthropic' | 'Responses' | 'OpenAI';
 

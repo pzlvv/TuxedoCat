@@ -228,10 +228,19 @@ mod unit_tests {
             build_responses_url("https://x.dev/"),
             "https://x.dev/v1/responses"
         );
-        // 只有以 /v1 结尾才不再补 /v1
+        // 只有纯数字版本段才不再补 /v1
         assert_eq!(
             build_responses_url("https://x.dev/v1beta"),
             "https://x.dev/v1beta/v1/responses"
+        );
+        // 智谱 `/v4` 与未来 `/v5` 直接复用版本段
+        assert_eq!(
+            build_responses_url("https://open.bigmodel.cn/api/paas/v4"),
+            "https://open.bigmodel.cn/api/paas/v4/responses"
+        );
+        assert_eq!(
+            build_responses_url("https://x.dev/v5/"),
+            "https://x.dev/v5/responses"
         );
     }
 

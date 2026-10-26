@@ -402,20 +402,34 @@ fn join_url(base: &str, suffix: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), suffix)
 }
 
-/// `{base}/v1/chat/completions`；base 已以 `/v1` 结尾时用 `{base}/chat/completions`
+/// base 的路径末段是否为版本段（`/v1`、`/v4`、`/v12` 等，对齐 `joinV1Path` 的正则）。
+///
+/// 带版本段的 base 不再补 `/v1`：智谱的 baseURL 是 `https://open.bigmodel.cn/api/paas/v4`，
+/// 补 `/v1` 会打到不存在的路径；按数字匹配让未来的 `/v5`、`/v6` 同样成立。
+pub(crate) fn base_has_version_segment(base: &str) -> bool {
+    let Some((_, segment)) = base.rsplit_once('/') else {
+        return false;
+    };
+    let Some(digits) = segment.strip_prefix('v') else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// `{base}/v1/chat/completions`；base 已带版本段时用 `{base}/chat/completions`
 fn chat_completions_url(base: &str) -> String {
     let base = base.trim_end_matches('/');
-    if base.ends_with("/v1") {
+    if base_has_version_segment(base) {
         join_url(base, "/chat/completions")
     } else {
         join_url(base, "/v1/chat/completions")
     }
 }
 
-/// `{base}/v1/messages`；base 已以 `/v1` 结尾时用 `{base}/messages`
+/// `{base}/v1/messages`；base 已带版本段时用 `{base}/messages`
 fn messages_url(base: &str) -> String {
     let base = base.trim_end_matches('/');
-    if base.ends_with("/v1") {
+    if base_has_version_segment(base) {
         join_url(base, "/messages")
     } else {
         join_url(base, "/v1/messages")
