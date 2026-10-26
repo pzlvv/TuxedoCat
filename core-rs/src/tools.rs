@@ -1674,29 +1674,38 @@ fn read_pipe(
                         let _ = file.write_all(&buffer[..size]);
                         let _ = file.flush();
                     }
-                    full.full.clone()
+                    let snapshot = full.full.clone();
+                    // 中止 / 超时置位时，已在途的 `read` 仍会返回数据：字节照常计入快照
+                    // （中断结果用 `fullOutput` 收尾），但**不再上报进度**——工具结果已经
+                    // 发出，迟到的 `toolProgress` 会让 UI 把已结束的卡片当成还在执行
+                    // （`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
+                    let stopped = stop.load(Ordering::Relaxed);
+                    if !stopped {
+                        if let Some(callback) = &progress {
+                            // 进度在锁内发射：stdout / stderr 两条管道共用 full，
+                            // 锁外发射时后到的回调可能带着更旧的快照，total_bytes
+                            // 会回跳（UI 进度倒退；specs/defects/
+                            // bash-progress-total-can-regress）。锁内发射使事件顺序
+                            // 与快照时序一致，total 单调不减。
+                            callback(BashProgress {
+                                output: chunk,
+                                full_output: util::clamp_output(
+                                    &snapshot,
+                                    TOOL_RESULT_HEAD,
+                                    TOOL_RESULT_TAIL,
+                                ),
+                                elapsed_time_seconds: started.elapsed().as_secs_f64(),
+                                total_lines: snapshot.split('\n').count(),
+                                // `totalBytes: fullOutput.length`（UTF-16）
+                                total_bytes: util::utf16_len(&snapshot),
+                                timeout_ms,
+                            });
+                        }
+                    }
+                    snapshot
                 };
-                // 中止 / 超时置位时，已在途的 `read` 仍会返回数据：字节照常计入快照
-                // （中断结果用 `fullOutput` 收尾），但**不再上报进度**——工具结果已经
-                // 发出，迟到的 `toolProgress` 会让 UI 把已结束的卡片当成还在执行
-                // （`specs/defects/bash-abort-does-not-kill-process-tree.md`）。
                 if stop.load(Ordering::Relaxed) {
                     break;
-                }
-                if let Some(callback) = &progress {
-                    callback(BashProgress {
-                        output: chunk,
-                        full_output: util::clamp_output(
-                            &snapshot,
-                            TOOL_RESULT_HEAD,
-                            TOOL_RESULT_TAIL,
-                        ),
-                        elapsed_time_seconds: started.elapsed().as_secs_f64(),
-                        total_lines: snapshot.split('\n').count(),
-                        // `totalBytes: fullOutput.length`（UTF-16）
-                        total_bytes: util::utf16_len(&snapshot),
-                        timeout_ms,
-                    });
                 }
             }
         }
