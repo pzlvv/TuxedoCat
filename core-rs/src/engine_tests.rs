@@ -7107,13 +7107,22 @@ fn resolve_pending_mention_sets_reminder_only_when_capable() {
     assert!(state.lock().unwrap().pending_mention_reminder.is_none());
 }
 
-/// reminder 文案点名目标身份与 `Agent.target`。
+/// reminder 文案点名目标身份与 `Agent.target`；只提示自主决定，不强制代理。
 #[test]
 fn mention_reminder_names_target_and_agent_tool() {
     let text = build_mention_reminder("HOST:/b");
     assert!(text.starts_with("<Reminder>"));
     assert!(text.contains("target=\"HOST:/b\""));
     assert!(text.contains("Agent tool"));
+    assert!(text.contains("After understanding the user's intent"));
+    // 旧文案的强制措辞不再出现：是否远程调用交给模型判断
+    assert!(!text.contains("Delegate this task"));
+    assert!(!text.contains("Do not execute"));
+    // reminder 是发给模型的 prompt，正文全英文。身份逐字来自用户数据，这里用 ASCII
+    // 身份隔离模板：测到的任何 CJK 字符（含中文标点与全角区）都只能来自模板本身。
+    assert!(!text.chars().any(|c| {
+        ('\u{2E80}'..='\u{9FFF}').contains(&c) || ('\u{FF00}'..='\u{FFEF}').contains(&c)
+    }));
     assert!(text.trim_end().ends_with("</Reminder>"));
 }
 

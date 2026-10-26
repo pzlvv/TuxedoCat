@@ -3122,13 +3122,15 @@ fn parse_mention_identity(text: &str) -> Option<String> {
     }
 }
 
-/// `@` 命令的 reminder 文案（specs/023 FR-008）：点名目标身份与 `Agent.target`。
+/// `@` 命令的 reminder 文案（specs/023 FR-008，正文全英文，不夹中文）：点名目标身份
+/// 与 `Agent.target`；只提示用户任务需要跨工作区 `Agent`，是否远程调用由模型理解
+/// 用户意图后自主决定。
 fn build_mention_reminder(identity: &str) -> String {
     format!(
         "<Reminder>\n\
-         The user addressed workspace \"{identity}\" with @. Delegate this task to that workspace: \
-         call the Agent tool with target=\"{identity}\", prompt set to the user's task text, and an \
-         agentRole that fits the task. Do not execute the task in the current workspace.\n\
+         The user addressed workspace \"{identity}\" with @. This means the user's task needs \
+         the cross-workspace Agent tool. After understanding the user's intent, call the Agent \
+         tool with target=\"{identity}\".\n\
          </Reminder>"
     )
 }
@@ -3396,7 +3398,7 @@ fn run_turn(
     }
 
     // 1.6 `@` 工作区 reminder（specs/023 FR-008）：用户消息之后紧跟一条 silent 消息，
-    // 点名目标身份与 `Agent.target`，让模型把事项代理给目标工作区。
+    // 点名目标身份与 `Agent.target`；是否远程调用由模型理解用户意图后自主决定。
     if let Some(reminder) = mention_reminder {
         persist_reminder(core, session_id, state, &reminder);
     }
