@@ -15,7 +15,7 @@ build job 没有 `GH_TOKEN`（发布职责在 publish job 的 `gh` CLI 上），
 - `package.json` 的 `package:app:installer` / `package:app:installer:x64` 调 `electron-builder`
   时只给 `--config` 与 `--win`，不指定发布策略。
 - `electron-builder.config.js` 没有 `publish` 段，provider 由 `package.json` 的
-  `repository.url`（`pzlvv/TuxedoCat`）推断为 github。
+  `repository.url` 推断为 github。
 - `node_modules/app-builder-lib/out/publish/PublishManager.js`：`publish` 未指定时，
   `isCI` 为真即把策略置为 `onTagOrDraft`；`scheduleUpload` 的「当前提交不是 tag」跳过
   只对非 github / bitbucket provider 生效，github provider 仍会创建 `GitHubPublisher`，

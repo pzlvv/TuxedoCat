@@ -115,7 +115,7 @@ jobs:
       # - target_commitish 把 tag 指到本次触发的提交，发布物与源码在同一个 commit 上
       # - 复用已有草稿时保持草稿态，不悄悄发布
       # - fail_on_unmatched_files 兜底「构建产物为空」：任一 glob 落空即失败；
-      #   产物名含空格（Tuxedo Cat-0.0.1-setup-x64.exe）由 glob 匹配，无 shell 分词问题
+      #   产物名含空格（<productName>-0.0.1-setup-x64.exe）由 glob 匹配，无 shell 分词问题
       - name: 创建 / 更新 Release
         uses: softprops/action-gh-release@v3
         with:
