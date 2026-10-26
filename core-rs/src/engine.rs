@@ -3426,7 +3426,8 @@ fn run_turn(
 }
 
 /// Reminder 消息（对齐 `QueryEngine.flushReminder` 的 `reminderMsg`）：
-/// `silent` / `origin=agent`，只进内存上下文、不落盘、不通知 UI。
+/// `silent` / `origin=agent` 的 user 消息。会落盘进 `<sid>.jsonl` 并计入
+/// `messageCount`（由 `persist_reminder` 负责），模型可见，UI 消息流与回放不展示。
 fn build_reminder_message(content: &str) -> Value {
     json!({
         "type": "user",
