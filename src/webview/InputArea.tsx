@@ -2515,9 +2515,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             colors={colors}
             isDark={isDark}
           />
-          {/* abort 按钮 + 悬停明细浮层（specs/019 FR-002 / FR-003）：relative 容器
-              供浮层 absolute 定位；浮层只读、pointer-events 穿透 */}
-          <div className="relative flex-shrink-0">
+          {/* abort 按钮（specs/019 FR-002 / FR-003）：悬停明细浮层锚在输入区根节点
+              （与任务进度浮层同一层，见下方 data-abort-tip），这里只放按钮本体 */}
+          <div className="flex-shrink-0">
             <button
               onClick={onAbort}
               disabled={abortButtonState === 'none'}
@@ -2543,41 +2543,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             >
               <Icon name="square" size={12} className="text-white" />
             </button>
-            {abortTipVisible && (abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0) && (
-              <div
-                data-abort-tip
-                className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
-                style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border, maxWidth: 320 }}
-              >
-                {abortHoverDetail.tasks.length > 0 && (
-                  <div className={abortHoverDetail.subAgents.length > 0 ? 'mb-2' : ''}>
-                    <div className="ui-fs-10 font-semibold mb-1" style={{ color: colors.textSecondary }}>
-                      {t('inputArea.abortHoverTasks')}
-                    </div>
-                    {abortHoverDetail.tasks.map((task) => (
-                      <div key={task.taskId} className="ui-fs-11 mb-1" style={{ color: colors.textSystem }}>
-                        <div className="truncate">{task.description}</div>
-                        {task.command !== task.description && (
-                          <div className="ui-fs-10 opacity-70 break-all font-mono">{task.command}</div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {abortHoverDetail.subAgents.length > 0 && (
-                  <div>
-                    <div className="ui-fs-10 font-semibold mb-1" style={{ color: colors.textSecondary }}>
-                      {t('inputArea.abortHoverSubAgents')}
-                    </div>
-                    {abortHoverDetail.subAgents.map((agent) => (
-                      <div key={agent.sessionId} className="ui-fs-11 truncate mb-0.5" style={{ color: colors.textSystem }}>
-                        {agent.description ?? t('inputArea.abortHoverSubAgentFallback')}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
           {/* 发送 split button：主按钮恒为立即发送（US-46）；小三角下拉是
               当次动作（立即发送 / 空闲发送），不记住选择、不改变主按钮语义。
@@ -2704,6 +2669,58 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                   </span>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+        {/* abort 悬停明细浮层（specs/019 FR-004）：锚在输入区根节点右下、宽度随内容
+          自适应，上限为输入区宽度（与任务进度浮层同一套布局）；行样式参考任务进度
+          列表（图标 + 文本，docs/features/todo-list.md FR-003）。pointer-events-none：
+          只读投影，点击不产生任何上行（FR-004）。放在任务进度浮层之后，两组浮层
+          同时可见（进度已固定 + 悬停 abort）时 abort 浮层盖在上层。 */}
+        {abortTipVisible && (abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0) && (
+          <div
+            data-abort-tip
+            className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
+            style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border, maxWidth: '100%' }}
+          >
+            <div className="flex flex-col gap-1" style={{ maxHeight: 240, overflowY: 'auto' }}>
+              {abortHoverDetail.tasks.length > 0 && (
+                <>
+                  <div className="ui-fs-10 font-semibold" style={{ color: colors.textSecondary }}>
+                    {t('inputArea.abortHoverTasks')}
+                  </div>
+                  {abortHoverDetail.tasks.map((task) => (
+                    <div key={task.taskId} className="flex items-start gap-2 ui-fs-11">
+                      <span className="flex-shrink-0 mt-0.5" style={{ color: colors.harness }}>
+                        <Icon name="terminal" size={12} />
+                      </span>
+                      <span style={{ color: colors.textSystem, wordBreak: 'break-word' }}>
+                        {task.description}
+                        {task.command !== task.description && (
+                          <span className="block ui-fs-10 opacity-70 break-all font-mono mt-0.5">{task.command}</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+              {abortHoverDetail.subAgents.length > 0 && (
+                <>
+                  <div className="ui-fs-10 font-semibold" style={{ color: colors.textSecondary }}>
+                    {t('inputArea.abortHoverSubAgents')}
+                  </div>
+                  {abortHoverDetail.subAgents.map((agent) => (
+                    <div key={agent.sessionId} className="flex items-start gap-2 ui-fs-11">
+                      <span className="flex-shrink-0 mt-0.5" style={{ color: colors.harness }}>
+                        <Icon name="bot" size={12} />
+                      </span>
+                      <span style={{ color: colors.textSystem, wordBreak: 'break-word' }}>
+                        {agent.description ?? t('inputArea.abortHoverSubAgentFallback')}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </div>
         )}
