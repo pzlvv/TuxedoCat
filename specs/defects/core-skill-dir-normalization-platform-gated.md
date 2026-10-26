@@ -41,5 +41,5 @@ status: 已修
 | --- | --- | --- | --- |
 | 回归用例（修复前，Linux） | PR #1 smoke run 40373536895 | 红 | `builtin_variables_parity` FAILED：left `Both C:\skills\x s` / right `Both C:/skills/x s` |
 | 回归用例（修复后，win32 本机） | `cargo test skills::tests::parity_tests` | 绿 | 3 项 parity 用例通过；win32 上行为与修复前一致（本就在归一分支内） |
-| 回归用例（修复后，Linux） | 随本修复所在 PR 的 smoke 重跑 | not-run | 本机无 Linux；由 CI 的 ubuntu 车道验证，结果见 PR #1 的后续 smoke run |
+| 回归用例（修复后，Linux） | PR #1 smoke run 40380622290 | 绿 | ubuntu 车道 `builtin_variables_parity` 通过（tests job 整体绿） |
 | 既有回归 | `npm run test:core` | 绿 | 全量 cargo test 本机通过（见提交） |

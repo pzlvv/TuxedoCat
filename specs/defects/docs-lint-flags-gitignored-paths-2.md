@@ -57,4 +57,4 @@ status: 已修
 | 回归用例（修复后） | 同上 | 绿 | 移开 `resources/core` 后 `isLocalOnlyPath('resources/core') === true`（补带斜杠查询命中），RT-1 整跑 docsLint exit 0；`e2e/environments.json` 豁免与「入库文件 / 拼错路径不豁免」两条既有断言不受影响 |
 | 既有回归（docs 守卫全量） | `node scripts/run-tests.mjs docs-lint` | 绿 | 行内代码路径失效 0 处；`resources/core/` 在本机存在与移开两种情形下都绿 |
 | 类型与静态检查 | `npm run check-types && npm run lint` | 绿 | 三份 tsc 配置与 eslint 无错误 |
-| CI 实证（修复前） | PR #1 smoke run 40366255086 | 红 | docs-lint job 红于本缺陷（`resources/core/` 误报）；tests job 因先构建 Core 落出该目录而绿——修复后由本提交所在 PR 的 smoke 重跑覆盖 |
+| CI 实证（修复前） | PR #1 smoke run 40366255086 | 红 | docs-lint job 红于本缺陷（`resources/core/` 误报）；tests job 因先构建 Core 落出该目录而绿——修复后 smoke run 40380622290（本 PR）docs-lint job 绿 |

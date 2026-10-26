@@ -44,5 +44,5 @@ ubuntu 上两次内必现（smoke 车道实证）；Windows 是调度运气。
 | --- | --- | --- | --- |
 | 回归用例（修复前，Linux） | PR #1 smoke run 40377964864 | 红 | `bash_reports_streaming_progress` FAILED：last.total_bytes < 增量 chars 之和 |
 | 回归用例（修复后，win32 本机） | `cargo test --bin standalone-core tools::` | 绿 | tools 全部用例通过（含流式进度、4KB 预览上限、后台转档） |
-| 回归用例（修复后，Linux） | 随本修复所在 PR 的 smoke 重跑 | not-run | 本机无 Linux；由 CI 的 ubuntu 车道验证，结果见 PR #1 的后续 smoke run |
+| 回归用例（修复后，Linux） | PR #1 smoke run 40380622290 | 绿 | ubuntu 车道 `bash_reports_streaming_progress` 通过（tests job 整体绿） |
 | 既有回归 | `cargo test --bin standalone-core` | 绿 | 981 项全通过（含中止不杀进程树的既有回归） |
