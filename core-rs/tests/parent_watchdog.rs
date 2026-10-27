@@ -107,7 +107,7 @@ fn core_exits_when_parent_process_disappears() {
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "echo $$ > \"{}\"; exec \"{}\" stdio < \"{}\" > \"{}\" 2>&1 & echo $! > \"{}\"",
+            "echo $$ > \"{}\"; exec \"{}\" stdio < \"{}\" > \"{}\" 2>&1 & echo $! > \"{}\"; sleep 3",
             parent_file.display(),
             exe,
             fifo.display(),
@@ -126,6 +126,18 @@ fn core_exits_when_parent_process_disappears() {
         .expect("core pid file was not written")
         .parse()
         .expect("core pid is not a number");
+    let (state, ppid, core_start) = stat_fields(pid).expect("core exited immediately");
+    assert!(state != 'Z', "core did not start (state={state:?})");
+    // Core 在 main 早期读一次 getppid 装看门狗；若 shell 抢先退出（孤儿化先于
+    // 取父），看门狗会盯上收养者（init / runner subreaper）永远不触发——ubuntu-26
+    // 镜像上启动变慢使此竞态从偶发变必现（三轮 15s 整点超窗、core 日志无看门狗
+    // diag 的实证）。shell 末尾的 `sleep 3` 就是为此存在的宽限：Core 的 getppid
+    // 必落在父进程存活期。竞态若仍然输掉，在这里以明确信息失败，不进谜之超窗。
+    assert_eq!(
+        ppid, parent_pid as u64,
+        "test infra: core armed its watchdog on the wrong parent (ppid {ppid}, \
+         expected {parent_pid})——孤儿化先于取父，宽限期不够"
+    );
 
     // 等中间 shell 退出（孤儿化落地）再开表：这之前看门狗不开火是正确行为。
     // shell 不退出是用例基建故障，与被测逻辑无关，显式失败并带现场。
