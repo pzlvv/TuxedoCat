@@ -143,7 +143,7 @@ export const enDict: Record<string, string> = {
   'messages.jumpToBottom': 'Jump to bottom',
   'inputArea.placeholder': 'Type your message, Shift+Enter for new line',
   'inputArea.placeholderSpinMode': 'Not accepting input in Spin mode',
-  'inputArea.placeholderNotUserCreated': 'Conversations not created by the user cannot accept input',
+  'inputArea.placeholderConversationEnded': 'This conversation has ended',
   'inputArea.placeholderNeedConfigPrefix': 'Please configure the model service first, ',
   'inputArea.placeholderNeedConfigClick': 'click Settings',
   'inputArea.placeholderNeedConfigTitle': 'Please configure the model service first, click Settings',

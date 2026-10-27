@@ -494,6 +494,15 @@ const App = () => {
     // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
   }, [currentSessionId, sessionIdleVersion]);
 
+  // 当前会话是否已结束（运行时快照 idle）：非用户创建会话的输入禁用判据
+  // （「对话已结束」，docs/features/user-message-pipeline.md 第 3.3 节）。
+  // 快照未到达按已结束处理——等待态宁禁勿放，不猜「可输入」。
+  const sessionEnded = useMemo(() => {
+    if (!currentSessionId) return true;
+    return sessionRuntimeStatesRef.current.get(currentSessionId)?.idle ?? true;
+    // sessionIdleVersion 是 core 推来新状态时的重渲染信号（ref 本身不触发渲染）
+  }, [currentSessionId, sessionIdleVersion]);
+
   // 只有对话列表由 webview 渲染（`rendersConversationListInWebview`）时才有内嵌的历史对话按钮。
   // 当「本工作目录的其它会话」正在等待用户输入（ask user / 权限确认）时，用户请求不再
   // 自动切换会话，因此在历史对话按钮上加黄色呼吸效果提醒用户：去那个会话处理待答请求。
@@ -1473,6 +1482,7 @@ onClick={handleNewConversation}
               onOpenSettings={handleOpenSettings}
               isProviderConfigured={providerConfigured}
               creator={creator}
+              sessionEnded={sessionEnded}
               subAgentRole={subAgentRole}
               workMode={workMode}
             />

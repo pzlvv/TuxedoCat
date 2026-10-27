@@ -99,8 +99,16 @@ fn run_sub_agent(
     // 驱动收尾事实（docs/features/spin-execution.md 第 2 节）：先落标记再发 queryEnd，
     // SpinLoop 的等待循环据此 + 自身 Idle 判「子对话无 Reply 收尾」。会话可能已被
     // 用户删除（状态已释放），取不到就跳过——等待循环对「会话不存在」同按收尾处理。
+    // 收尾即弃队（docs/features/user-message-pipeline.md 第 3.3 节）：Reply 检出 /
+    // 催办耗尽 / 中止后，排队的用户消息不再投递——对话已结束。abort 路径的消费
+    // 循环已清过一次，这里是非 abort 退出（Reply 检出 / 催办耗尽）的兜底。
     if let Some(state) = core.session_if_exists(&sub_session_id) {
-        state.lock().unwrap().sub_agent_driver_done = true;
+        let mut state = state.lock().unwrap();
+        state.pending_user_message = None;
+        state.pending_reminder = None;
+        state.pending_mention_reminder = None;
+        state.agent_messages.clear();
+        state.sub_agent_driver_done = true;
     }
     core.emit(json!({ "type": "queryEnd", "sessionId": sub_session_id }));
     // 刷新对话列表：此时子代理消息已持久化，新子会话能正确出现在对话树里
@@ -252,6 +260,13 @@ pub struct SessionState {
     /// （docs/features/spin-execution.md 第 2 节）；Reminder 轮次之间消费循环短暂
     /// 退出的窗口不算收尾，必须是驱动的最终退出。普通（非子代理）会话恒为假。
     pub sub_agent_driver_done: bool,
+    /// 子代理已调用过 `Reply`（`deliver_agent_reply` 按投递来源置位，仅子代理会话——
+    /// `parent_session_id` 非空或 creator 为 agent 形态——会置位）：对话进入收尾，
+    /// 排队中的用户消息就地丢弃（`take_queued_batch` 唯一收口）、新消息不再入队
+    /// （`on_user_message` 守卫，docs/features/user-message-pipeline.md 第 3.3 节）。
+    /// 与 `sub_agent_driver_done` 的差别：本标记在 Reply 工具执行的**当轮**置位
+    /// （早于驱动退出），盖住「Reply 之后、驱动收尾之前」的窗口。普通会话恒为假。
+    pub sub_agent_reply_called: bool,
     /// 工作模式（`QueryEngine.workMode`）：`spin` 期间子代理 Reply 不进消费队列
     /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。单向：进入后
     /// 不再写回 `Normal`。
@@ -395,6 +410,7 @@ impl SessionState {
             waiting: false,
             silent_abort: false,
             sub_agent_driver_done: false,
+            sub_agent_reply_called: false,
             work_mode: WorkMode::Normal,
             spin_sub_agents: HashSet::new(),
             spin_replied: HashSet::new(),
@@ -441,6 +457,16 @@ impl SessionState {
             && !self.compacting
             && self.pending_user_message.is_none()
             && !self.background
+    }
+
+    /// 本会话是否子代理会话（本地子代理或跨工作区对话）。两个内存事实各覆盖一半：
+    /// 本地子代理创建时写 `parent_session_id`，`creator` 要等 `ensure_loaded` 从 meta
+    /// 恢复；跨工作区对话创建时写 `creator`（agent 形态）而 `parent_session_id` 恒
+    /// `None`（specs/025 FR-001 / FR-002）。取或才是创建即成立的完整判据；
+    /// 普通会话两者皆空。
+    pub fn is_sub_agent_session(&self) -> bool {
+        self.parent_session_id.is_some()
+            || matches!(self.creator, SessionCreator::Agent { .. })
     }
 }
 
@@ -1565,6 +1591,18 @@ impl Core {
         content: &str,
         from_session_id: &str,
     ) -> Result<(), String> {
+        // Reply 一经调用即对用户输入关闭（docs/features/user-message-pipeline.md
+        // FR-008）：投递去向不限（本地创建方 / 跨工作区回投 / spin 验收），投递
+        // 成败也不影响——驱动循环据 `sub_agent_has_reply` 收尾，对话都已进入收尾。
+        // 排队中的用户消息由 `take_queued_batch` 丢弃，新消息被 `on_user_message`
+        // 守卫拒收。仅子代理会话置位：工具清单含 Reply，普通会话调用 Reply 不得
+        // 关闭其自身输入。
+        if let Some(from_state) = self.session_if_exists(from_session_id) {
+            let mut from_state = from_state.lock().unwrap();
+            if from_state.is_sub_agent_session() {
+                from_state.sub_agent_reply_called = true;
+            }
+        }
         let Some(state) = self.session_if_exists(target_session_id) else {
             // specs/023 FR-003：跨工作区子代理的 Reply 目标是发起方会话——它在另一个
             // Core 里。目标等于本会话 creator 指向的会话时交给宿主回投，不当作
@@ -2021,6 +2059,23 @@ impl Core {
             }
         }
 
+        // 子代理会话（本地子代理 / 跨工作区对话，UI 按已结束禁用输入）在 Reply 已
+        // 调用或驱动已收尾后不再受理用户消息：对话已结束，直接丢弃——不入队、不
+        // 拉起消费循环，避免已收尾的子代理被用户消息拉起新一轮
+        // （docs/features/user-message-pipeline.md 第 3.3 节）。驱动未收尾时照常
+        // 入队（运行中可补充输入，忙时走排队语义）。
+        {
+            let state = self.session(&session_id);
+            let state = state.lock().unwrap();
+            if state.is_sub_agent_session()
+                && (state.sub_agent_reply_called || state.sub_agent_driver_done)
+            {
+                drop(state);
+                self.log("userMessageSubmitted to a finished sub-agent; dropped");
+                return;
+            }
+        }
+
         // 随消息携带的会话覆盖：
         // agentMode / thinkingMode / webSearch / model 由宿主按会话解析后带上。
         let mut model_changed: Option<(String, String)> = None;
@@ -2071,6 +2126,11 @@ impl Core {
             if state.running || state.compacting {
                 // 压缩期间只入队不启动消费循环：
                 // 压缩会整体替换消息数组，与运行中的查询并发会互相踩踏）
+                false
+            } else if state.is_sub_agent_session() {
+                // 子代理会话的消费循环由 `run_sub_agent` 驱动持有：Reminder 轮次之间
+                // `running` 短暂为假的窗口也不在这里另起裸消费循环，否则会与驱动循环
+                // 并发踩踏同一会话；消息留在队列里由驱动的下一轮出队。
                 false
             } else {
                 state.running = true;
@@ -2171,6 +2231,11 @@ impl Core {
             if !has_queued {
                 return;
             }
+            // 子代理会话不在这里另起消费循环：驱动循环（`run_sub_agent`）收尾压缩后
+            // 自己继续出队，见 `on_user_message` 的同一抑制。
+            if state.is_sub_agent_session() {
+                return;
+            }
             state.running = true;
             state.cancel.store(false, Ordering::Relaxed);
             state.silent_abort = false;
@@ -2217,6 +2282,14 @@ impl Core {
             // 恢复创建者归属（specs/025 FR-002）：缺失 / 形态不对是数据异常，加载失败
             // 不回退（未发布无兼容义务）
             state.creator = history::creator_of_metadata(&metadata)?;
+            // 驱动收尾是进程内存事实（Core 重启即失）：重启后加载的子代理会话必然
+            // 已收尾（子代理驱动不跨重启），按「子代理会话且非运行态」补推导
+            // `sub_agent_driver_done`，`on_user_message` 的收尾守卫对重启后打开的
+            // 子代理会话同样成立。运行中的子代理状态在内存里（`running = true`），
+            // 不会走到这里。
+            if state.is_sub_agent_session() && !state.running {
+                state.sub_agent_driver_done = true;
+            }
             let (provider, model) = history::model_ref_of_session(session_id, &project);
             state.provider = provider;
             state.model = model;
@@ -4037,6 +4110,13 @@ fn take_queued_batch(
     include_command_user_message: bool,
 ) -> Option<QueuedBatch> {
     let mut guard = state.lock().unwrap();
+    // Reply 已调用的子代理：用户队列就地丢弃——对话进入收尾，不再受理补充输入
+    // （docs/features/user-message-pipeline.md 第 3.3 节）。自动消息与 Reminder 照常
+    // 排空：收尾轮的 tool_result / 催办仍要走完。丢弃必须落在本函数：消费循环的
+    // 轮次边界与 LLM 请求前的 `flush_queued_messages` 共用这一处出队，没有绕过路径。
+    if guard.sub_agent_reply_called {
+        guard.pending_user_message = None;
+    }
     let has_user_message = guard
         .pending_user_message
         .as_ref()
