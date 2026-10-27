@@ -9,33 +9,44 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// `/proc/<pid>/stat` 的 state 字段（comm 可含空格与括号，取最后一个 `)` 之后的首字符）；
+/// `/proc/<pid>/stat` 的 (state, starttime)（comm 可含空格与括号，取最后一个 `)`
+/// 之后的部分再按空白切分；state 是第 3 字段、starttime 是第 22 字段）。
 /// 条目已消失返回 `None`。
-fn process_state(pid: u32) -> Option<char> {
+fn process_state_and_start(pid: u32) -> Option<(char, u64)> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    text.rsplit_once(')')?.1.trim_start().chars().next()
+    let after_comm = text.rsplit_once(')')?.1.trim_start();
+    let fields = after_comm.split_whitespace().collect::<Vec<_>>();
+    let state = fields.first()?.chars().next()?;
+    let start: u64 = fields.get(19)?.parse().ok()?;
+    Some((state, start))
 }
 
-/// 进程是否已退出：条目消失（已收割）或僵尸态（已退出、`/proc` 条目占位待收割）都算。
+/// 进程是否已退出。判定必须同时比对 pid 与 starttime：
 ///
-/// 不能只认「`/proc` 条目存在 = 存活」：孤儿 Core 退出后的收割者是环境（init /
-/// runner 的 subreaper），不属于本回归的判定范围——Ubuntu 26 镜像上孤儿僵尸滞留
-/// 整个用例窗口，只看条目存在性会把「已退出」误判成「没退」（15s 整点超窗的
-/// 实证，见 PR #2 的 smoke 与 main 的整点 all）。
-fn process_exited(pid: u32) -> bool {
-    matches!(process_state(pid), None | Some('Z'))
+/// - 条目消失（已收割）与僵尸态（已退出、`/proc` 条目占位待收割）都算退出——
+///   回归意图是「Core 自行退出」，收割是环境职责；
+/// - **pid 复用也算退出**：runner 上并行的测试风暴 fork 频繁，Core 退出后 PID
+///   可能数秒内被无关进程复用（实证：断言时 `state=None` 而 core 日志带
+///   `[core] exited`），只看「/proc 条目存在且非僵尸」会把复用者误判成 Core。
+fn process_exited(pid: u32, core_start: Option<u64>) -> bool {
+    match (process_state_and_start(pid), core_start) {
+        (None, _) => true,
+        (Some((state, _)), _) if state == 'Z' => true,
+        (Some((_, start)), Some(core_start)) => start != core_start,
+        (Some(_), None) => false,
+    }
 }
 
 /// 等 Core 退出（含退出后进入僵尸态）；超时返回 false。
-fn wait_until_exited(pid: u32, timeout: Duration) -> bool {
+fn wait_until_exited(pid: u32, core_start: Option<u64>, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if process_exited(pid) {
+        if process_exited(pid, core_start) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    process_exited(pid)
+    process_exited(pid, core_start)
 }
 
 fn wait_for_pid(path: &Path, timeout: Duration) -> Option<u32> {
@@ -78,8 +89,7 @@ fn core_exits_when_parent_process_disappears() {
     // 全显式：`mkfifo` 建管，测试进程以 O_RDWR 打开持有两端（永不 EOF、开管不
     // 阻塞），shell 里 Core 是唯一后台命令且显式 `< fifo`——`$!` 在各 POSIX
     // shell 下都精确等于 Core 的 PID，shell 写完 pid 文件即退出，Core 如实孤儿化。
-    // stderr 落盘不落 /dev/null：失败时随断言消息带出 core 日志尾部，区分
-    // 「看门狗没开火」与其它根因，不再盲猜。
+    // stderr 落盘不落 /dev/null：失败时随断言消息带出 core 日志尾部，不再盲猜。
     let fifo = std::env::temp_dir().join(format!(
         "standalone-core-orphan-{}.fifo",
         std::process::id()
@@ -107,19 +117,17 @@ fn core_exits_when_parent_process_disappears() {
 
     let pid =
         wait_for_pid(&pid_file, Duration::from_secs(5)).expect("core pid file was not written");
-    assert!(
-        !process_exited(pid),
-        "core did not start (state={:?})",
-        process_state(pid)
-    );
+    let (state, core_start) = process_state_and_start(pid).expect("core exited immediately");
+    assert!(state != 'Z', "core did not start (state={state:?})");
 
     // 看门狗 1s 轮询 + exit(0)，名义上孤儿化后 ~1s 内退出；窗口给到 15s 是为
     // CI 负载下的启动与调度抖动留余量（5s 窗口在 runner 上实证会偶发超窗，
     // 看门狗本身没毛病）——真回归（看门狗没开火）在 15s 内照样红。
-    let exited = wait_until_exited(pid, Duration::from_secs(15));
+    let exited = wait_until_exited(pid, Some(core_start), Duration::from_secs(15));
     drop(fifo_keepalive);
     if !exited {
-        // 红阶段不留下孤儿：用例失败后清理。
+        // 红阶段不留下孤儿：用例失败后清理（pid + starttime 判定仍在，不会误杀
+        // 复用同一 PID 的无关进程）。
         kill(pid);
     }
     let core_log = std::fs::read_to_string(&log_file).unwrap_or_default();
@@ -132,8 +140,8 @@ fn core_exits_when_parent_process_disappears() {
 
     assert!(
         exited,
-        "core stayed alive after its parent process exited (pid {pid}, state={:?}); core 日志尾部：\n{}",
-        process_state(pid),
+        "core stayed alive after its parent process exited (pid {pid}, state={core_state:?}); core 日志尾部：\n{}",
+        core_state = process_state_and_start(pid).map(|(state, _)| state),
         core_log_tail
     );
 }
