@@ -63,11 +63,14 @@ fn core_exits_when_parent_process_disappears() {
     // （15s 窗口在 runner 上两轮整点超窗的实证）。内层 `sh -c 'exec … & echo $!'`
     // 把 Core 叉成内层 shell 的唯一后台命令后 exec 顶替，各 POSIX shell 下 `$!` 都
     // 精确等于 Core 的 PID；内层 shell 写完 pid 文件即退出，Core 如实孤儿化。
+    // `<&0` 必须显式带上：POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，
+    // Core 会在起跑瞬间读到 EOF 直接退出（runner 上 0.06s「core did not start」的
+    // 实证）；显式继承内层 shell 的 stdin（外层管线的读端）才是一根不会 EOF 的管道。
     // 外层管线整体后台化：否则 `status()` 会陪 `sleep` 等满全程。
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "sleep 60 | sh -c 'exec \"{}\" stdio >/dev/null 2>&1 & echo $! > \"{}\"' &",
+            "sleep 60 | sh -c 'exec \"{}\" stdio <&0 >/dev/null 2>&1 & echo $! > \"{}\"' &",
             exe,
             pid_file.display()
         ))
