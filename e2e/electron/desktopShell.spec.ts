@@ -65,6 +65,19 @@ async function pollMain<T>(expression: string, pred: (v: T) => boolean, timeout 
   throw new Error(`主进程断言超时：${expression} 最后结果 ${JSON.stringify(last)}`);
 }
 
+/**
+ * 点一个「点击本身就是关窗」的按钮（偏好设置的关闭键）：主进程收到 IPC 即销毁
+ * 窗口，Playwright 的 click 在动作收尾时发现目标页没了会抛
+ * 「Target page, context or browser has been closed」——窗口消失正是本步意图，
+ * 属于成功路径；其余错误原样抛出。关窗事实由调用方随后自行断言。
+ */
+async function clickThatCloses(page: Page, selector: string): Promise<void> {
+  await page.locator(selector).click().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('has been closed')) throw error;
+  });
+}
+
 /** 在 CDP 目标列表里按内容特征找到自绘菜单视图 */
 async function findMenuPage(): Promise<Page> {
   const deadline = Date.now() + 10_000;
@@ -182,7 +195,7 @@ test('US-34 全局唤醒快捷键：按配置注册、改键后立即换绑', as
   await expect(dialogPage.locator('#shortcut-wake')).toHaveText('Ctrl+Alt+9', { timeout: 5_000 });
 
   // 关闭窗口后按最新偏好重新注册：新组合注册、旧组合注销（US-34 验收 2）
-  await dialogPage.locator('#close').click();
+  await clickThatCloses(dialogPage, '#close');
   await pollMain<boolean>(
     "e.globalShortcut.isRegistered('Ctrl+Alt+9')",
     (v) => v === true,
@@ -254,7 +267,7 @@ test('US-53 标签页快捷键：录制改键生效、冲突拒绝、菜单同�
   );
 
   // 关窗后菜单同源（AC-13）：下一标签条目展示新组合
-  await dialogPage.locator('#close').click();
+  await clickThatCloses(dialogPage, '#close');
   const menuAfter = await openMenuAndGetPage();
   await expect(menuAfter.locator('.item[data-id="main.nextWorkspaceTab"]')).toContainText('Ctrl+J', { timeout: 5_000 });
   await expect(menuAfter.locator('.item[data-id="main.prevWorkspaceTab"]')).toContainText('Ctrl+Shift+Tab');
