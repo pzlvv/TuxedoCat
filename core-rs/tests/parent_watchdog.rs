@@ -53,25 +53,35 @@ fn core_exits_when_parent_process_disappears() {
     let pid_file = temp_pid_file("orphan");
     let _ = std::fs::remove_file(&pid_file);
 
-    // 中间 shell 拉起 Core 后立刻退出，Core 被 init 收养。Core 的 stdin 接 `sleep` 的
-    // stdout（一根不会 EOF 的管道），因此只有父进程看门狗能在测试窗口内结束它——
-    // 这正是扩展宿主被强杀时的形态。
-    //
-    // pid 文件必须写 Core 本尊的 PID：`$!` 只对「单条后台命令」保证是那一叉的 PID。
-    // 后台管线在 dash（Ubuntu 的 /bin/sh）下会叉出等 sleep 与 Core 都退出的中间
-    // subshell，`$!` 落在它头上——Core 的父进程因此永远活着，看门狗永不触发
-    // （15s 窗口在 runner 上两轮整点超窗的实证）。内层 `sh -c 'exec … & echo $!'`
-    // 把 Core 叉成内层 shell 的唯一后台命令后 exec 顶替，各 POSIX shell 下 `$!` 都
-    // 精确等于 Core 的 PID；内层 shell 写完 pid 文件即退出，Core 如实孤儿化。
-    // `<&0` 必须显式带上：POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，
-    // Core 会在起跑瞬间读到 EOF 直接退出（runner 上 0.06s「core did not start」的
-    // 实证）；显式继承内层 shell 的 stdin（外层管线的读端）才是一根不会 EOF 的管道。
-    // 外层管线整体后台化：否则 `status()` 会陪 `sleep` 等满全程。
+    // 中间 shell 拉起 Core 后立刻退出，Core 被 init 收养。Core 的 stdin 接一根
+    // 「不会 EOF 的管道」，只有父进程看门狗能在测试窗口内结束它——这正是扩展
+    // 宿主被强杀时的形态。这根管道不用 shell 管线搭（`sleep | core &` 一类写法
+    // 有两层 shell 语义坑，CI 两轮实证）：其一，`$!` 只对「单条后台命令」保证是
+    // 那一叉的 PID，dash 对后台管线会叉出等 sleep 与 Core 都退出的中间 subshell，
+    // pid 文件写的不是 Core 本尊，Core 的父进程永远活着，看门狗永不触发（15s
+    // 窗口整点超窗）；其二，POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，
+    // Core 起跑瞬间读到 EOF 直接退出（0.06s「core did not start」）。这里改为
+    // 全显式：`mkfifo` 建管，测试进程以 O_RDWR 打开持有两端（永不 EOF、开管不
+    // 阻塞），shell 里 Core 是唯一后台命令且显式 `< fifo`——`$!` 在各 POSIX
+    // shell 下都精确等于 Core 的 PID，shell 写完 pid 文件即退出，Core 如实孤儿化。
+    let fifo = std::env::temp_dir().join(format!(
+        "standalone-core-orphan-{}.fifo",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&fifo);
+    Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+    let fifo_keepalive = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fifo)
+        .expect("open fifo");
+
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "sleep 60 | sh -c 'exec \"{}\" stdio <&0 >/dev/null 2>&1 & echo $! > \"{}\"' &",
+            "exec \"{}\" stdio < \"{}\" >/dev/null 2>&1 & echo $! > \"{}\"",
             exe,
+            fifo.display(),
             pid_file.display()
         ))
         .status()
@@ -86,11 +96,13 @@ fn core_exits_when_parent_process_disappears() {
     // CI 负载下的启动与调度抖动留余量（5s 窗口在 runner 上实证会偶发超窗，
     // 看门狗本身没毛病）——真回归（看门狗没开火）在 15s 内照样红。
     let exited = wait_until_dead(pid, Duration::from_secs(15));
+    drop(fifo_keepalive);
     if !exited {
         // 红阶段不留下孤儿：用例失败后清理。
         kill(pid);
     }
     let _ = std::fs::remove_file(&pid_file);
+    let _ = std::fs::remove_file(&fifo);
 
     assert!(
         exited,
