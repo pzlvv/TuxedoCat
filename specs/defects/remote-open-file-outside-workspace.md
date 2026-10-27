@@ -32,7 +32,7 @@ Electron 宿主提供（VS Code 宿主没有远程入口，见
   `persistedOutput.tsx`、`MessagesView.tsx`）。
 - 共享 handler 原样转交：`src/host/ui/webviewMessageHandler.ts` 的 `handleOpenFile` 调
   `this.host.openFile(filePath, selectedLines ?? null)`，**不携带来源视图**。
-- `electron/ElectronUIHost.ts` 的 `openFile` 先走 `resolveRemoteWorkspaceFile`：只把「`/` 开头
+- `electron/ElectronUIHost.ts` 的 `openFile` 先走 `resolveRemoteFileWorkspace`：只把「`/` 开头
   且落在某个已打开远程工作区 root 内」的路径判为远程（活动项优先的 `/` 前缀匹配）；未命中即按
   本地路径进 `openMonacoWindow`（本地读盘）。工作区外路径必然未命中 → 本地分支 → ENOENT → 空窗口。
 
