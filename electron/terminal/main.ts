@@ -8,7 +8,7 @@
  * stdin（FR-004）。
  *
  * 主题由主进程推送（`terminal:theme`），字号在开窗时经 query 注入、运行期不热切
- * （FR-009）。剪贴板快捷键走主进程 clipboard 模块（FR-005）。
+ * （FR-009）。剪贴板（选中即复制 + 快捷键复制 / 粘贴）走主进程 clipboard 模块（FR-005）。
  */
 
 import { Terminal } from '@xterm/xterm';
@@ -111,6 +111,7 @@ function createPane(tab: TerminalTab): PaneView {
     void api.input({ tabId: tab.id, data });
   });
   attachClipboardShortcuts(term, tab.id);
+  attachCopyOnSelect(term);
   const view: PaneView = { id: tab.id, term, fit, host };
   panes.set(tab.id, view);
   return view;
@@ -169,6 +170,19 @@ function attachClipboardShortcuts(term: Terminal, tabId: number): void {
       return false;
     }
     return true;
+  });
+}
+
+/**
+ * 选中即复制（docs/hosts/electron-multi-workspace.md 第 14.4 节）：拖选 / 双击选词
+ * 产生的非空选区即时写入剪贴板（PuTTY 惯例，终端用户的复制动作就是选区本身）。
+ * 拖选中该事件逐帧触发、取消选中（清空选区）也触发——空选区不写，剪贴板保留
+ * 最近一次选区内容；写入选径与快捷键复制同一条 `terminal:copy`。
+ */
+function attachCopyOnSelect(term: Terminal): void {
+  term.onSelectionChange(() => {
+    const selection = term.getSelection();
+    if (selection.length > 0) api.copyText(selection);
   });
 }
 

@@ -14,7 +14,7 @@ import { openStaticPage } from '../helpers/webviewHarness';
  *   （开窗 / 新建 / 切换 / 重连就绪，docs/hosts/electron-multi-workspace.md 第 14.4 节）；
  * - 断开态覆盖层（原因 + 重连按钮）与重连动作（FR-007）；连接中的 logo 加载动画
  *   （红色警示只属于断开态）；
- * - 主题推送跟随（FR-009）；复制 / 粘贴快捷键（FR-005）；
+ * - 主题推送跟随（FR-009）；选中即复制与复制 / 粘贴快捷键（FR-005）；
  * - 标签切换快捷键推方向（`terminal:switch-tab`，US-55 验收 6 的页面侧；
  *   主进程 before-input-event 拦截属真实 SSH 链路，按未覆盖段豁免）。
  *
@@ -326,6 +326,32 @@ test('复制选区与粘贴快捷键', async () => {
   // Ctrl+Shift+V 把剪贴板内容原样送进 stdin
   await page.keyboard.press('Control+Shift+v');
   await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain(copied);
+});
+
+test('选中即复制：拖选即写剪贴板，取消选中不覆盖', async () => {
+  const { page } = handle;
+  await page.locator('#pane-1').click();
+  await page.keyboard.type('copy on select');
+
+  await expect.poll(() => page.locator('#pane-1 .xterm-rows').textContent()).toContain('copy');
+  const rows = page.locator('#pane-1 .xterm-rows');
+  const box = await rows.boundingBox();
+  if (!box) throw new Error('xterm rows not rendered');
+
+  // 假 API 剪贴板的初值：拖选不落键即被选区覆盖才算通过
+  expect((await state(page)).clipboard).toBe('pwd');
+  await page.mouse.move(box.x + 4, box.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 60, box.y + 8, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => (await state(page)).clipboard).not.toBe('pwd');
+  const copied = (await state(page)).clipboard;
+  expect('welcome-1copy on select'.includes(copied)).toBe(true);
+
+  // 取消选中（点击清空选区）同样触发 onSelectionChange：空选区不写，剪贴板保留原选区
+  await page.mouse.click(box.x + 4, box.y + 8);
+  await page.waitForTimeout(50);
+  expect((await state(page)).clipboard).toBe(copied);
 });
 
 test('标签切换快捷键推方向：切相邻终端标签并环绕（US-55 验收 6 的页面侧）', async () => {
