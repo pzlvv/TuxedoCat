@@ -40,7 +40,7 @@ rAF 调度不执行、所有面的重绘被合成器压到窗口重新可见—�
 1. 三个查看器窗口的 webPreferences 带 `backgroundThrottling: false`，三处内联对象
    收敛到共享工厂 `electron/viewerWindowPrefs.ts`（同一字段只有一处定义），各窗口的
    `preload` / `sandbox` / `contextIsolation` / `nodeIntegration` 逐字段保持原值。
-2. 不引入 app 级 `CalculateNativeWinOcclusion` 禁用（TODO 评估里的「必要时」项）：
+2. 不引入 app 级 CalculateNativeWinOcclusion 禁用（TODO 评估里的「必要时」项）：
    `backgroundThrottling: false` 的契约是「页面无论可见性都按前台行为运行」，逐视图
    生效已覆盖全部刷新面；全局关遮挡跟踪影响面大（内存 / 电池 / 既有 bug 掩蔽），
    无对应实证，不采纳。
@@ -70,7 +70,7 @@ rAF 调度不执行、所有面的重绘被合成器压到窗口重新可见—�
 
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
-| RT-1（修复前） | `npm run test:unit -- viewerWindowPrefs` | 红 | TS2307：`electron/viewerWindowPrefs` 模块尚不存在，编译期失败 |
+| RT-1（修复前） | `npm run test:unit -- viewerWindowPrefs` | 红 | TS2307：`electron/viewerWindowPrefs.ts` 模块尚不存在，编译期失败 |
 | RT-1（修复后） | `npm run test:unit -- viewerWindowPrefs` | 绿 | 12 断言全通过；markdown 分支补写显式 `contextIsolation: true` / `nodeIntegration: false`（原靠 Electron 默认值，行为等价） |
 | 既有回归（查看器刷新） | `npx playwright test --project=electron-app e2e/electron/preview.spec.ts` | 绿 | 5 通过：Markdown / 图片 / Monaco 刷新、单实例顶替、位置记忆 |
 | 既有回归（双击开窗） | `npx playwright test --project=electron-app e2e/electron/fileExplorer.spec.ts -g 双击` | 绿 | 5 通过：文本 / Markdown / 图片分流与窗口行为 |
