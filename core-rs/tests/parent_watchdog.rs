@@ -140,8 +140,8 @@ fn core_exits_when_parent_process_disappears() {
 
     assert!(
         exited,
-        "core stayed alive after its parent process exited (pid {pid}, state={core_state:?}); core 日志尾部：\n{}",
-        core_state = process_state_and_start(pid).map(|(state, _)| state),
+        "core stayed alive after its parent process exited (pid {pid}, state={:?}); core 日志尾部：\n{}",
+        process_state_and_start(pid).map(|(state, _)| state),
         core_log_tail
     );
 }
