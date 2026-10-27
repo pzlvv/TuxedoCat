@@ -19,8 +19,8 @@ fn process_state(pid: u32) -> Option<char> {
 /// 进程是否已退出：条目消失（已收割）或僵尸态（已退出、`/proc` 条目占位待收割）都算。
 ///
 /// 不能只认「`/proc` 条目存在 = 存活」：孤儿 Core 退出后的收割者是环境（init /
-/// runner 的 subreaper），不属于本回归的判定范围——Ubuntu 26 镜像上僵尸可能滞留
-/// 整个用例窗口，只看条目存在性会把「已退出」误判成「没退」。
+/// runner 的 subreaper），不属于本回归的判定范围——僵尸滞留时只看条目存在性会把
+/// 「已退出」误判成「没退」。
 fn process_exited(pid: u32) -> bool {
     matches!(process_state(pid), None | Some('Z'))
 }
@@ -66,21 +66,26 @@ fn core_exits_when_parent_process_disappears() {
     let _ = std::fs::remove_file(&pid_file);
     let _ = std::fs::remove_file(&log_file);
 
-    // 中间 shell 是 Core 的父进程：拉起 Core 后立刻退出，Core 被 init 收养。
-    // Core 的 stdin 接 `sleep` 的 stdout（一根不会 EOF 的管道），因此只有父进程
-    // 看门狗能在测试窗口内结束它——这正是扩展宿主被强杀时的形态。
-    // stderr 落盘不落 /dev/null：失败时随断言消息带出，区分「看门狗没开火」与
-    // 「已退出但僵尸滞留」两类根因。
-    // 末尾 `sleep 2` 让 shell 活过 Core 的启动窗口：Core 在 main 早期读一次
-    // `getppid` 装看门狗，若 shell 抢先退出（孤儿化先于取父），看门狗就盯上了
-    // 收养者（init / runner subreaper），永远不触发——ubuntu-26 镜像上此竞态
-    // 从偶发变确定性（run 40473531774：core 15s 内全程存活、日志为空，即
-    // 看门狗压根没装上正确的父 pid）。宽限期盖过启动耗时，之后 shell 退出，
-    // 看门狗 ~1s 内开火。
+    // 中间 shell 拉起 Core 后立刻退出，Core 被 init 收养。Core 的 stdin 接 `sleep` 的
+    // stdout（一根不会 EOF 的管道），因此只有父进程看门狗能在测试窗口内结束它——
+    // 这正是扩展宿主被强杀时的形态。
+    //
+    // pid 文件必须写 Core 本尊的 PID：`$!` 只对「单条后台命令」保证是那一叉的 PID。
+    // 后台管线在 dash（Ubuntu 的 /bin/sh）下会叉出等 sleep 与 Core 都退出的中间
+    // subshell，`$!` 落在它头上——Core 的父进程因此永远活着，看门狗永不触发
+    // （15s 窗口在 runner 上两轮整点超窗的实证）。内层 `sh -c 'exec … & echo $!'`
+    // 把 Core 叉成内层 shell 的唯一后台命令后 exec 顶替，各 POSIX shell 下 `$!` 都
+    // 精确等于 Core 的 PID；内层 shell 写完 pid 文件即退出，Core 如实孤儿化。
+    // `<&0` 必须显式带上：POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，
+    // Core 会在起跑瞬间读到 EOF 直接退出（runner 上 0.06s「core did not start」的
+    // 实证）；显式继承内层 shell 的 stdin（外层管线的读端）才是一根不会 EOF 的管道。
+    // 外层管线整体后台化：否则 `status()` 会陪 `sleep` 等满全程。
+    // stderr 落盘不落 /dev/null：失败时随断言消息带出 core 日志尾部，区分
+    // 「看门狗没开火」与其它根因，不再盲猜。
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "sleep 60 | '{}' stdio >'{}' 2>&1 & echo $! > '{}'; sleep 2",
+            "sleep 60 | sh -c 'exec \"{}\" stdio <&0 >\"{}\" 2>&1 & echo $! > \"{}\"' &",
             exe,
             log_file.display(),
             pid_file.display()

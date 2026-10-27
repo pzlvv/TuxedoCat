@@ -169,8 +169,15 @@ export interface UIHost extends WorkspaceProvider {
 
   // ===================== 面板 / 窗口 =====================
 
-  /** 打开文件并定位到行；不需要定位时传 null */
-  openFile(filePath: string, target: LineSelection | null): Promise<void>;
+  /**
+   * 打开文件并定位到行；不需要定位时传 `null`。
+   *
+   * `view` 是链接的来源对话视图（`WebviewMessageHandler` 传 `ctx.sender`）：远程会话
+   * 可能引用工作区外的文件，宿主按视图所属工作区把路径解析到那台机器
+   * （specs/defects/remote-open-file-outside-workspace.md）；无来源视图（宿主主动调用 /
+   * 单视图宿主）传 `null`，宿主只按打开集合解析、维持本地语义。
+   */
+  openFile(filePath: string, target: LineSelection | null, view: WebviewViewHandle | null): Promise<void>;
 
   /** 显示虚拟文档（内容预览） */
   showVirtualDocument(content: string, title: string): Promise<void>;

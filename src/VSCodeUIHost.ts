@@ -156,7 +156,13 @@ export class VSCodeUIHost implements UIHost {
     return vscode.env.language;
   }
 
-  async openFile(filePath: string, target: import('./host/UIHost.js').LineSelection | null): Promise<void> {
+  async openFile(
+    filePath: string,
+    target: import('./host/UIHost.js').LineSelection | null,
+    // 来源视图只服务远程工作区的机器归属解析；VS Code 宿主工作区引用恒为本地
+    // （endpoint 为 null），打开逻辑本就不经工作区解析，接受契约参数但不使用
+    _view: import('./host/UIHost.js').WebviewViewHandle | null,
+  ): Promise<void> {
     const selectedLines = target;
     const uri = vscode.Uri.file(filePath);
 

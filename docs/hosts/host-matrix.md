@@ -106,7 +106,7 @@ export class ElectronUIHost implements UIHost {
 | `getWorkspacePath()` | `vscode.workspace.workspaceFolders?.[0]?.uri.fsPath` | `this.workspacePath`（宿主当前工作目录；由标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme()` | `vscode.window.activeColorTheme.kind`（Dark / HighContrast） | `nativeTheme.shouldUseDarkColors` |
 | `getLocale()` | `vscode.env.language` | `app.getLocale()`（原始 BCP-47，不做归一化；消费方按 `startsWith('zh')` 判断） |
-| `openFile(filePath, target)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open` | 先按打开集合的远程工作区做 `/` 前缀匹配（活动项优先）：命中的远端路径经 SFTP 读出——图片进 `openImagePreviewWindow`、文本进 `openMonacoWindow({ mode: 'view', content })`（读失败也开窗口显示原因，与本地 ENOENT 对齐）；本地路径：图片 → `openImagePreviewWindow`（内置图片查看器，滚轮缩放），其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
+| `openFile(filePath, target, view)` | 图片 → `vscode.open`；文本 → `openTextDocument` + `showTextDocument` + 选区定位；`openTextDocument` 抛错（二进制）→ 回退 `vscode.open`（`view` 不使用：工作区引用恒为本地） | 远程解析两级（`src/host/remoteFileResolve.ts`）：先按打开集合的远程工作区做 `/` 前缀匹配（活动项优先）；未命中时若 `view` 来源视图所属工作区是远程，按该 endpoint 解析（工作区外文件同样经 SFTP 读出——图片进 `openImagePreviewWindow`、文本进 `openMonacoWindow({ mode: 'view', content })`，读失败也开窗口显示原因，与本地 ENOENT 对齐）；`view` 为 `null`（侧栏 `openLocalFile` 等）不做视图兜底；本地路径：图片 → `openImagePreviewWindow`（内置图片查看器，滚轮缩放），其余 → `openMonacoWindow({ mode: 'view' })` 并定位到行 |
 | `showVirtualDocument(content, title)` | 走 bootstrap 注入的 `onShowContentInVirtualDocumentCallback`（`DocumentManager`） | `openMonacoWindow({ mode: 'content' })` |
 | `showDiff(options)` | `DocumentManager.showDiff` 打开 before/after 虚拟文档的 diff 标签（按内容哈希去重，先关上一个预览） | **空实现**——没有原生 diff 界面，diff 只在 webview 工具卡片里渲染（[docs/architecture/host-ui-modules.md 第 2 节](../architecture/host-ui-modules.md#2-toolhandler)） |
 | `openMermaidPreview(code)` | `vscode.window.createWebviewPanel`（复用 `MERMAID_PANEL_ID`） | `openMermaidWindow`（`data:` URL + 本地 mermaid.min.js） |
@@ -192,7 +192,7 @@ export class ElectronUIHost implements UIHost {
 | `getWorkspacePath` | `workspaceFolders[0].uri.fsPath`（单一工作目录） | 主进程持有的 `workspacePath`（宿主当前工作目录：打开集合中的一项，由标题栏标签页切换 / 添加 / 关闭驱动） |
 | `isDarkTheme` | `activeColorTheme` 为 Dark 或 HighContrast | `nativeTheme.shouldUseDarkColors` |
 | `getLocale` | `vscode.env.language`（BCP-47，如 `zh-cn`） | `app.getLocale()`（BCP-47，如 `zh-CN`）——与 VS Code 同一值域，不做归一化 |
-| `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | 远程路径（落在打开的远程工作区内）经 SFTP 读出进内置窗口；图片开内置查看器；其余开 Monaco 窗口（`mode: 'view'`） |
+| `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | 远程两级解析：root 内按打开集合、root 外按来源视图工作区（`view` 为 `null` 只按打开集合）经 SFTP 读出进内置窗口；图片开内置查看器；其余开 Monaco 窗口（`mode: 'view'`） |
 | `showVirtualDocument` | `DocumentManager` → 虚拟文档预览标签 | Monaco 窗口（`mode: 'content'`） |
 | `showDiff` | `DocumentManager.showDiff` → 原生 diff 标签 | 空实现（diff 归 webview） |
 | `openMermaidPreview` | 复用单个 `WebviewPanel` | 复用单个 `BrowserWindow`（语义一致） |

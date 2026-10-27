@@ -126,8 +126,12 @@ fn run_sub_agent(
         return;
     }
     // specs/005：子代理后台任务的唯一退出点——循环内各 break（完成 / 中止 /
-    // Reminder 耗尽 / 会话消失）都落到这里，并发槽位在此释放并唤醒最早排队者
-    crate::subagent::release_slot(&creator_session_id);
+    // Reminder 耗尽 / 会话消失）都落到这里，并发槽位在此释放并唤醒最早排队者。
+    // 幂等释放：收尾线程与工具线程的 acquire 隔了整段子代理运行，配对事实无从
+    // 在本地复核（specs/023 FR-010 同款口径）；生产路径 acquire 必先于 spawn 发生，
+    // 槽位状态必然存在，幂等版与严格版行为一致——只有测试的 `reset_for_test()`
+    // 清掉台账后会走到「无状态」分支，不放大成无名线程 panic。
+    crate::subagent::release_slot_if_held(&creator_session_id);
 }
 
 /// 子代理最近一轮里是否调用过 `Reply`（对齐 `AgentTool.checkSubAgentHasReply`）。
