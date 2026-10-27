@@ -616,10 +616,12 @@ function itemHtml(
        </button>`
     : '';
 
-  // 标题区域：重命名时显示行内输入框
+  // 标题区域：重命名时显示行内输入框。
+  // 子代理（subagent）行首带「sub」标记，与 webview 对话列表（ConversationTreeItem）一致
+  const subTagHtml = depth > 0 ? '<span class="sub-tag">sub</span>' : '';
   const titleHtml = isRenaming
     ? `<input class="rename-input" type="text" value="${escapeHtml(renameValue)}" spellcheck="false" />`
-    : `<div class="title">${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
+    : `<div class="title">${subTagHtml}${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
 
   // 操作按钮（hover 显示，与 webview 版本一致），固定 2 行 2 列：
   // 重命名 / 智能命名 / 删除 / 关闭。

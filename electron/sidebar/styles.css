@@ -132,6 +132,17 @@ body.sidebar-resizing { cursor: col-resize; }
   background: #22c55e;
   flex-shrink: 0;
 }
+/* 子代理（subagent）行首的「sub」标记：配色取 webview 对话列表同款
+   （dark 的 bgSecondary #1e1e24 / textSystem #9f9fa9），两边观感一致 */
+.item .sub-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: #1e1e24;
+  color: #9f9fa9;
+}
 
 /* ── 非 idle 对话：左侧流水灯条（与 webview 对话列表一致） ── */
 @keyframes runningBarFlow {
@@ -471,6 +482,7 @@ body.sidebar-resizing { cursor: col-resize; }
   .item.active { background: #eff0fe; }
   .item .title { color: #3f3f46; }
   .item.active .title { color: #18181b; }
+  .item .sub-tag { background: #e4e4e7; color: #71717a; }
 
   .workspace-title { color: #27272a; }
 
