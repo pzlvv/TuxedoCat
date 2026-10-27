@@ -275,21 +275,26 @@ fn session_override_wins_and_flushes_to_meta() {
 }
 
 #[test]
-fn flush_skips_when_no_override_or_no_meta() {
+fn flush_skips_when_no_override_and_falls_back_when_no_meta() {
     let sandbox = Sandbox::new("mcp-config-flush");
     reset_session_overrides();
     let session = "mcp-config-flush-1";
     let project = sandbox.workspace.to_string_lossy().to_string();
-    config::set_session_workspace(session, Some(project));
+    config::set_session_workspace(session, Some(project.clone()));
 
     // 没有内存覆盖 → 什么也不做
     flush_session_mcp_to_meta(session);
 
-    // 有覆盖但 meta.json 不存在 → 静默跳过（不 panic、不建文件）
+    // 有覆盖但 meta.json 不存在 → 兜底建档写入（specs/defects/
+    // session-config-lost-before-first-message：首条消息前的配置也要能恢复）
     set_session_mcp_enabled(Some(session), "a", true);
     flush_session_mcp_to_meta(session);
     let dir = config::project_conversation_dir(&sandbox.workspace.to_string_lossy()).unwrap();
-    assert!(!dir.join(format!("{session}.meta.json")).exists());
+    let metadata =
+        crate::history::load_metadata(session, &project).expect("兜底建档的 meta.json");
+    assert_eq!(metadata["context"]["mcpEnabled"], json!(["a"]));
+    assert_eq!(metadata["creator"], json!({ "kind": "user" }));
+    assert!(!dir.join(format!("{session}.meta.json.lock")).exists(), "不留锁文件");
     reset_session_overrides();
 }
 
