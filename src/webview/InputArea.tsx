@@ -167,10 +167,17 @@ interface InputAreaProps {
   /** 服务商配置是否已完成；未完成时禁用输入框并引导点击打开设置 */
   isProviderConfigured: boolean | null;
   /**
-   * 会话创建者（specs/025 FR-002）：agent 形态的对话禁用输入（specs/025 FR-004）；
-   * 跨工作区派发的对话（workspaceId 非空）同时豁免 020 的角色选项锁定。
+   * 会话创建者（specs/025 FR-002）：agent 形态的对话在**已结束**后禁用输入
+   * （「对话已结束」，specs/025 FR-004 与 docs/features/user-message-pipeline.md FR-008）；
+   * 运行中可输入。跨工作区派发的对话（workspaceId 非空）同时豁免
+   * 020 的角色选项锁定。
    */
   creator?: SessionCreator | null;
+  /**
+   * 当前会话是否已结束（运行时快照 `idle`；快照未到达按已结束处理，等待态宁禁勿放）。
+   * 仅对非用户创建的会话参与输入禁用判定（与 `workMode` 同为 core 事实投影）。
+   */
+  sessionEnded?: boolean;
   /**
    * 当前会话的子代理角色（`conversationLoaded.metadata.role`，specs/020 FR-005）；
    * 普通会话 / 旧数据为 null。非 Master 子代理会话锁定选项菜单的提示词模式 /
@@ -1756,6 +1763,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   isProviderConfigured,
   workMode,
   creator,
+  sessionEnded = true,
   subAgentRole,
   mcpServers,
   onMcpToggle,
@@ -1852,21 +1860,24 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     clear: () => { setInput(''); setPastedImages([]); setHistoryIndex(-1); setSavedInput(''); slashActiveRef.current = false; },
   }), [input, pastedImages, historyIndex, savedInput]);
 
-  // 三个禁用来源（specs/016 FR-004；specs/025 FR-004）：provider 未配置（引导去设置）、
-  // spin 模式（会话不受理输入）与非用户创建（对话由创建方 Agent 驱动）。覆盖层只属于
-  // provider 分支；spin 与非用户创建只禁用 + 换 placeholder。判定在 inputAreaState
-  // 纯函数里，与测试共用一份实现。
+  // 禁用来源（specs/016 FR-004；specs/025 FR-004；user-message-pipeline FR-008）：
+  // provider 未配置（引导去设置）、spin 模式（会话不受理输入）与
+  // 非用户创建且已结束（空闲即「对话已结束」）。非用户创建的会话运行中可输入
+  // （忙时走排队语义），Reply 后由 core 拒收并丢弃排队消息。覆盖层只属于 provider
+  // 分支；spin 与已结束只禁用 + 换 placeholder。判定在 inputAreaState 纯函数里，
+  // 与测试共用一份实现。
   const disableFacts = {
     providerConfigured: isProviderConfigured,
     workMode,
     notUserCreated: isAgentCreator(creator ?? { kind: 'user' }),
+    sessionEnded,
   };
   const disabledReason = resolveInputDisabledReason(disableFacts);
   const isInputDisabled = disabledReason !== null;
   const inputPlaceholder = resolveInputPlaceholderText(disabledReason, {
     default: t('inputArea.placeholder'),
     spin: t('inputArea.placeholderSpinMode'),
-    notUserCreated: t('inputArea.placeholderNotUserCreated'),
+    conversationEnded: t('inputArea.placeholderConversationEnded'),
   });
 
   // Filter skills based on query after "/"

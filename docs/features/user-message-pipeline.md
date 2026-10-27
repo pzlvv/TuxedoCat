@@ -49,6 +49,10 @@ last_reviewed: 2026-10-20
   - **AC-22**（FR-007）：GIVEN 会话处于 spin 模式 WHEN 收到用户消息 THEN Core 丢弃该消息，不入队、不进上下文、不发起 LLM 轮次
   - **AC-23**（FR-007）：GIVEN spin 子代理已投递过 Reply WHEN 同一子代理再次投递 Reply THEN 只保留首条 silent 上下文与一次验收判定，后续 Reply 忽略且不发起父对话 LLM 轮次
   - **AC-24**（FR-007）：GIVEN spin 子代理在 Spin 结束后才投递首条 Reply WHEN 投递 THEN 只落 silent 上下文，不进入消费队列、不发起父对话 LLM 轮次
+- 场景 8：非用户创建会话的输入关闭
+  - **AC-25**（FR-008）：GIVEN 非用户创建的会话（creator 为 agent 形态）正在运行 WHEN 发送消息 THEN 消息按忙碌排队语义入队，由子代理驱动循环在轮次边界消费，不另起裸消费循环
+  - **AC-26**（FR-008）：GIVEN 子代理已调用 `Reply` WHEN 队列中仍有排队消息 THEN 排队消息在出队收口就地丢弃、不进上下文；此后到达的用户消息被拒收（不入队、不拉起消费循环）
+  - **AC-27**（FR-008）：GIVEN 非用户创建的会话收尾（`Reply` 检出 / 催办耗尽 / 中止 / Core 重启恢复）WHEN `queryEnd` 到达 THEN 未消费的排队项直接丢弃（不回投、不回填），输入框禁用并显示「对话已结束」
 
 ## 2. 功能需求
 
@@ -139,7 +143,8 @@ abort 标记、不打断正在运行的查询。「编辑」在清除排队项�
 - 其它：作为 `sendMessage` 重新提交。
 
 已消费 / 已执行的消息在 `queryEnd` 之前清除了排队项，因此回投只作用于真正未被消费的消息
-（入队失败 / 引擎缺失）。
+（入队失败 / 引擎缺失）。**例外**：非用户创建的会话（FR-008）收尾即关闭——`queryEnd`
+时未消费的排队项直接丢弃，不回投、不回填。
 
 **顺序**：同一会话内，`queuedMessage` 先于该消息的 `addMessage` / `clearQueuedMessage` 到达。
 
@@ -237,6 +242,29 @@ Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动�
 SpinLoop 如何判定一轮执行的完成（`Reply` 或子对话收尾）与失败重试见
 [spin-execution.md](spin-execution.md)。
 
+### FR-008：非用户创建会话的输入关闭
+
+非用户创建的会话（creator 为 agent 形态：本地子代理与跨工作区派发的对话）由创建方
+Agent 驱动，用户输入按「运行中开放、收尾即关闭」界定：
+
+- **运行中可输入**：会话未收尾时输入框开放；忙碌（消费循环运行中）的消息走 FR-003 的
+  排队语义。子代理会话的排队消息由驱动循环（`run_sub_agent`）在轮次边界消费，
+  `on_user_message` 不为子代理会话另起裸消费循环（Reminder 轮次之间 `running` 短暂
+  为假的窗口也不另起，避免与驱动循环并发踩踏）。
+- **Reply 即关闭**：`Reply` 一经调用（`deliver_agent_reply` 按投递来源置位，投递去向
+  与成败都不影响）即对用户输入关闭——排队中的用户消息在唯一出队收口
+  （`take_queued_batch`，轮次边界与 LLM 请求前的 flush 共用）就地丢弃、不进上下文；
+  此后到达的用户消息被 `on_user_message` 守卫拒收（不入队、不拉起消费循环）。
+  置位仅对子代理会话生效：普通会话的工具清单含 `Reply`，调用它不影响自身输入。
+- **收尾即弃队**：驱动循环退出（`Reply` 检出 / 催办耗尽 / 中止）时清空用户消息队列、
+  Reminder 与自动消息——对话已结束，队列不再投递。Core 重启后加载的子代理会话按
+  「子代理会话且非运行态」推导收尾标记，守卫对恢复出的会话同样成立。
+- **webview 口径**：非用户创建的会话空闲即禁用输入，placeholder「对话已结束」
+  （zh）/ 同义英文（`inputArea.placeholderConversationEnded`）；运行时快照未到达按
+  已结束处理（宁禁勿放）。`queryEnd` 时未消费的排队项直接丢弃——不回投、不回填，
+  否则回投会被收尾守卫拒收并留下一个永不持久化的乐观气泡。用户创建的会话不受本条
+  影响（空闲会话照常发送）。
+
 ## 3. 行为规格
 
 ### 3.1 术语与事实来源
@@ -274,7 +302,7 @@ SpinLoop 如何判定一轮执行的完成（`Reply` 或子对话收尾）与失
 - Skill 注入的上下文顺序唯一：用户消息在前，`tool_use` / `tool_result` 在后。
 - 排队项在消息进入上下文、被就地执行、被用户撤回（编辑 / 删除）、或会话关闭时被清除。
 - 排队项以消息 `uuid` 关联，不以文本内容关联。
-- 未被消费的排队项在 `queryEnd` 时回投。
+- 未被消费的排队项在 `queryEnd` 时回投；非用户创建的会话（FR-008）例外——收尾即丢弃。
 - 系统环境信息缓存按工作目录分桶；预热刷新该目录条目。
 - 补全只改写 `/` 到光标之间的文本。
 - 运行中与等待用户两种活动指示的动效语义不同。
@@ -282,6 +310,9 @@ SpinLoop 如何判定一轮执行的完成（`Reply` 或子对话收尾）与失
 - spin 模式父对话没有 LLM 消费循环：用户消息 / 自动消息不入队，子代理 Reply 只作结果
   更新与验收判定。
 - 同一 spin 子代理的 Reply 只响应一次；重复 / 迟到 Reply 忽略。
+- 非用户创建的会话收尾后不受理用户消息：`Reply` 已调用或驱动已收尾后，排队消息在
+  出队收口就地丢弃、新消息被守卫拒收；子代理会话的用户消息只由驱动循环消费，
+  不另起裸消费循环。
 
 ## 4. 边界与错误路径
 
@@ -291,6 +322,9 @@ SpinLoop 如何判定一轮执行的完成（`Reply` 或子对话收尾）与失
   不匹配而保持不动（AC-10）。
 - **回投兜底**：入队失败 / 引擎缺失导致的未消费排队项由 `queryEnd` 回投兜底（FR-003）。
 - **spin 期间输入**：Core 直接丢弃用户消息（UI 已禁用输入框），不报错、不入队。
+- **收尾窗口的子代理输入**：非用户创建的会话在「`Reply` 已调用、驱动尚未退出」的窗口内
+  到达的用户消息随收尾弃队一起丢弃（FR-008），webview 侧输入框随空闲快照到达才禁用，
+  窗口内提交的消息不会留下乐观气泡（忙碌排队语义，`deferEcho`）。
 - **迟到 Reply**：SpinLoop 结束后到达的 spin 子代理 Reply 只落 `silent` 上下文，不拉起 LLM。
 - **provider 为空**：模型身份不合法时记录日志并忽略（[events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)的 `modelChanged` 口径）。
 
@@ -317,3 +351,4 @@ US-39（Spin 设计器：spin 期间禁止用户输入与父对话不跑 LLM）�
 | FR-005 | `core-rs/src/prompt.rs` 的系统环境缓存（`GIT_CACHE` 等，按 `cwd` 分桶） | `core-rs/src/prompt_tests.rs`（环境信息组装用例） | 自动 |
 | FR-006 | `src/webview/InputArea.tsx` 的 `handleInputChange` / `commitSlash` | 无自动覆盖 + webview 输入交互，现有测试车道未覆盖，AC-15 / AC-16 由人工场景验证 | 无自动覆盖 + 现有车道未建输入框补全用例 |
 | FR-007 | `core-rs/src/engine.rs` 的 `on_user_message`（spin 丢弃）、`enqueue_agent_message`（spin 不入队）、`deliver_agent_reply` + `register_spin_sub_agent`（Reply 只响应一次 / 迟到 Reply 按 spin 语义处理）；`core-rs/src/spin_host.rs` 的 `CoreSpinHost::run_sub_agent` 登记 spin 子代理、`run_spin_command` 进入 spin 时清队列 | `core-rs/src/engine_tests.rs` 的 `user_message_is_dropped_while_spin_mode` / `spin_reply_is_consumed_once_and_late_replies_are_ignored` / `late_first_reply_from_spin_sub_agent_stays_silent`；`core-rs/src/spin_host_tests.rs` 的 `spin_run_feeds_replies_to_the_loop_not_the_main_llm`（含 Spin 结束后的重复 Reply）/ `entering_spin_clears_queued_auto_messages_and_reminders` | 自动 |
+| FR-008 | `core-rs/src/engine.rs` 的 `deliver_agent_reply`（Reply 置位收尾标记）、`take_queued_batch`（唯一出队收口丢弃）、`on_user_message`（收尾守卫 + 不另起裸消费循环）、`run_sub_agent` 收尾清队、`ensure_loaded`（重启恢复推导）；`src/webview/inputAreaState.ts`（空闲禁用 +「对话已结束」）、`src/webview/hooks/handlers/streamHandlers.ts`（queryEnd 丢弃排队项） | `core-rs/src/engine_tests.rs` 的 `reply_called_sub_agent_discards_user_messages` / `finished_sub_agent_rejects_user_message`；`src/test/inputAreaState.test.ts`（运行中可输入 / 已结束禁用 / 优先级）；e2e `e2e/electron/crossWorkspaceAgent.spec.ts`（输入关闭与文案） | 自动 |

@@ -121,14 +121,23 @@ export function handleStreamQueryEnd(
             : false;
           // 查询结束后，如果该会话仍有排队消息（未被后端消费，如入队失败/引擎缺失），
           // 将消息投递到"该会话"（而不是当前会话），保证排队消息与会话绑定。
+          // 例外：非用户创建的会话（creator 为 agent 形态——本地子代理与跨工作区对话）
+          // 收尾后队列直接丢弃，不回投、不回填——core 侧收尾即弃队并拒收后续消息
+          // （docs/features/user-message-pipeline.md 第 3.3 节），回投会得到一个永不
+          // 持久化的乐观气泡。creator 读运行时快照：能排队的前提是会话已打开，
+          // 打开即经 on_conversation_opened → ensure_loaded 恢复 meta 归属。
           if (endedSessionId) {
             const queued = props.queuedMessageRef.current.get(endedSessionId);
             if (queued) {
+              const notUserCreated =
+                props.sessionRuntimeStatesRef.current.get(endedSessionId)?.creator.kind === 'agent';
               props.queuedMessageRef.current.delete(endedSessionId);
               if (endedSessionId === props.currentSessionIdRef.current) {
                 props.setQueuedMessage(null);
               }
-              if (abortedByUser) {
+              if (notUserCreated) {
+                // 对话已结束：排队消息就地丢弃
+              } else if (abortedByUser) {
                 // abort：不回发排队消息，回填到输入框等待用户确认
                 restoreQueuedMessageToInput(endedSessionId, queued);
               } else {

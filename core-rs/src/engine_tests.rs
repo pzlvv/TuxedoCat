@@ -844,6 +844,100 @@ fn user_message_is_dropped_while_spin_mode() {
     assert!(!state.running, "不得拉起消费循环");
 }
 
+/// 非用户创建的会话（子代理 / 跨工作区对话）在 Reply 已调用后对用户输入关闭：
+/// 排队中的用户消息在唯一出队收口（`take_queued_batch`）就地丢弃，新消息被
+/// `on_user_message` 守卫拒收、也不得拉起裸消费循环（US-51 / US-56，
+/// docs/features/user-message-pipeline.md 第 3.3 节）。
+#[test]
+fn reply_called_sub_agent_discards_user_messages() {
+    let sandbox = Sandbox::new("engine-sub-reply-gate");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    history::create_conversation("sub1", &project, json!({ "sessionId": "sub1" })).unwrap();
+    // 本地子代理的内存判据：创建时写 parent_session_id（creator 要等 ensure_loaded 恢复）
+    harness
+        .core
+        .session("sub1")
+        .lock()
+        .unwrap()
+        .parent_session_id = Some("p1".to_string());
+
+    // Reply 前入队的消息：落在队列里等待驱动循环出队（子代理会话不另起裸消费循环）
+    submit(&harness, "sub1", "排队消息", "u-q");
+    assert!(
+        harness.core.session("sub1").lock().unwrap().pending_user_message.is_some(),
+        "Reply 前的排队消息应入队"
+    );
+    assert!(!harness.core.session("sub1").lock().unwrap().running);
+
+    // Reply 投递（去向缺失不影响置位）：对话进入收尾
+    let _ = harness.core.deliver_agent_reply("missing-target", "结果", "sub1");
+
+    // Reply 后的新消息：守卫拒收，队列里仍是 Reply 前那条
+    submit(&harness, "sub1", "Reply 后新消息", "u-post");
+    {
+        let state = harness.core.session("sub1");
+        let state = state.lock().unwrap();
+        let pending = state
+            .pending_user_message
+            .as_ref()
+            .expect("Reply 前的排队消息应仍在队列");
+        assert_eq!(pending["message"]["content"], "排队消息");
+        assert!(!state.running, "不得由用户消息拉起裸消费循环");
+    }
+
+    // 唯一出队收口：排队中的用户消息就地丢弃，不进上下文
+    let batch = take_queued_batch(&harness.core.session("sub1"), true);
+    assert!(batch.is_none(), "Reply 后用户队列应被丢弃");
+    let state = harness.core.session("sub1");
+    let state = state.lock().unwrap();
+    assert!(state.pending_user_message.is_none(), "队列应已清空");
+    assert!(state.messages.is_empty(), "丢弃的消息不得进上下文");
+}
+
+/// 驱动收尾后（催办耗尽 / 中止 / Core 重启恢复）子代理会话拒收用户消息：
+/// 不入队、不拉起消费循环。重启后加载的子代理会话按「子代理且非运行态」推导
+/// `sub_agent_driver_done`，收尾守卫对恢复出的会话同样成立。
+#[test]
+fn finished_sub_agent_rejects_user_message() {
+    let sandbox = Sandbox::new("engine-sub-finished-guard");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+
+    // 进程内存路径：驱动已收尾（run_sub_agent 退出时落标记）
+    history::create_conversation("sub1", &project, json!({ "sessionId": "sub1" })).unwrap();
+    harness
+        .core
+        .session("sub1")
+        .lock()
+        .unwrap()
+        .parent_session_id = Some("p1".to_string());
+    harness.core.session("sub1").lock().unwrap().sub_agent_driver_done = true;
+
+    // 重启恢复路径：meta 带本地子代理归属（creator 为 agent 形态），加载即推导收尾
+    history::create_sub_agent_metadata("sub2", &project, "子任务", "p1", "Master", None, None)
+        .unwrap();
+    harness.core.ensure_loaded("sub2").unwrap();
+    assert!(
+        harness.core.session("sub2").lock().unwrap().sub_agent_driver_done,
+        "恢复出的子代理会话应推导为已收尾"
+    );
+
+    for session_id in ["sub1", "sub2"] {
+        submit(&harness, session_id, "结束后的输入", "u-done");
+        let state = harness.core.session(session_id);
+        let state = state.lock().unwrap();
+        assert!(
+            state.pending_user_message.is_none(),
+            "{session_id}: 收尾后不得入队"
+        );
+        assert!(!state.running, "{session_id}: 收尾后不得拉起消费循环");
+        assert!(state.messages.is_empty(), "{session_id}: 收尾后不得进上下文");
+    }
+}
+
 /// abort 两阶段：
 /// 前台有工作时只置 `cancel`，后台 Bash 任务保留；前台停下后再次 abort 才中止后台。
 #[test]
