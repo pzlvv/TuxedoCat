@@ -53,17 +53,20 @@ fn core_exits_when_parent_process_disappears() {
     let pid_file = temp_pid_file("orphan");
     let _ = std::fs::remove_file(&pid_file);
 
-    // 中间 shell 拉起 Core 后立刻退出，Core 被 init 收养。Core 的 stdin 接一根
-    // 「不会 EOF 的管道」，只有父进程看门狗能在测试窗口内结束它——这正是扩展
-    // 宿主被强杀时的形态。这根管道不用 shell 管线搭（`sleep | core &` 一类写法
-    // 有两层 shell 语义坑，CI 两轮实证）：其一，`$!` 只对「单条后台命令」保证是
-    // 那一叉的 PID，dash 对后台管线会叉出等 sleep 与 Core 都退出的中间 subshell，
-    // pid 文件写的不是 Core 本尊，Core 的父进程永远活着，看门狗永不触发（15s
-    // 窗口整点超窗）；其二，POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，
-    // Core 起跑瞬间读到 EOF 直接退出（0.06s「core did not start」）。这里改为
-    // 全显式：`mkfifo` 建管，测试进程以 O_RDWR 打开持有两端（永不 EOF、开管不
-    // 阻塞），shell 里 Core 是唯一后台命令且显式 `< fifo`——`$!` 在各 POSIX
-    // shell 下都精确等于 Core 的 PID，shell 写完 pid 文件即退出，Core 如实孤儿化。
+    // 中间 shell 拉起 Core 后**稍后**退出，Core 被 init 收养。Core 的 stdin 接一根
+    // 「不会 EOF 的管道」，只有父进程看门狗能在测试窗口内结束它——这正是扩展宿主
+    // 被强杀时的形态。
+    //
+    // 这套装配有三层 shell 语义坑（CI 三轮实证各中一轮），逐一显式化：
+    // 其一，父 shell 必须比 Core 的父 PID 记录活得久——Core 要等运行时起来才在
+    // `run_core()` 里调 `parent_id()`，shell 写完 pid 文件就退的话记录到的是收养
+    // 进程（pid 1），看门狗从此盯着一号进程永不开火（15s 窗口整点超窗的根因）；
+    // 尾部 `sleep 2` 给出 ~100 倍余量。其二，`$!` 只对「单条后台命令」保证是那一
+    // 叉的 PID，后台管线在 dash 下会叉出等 sleep 与 Core 都退出的中间 subshell，
+    // pid 文件会写成 subshell 头上；Core 保持单条后台命令 + `exec` 顶替。其三，
+    // POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，Core 起跑瞬间读到 EOF
+    // 直接退出（0.06s「core did not start」）——stdin 显式接 FIFO，且由测试进程
+    // O_RDWR 持有（永不 EOF、开管不阻塞）。
     let fifo = std::env::temp_dir().join(format!(
         "standalone-core-orphan-{}.fifo",
         std::process::id()
@@ -79,7 +82,7 @@ fn core_exits_when_parent_process_disappears() {
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "exec \"{}\" stdio < \"{}\" >/dev/null 2>&1 & echo $! > \"{}\"",
+            "exec \"{}\" stdio < \"{}\" >/dev/null 2>&1 & echo $! > \"{}\"; sleep 2",
             exe,
             fifo.display(),
             pid_file.display()
