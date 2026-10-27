@@ -71,10 +71,16 @@ fn core_exits_when_parent_process_disappears() {
     // 看门狗能在测试窗口内结束它——这正是扩展宿主被强杀时的形态。
     // stderr 落盘不落 /dev/null：失败时随断言消息带出，区分「看门狗没开火」与
     // 「已退出但僵尸滞留」两类根因。
+    // 末尾 `sleep 2` 让 shell 活过 Core 的启动窗口：Core 在 main 早期读一次
+    // `getppid` 装看门狗，若 shell 抢先退出（孤儿化先于取父），看门狗就盯上了
+    // 收养者（init / runner subreaper），永远不触发——ubuntu-26 镜像上此竞态
+    // 从偶发变确定性（run 40473531774：core 15s 内全程存活、日志为空，即
+    // 看门狗压根没装上正确的父 pid）。宽限期盖过启动耗时，之后 shell 退出，
+    // 看门狗 ~1s 内开火。
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "sleep 60 | '{}' stdio >'{}' 2>&1 & echo $! > '{}'",
+            "sleep 60 | '{}' stdio >'{}' 2>&1 & echo $! > '{}'; sleep 2",
             exe,
             log_file.display(),
             pid_file.display()

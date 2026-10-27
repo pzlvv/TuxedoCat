@@ -130,7 +130,7 @@ export function handleStreamQueryEnd(
             const queued = props.queuedMessageRef.current.get(endedSessionId);
             if (queued) {
               const notUserCreated =
-                props.sessionRuntimeStatesRef.current.get(endedSessionId)?.creator.kind === 'agent';
+                props.sessionRuntimeStatesRef.current.get(endedSessionId)?.creator?.kind === 'agent';
               props.queuedMessageRef.current.delete(endedSessionId);
               if (endedSessionId === props.currentSessionIdRef.current) {
                 props.setQueuedMessage(null);
