@@ -100,13 +100,9 @@ fn core_exits_when_parent_process_disappears() {
         kill(pid);
     }
     let core_log = std::fs::read_to_string(&log_file).unwrap_or_default();
-    let core_log_tail: String = core_log
-        .lines()
-        .rev()
-        .take(20)
-        .collect::<Vec<_>>()
-        .rev()
-        .join("\n");
+    let mut core_log_tail: Vec<&str> = core_log.lines().rev().take(20).collect();
+    core_log_tail.reverse();
+    let core_log_tail = core_log_tail.join("\n");
     let _ = std::fs::remove_file(&log_file);
     let _ = std::fs::remove_file(&pid_file);
 
