@@ -832,6 +832,75 @@ fn decode_frame_tolerates_lone_surrogate_escapes() {
     assert!(decode_frame("{oops").is_err());
 }
 
+/// 余额查询不得阻塞帧循环（specs/defects/balance-fetch-blocks-frame-loop）：
+/// `balanceRequested` 由独立线程执行、应答异步回写，挂起的 HTTP 期间帧循环
+/// 仍要处理后续帧（`workspaceChanged` 的事件先于余额应答帧出现在输出里）。
+/// 假服务器接受连接后不响应，同步实现会在 30s 超时前卡死帧循环。
+#[test]
+fn balance_request_does_not_block_the_frame_loop() {
+    let sandbox = Sandbox::new("main-balance-nonblocking");
+    let harness = EngineHarness::allow_all();
+    // 未配 provider 时 fetch_balance 不发请求——用例要驱动 HTTP 路径，
+    // 需要一个 host 为 api.deepseek.com 的 provider（apiKey 非空即可）
+    sandbox.write_settings(json!({
+        "llm": {
+            "providers": {
+                "deepseek": {
+                    "baseURL": "https://api.deepseek.com",
+                    "apiKey": "sk-test",
+                    "models": [],
+                }
+            }
+        }
+    }));
+
+    // 挂起的假服务器：accept 一个连接后不读写，请求方将一直等待
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind hanging server");
+    let addr = listener.local_addr().expect("local addr");
+    let server = std::thread::spawn(move || {
+        let _socket = listener.accept().expect("accept");
+        // 故意不响应；socket drop 即关闭
+    });
+    // 余额接口指到假服务器：HTTP 分支可测且不会打到真实接口
+    crate::balance::set_base_url_for_test(Some(&format!("http://{addr}")));
+
+    let input = format!(
+        "{}{{\"kind\":\"request\",\"id\":7,\"request\":{{\"type\":\"balanceRequested\"}}}}\n\
+         {{\"kind\":\"request\",\"id\":8,\"request\":{{\"type\":\"conversationSpacesRequested\"}}}}\n",
+        hello_frame(),
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(run_loop(&harness, &input), 0);
+    // 同步实现会卡在 fetch_balance 的超时上；异步实现整条输入立即处理完
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "帧循环被余额查询阻塞了 {:?}",
+        started.elapsed()
+    );
+    // 后一帧（conversationSpaces，同步应答）已被处理：id=8 的 response 帧在输出里，
+    // 且先于余额应答（id=7，余额线程晚点回写不算失败）
+    let ids: Vec<u64> = harness
+        .sink
+        .frames()
+        .into_iter()
+        .filter(|frame| frame["kind"] == "response")
+        .filter_map(|frame| frame["id"].as_u64())
+        .collect();
+    assert!(
+        ids.contains(&8),
+        "余额查询挂起期间后续帧未被处理（responses: {ids:?}）"
+    );
+    assert_eq!(
+        ids.first(),
+        Some(&8),
+        "同步请求应先于异步余额应答（responses: {ids:?}）"
+    );
+
+    // 收尾：等假服务器线程退出（socket 随 loop 结束被 drop）
+    let _ = server.join();
+    crate::balance::set_base_url_for_test(None);
+}
+
 // ==================== UI → core 请求 ====================
 
 #[test]
