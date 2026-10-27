@@ -5852,6 +5852,16 @@ fn agent_tool_caps_concurrent_sub_agents_and_queues_the_rest() {
     assert_eq!(crate::subagent::list_for_creator(creator).len(), 6);
 }
 
+/// 直建 `create_sub_agent` 用例的槽位配对：acquire 的正规入口在 Agent 工具调用内，
+/// 绕过工具直建时收尾的 `release_slot` 按「配对破坏即 panic」契约找不到在握槽位，
+/// worker 以无名线程 panic 告警——测试里显式配对，语义与工具路径一致。
+fn acquire_slot_for_test(creator: &str) {
+    assert!(
+        crate::subagent::acquire_slot(creator, &std::sync::atomic::AtomicBool::new(false)),
+        "无取消标记的 acquire 不应失败"
+    );
+}
+
 /// 子代理完整继承主对话的 agent mode：manual / risk / auto 一律照搬（不能把
 /// manual 降级成 risk 造成越权），并落盘到子会话
 /// meta.json 的 context，重启后重开子会话仍显示继承来的模式。
@@ -5880,6 +5890,7 @@ fn sub_agent_inherits_parent_agent_mode() {
     for mode in ["manual", "risk", "auto"] {
         let parent = harness.core.session(creator);
         parent.lock().unwrap().agent_mode = mode.to_string();
+        acquire_slot_for_test(creator);
         let sub_id = harness
             .core
             .create_sub_agent(tools::SubAgentRequest {
@@ -5931,6 +5942,7 @@ fn sub_agent_inherits_parent_prompt_mode() {
 
     for mode in ["minimal", "normal"] {
         harness.core.session(creator).lock().unwrap().prompt_mode = Some(mode.to_string());
+        acquire_slot_for_test(creator);
         let sub_id = harness
             .core
             .create_sub_agent(tools::SubAgentRequest {
@@ -6970,6 +6982,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
     harness.core.session(creator).lock().unwrap().prompt_mode = Some("minimal".to_string());
     harness.core.session(creator).lock().unwrap().web_search = Some(true);
 
+    acquire_slot_for_test(creator);
     let explorer_id = harness
         .core
         .create_sub_agent(tools::SubAgentRequest {
@@ -6980,6 +6993,7 @@ fn explorer_fixes_session_config_while_master_inherits() {
             target: None,
         })
         .expect("create explorer");
+    acquire_slot_for_test(creator);
     let master_id = harness
         .core
         .create_sub_agent(tools::SubAgentRequest {

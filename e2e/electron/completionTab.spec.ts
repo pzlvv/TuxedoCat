@@ -97,22 +97,21 @@ test('窗口失焦期间任务完成 → 绿灯当场挂上，不等回窗聚焦
   await tabs.nth(0).click();
   await app.evaluateInMain(`(function(){try{
     const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
-    const focused = e.BrowserWindow.getAllWindows().find(function(win){ return !win.isDestroyed() && win.isFocused(); });
-    if (!focused) return 'none-focused';
-    // blur() 对前台窗口直接调用在 Windows 下可能无效（前台锁）：
-    // minimize → restore 打散焦点状态后 blur() 可靠生效，窗口保持可见（不最小化）
-    focused.minimize();
-    focused.restore();
-    focused.blur();
+    // 焦点让渡给 1x1 辅助窗：blur() 在 Linux 窗管（openbox）下可能被无视，
+    // minimize→restore 后焦点也常回到原窗；新建窗口主动持焦在三大平台都把
+    // 主窗挤出焦点态，且主窗保持可见
+    const sink = new e.BrowserWindow({ width: 1, height: 1, show: true, skipTaskbar: true });
+    sink.setTitle('e2e-focus-sink');
+    sink.focus();
     return 'ok';
   } catch (err) { return 'ERR ' + err.message; }})()`);
   // 失焦必须真实生效（否则完成落在聚焦窗口里，用例测不到失焦链路）：
-  // 全部窗口都不持焦点才算失焦成立
+  // 除焦点沉降窗外全部窗口都不持焦点才算失焦成立
   await expect.poll(async () => {
     const raw = await app.evaluateInMain(`(function(){try{
       const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
       return String(e.BrowserWindow.getAllWindows().some(function(win){
-        return !win.isDestroyed() && win.isFocused();
+        return !win.isDestroyed() && win.getTitle() !== 'e2e-focus-sink' && win.isFocused();
       }));
     } catch (err) { return 'ERR ' + err.message; }})()`);
     return (raw as { result?: { result?: { value?: string } } })?.result?.result?.value;

@@ -204,8 +204,36 @@ pub fn update_metadata(
     }
     mutator(&mut metadata);
     let text = serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?;
-    std::fs::write(&path, text).map_err(|err| format!("write {} failed: {err}", path.display()))?;
+    write_file_atomic(&path, &text)?;
     Ok(metadata)
+}
+
+/// 原子落盘：先写同目录临时文件，再 rename 覆盖目标。
+///
+/// meta.json 的读侧（对话列表枚举 / `load_metadata`）不加写锁，`fs::write` 的
+/// 「截断后写入」会让并发读者看到半截 JSON——读侧按「解析失败返回 None」容错，
+/// 会话因此从列表 / 树里瞬时消失（同一文件系统的 rename 原子生效，读者要么看到
+/// 旧文件要么看到新文件）。临时名不落在 `.meta.json` 后缀上，进程死在两步之间
+/// 也不会被列表当成会话。
+fn write_file_atomic(path: &std::path::Path, text: &str) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("write {} failed: non-utf8 file name", path.display()))?;
+    let tmp = path.with_file_name(format!("{file_name}.tmp-{}", util::random_suffix()));
+    let write = || -> Result<(), String> {
+        std::fs::write(&tmp, text).map_err(|err| format!("write {} failed: {err}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .map_err(|err| format!("rename {} -> {} failed: {err}", tmp.display(), path.display()))
+    };
+    match write() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // 落在半路的临时文件按尽力清理：失败不再放大原错误
+            let _ = std::fs::remove_file(&tmp);
+            Err(error)
+        }
+    }
 }
 
 /// 创建会话文件（`meta.json` + 空 `.jsonl`）
@@ -224,7 +252,7 @@ pub fn create_conversation(
     let meta_path = dir.join(session_file_name(session_id, ".meta.json")?);
     let messages_path = dir.join(session_file_name(session_id, ".jsonl")?);
     let text = serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?;
-    std::fs::write(&meta_path, text)
+    write_file_atomic(&meta_path, &text)
         .map_err(|err| format!("write {} failed: {err}", meta_path.display()))?;
     if !messages_path.exists() {
         std::fs::write(&messages_path, "")
