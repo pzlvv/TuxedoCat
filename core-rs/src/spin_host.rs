@@ -3,7 +3,8 @@
 //! `spin.rs` 只依赖 [`SpinHost`] 这个回调边界，不引用引擎内部类型；本模块是那条
 //! 边界的具体实现，职责有三块：
 //! - **子代理**：`run_sub_agent` 走 `Core::create_sub_agent` 起子会话，然后阻塞等它
-//!   的 Reply 投递回父会话（对齐 `createSubAgent` + `waitForAgentReply`）；
+//!   的 Reply 投递回父会话，或等它无 Reply 收尾（完成判定见
+//!   `docs/features/spin-execution.md`）；
 //! - **事件**：`emit_event` 直接转发给 `Core::emit`（`spinDesignDataChanged` 等）；
 //! - **进度消息**：`push_message` 把 spin 的进度写进会话上下文并落盘（对齐 TS 的
 //!   `mutableMessages.push` + `appendMessage`），否则消息只到 UI、模型看不到。
@@ -47,6 +48,19 @@ impl CoreSpinHost {
     #[allow(dead_code)]
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// 子对话是否已无 Reply 收尾（docs/features/spin-execution.md 第 2 节）：
+    /// 引擎子代理驱动已退出（Reminder 轮次之间消费循环短暂退出的窗口不算——驱动
+    /// 会立刻重标 running）且会话自身空闲；会话不存在（被用户删除）同按收尾处理。
+    fn sub_agent_finished_without_reply(&self, sub_session_id: &str) -> bool {
+        match self.core.session_if_exists(sub_session_id) {
+            None => true,
+            Some(state) => {
+                let state = state.lock().unwrap();
+                state.sub_agent_driver_done && state.is_idle()
+            }
+        }
     }
 }
 
@@ -118,7 +132,17 @@ impl SpinHost for CoreSpinHost {
             }
             match receiver.recv_timeout(Duration::from_millis(REPLY_POLL_MS)) {
                 Ok(message) => break Ok(message),
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // 先于收尾检查消费通道：Reply 投递先于驱动收尾（投递成功后引擎才
+                    // 静默中止子对话），两者不会颠倒。超时后子对话仍无 Reply 且已收尾
+                    // （docs/features/spin-execution.md 第 2 节），本轮按无 Reply 失败
+                    // 结束，不再无限等待。
+                    if self.sub_agent_finished_without_reply(&sub_session_id) {
+                        break Err(format!(
+                            "spin sub-agent {sub_session_id} ended without a reply"
+                        ));
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     break Err("spin sub-agent reply channel closed".to_string())
                 }

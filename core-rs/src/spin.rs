@@ -1310,8 +1310,18 @@ impl SpinLoop {
                     if self.is_aborted() {
                         return SpinOutcome::Aborted;
                     }
-                    // 非中止的失败：与 TS 把异常转成 `Error: ${err}` 一致，作为反馈参与判定
-                    format!("Error: {error}")
+                    // 无 Reply 失败（docs/features/spin-execution.md 第 2 节）：子对话
+                    // 收尾却没有 Reply（用户中止该子对话 / LLM 请求异常 / 催办耗尽 /
+                    // Agent 工具未能起会话）。与验收无关——不进入验收判定、不写节点
+                    // note，直接重试且不占用验收失败上限（回退本次预支的计数，无验收
+                    // 条件的节点同样重试；无独立上限，持续故障由用户 abort 兜底）。
+                    attempts -= 1;
+                    let message = format!(
+                        "{}Errored: Task {current_seq} - {resolved_task} ({error}); retrying",
+                        progress.iteration_label
+                    );
+                    self.host.push_message(&self.session_id, "user", &message);
+                    continue;
                 }
             };
 

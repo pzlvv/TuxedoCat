@@ -103,6 +103,11 @@ impl FakeSpinHost {
             .push_back(Ok(reply.to_string()));
     }
 
+    /// 脚本一次无 Reply 失败（`run_sub_agent` 返回 Err）
+    fn push_failure(&self, error: &str) {
+        self.replies.lock().unwrap().push_back(Err(error.to_string()));
+    }
+
     fn push_judge(&self, accept: bool) {
         self.judges.lock().unwrap().push_back(accept);
     }
@@ -845,6 +850,69 @@ fn spin_loop_injects_skills_prompt() {
     let outcome = SpinLoop::new(host.clone(), cwd, "s1").run();
     assert_eq!(outcome, SpinOutcome::Completed);
     assert!(host.prompts()[0].contains("### 已加载的 Skills\n### commit\n按规范提交"));
+}
+
+#[test]
+fn spin_loop_retries_without_reply_failure_without_counting_attempts() {
+    // 无 Reply 失败与验收无关（docs/features/spin-execution.md 第 2 节）：无验收条件
+    // 的节点第一轮子对话收尾无 Reply → 不判通过（旧实现会把 Err 转成反馈后直接判
+    // 通过），立即重试且不占用上限；重试轮 Reply 到达后节点通过。
+    let sandbox = Sandbox::new("spin-no-reply-retry");
+    let cwd = cwd_of(&sandbox);
+    write_spin(
+        &sandbox,
+        json!({
+            "nodes": [ { "id": 1, "task": "A", "criteria": [] } ],
+            "edges": [],
+            "meta": {},
+        }),
+    );
+
+    let host = Arc::new(FakeSpinHost::new());
+    host.push_failure("spin sub-agent ended without a reply");
+    host.push_reply("done");
+
+    let outcome = SpinLoop::new(host.clone(), cwd.clone(), "s1").run();
+    assert_eq!(outcome, SpinOutcome::Completed);
+    // 失败轮重试了一次：共两次子代理调用；无验收条件不进评审
+    assert_eq!(host.prompts().len(), 2);
+    assert_eq!(host.judge_count(), 0);
+
+    let config = read_spin(&sandbox);
+    assert_eq!(config["meta"]["1"]["passed"], json!(true));
+}
+
+#[test]
+fn spin_loop_stops_only_on_acceptance_failures() {
+    // 上限只数验收失败（docs/features/spin-execution.md 第 2 节）：上限 1 时，
+    // 先一次无 Reply 失败（不计数）不触发停止，再一次验收失败（计数 1）才停——
+    // 共两次子代理调用；无 Reply 轮不进评审、不写 note。
+    let sandbox = Sandbox::new("spin-stop-only-acceptance");
+    let cwd = cwd_of(&sandbox);
+    write_spin(
+        &sandbox,
+        json!({
+            "nodes": [ { "id": 1, "task": "A", "criteria": ["c"] } ],
+            "edges": [],
+            "meta": {},
+        }),
+    );
+
+    let host = Arc::new(FakeSpinHost::new());
+    host.push_failure("spin sub-agent ended without a reply");
+    host.push_reply("y");
+    host.push_judge(false);
+
+    let mut spin = SpinLoop::new(host.clone(), cwd.clone(), "s1");
+    spin.set_max_attempts(1);
+    let outcome = spin.run();
+    assert_eq!(outcome, SpinOutcome::Stopped);
+    assert_eq!(host.prompts().len(), 2);
+    assert_eq!(host.judge_count(), 1);
+
+    let config = read_spin(&sandbox);
+    assert_eq!(config["meta"]["1"]["passed"], json!(false));
+    assert_eq!(config["meta"]["1"]["note"], json!("failed after 1 attempts"));
 }
 
 #[test]

@@ -503,3 +503,87 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
         "Reply 的 tool_result 应正常落盘: {sub_messages:?}"
     );
 }
+
+#[test]
+fn spin_run_retries_when_sub_agent_ends_without_reply() {
+    // 子对话无 Reply 收尾（docs/features/spin-execution.md 第 2 节）：第一个子代理
+    // 的 LLM 只回文本、始终不调用 Reply，引擎催办耗尽后驱动收尾——SpinLoop 必须
+    // 判无 Reply 失败并重试（旧实现只会永远等 Reply），而不是无限等待；重试轮
+    // 子代理 Reply 到达，节点通过。
+    let sandbox = Sandbox::new("spin-host-no-reply-retry");
+    let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let captured = std::sync::Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if index < 4 {
+            // 第一个子对话：任务轮 + 3 次催办全部只回文本（不调 Reply），驱动收尾
+            openai_text_sse(&["仍在处理"])
+        } else {
+            // 重试的子对话首轮就调 Reply 交回执行反馈
+            openai_tool_sse("call_1", "Reply", r#"{"message":"节点已完成"}"#)
+        }
+    });
+    sandbox.write_llm_settings(&llm.base_url, "auto");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+
+    write_ready_design(&sandbox, "把 README 补一段说明");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+    harness.core.session("s1");
+
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    run_spin_command(&harness.core, "s1", &workspace, "auto");
+
+    // 两个子对话都收尾：失败轮一个 + 重试轮一个（重试轮不该再多起）
+    assert!(
+        harness.wait_for(
+            |sink| sink
+                .events_of("queryEnd")
+                .iter()
+                .filter(|event| event["sessionId"]
+                    .as_str()
+                    .map_or(false, |id| id.starts_with("sub_")))
+                .count()
+                >= 2,
+            std::time::Duration::from_secs(30),
+        ),
+        "两个子对话都应收尾: {:?}",
+        harness.sink.event_types()
+    );
+    let sub_sessions = harness
+        .sink
+        .events_of("queryBegin")
+        .iter()
+        .filter(|event| {
+            event["sessionId"]
+                .as_str()
+                .map_or(false, |id| id.starts_with("sub_"))
+        })
+        .count();
+    assert_eq!(sub_sessions, 2, "失败重试恰好多起一个子对话");
+
+    // LLM 请求：第一个子对话任务轮 + 3 次催办 = 4 次，重试轮 1 次，主对话 0 次
+    assert_eq!(
+        bodies.lock().unwrap().len(),
+        5,
+        "请求次数应符合任务轮 + 催办 + 重试轮"
+    );
+
+    // 失败轮的进度消息落盘（Errored），重试后节点通过
+    let messages = history::load_messages("s1", &project);
+    assert!(
+        messages.iter().any(|message| message["type"] == "user"
+            && message["message"]["content"]
+                .as_str()
+                .map_or(false, |content| content.contains("Errored: Task 1"))),
+        "无 Reply 失败应落一条 Errored 进度消息: {messages:?}"
+    );
+    let spin_config = spin::read_spin_json(&workspace).expect("spin.json");
+    assert_eq!(spin_config["meta"]["1"]["passed"], json!(true));
+}

@@ -234,6 +234,9 @@ Spin 模式（`WorkMode::Spin`）期间父对话完全由 SpinLoop 程序驱动�
   结束（spin 单向，`work_mode` 保持 `Spin`），仍按 spin 语义处理，只落 `silent` 上下文，
   不拉起父对话的 LLM 轮次。
 
+SpinLoop 如何判定一轮执行的完成（`Reply` 或子对话收尾）与失败重试见
+[spin-execution.md](spin-execution.md)。
+
 ## 3. 行为规格
 
 ### 3.1 术语与事实来源

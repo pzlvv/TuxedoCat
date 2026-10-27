@@ -96,6 +96,12 @@ fn run_sub_agent(
         state.silent_abort = false;
     }
 
+    // 驱动收尾事实（docs/features/spin-execution.md 第 2 节）：先落标记再发 queryEnd，
+    // SpinLoop 的等待循环据此 + 自身 Idle 判「子对话无 Reply 收尾」。会话可能已被
+    // 用户删除（状态已释放），取不到就跳过——等待循环对「会话不存在」同按收尾处理。
+    if let Some(state) = core.session_if_exists(&sub_session_id) {
+        state.lock().unwrap().sub_agent_driver_done = true;
+    }
     core.emit(json!({ "type": "queryEnd", "sessionId": sub_session_id }));
     // 刷新对话列表：此时子代理消息已持久化，新子会话能正确出现在对话树里
     core.emit(json!({ "type": "conversationListChanged" }));
@@ -236,6 +242,12 @@ pub struct SessionState {
     /// `*User Interrupted*`（见 `emit_user_interrupted`）。新的消费循环启动时随
     /// `cancel` 一并复位。
     pub silent_abort: bool,
+    /// 子代理后台驱动已收尾：`run_sub_agent` 的驱动循环退出（完成 / 中止 / 催办耗尽 /
+    /// 会话被删），此后不再跑消费循环、不再注入 Reminder，Reply 也不可能再投递。
+    /// SpinLoop 的等待循环据此 + 自身 Idle 判定「子对话无 Reply 收尾」
+    /// （docs/features/spin-execution.md 第 2 节）；Reminder 轮次之间消费循环短暂
+    /// 退出的窗口不算收尾，必须是驱动的最终退出。普通（非子代理）会话恒为假。
+    pub sub_agent_driver_done: bool,
     /// 工作模式（`QueryEngine.workMode`）：`spin` 期间子代理 Reply 不进消费队列
     /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。单向：进入后
     /// 不再写回 `Normal`。
@@ -378,6 +390,7 @@ impl SessionState {
             running: false,
             waiting: false,
             silent_abort: false,
+            sub_agent_driver_done: false,
             work_mode: WorkMode::Normal,
             spin_sub_agents: HashSet::new(),
             spin_replied: HashSet::new(),
@@ -411,7 +424,12 @@ impl SessionState {
         }
     }
 
-    fn is_idle(&self) -> bool {
+    /// 自身（不含下层子代理）是否空闲。
+    ///
+    /// 对外只读投影的消费方：SpinLoop 的等待循环判「子对话无 Reply 收尾」时与驱动
+    /// 收尾标记合取（docs/features/spin-execution.md 第 2 节）；快照里的 `idle` 是
+    /// 递归版本（`is_idle_deep`），两者口径差异见该节术语表。
+    pub fn is_idle(&self) -> bool {
         // 对齐 `sessionRuntime.isIdleInSnapshot`：`query`(running) / `waiting` /
         // `compacting` / `background` 任一为真都不算空闲。
         !self.running
