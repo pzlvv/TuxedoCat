@@ -20,6 +20,10 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 返回 `None` 表示平台没有实现（或取不到父 PID），此时保持原有退出路径。
 pub fn spawn(on_dead: impl FnOnce() + Send + 'static) -> Option<thread::JoinHandle<()>> {
     let parent = platform::parent_pid()?;
+    // 武装诊断：测试（parent_watchdog）靠这行确认「看门狗已记录父 PID」这个
+    // 前置事实发生——runner 满载时 Core 的启动可慢于测试的任何定时假设，
+    // 按顺序观察而不是按时间赌（docs/core/standalone-core.md 第 5.4 节）。
+    diag!("[core] watchdog armed on parent {parent}");
     thread::Builder::new()
         .name("parent-watchdog".to_string())
         .spawn(move || watch(parent, POLL_INTERVAL, on_dead))

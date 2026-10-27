@@ -2,6 +2,14 @@
 //!
 //! 本地 stdio Core 的父进程（宿主）消失后，Core 必须自行退出；不能只依赖标准输入
 //! EOF——宿主被强杀、Core 主线程正卡在同步处理时，EOF 都不是及时信号。
+//!
+//! 时序是本用例的全部难点：Core 在 main 早期（动态链接完成后）才读一次 `getppid`
+//! 装看门狗，runner 满载时这段启动可长达数秒——父进程若抢在这之前退出，Core 读到
+//! 的就是收养者（init / subreaper），看门狗盯上永生的收养者、永不触发（ubuntu-26
+//! 镜像上三种测试构造同以 15s 整点超窗的根因，CI 多轮实证）。因此本用例按
+//! **顺序**而不是按时钟构造竞态：等 Core 打出「看门狗已武装」诊断（`[core]
+//! watchdog armed on parent`）之后再杀父进程——「先武装、后失父」由观察顺序保证，
+//! 与启动耗时无关。
 
 #![cfg(unix)]
 
@@ -9,16 +17,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// `/proc/<pid>/stat` 的 (state, ppid, starttime)（comm 可含空格与括号，取最后一个
-/// `)` 之后的部分再按空白切分；state 是第 3 字段、ppid 是第 4、starttime 是第 22）。
+/// `/proc/<pid>/stat` 的 (state, starttime)（comm 可含空格与括号，取最后一个 `)`
+/// 之后的部分再按空白切分；state 是第 3 字段、starttime 是第 22 字段）。
 /// 条目已消失返回 `None`。
-fn stat_fields(pid: u32) -> Option<(char, u64, u64)> {
+fn process_state_and_start(pid: u32) -> Option<(char, u64)> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let fields = text.rsplit_once(')')?.1.split_whitespace().collect::<Vec<_>>();
     let state = fields.first()?.chars().next()?;
-    let ppid: u64 = fields.get(1)?.parse().ok()?;
     let start: u64 = fields.get(19)?.parse().ok()?;
-    Some((state, ppid, start))
+    Some((state, start))
 }
 
 /// 进程是否已退出。判定必须同时比对 pid 与 starttime：
@@ -29,15 +36,15 @@ fn stat_fields(pid: u32) -> Option<(char, u64, u64)> {
 ///   可能数秒内被无关进程复用，只看「/proc 条目存在且非僵尸」会把复用者误判
 ///   成 Core（实证：断言时 `state=None` 而 core 日志带 `[core] exited`）。
 fn process_exited(pid: u32, core_start: Option<u64>) -> bool {
-    match (stat_fields(pid), core_start) {
+    match (process_state_and_start(pid), core_start) {
         (None, _) => true,
-        (Some((state, _, _)), _) if state == 'Z' => true,
-        (Some((_, _, start)), Some(core_start)) => start != core_start,
+        (Some((state, _)), _) if state == 'Z' => true,
+        (Some((_, start)), Some(core_start)) => start != core_start,
         (Some(_), None) => false,
     }
 }
 
-/// 等 Core 退出（含退出后进入僵尸态）；超时返回 false。
+/// 等进程退出（含退出后进入僵尸态）；超时返回 false。
 fn wait_until_exited(pid: u32, core_start: Option<u64>, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -49,13 +56,26 @@ fn wait_until_exited(pid: u32, core_start: Option<u64>, timeout: Duration) -> bo
     process_exited(pid, core_start)
 }
 
-fn wait_until(path: &Path, timeout: Duration) -> Option<String> {
+/// 等文件里出现目标行；超时返回 false。
+fn wait_for_line(path: &Path, needle: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(path) {
-            let trimmed = text.trim().to_string();
-            if !trimmed.is_empty() {
-                return Some(trimmed);
+            if text.lines().any(|line| line.contains(needle)) {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn wait_for_pid(path: &Path, timeout: Duration) -> Option<u32> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(pid) = text.trim().parse() {
+                return Some(pid);
             }
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -81,17 +101,19 @@ fn core_exits_when_parent_process_disappears() {
         let _ = std::fs::remove_file(path);
     }
 
-    // 中间 shell 拉起 Core 后立刻退出，Core 被 init 收养。Core 的 stdin 接一根
-    // 「不会 EOF 的管道」，只有父进程看门狗能在测试窗口内结束它——这正是扩展
-    // 宿主被强杀时的形态。这根管道不用 shell 管线搭（`sleep | core &` 一类写法
-    // 有两层 shell 语义坑，CI 多轮实证）：其一，`$!` 只对「单条后台命令」保证是
-    // 那一叉的 PID，dash 对后台管线会叉出等 sleep 与 Core 都退出的中间 subshell，
-    // pid 文件写的不是 Core 本尊，Core 的父进程永远活着，看门狗永不触发；其二，
-    // POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，Core 起跑瞬间读到
-    // EOF 直接退出（0.06s「core did not start」）。这里改为全显式：`mkfifo` 建管，
-    // 测试进程以 O_RDWR 打开持有两端（永不 EOF、开管不阻塞），shell 先把**自己的
-    // PID**（`$$`，即 Core 的父进程）落盘再起 Core——孤儿化是可观测的前置事实，
-    // 不是猜出来的前提。stderr 落盘不落 /dev/null：失败时随断言消息带出。
+    // 中间 shell 拉起 Core 后被测试显式杀死，Core 被 init 收养。Core 的 stdin 接
+    // 一根「不会 EOF 的管道」，只有父进程看门狗能在测试窗口内结束它——这正是
+    // 扩展宿主被强杀时的形态。这根管道不用 shell 管线搭（`sleep | core &` 一类
+    // 写法有两层 shell 语义坑，CI 多轮实证）：其一，`$!` 只对「单条后台命令」
+    // 保证是那一叉的 PID，dash 对后台管线会叉出等 sleep 与 Core 都退出的中间
+    // subshell，pid 文件写的不是 Core 本尊，Core 的父进程永远活着，看门狗永不
+    // 触发；其二，POSIX 规定异步命令未显式重定向 stdin 时接 /dev/null，Core
+    // 起跑瞬间读到 EOF 直接退出（0.06s「core did not start」）。这里改为全显式：
+    // `mkfifo` 建管，测试进程以 O_RDWR 打开持有两端（永不 EOF、开管不阻塞），
+    // shell 里 Core 是唯一后台命令且显式 `< fifo`——`$!` 精确等于 Core 的 PID。
+    // shell 自身 PID（`$$`，即 Core 的父进程）落盘给测试按需杀死；`sleep 90` 让
+    // 父进程活过 Core 的启动与武装，杀死时机由测试按「已武装」诊断决定，不靠
+    // 定时赌。stderr 落盘：失败时随断言消息带出，不再盲猜。
     let fifo = std::env::temp_dir().join(format!(
         "standalone-core-orphan-{}.fifo",
         std::process::id()
@@ -107,58 +129,39 @@ fn core_exits_when_parent_process_disappears() {
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "echo $$ > \"{}\"; exec \"{}\" stdio < \"{}\" > \"{}\" 2>&1 & echo $! > \"{}\"; sleep 3",
-            parent_file.display(),
+            "exec \"{}\" stdio < \"{}\" > \"{}\" 2>&1 & echo $! > \"{}\"; echo $$ > \"{}\"; sleep 90",
             exe,
             fifo.display(),
             log_file.display(),
-            pid_file.display()
+            pid_file.display(),
+            parent_file.display()
         ))
         .status()
         .expect("spawn intermediate shell");
     assert!(status.success(), "intermediate shell failed");
 
-    let parent_pid: u32 = wait_until(&parent_file, Duration::from_secs(5))
-        .expect("parent pid file was not written")
-        .parse()
-        .expect("parent pid is not a number");
-    let pid: u32 = wait_until(&pid_file, Duration::from_secs(5))
-        .expect("core pid file was not written")
-        .parse()
-        .expect("core pid is not a number");
-    let (state, ppid, core_start) = stat_fields(pid).expect("core exited immediately");
+    let pid: u32 = wait_for_pid(&pid_file, Duration::from_secs(5))
+        .expect("core pid file was not written");
+    let parent_pid: u32 = wait_for_pid(&parent_file, Duration::from_secs(5))
+        .expect("parent pid file was not written");
+    let (state, core_start) =
+        process_state_and_start(pid).expect("core exited before arming");
     assert!(state != 'Z', "core did not start (state={state:?})");
-    // Core 在 main 早期读一次 getppid 装看门狗；若 shell 抢先退出（孤儿化先于
-    // 取父），看门狗会盯上收养者（init / runner subreaper）永远不触发——ubuntu-26
-    // 镜像上启动变慢使此竞态从偶发变必现（三轮 15s 整点超窗、core 日志无看门狗
-    // diag 的实证）。shell 末尾的 `sleep 3` 就是为此存在的宽限：Core 的 getppid
-    // 必落在父进程存活期。竞态若仍然输掉，在这里以明确信息失败，不进谜之超窗。
-    assert_eq!(
-        ppid, parent_pid as u64,
-        "test infra: core armed its watchdog on the wrong parent (ppid {ppid}, \
-         expected {parent_pid})——孤儿化先于取父，宽限期不够"
-    );
 
-    // 等中间 shell 退出（孤儿化落地）再开表：这之前看门狗不开火是正确行为。
-    // shell 不退出是用例基建故障，与被测逻辑无关，显式失败并带现场。
+    // 等「看门狗已武装」诊断（Core 记录父 PID 之后的第一个动作）：它出现前杀父
+    // 进程就是在赌启动耗时。满载下 Core 启动可慢于任何固定时钟，宽限给足 60s
+    // （父进程 sleep 90 活得更久，先看武装后杀父的顺序不被打破）。
     assert!(
-        wait_until_exited(parent_pid, None, Duration::from_secs(5)),
-        "test infra: intermediate shell (parent pid {parent_pid}) never exited; core state={:?}",
-        stat_fields(pid)
+        wait_for_line(&log_file, "watchdog armed on parent", Duration::from_secs(60)),
+        "watchdog never armed; core 日志尾部：\n{}",
+        std::fs::read_to_string(&log_file).unwrap_or_default()
     );
-    let (state, ppid, core_start) = stat_fields(pid).expect("core exited before the window opened");
-    assert!(state != 'Z', "core did not start (state={state:?})");
 
-    // 看门狗 1s 轮询 + exit(0)，名义上孤儿化后 ~1s 内退出；窗口给到 15s 是为
-    // CI 负载下的启动与调度抖动留余量（5s 窗口在 runner 上实证会偶发超窗，
-    // 看门狗本身没毛病）——真回归（看门狗没开火）在 15s 内照样红。
+    // 已武装 → 杀父进程（孤儿化落地）：看门狗 1s 轮询 + exit(0)，~1s 内退出；
+    // 15s 窗口为 CI 负载留余量——真回归（看门狗没开火）在窗口内照样红。
+    kill(parent_pid);
     let exited = wait_until_exited(pid, Some(core_start), Duration::from_secs(15));
     drop(fifo_keepalive);
-    if !exited {
-        // 红阶段不留下孤儿：用例失败后清理（pid + starttime 判定仍在，不会误杀
-        // 复用同一 PID 的无关进程）。
-        kill(pid);
-    }
     let core_log = std::fs::read_to_string(&log_file).unwrap_or_default();
     let mut core_log_tail: Vec<&str> = core_log.lines().rev().take(20).collect();
     core_log_tail.reverse();
@@ -170,11 +173,15 @@ fn core_exits_when_parent_process_disappears() {
 
     assert!(
         exited,
-        "core stayed alive after its parent process (pid {parent_pid}) exited \
-         — core pid {pid}, state={:?}, ppid now={:?}, parent alive={:?}; core 日志尾部：\n{}",
-        stat_fields(pid).map(|(state, _, _)| state),
-        stat_fields(pid).map(|(_, ppid, _)| ppid),
-        stat_fields(parent_pid).map(|(state, _, _)| state != 'Z'),
+        "core stayed alive after its armed parent (pid {parent_pid}) was killed \
+         — core pid {pid}, state={:?}; core 日志尾部：\n{}",
+        process_state_and_start(pid).map(|(state, _)| state),
         core_log_tail
+    );
+    // 看门狗路径的自证：开火时必先打诊断。它在退出之前写就，退出被观测到则
+    // 这行必已在日志里。
+    assert!(
+        core_log.contains("parent process"),
+        "看门狗开火诊断缺失；core 日志尾部：\n{core_log_tail}"
     );
 }
