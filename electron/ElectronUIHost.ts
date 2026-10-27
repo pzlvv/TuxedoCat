@@ -15,7 +15,8 @@ import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import type { CoreEvent } from '../src/shared/AssistantEventBus.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
-import { workspaceRefKey, type WorkspaceRef, type WorkspaceEndpoint } from '../src/host/workspaceRef.js';
+import { workspaceRefKey, type WorkspaceRef } from '../src/host/workspaceRef.js';
+import { resolveRemoteFileWorkspace } from '../src/host/remoteFileResolve.js';
 import { parseCreatedFilePath, resolveToolWorkspace } from './toolResultSideEffects.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
@@ -253,13 +254,21 @@ export class ElectronUIHost implements UIHost {
     return app.getLocale();
   }
 
-  async openFile(filePath: string, target: import('../src/host/UIHost.js').LineSelection | null): Promise<void> {
+  async openFile(
+    filePath: string,
+    target: import('../src/host/UIHost.js').LineSelection | null,
+    view: import('../src/host/UIHost.js').WebviewViewHandle | null,
+  ): Promise<void> {
     // 远程工作区的文件链接（Read 工具卡片等）：路径是远端机上的 POSIX 绝对路径，
     // 本地盘读不到（ENOENT → 空编辑器）——先按打开集合里的远程工作区做前缀匹配，
-    // 命中就走 SFTP 读出内容，进与本地同一套内置窗口
-    const remote = this.resolveRemoteWorkspaceFile(filePath);
+    // 命中就走 SFTP 读出内容，进与本地同一套内置窗口；未命中（工作区外路径）按
+    // 来源视图所属工作区解析（specs/defects/remote-open-file-outside-workspace.md）。
+    // 无来源视图不做活动工作区兜底：机器归属无法判定，侧栏 openLocalFile 等
+    // 本地调用点不能被误判成远程
+    const viewRef = view ? this.getWorkspaceRefForView(view) : undefined;
+    const remote = resolveRemoteFileWorkspace(filePath, this.openRemoteRefsByActivity(), viewRef);
     if (remote) {
-      await this.openRemoteFile(remote.endpoint, remote.workspacePath, remote.abs);
+      await this.openRemoteFile(remote.ref.endpoint, remote.ref.path, remote.abs);
       return;
     }
     // 图片用内置图片查看器打开，避免 Monaco 按 utf-8 读取显示乱码
@@ -282,32 +291,15 @@ export class ElectronUIHost implements UIHost {
   }
 
   /**
-   * 把文件路径解析到某个已打开的远程工作区内（活动项优先）。
-   *
-   * webview 发来的 filePath 是 core 读文件时的远端真实路径（POSIX 绝对路径）；
-   * 只有落在某个远程工作区 root 内才按远程处理，否则维持本地语义
-   * （本地工作区路径、跨盘的 Windows 路径都不会命中 `/` 前缀匹配）。
+   * 打开集合按「活动项优先」排序（同一文件在多个工作区出现时按用户当前上下文解释）。
+   * 路径 → 远程工作区的判定本体在 `src/host/remoteFileResolve.ts`（纯函数，可单测）。
    */
-  private resolveRemoteWorkspaceFile(filePath: string): {
-    endpoint: WorkspaceEndpoint;
-    workspacePath: string;
-    abs: string;
-  } | null {
-    if (typeof filePath !== 'string' || !filePath.startsWith('/')) return null;
-    // 活动工作区优先：同一文件在多个工作区出现时按用户当前上下文解释
+  private openRemoteRefsByActivity(): readonly WorkspaceRef[] {
     const active = this.getWorkspaceRef();
-    const refs = [
+    return [
       ...(active ? [active] : []),
       ...this.getOpenWorkspaceRefs().filter((ref) => ref !== active),
     ];
-    for (const ref of refs) {
-      if (!ref.endpoint) continue;
-      const root = ref.path.replace(/\/+$/, '');
-      if (filePath === root || filePath.startsWith(`${root}/`)) {
-        return { endpoint: ref.endpoint, workspacePath: ref.path, abs: filePath };
-      }
-    }
-    return null;
   }
 
   /** 经 SFTP 读远端文件并进内置窗口（文本 → Monaco，图片 → 查看器） */

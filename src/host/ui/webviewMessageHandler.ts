@@ -281,7 +281,7 @@ export class WebviewMessageHandler {
   private buildMessageHandlers(): Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void> {
     return new Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void>([
       // ===== 纯宿主操作（留在 handler 内直接调 UIHost，见 ``docs/architecture/events.md` 第 2.3 节保留清单）=====
-      entry('openFile', (msg) => this.handleOpenFile(msg)),
+      entry('openFile', (msg, ctx) => this.handleOpenFile(msg, ctx)),
       entry('requestToolMeta', (msg) => this.handleRequestToolMeta(msg)),
       entry('showVirtualDocument', (msg) => this.handleShowVirtualDocument(msg)),
       entry('openMermaidPreview', (msg) => this.handleOpenMermaidPreview(msg)),
@@ -583,14 +583,19 @@ export class WebviewMessageHandler {
     return ref;
   }
 
-  private async handleOpenFile(message: Extract<WebviewToHostMessage, { type: 'openFile' }>): Promise<void> {
+  private async handleOpenFile(
+    message: Extract<WebviewToHostMessage, { type: 'openFile' }>,
+    ctx: WebviewRequestContext,
+  ): Promise<void> {
     const { filePath, selectedLines } = message;
     this.log(`[WebviewMessageHandler] openFile: ${filePath} ${JSON.stringify(selectedLines)}`);
 
     if (!filePath) return;
 
     try {
-      await this.host.openFile(filePath, selectedLines ?? null);
+      // 来源视图一起交给宿主：远程会话可能引用工作区外文件，宿主按视图所属工作区
+      // 解析机器归属（specs/defects/remote-open-file-outside-workspace.md）
+      await this.host.openFile(filePath, selectedLines ?? null, ctx.sender);
     } catch (err) {
       this.log(`[WebviewMessageHandler] Error opening file: ${err}`);
     }

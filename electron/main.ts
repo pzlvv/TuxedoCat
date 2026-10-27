@@ -5294,7 +5294,8 @@ function setupIpc(): void {
     },
     openLocalFile: (filePath) => {
       if (!uiHost) throw new Error('ui host unavailable');
-      return uiHost.openFile(filePath, null);
+      // 侧栏双击的是本地工作区文件，没有来源对话视图：不参与远程机器归属解析
+      return uiHost.openFile(filePath, null, null);
     },
     openWithSystemApp: async (filePath) => {
       // shell.openPath 失败时回错误串（成功回 ''），原样抛给调用方显示
