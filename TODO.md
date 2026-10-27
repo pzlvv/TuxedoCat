@@ -46,3 +46,20 @@
   快照同款 version 防护；双击二选一（删自绘处理器交原生，或标题栏改 `no-drag` 自行实现拖动）。
   验收判据：snap / 托盘往返 / 最小化还原后图标与 `isMaximized()` 一致且能自愈；双击标题栏空白区
   恰好切换一次最大化；electron 车道 e2e 锁定两条行为。
+
+- **Electron 文件监听在窗口非焦点时不落到界面**（用户报告 + 代码走读定位，评估已完成）：
+  监听链路全在主进程且失焦期间照常收到事件、照常 `webContents.send`（本地
+  `electron/localFileWatch.ts`、远程 `core-rs/src/file_watch.rs`、文档视图哨兵
+  `electron/sidebarDocWatch.ts`、查看器投递 `electron/viewerWatch.ts`）；缺口在渲染侧
+  ——失焦 / 被遮挡时 Chromium 让渲染进程进入后台状态，DOM 更新与合成器降帧，依赖
+  `requestAnimationFrame` 的刷新（webview 流式渲染、侧栏滚动回填）被压到窗口重新
+  可见 / 聚焦时才发生，表现即「聚焦后才刷新」。三类刷新面都受影响：文件树
+  （`sidebar:files-invalidate` 的 `tree`）、文档视图（`doc`）、内置查看器
+  （`monaco-refresh` / `markdown-refresh` / `imageviewer-refresh`）。方向：补齐
+  `backgroundThrottling: false` 的缺失位点（现有位点只盖主窗口子视图的一部分），
+  必要时同时关掉 Chromium 的 `CalculateNativeWinOcclusion`（Windows 原生遮挡跟踪是
+  独立的第二条降频闸门，VS Code 同样关掉它）；刷新链路去掉对 `requestAnimationFrame`
+  的强依赖（等布局的步骤改 `setTimeout(0)` 兜底），失焦态下直接同步更新。
+  验收判据：主窗口失焦时改源文件，侧栏文件树 / 文档视图 / Markdown 预览三类面都在
+  失焦期间即时更新（不靠重新聚焦）；electron 车道 e2e 锁定「失焦期间刷新」与
+  「回窗不重复刷新」两条行为；监听注册 / 注销、去抖、内容判重、标题标记语义不变。
