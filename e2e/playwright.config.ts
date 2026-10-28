@@ -78,11 +78,11 @@ export default defineConfig({
     {
       name: 'electron-app',
       testMatch: /electron[\\/].+\.spec\.ts/,
-      testIgnore: /remoteSshExecution\.spec\.ts/,
+      testIgnore: /remoteSshExecution\.spec\.ts|remoteTaskSurvival\.spec\.ts/,
     },
     // 真实 SSH 远端（本地车道：要 e2e/environments.json，不进 CI——runner 内临时起的
     // sshd 替代不了真实远端，见 e2e/README.md 的 CI 车道表）
-    { name: 'electron-ssh', testMatch: /electron[\\/]remoteSshExecution\.spec\.ts/ },
+    { name: 'electron-ssh', testMatch: /electron[\\/](remoteSshExecution|remoteTaskSurvival)\.spec\.ts/ },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道
     { name: 'terminal-ui', testMatch: /terminal[\\/].+\.spec\.ts/ },

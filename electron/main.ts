@@ -35,7 +35,7 @@ import { showStyledMessageBox } from './styledMessageBox.js';
 import { guardViewNavigation } from './viewNavigation.js';
 import { ElectronConversationManager } from './ElectronConversationManager.js';
 import { WebViewUI } from '../src/host/WebViewUI.js';
-import type { Client } from '../src/host/Client.js';
+import type { Client, CoreChannelCloseMode } from '../src/host/Client.js';
 import type { WebviewToHostMessage } from '../src/host/webviewMessages.js';
 import { normalizeWorkspacePath, sameWorkspace } from '../src/host/workspacePaths.js';
 import { buildRemoteEndpoint, type RemoteConnectError } from '../src/host/remoteConnect.js';
@@ -79,7 +79,7 @@ import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } fro
 import { diffSessionEndEvents, shouldFireCompletion, type SessionBusyRecord, type SessionLevel } from './trayAttention.js';
 import { createAttentionSound, traySoundEnabled } from './trayAttentionSound.js';
 import { createTraySoundPlayer } from './traySoundWindow.js';
-import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
+import { backfillCompletionAttention, diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   selectClosableIdleSessions,
@@ -354,7 +354,7 @@ const sessionWorkspaces = new Map<string, string>();
 /** 宿主实例（initCore 创建后回填；侧栏哨兵启停等工作区生命周期挂点用，specs/030） */
 let electronHost: ElectronUIHost | null = null;
 /** 工作区打开 / 关闭 / 激活的订阅者（ElectronUIHost 的 WorkspaceProvider 契约） */
-const workspaceChangeListeners = new Set<(change: { type: 'opened' | 'closed' | 'activated'; ref: WorkspaceRef }) => void>();
+const workspaceChangeListeners = new Set<(change: { type: 'opened' | 'closed' | 'activated'; ref: WorkspaceRef; closeMode: CoreChannelCloseMode }) => void>();
 
 /** 工作区引用的稳定 id（跨进程 IPC 与标签页身份用） */
 function refKey(ref: WorkspaceRef): string {
@@ -403,13 +403,28 @@ function sameRef(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): bool
   return sameWorkspaceRef(a, b);
 }
 
-/** 通知工作区变化（Client 据此建立 / 销毁 Connection） */
-function emitWorkspaceChange(type: 'opened' | 'closed' | 'activated', ref: WorkspaceRef): void {
+/**
+ * 退出确认链的决策表（specs/031）：按 workspaceRefKey 记录用户对各忙碌远程工作区
+ * 的选择（后台运行 / 立即关闭）。窗口 close 确认链填写，will-quit 的 shutdownCore
+ * 消费；弹不出对话框的出口（窗口已销毁）不填 = 全部只断链，daemon 默认策略接管。
+ */
+const pendingQuitDecisions = new Map<string, CoreChannelCloseMode>();
+
+/** 通知工作区变化（Client 据此建立 / 销毁 Connection）。
+ *
+ * `closeMode` 只对 closed 有意义（specs/031）：`detach` = 后台运行，Connection
+ * 只摘路由不发 `closeWorkspace`，Core 留在 daemon 孤儿表继续执行。
+ */
+function emitWorkspaceChange(
+  type: 'opened' | 'closed' | 'activated',
+  ref: WorkspaceRef,
+  closeMode: CoreChannelCloseMode = 'close',
+): void {
   // 工作区关闭连带摘掉文档视图的 git 哨兵（specs/030 FR-003：监听随工作区生命周期）
   if (type === 'closed') void electronHost?.stopDocSentinelFor(ref);
   for (const listener of [...workspaceChangeListeners]) {
     try {
-      listener({ type, ref });
+      listener({ type, ref, closeMode });
     } catch (err) {
       console.error('[main] workspace change listener error:', err);
     }
@@ -484,7 +499,7 @@ function reviveWorkspaceIfRecovered(ref: WorkspaceRef): boolean {
 /** 当前 WebViewUI 实例（initCore 创建；消息路由 / 工作区切换使用） */
 let webviewUi: WebViewUI | undefined;
 /** core 侧进程级资源的释放入口（initCore 从共享骨架取得；will-quit 调用） */
-let coreShutdown: (() => Promise<void>) | undefined;
+let coreShutdown: ((decisions?: ReadonlyMap<string, CoreChannelCloseMode>) => Promise<void>) | undefined;
 /** 当前宿主实现（initCore 创建） */
 let uiHost: ElectronUIHost | undefined;
 /** 共享装配的 Client（initCore 创建）：会话 → Connection 路由表的宿主侧只读入口 */
@@ -705,7 +720,11 @@ async function main(): Promise<void> {
   // 本应用任意窗口（主窗口 / 偏好设置窗口等）获得焦点即取消闪烁提醒。
   // 只监听 mainWindow 的 focus 会漏掉子窗口聚焦的情况——子窗口聚焦时主窗口
   // 失去焦点，但用户正在使用本应用，不应继续闪烁。
-  app.on('browser-window-focus', () => cancelAttention());
+  app.on('browser-window-focus', () => {
+    cancelAttention();
+    // 用户已到场：启动恢复的托盘抑制立即解除（specs/031 FR-006）
+    startupTraySuppressionDeadline = 0;
+  });
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
@@ -736,8 +755,9 @@ async function main(): Promise<void> {
     disposeAllRemoteFilesClients();
     // core 侧的进程级资源（MCP 子进程 / Standalone Core 进程）统一由共享骨架释放；
     // Standalone 下关闭 Core 进程需要一点时间，此处不阻塞退出——Core 也会在
-    // 标准输入关闭（EOF）时自行退出。
-    void coreShutdown?.();
+    // 标准输入关闭（EOF）时自行退出。决策表承载退出确认链的选择（specs/031）：
+    // detach 的工作区只断链，Core 孤儿化存活。
+    void coreShutdown?.(pendingQuitDecisions);
   });
 }
 
@@ -884,8 +904,9 @@ function createMainWindow(): void {
     // 窗口被拖动后菜单的锚点失效，直接关掉（与原生菜单一致）
     closeTitlebarMenu();
   });
-  // 退出确认：关一张标签要确认、退出却直接杀掉全部运行中会话是粒度倒挂——
-  // 任一工作区还有非 idle 对话时先经同一份确认（confirmCloseBusy，默认落在「取消」）；
+  // 退出确认：关一张标签要确认、退出却直接杀掉全部运行中会话是粒度倒挂——任一
+  // 工作区还有非 idle 对话时先经确认。远程工作区逐个弹三选（后台运行 / 立即关闭 /
+  // 取消，specs/031 FR-002），本地工作区维持现有总确认；任一「取消」中止整个退出。
   // 确认后置标志放行，关闭流程不再重复问。关闭路径的关键不变量：preventDefault 后
   // 每一条出口（再次 close / will-quit）都必须能走到真正的退出。
   let windowCloseConfirmed = false;
@@ -896,19 +917,33 @@ function createMainWindow(): void {
     }
     persistWindowRect();
     if (windowCloseConfirmed) return;
-    const busyWorkspace = openWorkspaces.find((candidate) => workspaceHasBusySession(candidate));
-    if (!busyWorkspace) return;
+    const busyRemote = openWorkspaces.filter(
+      (candidate) => candidate.endpoint !== null && workspaceHasBusySession(candidate),
+    );
+    const busyLocal = openWorkspaces.find(
+      (candidate) => candidate.endpoint === null && workspaceHasBusySession(candidate),
+    );
+    if (busyRemote.length === 0 && !busyLocal) return;
     event.preventDefault();
-    void confirmCloseBusy(
-      tt('仍有对话在运行', 'Conversations are still running'),
-      tt(`「${refDisplay(busyWorkspace)}」下仍有对话在运行，退出会中止它们。确定退出？`,
-         `Conversations in "${refDisplay(busyWorkspace)}" are still running. Quit anyway?`),
-    ).then((confirmed) => {
-      if (confirmed && win && !win.isDestroyed()) {
+    void (async () => {
+      const decisions = await confirmQuitWorkspaces(busyRemote);
+      if (!decisions) return; // 任一「取消」：整个退出中止（spec AC-12）
+      if (busyLocal) {
+        // 本地忙碌工作区维持现有总确认，排在远程逐区确认之后（spec FR-002）
+        const confirmed = await confirmCloseBusy(
+          tt('仍有对话在运行', 'Conversations are still running'),
+          tt(`「${refDisplay(busyLocal)}」下仍有对话在运行，退出会中止它们。确定退出？`,
+             `Conversations in "${refDisplay(busyLocal)}" are still running. Quit anyway?`),
+        );
+        if (!confirmed) return;
+      }
+      pendingQuitDecisions.clear();
+      for (const [key, mode] of decisions) pendingQuitDecisions.set(key, mode);
+      if (win && !win.isDestroyed()) {
         windowCloseConfirmed = true;
         win.close();
       }
-    });
+    })();
   });
 
   // ── 左侧原生侧栏 ──
@@ -1032,6 +1067,7 @@ function createMainWindow(): void {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
       // 该对话成为当前对话 = 阅读了它的未读完成：清掉并同步（侧栏 / webview 灯条随之熄灭）
       if (sessionId && unreadCompletionSessions.delete(sessionId)) syncCompletionAttention();
+      if (sessionId) completionsReadInRun.add(sessionId);
       // 同步 UI 侧的「当前活跃会话」：切到已打开的视图不会再走 loadConversation /
       // startNewConversation，不同步的话按会话解析的数据（project skills / MCP 启用
       // 列表）会停在旧视图，取到别的标签页的工作目录。
@@ -1304,6 +1340,12 @@ let completionAttentionLevels = new Map<string, SessionLevel>();
 const unreadCompletionTabs = new Set<string>();
 /** 未读完成的对话（sessionId）：成为当前对话、或回窗聚焦时正看着即视为阅读 */
 const unreadCompletionSessions = new Set<string>();
+/**
+ * 本次运行已阅读的会话：补武装（`backfillCompletionAttention`）的护栏。打开对话
+ * 即清掉 core 侧的 `unreadCompletions` 计数，但清零落盘与下一次列表刷新之间存在
+ * 在途窗口——护栏挡住窗口期的重复武装，重启后 core 已清零，护栏不需要持久化。
+ */
+const completionsReadInRun = new Set<string>();
 
 /**
  * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
@@ -1580,6 +1622,7 @@ function reconcileCompletionAttention(): void {
   let removed = false;
   for (const sessionId of pickReadCompletions([...unreadCompletionSessions], completionFactsOf)) {
     if (unreadCompletionSessions.delete(sessionId)) removed = true;
+    completionsReadInRun.add(sessionId);
   }
   if (removed) syncCompletionAttention();
 }
@@ -1647,6 +1690,18 @@ const pendingCompletionTimers = new Map<string, NodeJS.Timeout>();
  * （`COMPLETION_ATTENTION_GRACE_MS`）：空闲挂起项提交 / 队列续跑造成的
  * idle → running 闪现不算完成，不提醒；转等待立即提醒不设窗口。
  */
+/**
+ * 启动恢复期间的托盘提醒抑制（specs/031 FR-006）：启动恢复打开的远程工作区经
+ * 认领重放补发孤儿期间的快照序列，其中的 running → idle 差分会命中托盘提醒的
+ * 「窗口不在前台」条件，造成开屏误闪提示音。抑制带硬上限，首个窗口聚焦即解除；
+ * 对话列表绿灯（completionAttention）不受影响——那是用户主动要看的未读事实。
+ */
+let startupTraySuppressionDeadline = Date.now() + 30_000;
+
+function trayAttentionSuppressed(): boolean {
+  return Date.now() < startupTraySuppressionDeadline;
+}
+
 function updateTrayStatusFromStates(
   states: ReadonlyArray<import('../src/shared/AssistantEventBus.js').SessionRuntimeState>,
 ): void {
@@ -1666,6 +1721,9 @@ function updateTrayStatusFromStates(
   // 队列续跑造成的 idle → running 闪现不算完成）；trayStatus 为 null = 托盘未建，
   // 闪烁无从谈起，跳过
   for (const sessionId of ends.completedSessions) {
+    // 启动恢复窗口内的「完成」是认领重放的补发（specs/031），不武装托盘提醒：
+    // 差分表照常推进，绿灯由 completionAttention 负责
+    if (trayAttentionSuppressed()) continue;
     const timer = setTimeout(() => {
       pendingCompletionTimers.delete(sessionId);
       if (trayStatus && shouldFireCompletion(traySessionLevels.get(sessionId)?.level)) {
@@ -1689,7 +1747,7 @@ function updateTrayStatusFromStates(
     }
   }
 
-  if (ends.anyNowWaiting) {
+  if (ends.anyNowWaiting && !trayAttentionSuppressed()) {
     startAttention(status);
   }
 }
@@ -2357,6 +2415,54 @@ async function confirmCloseBusy(message: string, detail: string): Promise<boolea
     detail,
   });
   return response === 0;
+}
+
+/**
+ * 忙碌远程工作区的三选对话框（specs/031 FR-001）：后台运行 / 立即关闭 / 取消，
+ * 默认焦点落在取消（防误关）。窗口不可用时按「取消」处理——退出确认链的关键
+ * 不变量是每条出口都能走到真正的退出，但「静默替用户选后台运行」不可接受，
+ * 让 daemon 默认策略接管的出口只属于弹不出任何对话框的崩溃路径。
+ */
+async function confirmRemoteCloseChoice(ref: WorkspaceRef): Promise<'detach' | 'close' | 'cancel'> {
+  if (!mainWindow || mainWindow.isDestroyed()) return 'cancel';
+  // 文案区分等待与运行：waiting 的会话后台运行后请求仍在等待，回来即可应答
+  const activity = collectWorkspaceActivity()[refKey(ref)];
+  const detail = activity === 'waiting'
+    ? tt('远端有对话在等待你的输入。后台运行保留任务与等待中的请求，重开工作区即可应答；立即关闭会中止它们。',
+         'A conversation is waiting for your input. Keep it running in the background and answer later, or stop it now.')
+    : tt('远端有对话仍在运行。后台运行让任务继续执行，重开工作区即可恢复；立即关闭会中止它们。',
+         'Conversations are still running remotely. Keep them running in the background, or stop them now.');
+  const response = await showStyledMessageBox(mainWindow, {
+    type: 'warning',
+    message: tt(`「${refDisplay(ref)}」下仍有对话在运行`,
+                `Conversations in "${refDisplay(ref)}" are still running`),
+    detail,
+    buttons: [
+      tt('后台运行', 'Run in Background'),
+      tt('立即关闭', 'Close Now'),
+      tt('取消', 'Cancel'),
+    ],
+    defaultId: 2,
+    cancelId: 2,
+  });
+  return response === 0 ? 'detach' : response === 1 ? 'close' : 'cancel';
+}
+
+/**
+ * 退出确认链的远程段（specs/031 FR-002）：按标签页顺序逐个工作区弹三选，决策落表；
+ * 任一「取消」中止整个退出（返回 null）。忙碌判据与关一张标签同一份事实
+ * （collectWorkspaceActivity 的宿主快照投影）。
+ */
+async function confirmQuitWorkspaces(
+  refs: readonly WorkspaceRef[],
+): Promise<ReadonlyMap<string, CoreChannelCloseMode> | null> {
+  const decisions = new Map<string, CoreChannelCloseMode>();
+  for (const ref of refs) {
+    const choice = await confirmRemoteCloseChoice(ref);
+    if (choice === 'cancel') return null;
+    decisions.set(refKey(ref), choice);
+  }
+  return decisions;
 }
 
 /**
@@ -3690,10 +3796,20 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
     ? openWorkspaces.find((candidate) => refKey(candidate) === target)
     : findWorkspace(target);
   if (!ref || !openWorkspaces.includes(ref)) return;
-  if (workspaceHasBusySession(ref) && !(await confirmCloseBusy(
-    tt(`「${refDisplay(ref)}」下仍有对话在运行`, `Conversations in "${refDisplay(ref)}" are still running`),
-    tt('关闭工作区会中止这些对话的运行。确定关闭？', 'Closing the workspace stops them. Close anyway?'),
-  ))) return;
+  if (workspaceHasBusySession(ref)) {
+    if (ref.endpoint !== null) {
+      // 忙碌远程工作区：三选（specs/031 FR-001）。后台运行 = detach——标签页与
+      // 打开集合照常移除（最近列表保留），Core 留在远端孤儿表继续执行
+      const choice = await confirmRemoteCloseChoice(ref);
+      if (choice === 'cancel') return;
+      teardownWorkspace(ref, choice);
+      return;
+    }
+    if (!(await confirmCloseBusy(
+      tt(`「${refDisplay(ref)}」下仍有对话在运行`, `Conversations in "${refDisplay(ref)}" are still running`),
+      tt('关闭工作区会中止这些对话的运行。确定关闭？', 'Closing the workspace stops them. Close anyway?'),
+    ))) return;
+  }
   teardownWorkspace(ref);
 }
 
@@ -3702,7 +3818,7 @@ async function closeWorkspace(target: WorkspaceRef | string): Promise<void> {
  * `closeWorkspace` 的忙碌确认后进来；右键「关闭其它所有工作区」在**一次汇总确认**后
  * 逐个进来——若走 `closeWorkspace` 会放大成每区一次确认，违背汇总语义。
  */
-function teardownWorkspace(ref: WorkspaceRef): void {
+function teardownWorkspace(ref: WorkspaceRef, closeMode: CoreChannelCloseMode = 'close'): void {
   const idx = openWorkspaces.indexOf(ref);
   if (idx < 0) return;
   openWorkspaces.splice(idx, 1);
@@ -3715,8 +3831,10 @@ function teardownWorkspace(ref: WorkspaceRef): void {
   // 远程终端窗口随工作区关闭（docs/hosts/electron-multi-workspace.md 第 14.7 节）：shell 通道随窗口收尾，
   // 终端自己的连接租约在窗口 closed 时释放
   closeTerminalWorkspace(refKey(ref));
-  // 视图归属按稳定 id（refKey）：同路径不同主机的远程工作区互不误伤
-  chatViews?.closeWorkspace(refKey(ref));
+  // 视图归属按稳定 id（refKey）：同路径不同主机的远程工作区互不误伤。
+  // detach（后台运行，specs/031）只销视图：会话与在跑任务留在孤儿的 Core 里继续，
+  // 不发 conversationClosed（那会中止整棵会话树）
+  chatViews?.closeWorkspace(refKey(ref), { releaseSessions: closeMode !== 'detach' });
   // 该目录的列表快照一并丢弃：关闭期间盘上内容可能变化（另一实例 / daemon 侧），
   // 重新打开时按首次打开处理（无快照 → 完整读一次盘）。其它目录的快照不受影响。
   conversations?.invalidateCachedList(refKey(ref));
@@ -3745,8 +3863,9 @@ function teardownWorkspace(ref: WorkspaceRef): void {
   } else {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
   }
-  // 通知 Client 销毁该工作区的 Connection（Standalone 下关闭 Core 进程）
-  emitWorkspaceChange('closed', ref);
+  // 通知 Client 销毁该工作区的 Connection（Standalone 下关闭 Core 进程；
+  // detach 为后台运行，specs/031）
+  emitWorkspaceChange('closed', ref, closeMode);
   setupMenu();
   pushTitlebarModeState();
   syncWindowTitle();
@@ -3794,7 +3913,7 @@ function markWorkspaceUnavailable(ref: WorkspaceRef, reason: ChatPlaceholderReas
   }
   // 该工作区的 Connection 已无法建立：让 Client 销毁（含仍在长超时里挂着的建链尝试），
   // 不留半开的死连接（尚未建立 Connection 的项是空操作）
-  emitWorkspaceChange('closed', ref);
+  emitWorkspaceChange('closed', ref, 'close');
   if (sameRef(workspacePath, ref)) {
     syncChatAreaForActiveWorkspace();
   }
@@ -4676,6 +4795,9 @@ function setupIpc(): void {
       activeWorkspace: workspacePath ? refKey(workspacePath) : null,
       // 标签页流水灯：每个工作目录的聚合运行时状态（waiting 优先，其次 running）
       activity: collectWorkspaceActivity(),
+      // 未读完成的标签页集合：推送早于标题栏订阅（页面加载期）的窗口由这份
+      // 初始快照补上，离场完成的标签页灯不因加载时序丢失
+      completion: [...unreadCompletionTabs],
       // 标题栏是独立页面，拿不到 core 的 i18n 上下文：文案由主进程按当前语言下发，
       // 避免中文 tooltip 与英文 aria-label 混排（原先写死在页面里）。
       labels: {
@@ -4854,6 +4976,11 @@ function setupIpc(): void {
   ipcMain.handle('sidebar:get-session-states', () => {
     return conversations?.getSessionStatesSnapshot() ?? [];
   });
+
+  // 未读完成集合流与状态流同构：「变化时才推」，侧栏初始化 / 重载时主动拉一次，
+  // 补上「补武装推送早于侧栏订阅（页面加载期）」造成的空档，否则离场完成的绿灯
+  // 一直不亮（specs/defects/orphan-completion-unread-light）
+  ipcMain.handle('sidebar:get-session-completion', () => [...unreadCompletionSessions]);
 
   ipcMain.handle('sidebar:get-active-session', () => {
     return chatViews?.getActiveSessionId() ?? null;
@@ -5417,7 +5544,26 @@ function initCore(): void {
       // 重命名 / 智能命名 / 从侧栏打开对话都按会话 id 反查该索引解析工作目录，不在这里
       // 补记，这些操作对晚到的会话会解析不到归属（批量关闭空闲会话不走该索引，它按
       // 已打开的会话视图枚举）。
-      if (channel === 'sidebar:conversations-updated') syncSessionWorkspaceIndex();
+      if (channel === 'sidebar:conversations-updated') {
+        syncSessionWorkspaceIndex();
+        // 离场完成的补武装（specs/defects/orphan-completion-unread-light）：列表一到达
+        // 就按 meta.json 的 unreadCompletions 补绿灯——先刷新会话归属索引，标签页灯的
+        // 激活判定才有依据；本次运行已阅读的会话不再补（清零落盘的在途窗口护栏）
+        const armed = backfillCompletionAttention(
+          [...unreadCompletionSessions],
+          payload as ReadonlyArray<{ sessionId: string; unreadCompletions?: number; creator?: import('../src/shared/sessionCreator.js').SessionCreator }>,
+          completionFactsOf,
+        );
+        fileLogger.info(
+          'completion-backfill',
+          `list=${(payload as unknown[]).length} armed=${armed.sessions.length} [${armed.sessions.join(',')}]`,
+        );
+        if (armed.sessions.length > 0) {
+          for (const sessionId of armed.sessions) unreadCompletionSessions.add(sessionId);
+          for (const key of armed.tabs) unreadCompletionTabs.add(key);
+          syncCompletionAttention();
+        }
+      }
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);
       }

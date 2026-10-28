@@ -38,6 +38,8 @@ impl CoreProcessHandle for FakeHandle {
 #[derive(Default)]
 struct FakeSpawner {
     children: Mutex<Vec<Arc<FakeChild>>>,
+    /// 每次 spawn 时收到的帧出口（specs/031：模拟 Core 输出经 `RoutableSink` 的真实路径）
+    sinks: Mutex<Vec<Arc<dyn CoreEventSink>>>,
     spawns: AtomicUsize,
     fail_next: AtomicBool,
 }
@@ -50,13 +52,17 @@ impl FakeSpawner {
     fn lines_of(&self, index: usize) -> Vec<String> {
         self.child(index).lines.lock().unwrap().clone()
     }
+
+    fn sink_of(&self, index: usize) -> Arc<dyn CoreEventSink> {
+        Arc::clone(&self.sinks.lock().unwrap()[index])
+    }
 }
 
 impl CoreSpawner for FakeSpawner {
     fn spawn(
         &self,
         _channel: u64,
-        _sink: Arc<dyn CoreEventSink>,
+        sink: Arc<dyn CoreEventSink>,
     ) -> io::Result<Box<dyn CoreProcessHandle>> {
         if self.fail_next.swap(false, Ordering::SeqCst) {
             return Err(io::Error::new(io::ErrorKind::Other, "spawn failed"));
@@ -64,22 +70,8 @@ impl CoreSpawner for FakeSpawner {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         let child = Arc::new(FakeChild::default());
         self.children.lock().unwrap().push(Arc::clone(&child));
+        self.sinks.lock().unwrap().push(sink);
         Ok(Box::new(FakeHandle { child }))
-    }
-}
-
-/// 测试事件汇：把子进程的输出 / 退出转成 `DaemonEvent`
-struct TestSink {
-    tx: Sender<DaemonEvent>,
-}
-
-impl CoreEventSink for TestSink {
-    fn on_line(&self, channel: u64, line: String) {
-        let _ = self.tx.send(DaemonEvent::FrameLine { channel, line });
-    }
-
-    fn on_exit(&self, channel: u64, code: Option<i32>) {
-        let _ = self.tx.send(DaemonEvent::CoreExited { channel, code });
     }
 }
 
@@ -94,13 +86,20 @@ struct Harness {
 
 impl Harness {
     fn new(options: DaemonOptions) -> Harness {
+        Harness::with_context(options, None)
+    }
+
+    /// `context` 传孤儿表上下文即启用 specs/031 语义（断开孤儿化 / detach / 认领）
+    fn with_context(options: DaemonOptions, context: Option<ConnectionContext>) -> Harness {
         let (tx, rx) = mpsc_channel::<DaemonEvent>();
         let (out_tx, out_rx) = mpsc_channel::<String>();
-        let sink: Arc<dyn CoreEventSink> = Arc::new(TestSink { tx: tx.clone() });
         let spawner = Arc::new(FakeSpawner::default());
         let out: Arc<dyn FrameOutput> = Arc::new(ChannelOutput { tx: out_tx });
         let spawner_for_thread = Arc::clone(&spawner);
-        let join = thread::spawn(move || run_daemon(rx, out, sink, spawner_for_thread, options));
+        let tx_for_thread = tx.clone();
+        let join = thread::spawn(move || {
+            run_daemon(tx_for_thread, rx, out, spawner_for_thread, options, context)
+        });
         Harness {
             tx,
             out_rx,
@@ -123,6 +122,17 @@ impl Harness {
         self.tx
             .send(DaemonEvent::CoreExited { channel, code })
             .expect("send exit");
+    }
+
+    /// 模拟第 index 个 Core 的 stdout 输出一帧内层帧（经 spawn 时登记的
+    /// `RoutableSink`，与生产路径一致：孤儿化后帧进孤儿表而不是连接）
+    fn emit_line(&self, index: usize, line: &str) {
+        self.spawner.sink_of(index).on_line(0, line.to_string());
+    }
+
+    /// 模拟第 index 个 Core 退出（经 spawn 时登记的 `RoutableSink`）
+    fn emit_exit(&self, index: usize, code: Option<i32>) {
+        self.spawner.sink_of(index).on_exit(0, code);
     }
 
     fn next_frame(&self) -> Value {
@@ -460,6 +470,307 @@ fn workspace_failure_is_reported_without_a_channel() {
     assert_eq!(failed["id"], 1);
     assert!(failed["error"].as_str().unwrap().contains("spawn failed"));
     assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 0);
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+// ==================== 孤儿化 / detach / 认领（specs/031）====================
+
+/// 一条 `sessionRuntimeChanged` 快照帧（单会话）
+fn runtime_snapshot(idle: bool, waiting: bool) -> String {
+    format!(
+        "{{\"kind\":\"event\",\"event\":{{\"type\":\"sessionRuntimeChanged\",\"states\":\
+         [{{\"sessionId\":\"s1\",\"idle\":{idle},\"waiting\":{waiting}}}]}}}}"
+    )
+}
+
+/// 一条用户请求帧（权限确认形态）
+fn pending_request(id: u64) -> String {
+    format!(
+        "{{\"kind\":\"request\",\"id\":{id},\"request\":{{\"type\":\"permissionRequested\",\
+         \"sessionId\":\"s1\"}}}}"
+    )
+}
+
+fn orphan_context() -> Option<ConnectionContext> {
+    Some(ConnectionContext {
+        orphans: Arc::new(OrphanRegistry::new()),
+        connection: 1,
+    })
+}
+
+#[test]
+fn host_disconnect_orphans_busy_cores_and_closes_idle_ones() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/busy"));
+    harness.command(open(2, "D:/repo/idle"));
+    harness.next_frame();
+    harness.next_frame();
+    // channel 1 有非 idle 会话，channel 2 无快照
+    harness.emit_line(0, &runtime_snapshot(false, false));
+
+    harness.tx.send(DaemonEvent::HostDisconnected).expect("disconnect");
+    let exit = harness.join.take().expect("daemon thread").join().expect("join");
+    assert_eq!(exit, ChannelExit::Continue);
+    // 忙 Core 孤儿化存活，idle Core 照旧终止（spec AC-5 / AC-6）
+    assert!(
+        !harness.spawner.child(0).killed.load(Ordering::SeqCst),
+        "busy core must survive the disconnect"
+    );
+    assert!(
+        harness.spawner.child(1).killed.load(Ordering::SeqCst),
+        "idle core must be closed as before"
+    );
+}
+
+#[test]
+fn malformed_snapshot_counts_as_busy_for_orphaning() {
+    // 契约漂移（快照缺 states）按忙 fail-safe：保活，不静默杀任务
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    harness.emit_line(0, "{\"kind\":\"event\",\"event\":{\"type\":\"sessionRuntimeChanged\"}}");
+
+    harness.tx.send(DaemonEvent::HostDisconnected).expect("disconnect");
+    let exit = harness.join.take().expect("daemon thread").join().expect("join");
+    assert_eq!(exit, ChannelExit::Continue);
+    assert!(!harness.spawner.child(0).killed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn detach_workspace_orphans_the_core_and_keeps_serving_the_connection() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/a"));
+    harness.next_frame();
+
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    let closed = harness.next_frame();
+    assert_eq!(closed["kind"], "workspaceClosed", "{closed}");
+    assert_eq!(closed["channel"], 1);
+    assert_eq!(closed["reason"], "detached");
+    assert!(
+        !harness.spawner.child(0).killed.load(Ordering::SeqCst),
+        "detached core must keep running"
+    );
+
+    // 连接本身继续服务：新工作区照常打开、帧照常转发
+    harness.command(open(2, "D:/repo/b"));
+    let opened = harness.next_frame();
+    assert_eq!(opened["kind"], "workspaceOpened");
+    assert_eq!(opened["channel"], 2);
+    harness.command(json!({
+        "kind": "frame",
+        "channel": 2,
+        "frame": { "kind": "hello", "protocol": 2 },
+    }));
+    harness.wait_for_lines(1, 1);
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+    // shutdown 只收尾本连接的 channel；孤儿由 daemon 停机路径收尾（不在本表）
+    assert!(!harness.spawner.child(0).killed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn second_orphan_for_the_same_key_falls_back_to_close() {
+    // 同一连接、同一工作区路径的第二条孤儿登记拒绝插入：按现行关闭兜底，
+    // 不静默覆盖（spec FR-005）
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.command(open(2, "D:/repo/w"));
+    harness.next_frame();
+    harness.next_frame();
+
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    assert_eq!(harness.next_frame()["reason"], "detached");
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 2 }));
+    let closed = harness.next_frame();
+    assert_eq!(closed["kind"], "workspaceClosed");
+    assert_eq!(closed["reason"], "closed");
+    assert!(harness.spawner.child(1).killed.load(Ordering::SeqCst));
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn claim_replays_orphan_frames_in_arrival_order_without_spawning() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    assert_eq!(harness.next_frame()["channel"], 1);
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    assert_eq!(harness.next_frame()["reason"], "detached");
+
+    // 孤儿期间的帧：running → 请求帧 → idle（经 RoutableSink 进孤儿表）
+    harness.emit_line(0, &runtime_snapshot(false, false));
+    harness.emit_line(0, &pending_request(7));
+    harness.emit_line(0, &runtime_snapshot(true, false));
+
+    // 重开同一工作区：认领，不开新进程（spec AC-7）
+    harness.command(open(2, "D:/repo/w"));
+    let opened = harness.next_frame();
+    assert_eq!(opened["kind"], "workspaceOpened");
+    assert_eq!(opened["id"], 2);
+    assert_eq!(opened["channel"], 2);
+    assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 1, "claim must not spawn");
+
+    // 重放缓存帧按到达序，channel 号换成新连接分配的号（spec AC-8 / AC-9 原料）
+    let first = harness.next_frame();
+    assert_eq!(first["kind"], "frame");
+    assert_eq!(first["channel"], 2);
+    assert_eq!(first["frame"]["kind"], "event");
+    assert_eq!(first["frame"]["event"]["states"][0]["idle"], false);
+    let second = harness.next_frame();
+    assert_eq!(second["frame"]["kind"], "request");
+    assert_eq!(second["frame"]["id"], 7);
+    let third = harness.next_frame();
+    assert_eq!(third["frame"]["event"]["states"][0]["idle"], true);
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn claim_with_quiet_orphan_replays_the_last_runtime_snapshot() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    harness.emit_line(0, &runtime_snapshot(false, true));
+    // 连接态的快照会照常转发给宿主：消费掉，后续断言才对得上帧序
+    assert_eq!(harness.next_frame()["kind"], "frame");
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    assert_eq!(harness.next_frame()["reason"], "detached");
+
+    // 孤儿期间没有任何新帧：认领时补放最新快照，保证全量状态（spec FR-006）
+    harness.command(open(2, "D:/repo/w"));
+    let opened = harness.next_frame();
+    assert_eq!(opened["channel"], 2);
+    let replayed = harness.next_frame();
+    assert_eq!(replayed["kind"], "frame");
+    assert_eq!(replayed["channel"], 2);
+    assert_eq!(replayed["frame"]["event"]["states"][0]["waiting"], true);
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn claimed_core_receives_new_connection_frames() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    harness.next_frame();
+    harness.command(open(2, "D:/repo/w"));
+    assert_eq!(harness.next_frame()["channel"], 2);
+
+    // 认领后宿主 → Core 的帧走移交后的句柄
+    harness.command(json!({
+        "kind": "frame",
+        "channel": 2,
+        "frame": { "kind": "hello", "protocol": 2 },
+    }));
+    let lines = harness.wait_for_lines(0, 1);
+    assert_eq!(lines[0], "{\"kind\":\"hello\",\"protocol\":2}");
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn crashed_orphan_is_not_restarted_and_reopen_spawns_fresh() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    harness.emit_line(0, &runtime_snapshot(false, false));
+    assert_eq!(harness.next_frame()["kind"], "frame");
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    assert_eq!(harness.next_frame()["reason"], "detached");
+
+    // 孤儿崩溃：经帧出口路由进孤儿表，不走重启（无 channelReset）
+    harness.emit_exit(0, Some(1));
+
+    harness.command(open(2, "D:/repo/w"));
+    let opened = harness.next_frame();
+    assert_eq!(opened["kind"], "workspaceOpened");
+    assert_eq!(
+        harness.spawner.spawns.load(Ordering::SeqCst),
+        2,
+        "dead orphan must be replaced by a fresh spawn"
+    );
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn replay_drain_drops_requests_beyond_the_reply_ttl() {
+    let now = Instant::now();
+    let mut entry = OrphanEntry {
+        workspace_path: "D:/repo/w".to_string(),
+        handle: None,
+        runtime: None,
+        runtime_line: None,
+        replay: VecDeque::new(),
+        busy: false,
+        idle_since: None,
+        exited: false,
+    };
+    push_replay(&mut entry.replay, BufferedFrame {
+        line: pending_request(1),
+        at: now.checked_sub(PENDING_REQUEST_TTL).unwrap_or(now),
+        is_request: true,
+    });
+    push_replay(&mut entry.replay, BufferedFrame {
+        line: runtime_snapshot(true, false),
+        at: now,
+        is_request: false,
+    });
+
+    let lines = drain_replay(&mut entry);
+    assert_eq!(lines.len(), 1, "过时效的请求帧不再重放");
+    assert!(lines[0].contains("sessionRuntimeChanged"));
+}
+
+// ==================== 孤儿期未读完成（specs/defects/orphan-completion-unread-light）====================
+
+#[test]
+fn orphan_running_to_idle_transition_notifies_the_core() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    // 连接期 running 快照照常转发（消费掉帧序；连接态窥探点把快照种进 channel 状态，
+    // detach 时作为孤儿条目的上一份快照）
+    harness.emit_line(0, &runtime_snapshot(false, false));
+    harness.next_frame();
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    harness.next_frame();
+
+    // 孤儿期 idle 快照：running → idle 迁移检出，Core 的 stdin 收到控制帧
+    harness.emit_line(0, &runtime_snapshot(true, false));
+    let lines = harness.wait_for_lines(0, 1);
+    let control: Value = serde_json::from_str(lines.last().unwrap()).expect("control frame");
+    assert_eq!(control["kind"], "orphanCompletions");
+    assert_eq!(control["workspace"], "D:/repo/w");
+    assert_eq!(control["sessions"], json!(["s1"]));
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn orphan_waiting_to_idle_transition_is_not_a_completion() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    // 上一份快照是 waiting（等用户应答）
+    harness.emit_line(0, &runtime_snapshot(false, true));
+    harness.next_frame();
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    harness.next_frame();
+
+    // waiting → idle：应答 / 中止的结果，不算完成，不发控制帧；
+    // idle → running 与再次 running → idle 才发——用后者确认链路活着，前者确实没发
+    harness.emit_line(0, &runtime_snapshot(true, false));
+    harness.emit_line(0, &runtime_snapshot(false, false));
+    harness.emit_line(0, &runtime_snapshot(true, false));
+    let lines = harness.wait_for_lines(0, 1);
+    assert_eq!(lines.len(), 1, "只有最后一对 running → idle 产生控制帧");
+    let control: Value = serde_json::from_str(&lines[0]).expect("control frame");
+    assert_eq!(control["sessions"], json!(["s1"]));
 
     assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }

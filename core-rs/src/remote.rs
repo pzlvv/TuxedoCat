@@ -36,7 +36,8 @@ use std::time::{Duration, Instant};
 use socket2::{SockRef, TcpKeepalive};
 
 use crate::daemon::{
-    self, ChannelExit, CoreSpawner, DaemonEvent, DaemonOptions, FrameOutput, HEARTBEAT_TIMEOUT,
+    self, ChannelExit, ConnectionContext, CoreSpawner, DaemonEvent, DaemonOptions, FrameOutput,
+    OrphanRegistry, HEARTBEAT_TIMEOUT, ORPHAN_IDLE_TTL,
 };
 use crate::util::diag;
 use crate::daemon_protocol::DirectoryEntry;
@@ -290,12 +291,14 @@ pub fn remote_daemon_options() -> DaemonOptions {
 /// `Continue`（普通断线）→ 线程自然结束，daemon 继续服务其它连接。
 ///
 /// `session_events` 是这条会话的事件通道（调用方创建，发送端已登记进注册表供停机
-/// 广播注入），原样转交 `run_control_channel`。
+/// 广播注入），原样转交 `run_control_channel`；`context` 携带跨连接的孤儿表与
+/// 本连接标识（specs/031）。
 pub fn serve_connection(
     stream: TcpStream,
     options: DaemonOptions,
     spawner: Arc<dyn CoreSpawner>,
     session_events: (Sender<DaemonEvent>, Receiver<DaemonEvent>),
+    context: Option<ConnectionContext>,
 ) -> ChannelExit {
     // 死对端探测（`docs/core/core-remote.md` 第 2.5 节）：对端消失后读线程等不到 EOF
     // 时，keepalive 是 socket 层的回收手段（心跳超时兜底控制帧层的沉默）。
@@ -324,6 +327,7 @@ pub fn serve_connection(
         options,
         session_events.0,
         session_events.1,
+        context,
     );
     diag!("[core] remote: {peer} disconnected");
     if let Some(handle) = shutdown {
@@ -1042,6 +1046,10 @@ struct DaemonRuntime {
     stopping: AtomicBool,
     /// 停机 / 连接收尾的信号：主线程等「已停机且全部连接线程退出」后清状态文件
     drained: Condvar,
+    /// 跨连接共享的孤儿表（specs/031）：连接之间移交 Core，空闲判定纳入孤儿忙闲
+    orphans: Arc<OrphanRegistry>,
+    /// 全 idle 孤儿的收尾宽限；生产取 [`ORPHAN_IDLE_TTL`]，测试注小值
+    orphan_idle_ttl: Duration,
 }
 
 /// 连接表：分配连接 id 并保存每条在途连接的登记项
@@ -1068,7 +1076,16 @@ impl DaemonRuntime {
             connections: Mutex::new(ConnectionTable::default()),
             stopping: AtomicBool::new(false),
             drained: Condvar::new(),
+            orphans: Arc::new(OrphanRegistry::new()),
+            orphan_idle_ttl: ORPHAN_IDLE_TTL,
         }
+    }
+
+    /// 测试注入：收窄全 idle 孤儿的收尾宽限（生产恒为 [`ORPHAN_IDLE_TTL`]）
+    #[cfg(test)]
+    fn with_orphan_idle_ttl(mut self, ttl: Duration) -> DaemonRuntime {
+        self.orphan_idle_ttl = ttl;
+        self
     }
 
     /// 登记一条连接；停机已开始时拒绝（返回 `None`），调用方直接关闭这条连接。
@@ -1080,6 +1097,11 @@ impl DaemonRuntime {
         table.next_id += 1;
         let id = table.next_id;
         table.entries.insert(id, entry);
+        drop(table);
+        // 唤醒监听循环：连接到达改变「无连接」的空闲退出前提——首条连接落在
+        // 初始 wait 窗口内时，不唤醒会让循环睡满整个窗口才开始清扫与判定
+        // （specs/defects/idle-orphan-linger-while-connected）
+        self.drained.notify_all();
         Some(id)
     }
 
@@ -1115,15 +1137,37 @@ impl DaemonRuntime {
 
     /// 主线程：等停机信号，或（给了 `idle_exit` 时）等空闲死线。
     ///
-    /// 空闲 = 没有任何控制连接：死线在**首次观察到空表**时起算（daemon 刚启动 /
-    /// 最后一条连接刚断开），任何一条连接登记即取消，断开后重新起算。到期返回
-    /// `false`，调用方走停机收尾；`shutdown` 先到返回 `true`。同一把锁下判定，
-    /// 「到期」与「新连接登记」不会交错——到期后 `begin_stop` 置位，迟到的连接
-    /// 会被 `register` 拒绝。
+    /// 空闲 = 没有任何控制连接**且**没有非 idle 的孤儿（specs/031）：死线在首次
+    /// 观察到该条件成立时起算（daemon 刚启动 / 最后一条连接刚断开 / 最后一个孤儿
+    /// 转全 idle），任何一条连接登记或孤儿转忙即取消，条件重新成立后重新起算。
+    /// 到期返回 `false`，调用方走停机收尾；`shutdown` 先到返回 `true`。同一把锁下
+    /// 判定，「到期」与「新连接登记」不会交错——到期后 `begin_stop` 置位，迟到的
+    /// 连接会被 `register` 拒绝。
+    ///
+    /// 孤儿清扫与本判定同循环执行：转全 idle 满 [`ORPHAN_IDLE_TTL`] 的孤儿由这里
+    /// 终止并移出孤儿表（沿 US-33 口径，短暂 idle 可能紧随提交）；孤儿崩溃不重启，
+    /// 由清扫移出。有孤儿在册期间等待按 1s 封顶轮询（孤儿忙闲变化没有事件通道，
+    /// 读线程只写孤儿表，轮询是唯一的回收手段）。
     fn wait_for_stop_or_idle(&self, idle_exit: Option<Duration>) -> bool {
+        const POLL: Duration = Duration::from_secs(1);
         let mut table = self.connections.lock().unwrap();
         let mut idle_deadline: Option<Instant> = None;
         while !self.stopping.load(Ordering::SeqCst) {
+            // 孤儿清扫独立于连接数：孤儿不属于任何连接
+            let sweep = self.orphans.sweep(self.orphan_idle_ttl);
+            for handle in sweep.to_close {
+                let _ = handle.send_line("{\"kind\":\"shutdown\"}");
+                handle.kill();
+            }
+            if sweep.alive > 0 {
+                // 有孤儿在册：空闲计时一并挂起（spec AC-17，非 idle 孤儿在跑
+                // daemon 不退出），按轮询等它们收尾——孤儿忙闲变化没有事件
+                // 通道（读线程只写孤儿表），轮询是唯一的回收手段
+                idle_deadline = None;
+                let (guard, _) = self.drained.wait_timeout(table, POLL).unwrap();
+                table = guard;
+                continue;
+            }
             if table.entries.is_empty() {
                 if let Some(idle) = idle_exit {
                     let deadline = *idle_deadline.get_or_insert_with(|| Instant::now() + idle);
@@ -1136,8 +1180,14 @@ impl DaemonRuntime {
                     continue;
                 }
             } else {
-                // 有连接：取消空闲计时，等最后一条断开再重新起算
+                // 有连接：取消空闲计时。等待按 1s 封顶轮询——孤儿忙闲变化没有事件
+                // 通道（读线程只写孤儿表），插入与翻转也不会唤醒本循环，阻塞等待
+                // 会让「满 TTL 的全 idle 孤儿」在有连接存活期间永远无人收尾
+                // （specs/defects/idle-orphan-linger-while-connected）
                 idle_deadline = None;
+                let (guard, _) = self.drained.wait_timeout(table, POLL).unwrap();
+                table = guard;
+                continue;
             }
             table = self.drained.wait(table).unwrap();
         }
@@ -1223,7 +1273,18 @@ fn serve_accepted(
         diag!("[core] remote: connection dropped; the daemon is stopping");
         return;
     };
-    let exit = serve_connection(stream, options, spawner, (events, event_rx));
+    // 连接标识进孤儿键（specs/031）：同一 endpoint 两个客户端的孤儿互不覆盖
+    let context = ConnectionContext {
+        orphans: Arc::clone(&runtime.orphans),
+        connection: id,
+    };
+    let exit = serve_connection(
+        stream,
+        options,
+        spawner,
+        (events, event_rx),
+        Some(context),
+    );
     runtime.unregister(id);
     diag!("[core] remote: control connection closed (exit={exit:?})");
     if exit == ChannelExit::Stop {
@@ -1334,6 +1395,9 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     // 等全部连接线程收尾：各自的 `run_daemon` 已把该连接的全部 Core 关闭（空闲退出
     // 时没有连接，立即通过）。
     runtime.wait_until_drained(STOP_TIMEOUT);
+    // 孤儿一并收尾（specs/031）：全局停机是孤儿语义的边界，孤儿不越过 daemon 的
+    // 生命周期；锁文件由 specs/032 的陈旧锁接管兜底。
+    runtime.orphans.shutdown_all();
     // 只删自己写的那份：期间可能有新 daemon 覆盖过状态文件
     remove_state_if_unchanged(&state_path, &state);
     diag!(

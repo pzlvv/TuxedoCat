@@ -28,6 +28,7 @@ import type {
   Unsubscribe,
 } from '../shared/AssistantEventBus.js';
 import type { StandaloneCoreBus } from './standalone/StandaloneEventBus.js';
+import type { CoreChannelCloseMode } from './Client.js';
 import type { WorkspaceRef } from './workspaceRef.js';
 import { workspaceRefDisplayPath } from './workspaceRef.js';
 
@@ -62,7 +63,7 @@ export interface ConnectionOptions {
   /** Connection 关闭后回调（Client 维护映射表） */
   onClosed?: (connection: Connection) => void;
   /** 释放总线（终止 Core 进程） */
-  disposeBus: () => Promise<void>;
+  disposeBus: (mode: CoreChannelCloseMode) => Promise<void>;
 }
 
 export class Connection {
@@ -254,7 +255,7 @@ export class Connection {
   private readonly readyResolvers: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
 
   /** 关闭 Connection：拒绝未完成的请求，终止总线（Standalone 下即关闭 Core 进程） */
-  async dispose(): Promise<void> {
+  async dispose(mode: CoreChannelCloseMode = 'close'): Promise<void> {
     if (this.state === 'closed') return;
     this.state = 'closed';
     const error = new Error(`Connection ${this.id} has been closed.`);
@@ -272,7 +273,7 @@ export class Connection {
     this.fatalUnsubscribe = null;
 
     try {
-      await this.options.disposeBus();
+      await this.options.disposeBus(mode);
     } catch (disposeError) {
       this.log(`[client] connection ${this.id} dispose failed: ${String(disposeError)}`);
     }

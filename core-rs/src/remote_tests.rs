@@ -272,7 +272,13 @@ fn start_server() -> (std::net::SocketAddr, thread::JoinHandle<ChannelExit>) {
     let address = listener.local_addr().expect("addr");
     let handle = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept");
-        serve_connection(stream, remote_daemon_options(), system_spawner(), detached_events())
+        serve_connection(
+            stream,
+            remote_daemon_options(),
+            system_spawner(),
+            detached_events(),
+            None,
+        )
     });
     (address, handle)
 }
@@ -734,6 +740,7 @@ fn silent_connection_is_dropped_after_heartbeat_timeout() {
             },
             system_spawner(),
             detached_events(),
+            None,
         )
     });
     let client = TcpStream::connect(address).expect("connect");
@@ -761,6 +768,7 @@ fn heartbeat_silence_ends_the_connection() {
             },
             system_spawner(),
             detached_events(),
+            None,
         )
     });
     let mut client = TcpStream::connect(address).expect("connect");
@@ -834,18 +842,29 @@ impl daemon::CoreProcessHandle for FakeHandle {
 #[derive(Default)]
 struct FakeSpawner {
     children: Mutex<Vec<Arc<FakeChild>>>,
+    /// 每次 spawn 时收到的帧出口（specs/031：模拟 Core 输出经 `RoutableSink` 的真实路径）
+    sinks: Mutex<Vec<Arc<dyn daemon::CoreEventSink>>>,
     spawns: AtomicUsize,
+}
+
+impl FakeSpawner {
+    /// 模拟第 index 个 Core 的 stdout 输出一帧内层帧（经 spawn 时登记的帧出口）
+    fn emit_line(&self, index: usize, line: &str) {
+        let sink = Arc::clone(&self.sinks.lock().unwrap()[index]);
+        sink.on_line(0, line.to_string());
+    }
 }
 
 impl CoreSpawner for FakeSpawner {
     fn spawn(
         &self,
         _channel: u64,
-        _sink: Arc<dyn daemon::CoreEventSink>,
+        sink: Arc<dyn daemon::CoreEventSink>,
     ) -> std::io::Result<Box<dyn daemon::CoreProcessHandle>> {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         let child = Arc::new(FakeChild::default());
         self.children.lock().unwrap().push(Arc::clone(&child));
+        self.sinks.lock().unwrap().push(sink);
         Ok(Box::new(FakeHandle { child }))
     }
 }
@@ -862,9 +881,13 @@ struct TestDaemon {
 
 impl TestDaemon {
     fn start(options: DaemonOptions) -> TestDaemon {
+        TestDaemon::start_with_orphan_ttl(options, crate::daemon::ORPHAN_IDLE_TTL)
+    }
+
+    fn start_with_orphan_ttl(options: DaemonOptions, orphan_idle_ttl: Duration) -> TestDaemon {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
         let address = listener.local_addr().expect("addr");
-        let runtime = Arc::new(DaemonRuntime::new());
+        let runtime = Arc::new(DaemonRuntime::new().with_orphan_idle_ttl(orphan_idle_ttl));
         let spawner: Arc<FakeSpawner> = Arc::new(FakeSpawner::default());
         {
             let runtime = Arc::clone(&runtime);
@@ -903,6 +926,11 @@ impl TestDaemon {
             assert!(Instant::now() < deadline, "core did not receive frames in time");
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// 模拟第 index 个 Core 的 stdout 输出一帧内层帧
+    fn emit_line(&self, index: usize, line: &str) {
+        self.spawner.emit_line(index, line);
     }
 
     /// 轮询直到第 index 个孩子被 kill
@@ -974,6 +1002,15 @@ impl TestClient {
         assert_eq!(opened["kind"], "workspaceOpened", "{opened}");
         assert_eq!(opened["id"], id, "{opened}");
         opened["channel"].as_u64().expect("channel id")
+    }
+
+    /// 后台运行（specs/031）：发 `detachWorkspace`，等 `workspaceClosed { detached }`。
+    /// 连接保持存活——孤儿在「有连接在册」的状态下进入孤儿表。
+    fn detach_workspace(&mut self, channel: u64) {
+        self.send(&json!({ "kind": "detachWorkspace", "channel": channel }));
+        let closed = self.next_frame();
+        assert_eq!(closed["kind"], "workspaceClosed", "{closed}");
+        assert_eq!(closed["reason"], "detached", "{closed}");
     }
 
     /// 断言 `duration` 内没有任何入站帧（channel 不 reset、Core 不重启的观察面）
@@ -1246,4 +1283,164 @@ fn panic_hook_appends_trace_to_file() {
     assert!(content.contains("[core] panic:"), "trace 块应带 panic 前缀：{content}");
     assert!(content.contains("boom-in-daemon"), "trace 块应含 panic 信息：{content}");
     std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}
+
+// ==================== 孤儿化 / 认领（specs/031）====================
+
+/// 一条 `sessionRuntimeChanged` 快照帧（单会话，specs/031 的忙闲事实）
+fn orphan_snapshot(idle: bool) -> String {
+    format!(
+        "{{\"kind\":\"event\",\"event\":{{\"type\":\"sessionRuntimeChanged\",\"states\":\
+         [{{\"sessionId\":\"s1\",\"idle\":{idle},\"waiting\":false}}]}}}}"
+    )
+}
+
+impl TestDaemon {
+    /// 轮询直到孤儿表里有 `expected` 个存活孤儿（断开收尾完成的观察面）
+    fn wait_orphans(&self, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let sweep = self.runtime.orphans.sweep(Duration::from_secs(30));
+            if sweep.alive == expected {
+                return;
+            }
+            assert!(Instant::now() < deadline, "orphans were not registered in time");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// 同一 endpoint 的两个客户端各自打开同一工作区、各自断开：两个孤儿按连接标识
+/// 各占一条，互不覆盖；重开时按登记序逐个认领，不新起进程（spec AC-10 与
+/// FR-005 修订：纯 path 键会覆盖第一条，泄漏的孤儿连会话锁一起失控）。
+#[test]
+fn two_clients_orphans_register_separately_and_claim_earliest_first() {
+    let daemon = TestDaemon::start(remote_daemon_options());
+    let mut first = daemon.connect();
+    let mut second = daemon.connect();
+    let _ = first.open_workspace(1, "D:/repo/shared");
+    let _ = second.open_workspace(1, "D:/repo/shared");
+    assert_eq!(daemon.spawn_count(), 2, "两个客户端各得一个独立 Core");
+
+    daemon.emit_line(0, &orphan_snapshot(false));
+    daemon.emit_line(1, &orphan_snapshot(false));
+    drop(first);
+    drop(second);
+    daemon.wait_orphans(2);
+
+    // 先到先得：第一条连接认领最早的孤儿，第二条认领剩下的，都不新起进程
+    let mut third = daemon.connect();
+    let _ = third.open_workspace(1, "D:/repo/shared");
+    assert_eq!(daemon.spawn_count(), 2, "认领不得新起进程");
+    let mut fourth = daemon.connect();
+    let _ = fourth.open_workspace(1, "D:/repo/shared");
+    assert_eq!(daemon.spawn_count(), 2, "第二条认领同样不新起进程");
+}
+
+/// 断开后重开：认领的是原 Core 进程（同一假进程句柄），孤儿期间的快照按序重放，
+/// 新连接的帧直达被认领的 Core（spec AC-7 / AC-8）。
+#[test]
+fn orphaned_core_is_claimed_by_the_next_open_with_replay() {
+    let daemon = TestDaemon::start(remote_daemon_options());
+    let mut first = daemon.connect();
+    let _ = first.open_workspace(1, "D:/repo/w");
+    daemon.emit_line(0, &orphan_snapshot(false));
+    drop(first);
+    daemon.wait_orphans(1);
+
+    let mut second = daemon.connect();
+    let channel = second.open_workspace(1, "D:/repo/w");
+    assert_eq!(daemon.spawn_count(), 1, "认领的是原 Core 进程");
+
+    // 孤儿期间的最后一份快照重放给新宿主（channel 号换成新连接分配的）
+    let replayed = second.next_frame();
+    assert_eq!(replayed["kind"], "frame", "{replayed}");
+    assert_eq!(replayed["channel"], channel);
+    assert_eq!(replayed["frame"]["event"]["type"], "sessionRuntimeChanged");
+    assert_eq!(replayed["frame"]["event"]["states"][0]["idle"], false);
+
+    // 新连接 → 被认领 Core 的帧直达原进程
+    second.send(&json!({
+        "kind": "frame",
+        "channel": channel,
+        "frame": { "kind": "hello", "protocol": 2 },
+    }));
+    let lines = daemon.wait_for_lines(0, 1);
+    assert_eq!(lines[lines.len() - 1], "{\"kind\":\"hello\",\"protocol\":2}");
+}
+
+/// 空闲判定新口径（spec FR-007 / AC-16 / AC-17）：非 idle 孤儿在跑 daemon 不空退；
+/// 孤儿转全 idle 满 [ORPHAN_IDLE_TTL] 宽限后被收尾，随后空闲退出照常触发。
+#[test]
+fn busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace() {
+    let daemon = TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
+    let mut client = daemon.connect();
+    let _ = client.open_workspace(1, "D:/repo/w");
+    daemon.emit_line(0, &orphan_snapshot(false));
+    drop(client);
+    daemon.wait_orphans(1);
+
+    // idle_exit(80ms) 远小于等待时长：孤儿忙碌期间等待者必须一直活着
+    let (done_tx, done_rx) = mpsc::channel();
+    {
+        let runtime = Arc::clone(&daemon.runtime);
+        thread::spawn(move || {
+            let _ = done_tx.send(runtime.wait_for_stop_or_idle(Some(Duration::from_millis(80))));
+        });
+    }
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        done_rx.try_recv().is_err(),
+        "非 idle 孤儿在跑时空闲退出不得触发（spec AC-17）"
+    );
+
+    // 孤儿转全 idle：宽限（200ms）后被收尾（Core 终止、移出孤儿表），随后
+    // 空闲退出照常触发（spec AC-16）
+    daemon.emit_line(0, &orphan_snapshot(true));
+    let stopped = done_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("idle waiter should return after the orphan closes");
+    assert!(!stopped, "应报空闲退出，而不是 shutdown");
+    daemon.wait_killed(0);
+}
+
+/// 有连接在册时，满 TTL 的全 idle 孤儿也要被收尾
+/// （specs/defects/idle-orphan-linger-while-connected）：监听循环在「有连接、无孤儿」
+/// 分支若阻塞等待而不按 1s 轮询，detach 后任务完成转 idle 的孤儿在连接存活期间
+/// 永远无人收尾。
+#[test]
+fn idle_orphan_is_swept_while_a_connection_is_alive() {
+    let daemon = TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
+    // 监听循环（清扫的宿主）生产里跑在 start-daemon 主线程；测试里单独拉起。
+    // 先等它停进 wait_timeout：register 的 notify 先于等待到达会丢（一次性 30s
+    // 空窗），测试要的是循环随即开始按 1s 轮询
+    {
+        let runtime = Arc::clone(&daemon.runtime);
+        std::thread::spawn(move || {
+            let _ = runtime.wait_for_stop_or_idle(Some(Duration::from_secs(30)));
+        });
+    }
+    thread::sleep(Duration::from_millis(100));
+    let mut first = daemon.connect();
+    let channel = first.open_workspace(1, "D:/repo/w");
+    // 任务在跑：running 快照进连接态忙闲缓存（连接态照常转发给宿主，消费掉帧序）
+    daemon.emit_line(0, &orphan_snapshot(false));
+    let forwarded = first.next_frame();
+    assert_eq!(forwarded["kind"], "frame", "{forwarded}");
+    // detach：孤儿插入时连接仍在册——监听循环此刻停在「有连接、无孤儿」分支
+    first.detach_workspace(channel);
+    daemon.wait_orphans(1);
+    // 任务完成：孤儿转 idle，宽限 TTL 起算
+    daemon.emit_line(0, &orphan_snapshot(true));
+    // TTL 满后被收尾：Core 收到 shutdown 并被 kill（连接全程存活，无 unregister 唤醒）
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let probe = daemon.runtime.orphans.sweep(Duration::from_secs(30));
+        eprintln!("[probe] alive={} has_busy={}", probe.alive, probe.has_busy);
+        if daemon.child(0).killed.load(Ordering::SeqCst) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "idle orphan was not reaped in time");
+        thread::sleep(Duration::from_millis(100));
+    }
 }

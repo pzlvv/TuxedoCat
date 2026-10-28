@@ -135,7 +135,7 @@ export class VSCodeUIHost implements UIHost {
     const subscription = vscode.workspace.onDidChangeWorkspaceFolders(() => {
       const next = this.getWorkspaceRef();
       if (current && (!next || !sameWorkspaceRef(current, next))) {
-        listener({ type: 'closed', ref: current });
+        listener({ type: 'closed', ref: current, closeMode: 'close' });
       }
       if (next && (!current || !sameWorkspaceRef(current, next))) {
         listener({ type: 'opened', ref: next });

@@ -211,6 +211,39 @@ class DaemonChannel implements CoreChannelTransport {
     this.stopped = true;
   }
 
+  /**
+   * 只断链（specs/031 AC-19：弹不出确认链的退出口径）：不发任何控制帧——
+   * 控制链随 daemon.disconnect() 断开后，daemon 的断开收尾按默认策略分叉
+   * （非 idle 孤儿化、idle 终止）。标记 failed 抑制随后的 daemon-gone fatal
+   * （进程正在退出，忙会话的失败标记没有意义）。
+   */
+  async disconnectOnly(): Promise<void> {
+    if (this.stopped) return;
+    this.stopping = true;
+    this.failed = true;
+    this.clearHandshakeTimer();
+    this.stopped = true;
+  }
+
+  /**
+   * 后台运行（specs/031）：向 daemon 发 `detachWorkspace`，等
+   * `workspaceClosed { reason: 'detached' }`。Core 进程留在 daemon 的孤儿表里
+   * 继续执行；channel 尚未建立时无可 detach，按现行 `stop()` 收尾（刚拉起的
+   * 进程没有任何在跑会话，留下只是孤儿表里的空转进程）。
+   */
+  async detach(): Promise<void> {
+    if (this.stopping || this.stopped) return;
+    this.stopping = true;
+    this.clearHandshakeTimer();
+    const channelId = this.channelId;
+    if (channelId !== null) {
+      await this.daemon.detachChannel(channelId);
+    } else {
+      await this.stop();
+    }
+    this.stopped = true;
+  }
+
   isReady(): boolean {
     return this.ready;
   }
@@ -262,13 +295,14 @@ class DaemonChannel implements CoreChannelTransport {
     this.sendHello();
   }
 
-  /** `workspaceClosed`：channel 关闭（Host 主动 / 重启超限 / daemon 清理） */
+  /** `workspaceClosed`：channel 关闭（Host 主动 / 重启超限 / daemon 清理 / detach） */
   handleClosed(reason: WorkspaceCloseReason): void {
     this.clearHandshakeTimer();
     const wasReady = this.ready;
     this.ready = false;
     this.stopped = true;
-    const expected = reason === 'closed';
+    // detached（specs/031）是宿主主动选择的后台运行：Core 仍在远端跑，不算异常
+    const expected = reason === 'closed' || reason === 'detached';
     if (wasReady) this.hooks.onNotReady();
     this.resolveClosedWaiters();
     this.hooks.onExit({ code: null, signal: null, expected });
@@ -534,6 +568,14 @@ export class CoreDaemon {
   async closeChannel(channelId: number): Promise<void> {
     const channel = this.channels.get(channelId);
     this.enqueue(encodeDaemonFrame({ kind: 'closeWorkspace', channel: channelId }));
+    if (!channel) return;
+    await channel.waitClosed(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
+  }
+
+  /** 后台运行（specs/031）：发 `detachWorkspace`，等 `workspaceClosed('detached')` 或超时 */
+  async detachChannel(channelId: number): Promise<void> {
+    const channel = this.channels.get(channelId);
+    this.enqueue(encodeDaemonFrame({ kind: 'detachWorkspace', channel: channelId }));
     if (!channel) return;
     await channel.waitClosed(this.options.shutdownTimeoutMs ?? DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS);
   }

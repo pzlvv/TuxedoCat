@@ -8,5 +8,7 @@
   "notice.spin.variableNoValueWithNames",
   "notice.spin.invalid",
   "notice.spin.allCompleted",
-  "command.spin.description"
+  "command.spin.description",
+  "notice.session.lockedOpen",
+  "notice.session.lockedChange"
 ]

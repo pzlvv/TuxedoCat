@@ -115,3 +115,39 @@ export function pickReadCompletions(
 ): string[] {
   return unread.filter((sessionId) => isCompletionVisible(factsOf(sessionId)));
 }
+
+/**
+ * 「离场完成」的补武装（specs/defects/orphan-completion-unread-light）：后台运行
+ * 期间会话完成时宿主不在场——帧进 daemon 孤儿表，不进任何连接，实时差分永远
+ * 看不到迁移；core 把次数记进 meta.json 的 `unreadCompletions`，重开后宿主装载
+ * 对话列表据它补武装。daemon 空退（30s 空闲窗口）后重开的是全新 Core，快照流里
+ * 不会再出现该会话，这份磁盘证据是绿灯不丢的唯一来源。
+ *
+ * 与在线差分的分工天然不相交：在线完成走连接路由、core 不计数，本函数只补
+ * 「宿主完全缺席」的那部分。agent 创建的会话保持安静（specs/025 FR-003，与差分
+ * 同一在源头掐掉的口径）；已在未读集合里的 id 保留原到达时刻（不重复呼吸）。
+ * 标签页沿用在线规则：完成时未激活的标签页才武装（重开时正盯着的那块屏幕，
+ * 灯条由对话行表达，切走再切回不补亮）。
+ */
+export function backfillCompletionAttention(
+  existing: ReadonlyArray<string>,
+  list: ReadonlyArray<{
+    sessionId: string;
+    unreadCompletions?: number;
+    creator?: SessionCreator;
+  }>,
+  factsOf: (sessionId: string) => CompletionAttentionFacts,
+): { sessions: string[]; tabs: string[] } {
+  const known = new Set(existing);
+  const sessions: string[] = [];
+  const tabs = new Set<string>();
+  for (const item of list) {
+    if (!item?.sessionId || known.has(item.sessionId)) continue;
+    if ((item.unreadCompletions ?? 0) <= 0) continue;
+    if (item.creator !== undefined && isAgentCreator(item.creator)) continue;
+    sessions.push(item.sessionId);
+    const facts = factsOf(item.sessionId);
+    if (facts.workspaceKey && !facts.tabActive) tabs.add(facts.workspaceKey);
+  }
+  return { sessions, tabs: [...tabs] };
+}

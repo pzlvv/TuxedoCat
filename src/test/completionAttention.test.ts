@@ -1,4 +1,5 @@
 import {
+  backfillCompletionAttention,
   diffCompletionAttention,
   pickReadCompletions,
   type CompletionAttentionFacts,
@@ -192,6 +193,69 @@ runTests('completionAttention', async () => {
     // 回窗：焦点回来了，画面事实齐了 → 已读，播放前清掉，切走后无灯可补亮
     const read = pickReadCompletions(second.sessions, () => seen());
     return read.length === 1 && read[0] === 'a';
+  })());
+
+  // ==================== 离场完成的补武装（specs/defects/orphan-completion-unread-light）====================
+
+  check('补武装：unreadCompletions > 0 的会话进对话行，未激活标签页进标签页集合', (() => {
+    const armed = backfillCompletionAttention(
+      [],
+      [{ sessionId: 'a', unreadCompletions: 1, creator: { kind: 'user' } }],
+      () => seen({ tabActive: false }),
+    );
+    return armed.sessions.length === 1 && armed.sessions[0] === 'a'
+      && armed.tabs.length === 1 && armed.tabs[0] === 'ws-a';
+  })());
+
+  check('补武装：标签页沿用在线规则——正盯着的标签页不武装，灯条由对话行表达', (() => {
+    const armed = backfillCompletionAttention(
+      [],
+      [{ sessionId: 'a', unreadCompletions: 2, creator: { kind: 'user' } }],
+      () => seen(),
+    );
+    return armed.sessions.length === 1 && armed.tabs.length === 0;
+  })());
+
+  check('补武装：unreadCompletions 缺失 / 0 不武装（在线完成不经过该路径）', (() => {
+    const armed = backfillCompletionAttention(
+      [],
+      [
+        { sessionId: 'a', creator: { kind: 'user' } },
+        { sessionId: 'b', unreadCompletions: 0, creator: { kind: 'user' } },
+      ],
+      () => seen({ tabActive: false }),
+    );
+    return armed.sessions.length === 0 && armed.tabs.length === 0;
+  })());
+
+  check('补武装：agent 创建的会话保持安静（specs/025 FR-003 同口径）', (() => {
+    const armed = backfillCompletionAttention(
+      [],
+      [{ sessionId: 'sub', unreadCompletions: 1, creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } }],
+      () => seen({ tabActive: false }),
+    );
+    return armed.sessions.length === 0 && armed.tabs.length === 0;
+  })());
+
+  check('补武装：已在未读集合里的 id 不重复武装（幂等，保留原到达时刻）', (() => {
+    const armed = backfillCompletionAttention(
+      ['a'],
+      [{ sessionId: 'a', unreadCompletions: 1, creator: { kind: 'user' } }],
+      () => seen({ tabActive: false }),
+    );
+    return armed.sessions.length === 0 && armed.tabs.length === 0;
+  })());
+
+  check('补武装：多个列表项批量武装，同一工作区的标签页去重', (() => {
+    const armed = backfillCompletionAttention(
+      [],
+      [
+        { sessionId: 'a', unreadCompletions: 1, creator: { kind: 'user' } },
+        { sessionId: 'b', unreadCompletions: 3, creator: { kind: 'user' } },
+      ],
+      () => seen({ tabActive: false }),
+    );
+    return armed.sessions.length === 2 && armed.tabs.length === 1;
   })());
 
   finish();

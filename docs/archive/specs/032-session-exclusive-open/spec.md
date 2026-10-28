@@ -1,0 +1,182 @@
+---
+status: 已收敛
+---
+
+# 改动规格：会话跨实例独占打开
+
+同一个工作区的同一个会话，在同一时刻至多被一个宿主实例打开——本地多实例（Electron 与
+VS Code / TUI 并存、VS Code 双窗口）、SSH 同一 endpoint 的多个客户端、VS Code 宿主一律
+适用。独占由 Core 落在会话数据目录的 OS 建议性文件锁承担（锁跟数据走：无论传输拓扑，
+写同一份会话数据的多个 Core 必共处会话数据所在的那台机器；锁的生命周期归内核——持有
+进程退出即释放，崩溃不留死锁，互斥由内核仲裁），daemon 与总线协议零变化，宿主零改动
+或仅错误透传。争用时硬拒绝并给明确错误，不提供只读视图；独占语义按本版设计，不为旧版
+Core 提供兼容。Electron 自身的单实例锁（`requestSingleInstanceLock`）不变。
+
+**锁的持有者是 Core 进程内的会话实例**，与连接、总线、Connection 的生命周期无关：宿主
+断开而 Core 存活时锁照旧持有，认领换宿主不换 Core、也不解锁。daemon 的孤儿化 / 认领 /
+空闲判定语义归 `specs/031-remote-detached-tasks`，本规格只声明锁在这套机制下的存续边界
+（见场景 4）。
+
+## 影响基线
+
+| 基线文档 | 章节 | 变更 | 说明 |
+| --- | --- | --- | --- |
+| [docs/core/client-connection.md](../../docs/core/client-connection.md) | [第 5 节 Connection 生命周期](../../docs/core/client-connection.md#5-connection-生命周期) | 修改 | 「跨宿主实例各自独立，互不感知」修订为：连接独立、会话独占——跨实例可各自打开同一工作区，但同一会话至多一个实例持有 |
+| [docs/core/standalone-core.md](../../docs/core/standalone-core.md) | [第 7 节 事实归属](../../docs/core/standalone-core.md#7-事实归属) | 修改 | 会话数据归属行补锁文件：`session.lock` 由 Core 读写，宿主侧 `src/shared/history/` 不碰它 |
+| [docs/features/user-stories/sessions-and-llm.md](../../docs/features/user-stories/sessions-and-llm.md) | [EP-5 会话管理](../../docs/features/user-stories/sessions-and-llm.md#ep-5-会话管理) | 新增 | US-66 会话跨实例独占 |
+| [docs/features/user-stories.md](../../docs/features/user-stories.md) | [附录：US 与 e2e 场景用例映射](../../docs/features/user-stories.md#附录us-与-e2e-场景用例映射) | 修改 | US-66 按 e2e 豁免口径登记（双实例场景依赖两个宿主进程） |
+
+## 用户场景与验收标准
+
+说明：「实例 A / 实例 B」指两个并存的宿主实例，其下各有一个 Core 进程——
+本地形态（Electron + VS Code / TUI、VS Code 双窗口）与 SSH 多客户端形态在此视角下同构，
+验收标准对两种形态同样成立。
+
+- 场景 1：装载争用
+  - **AC-1**（FR-001）：GIVEN 实例 A 已打开工作区 W 的会话 S WHEN 实例 B 打开 W 并装载 S THEN B 收到明确错误提示，不展示会话内容、不建只读视图
+  - **AC-2**（FR-001）：GIVEN 实例 A 打开会话 S WHEN 实例 B 打开同一工作区的另一个会话 THEN B 正常打开（锁是会话级，不是工作区级）
+  - **AC-3**（FR-001）：GIVEN 实例 B 装载被拒 WHEN 实例 A 关闭会话 S 的视图、选「立即关闭」或以无 daemon 形态关闭工作区、宿主退出 THEN B 随后装载 S 成功
+- 场景 2：变更全锁
+  - **AC-4**（FR-002）：GIVEN 会话 S 被实例 A 持有 WHEN 实例 B 对 S 发起重命名 / 删除 / 会话配置变更 / 手动压缩 / 智能命名 / Spin 设计写入 THEN 各入口拒绝并报会话被占用，数据零改动
+  - **AC-5**（FR-002）：GIVEN 会话 S 被实例 A 持有 WHEN 实例 B 读取会话列表 / 待办 / Spin 设计内容 THEN 正常返回（纯读不受限）
+  - **AC-6**（FR-002）：GIVEN 会话 S 未被实例 B 装载 WHEN 实例 B 对 S 发起重命名 / 删除 / 智能命名 THEN 各入口先取得锁、在锁内完成写入、随后释放，操作结束后 S 可被其他实例装载
+- 场景 3：崩溃与接管
+  - **AC-7**（FR-003）：GIVEN 实例 A 崩溃（含被强杀）WHEN 实例 B 装载 S THEN B 直接获得锁并正常打开（锁已随持有进程退出由内核释放，无残留死锁、无等待）
+  - **AC-8**（FR-003）：GIVEN 锁文件由无法识别格式版本的 Core 写入 WHEN 本版 Core 尝试装载 THEN 视为有效占用拒绝打开（fail-safe 方向是拒外，不是抢占）
+  - **AC-9**（FR-003）：GIVEN 会话 S 的持有者已死 WHEN 实例 B 与实例 C 同时尝试装载 THEN 至多一个装载成功，另一个收到占用错误（互斥由内核仲裁，不存在摘除-重建的时序窗口）
+- 场景 4：与孤儿认领的咬合（specs/031）
+  - **AC-10**（FR-001）：GIVEN 实例 A 的 Core 被孤儿化、实例 B 经认领复用同一 Core WHEN B 装载 S THEN 正常打开（同 Core 重入），不出现自锁
+  - **AC-11**（FR-001）：GIVEN 实例 A 关标签页或退应用时选「后台运行」、Core 连同其中的会话实例仍在跑 WHEN 实例 B 装载 S THEN B 收到占用错误（宿主离场不等于锁释放）
+  - **AC-12**（FR-003）：GIVEN daemon 收尾使孤儿 Core 全部退出、锁文件残留 WHEN 实例 B 重新打开该工作区 THEN 新 Core 直接获得锁并打开
+- 场景 5：释放路径
+  - **AC-13**（FR-001）：GIVEN 实例 A 持有会话 S WHEN 发生视图关闭 / VS Code 空闲回收 / Core 退出任一 THEN 锁释放，B 可随即装载
+  - **AC-14**（FR-001）：GIVEN 承载会话 S 的 Core 进程已退出、锁文件残留 WHEN 实例 B 装载 S THEN B 装载成功（锁只依赖进程与内核，不依赖任何宿主侧或 daemon 侧的存活记录）
+
+## 功能需求
+
+### FR-001：会话级独占锁
+
+锁对象是会话数据目录内的 `session.lock`，互斥由 OS 建议性文件锁承担（Unix `flock` /
+Windows `LockFileEx` 一类的非阻塞独占锁），获取与持有都由内核仲裁：同一时刻
+至多一个进程持有，进程退出（含崩溃、被杀、成僵尸）即释放，不存在需要主动摘除的陈旧锁
+协议。锁文件同时记录持有者 pid、进程启动时刻与格式版本，仅作占用诊断与版本拒外
+（FR-003），不参与互斥判定。同 Core 重入放行：已持有的会话再次装载不与自身争用
+（同一 Core 内的父子会话与子代理天然无争用）。获取点收敛在 Core 的会话装载入口
+（`conversationLoadRequested` 与 `conversationOpened` 两个入口各自校验，先到先得）。
+被其他实例持有时硬拒绝：返回明确错误（文案以「键 + 参数」表达，能指认持有者 pid 时
+一并给出，承载形态由 plan 定），不展示内容、不提供只读视图。释放随 Core 内会话实例的
+释放发生（`conversationClosed` / 会话清理 / 进程退出），关闭锁句柄即释放。锁的行为只
+取决于文件系统、内核与进程，不感知 daemon、传输与宿主种类——宿主连接断开、Connection
+销毁、总线关闭都不构成释放条件，只有 Core 里的会话实例消失或 Core 进程退出才释放。
+
+### FR-002：变更全锁
+
+会话被其他实例持有时，一切变更类入口一律拒绝、数据零改动：重命名（`conversationRenamed`）、
+删除（`conversationDeleted`）、会话配置变更（`sessionConfigChanged`）、手动压缩
+（`compactArchiveRequested`）、智能命名（`smartNamingRequested`）、Spin 设计写入
+（`spinDesignSaveRequested`），整空间清理（会话空间清空）同理：空间内任一会话被他人持有时
+整体拒绝。纯读不受限：会话列表、待办、Spin 设计内容、运行时快照。自动压缩与后台任务
+发生在持有者 Core 内部，天然在锁覆盖之内。
+
+本实例未装载该会话时发起变更，按「先取锁、锁内写入、随即释放」处理：变更期间该会话对
+其他实例不可装载，变更结束即释放，不留下长期持有。
+
+### FR-003：锁文件格式与版本拒外
+
+接管即再次获取：持有者已死的锁（崩溃、被杀、孤儿收尾、任一路径下 Core 进程退出）内核
+已先行释放，装载入口以非阻塞方式尝试获取，成功即接管——无摘除-重建步骤，并发尝试由
+内核保证至多一胜。宿主断开而 Core 存活（detach / 孤儿化）不算持有者已死，锁不释放；
+其判据是承载锁的 Core 进程是否还在，与传输层连接是否存在无关。daemon 的孤儿化与空闲
+判定见 `specs/031-remote-detached-tasks`，本规格不重复其语义。锁文件带格式版本号：无法
+识别的版本视为有效占用、不装载（fail-safe 方向是拒外：更高版本的 Core 可能改用其他互斥
+机制，抢占可能破坏其独占，即使其进程已退出）。锁文件按本版设计：旧版 Core 不写锁、不读
+锁，无兼容义务；同指纹产物行为一致（构建指纹语义既有）。
+
+## 边界与错误路径
+
+- 锁文件损坏或读不出持有者：互斥不受影响（互斥在内核锁，不在文件内容），照常装载；
+  落诊断，错误文案退化为不指认持有者。
+- 锁文件被外部删除：视作外部干预不防御（与手动改动会话数据同级）；独占在持有者退出
+  前可能失效，Core 不重建、只落诊断。
+- 删除会话目录时锁文件随目录删除；删除被他实例持有的会话被 FR-002 拒绝，不会删掉
+  别人的锁。删除自己持有的会话先释放句柄再删目录（Windows 上活动句柄会挡住目录删除）。
+- VS Code 空闲回收关闭空闲会话：既有行为，锁随会话实例释放自然跟随，不需要专门处理。
+- 跨工作区代理派发：目标会话被其他实例持有时，Agent 工具收到明确失败（不排队、不
+  静默），派发方会话内落一条可读错误。
+- 子代理会话与父会话同 Core：同 Core 重入，无争用路径。
+- SSH 断开：Core 是否存活由 daemon 的生命周期语义决定——非 idle 的 Core 孤儿化存活
+  （`specs/031-remote-detached-tasks`），此时锁继续被持有；Core 真退出则锁随内核释放。
+  两种情况下锁文件残留都不影响下一次装载（FR-003 接管即再次获取）。
+- 等待用户输入的持有者：锁照常持有（等待不代表释放）；超过 Core 既有请求应答上限后
+  该轮失败，锁仍随会话实例存续。
+- 后台运行的持有者与全 idle 孤儿：031 的 idle 宽限期（全 idle 持续满 30 秒才关闭孤儿
+  Core）期间锁仍被持有，构成最长 30 秒的不可装载窗口；后台任务的实际执行时长没有上限，
+  等待用户输入的孤儿最长到 Core 的既有应答上限。这些窗口是独占语义的代价，评审确认接受。
+- 两个客户端在同一 endpoint 上各开同一工作区（031 AC-10 的「两个独立 Core」）：会话锁
+  是这两份数据之间的互斥，后装载者被拒，不因为工作区可并发打开而放宽。
+
+## 非目标
+
+- 只读视图 / 观察者模式（被拒实例不提供任何形态的会话展示）。
+- 工作区级独占（两实例仍可同时打开同一工作区的不同会话；daemon 的「两客户端两 Core」
+  语义不变）。
+- 跨机器的分布式锁（锁只在会话数据所在机器内有效；SSH 场景 Core 全在远端，天然单机）。
+- 会话列表上的占用灰显 / 徽标提示（v1 仅装载与变更时的错误提示）。
+- 旧版 Core 与本版的锁争用仲裁（无兼容义务，见 FR-003）。
+- Electron 的单实例锁（`requestSingleInstanceLock`）与启动流程变更。
+
+## 对需求基线的影响
+
+新增 **US-66 会话跨实例独占**（EP-5 会话管理分册）：双实例争用同一会话时硬拒绝、
+变更全锁、崩溃接管与版本拒外，以及锁与 specs/031 孤儿认领的咬合（后台运行的 Core 仍然
+持有锁）。e2e：双实例场景依赖两个宿主进程（electron 车道单应用启动），按既有口径登记
+豁免；锁语义由 core-rs 单测锁定（双进程争用、崩溃接管、并发接管至多一胜、同 Core 重入、
+未知版本拒外、宿主离场不释放）。
+
+## 追溯矩阵
+
+| 需求 | 实现落点 | 测试落点 | 覆盖 |
+| --- | --- | --- | --- |
+| FR-001 | `core-rs/src/session_lock.rs`（锁原语 + 注册表）、`core-rs/src/engine.rs`（会话装载入口获取、`drop_session` 释放） | `core-rs/src/session_lock_tests.rs`（双进程争用 / 同 Core 重入 / 释放 / 宿主离场不释放） | 自动 |
+| FR-002 | `core-rs/src/session_lock.rs`（`ensure_can_mutate`）、`core-rs/src/engine.rs`（六个变更入口 + 空间清除接守卫） | `core-rs/src/session_lock_tests.rs`（变更拒绝 / 未装载时取锁写入后释放） | 自动 |
+| FR-003 | `core-rs/src/session_lock.rs`（版本字段 / 诊断内容 / 接管语义） | `core-rs/src/session_lock_tests.rs`（崩溃接管 / 并发接管至多一胜 / 未知版本拒外） | 自动 |
+
+## 待澄清
+
+（无——三个决策点已定：硬拒绝、全锁、独占语义按本版设计不为旧版提供兼容。锁原语
+原稿为「O_EXCL + pid + 启动时刻 + 摘除式接管」，按崩溃路径评审修订为 OS 建议性文件锁：
+纯锁文件的摘除-重建接管存在双持有竞态（两个接管者互相摘掉对方的新锁），且「残缺即
+无主」罩不住建锁后写 pid 前的窗口，秒级锁可容忍、小时级会话锁不可；内核锁让接管即
+再次获取，此类竞态整体消失，pid / 启动时刻 / 版本退化为诊断与版本拒外。）
+
+## 收敛记录
+
+（2026-10-29 /converge，逐 AC 核对 + 实现反向对照。）
+
+### 已满足
+
+- **FR-001 / AC-1** → `main_tests::session_lock_rejects_mutating_and_loading_requests`（`conversationLoadRequested` 被拒回 Err + 占用通知，通知带持有者 pid）；`ensure_loaded` 同口径（`on_conversation_opened` 拒绝不建状态）。**无双实例端到端**：双实例场景依赖两个宿主进程，按 spec「对需求基线的影响」登记豁免，锁语义由 core-rs 单测锁定。
+- **FR-001 / AC-2** → `session_lock_tests::different_sessions_do_not_contend`（同目录另一会话不受牵连）；锁文件按会话 id 命名是结构性保证。
+- **FR-001 / AC-3 / AC-13** → `session_lock_tests::drop_session_releases_the_lock`（会话关闭后另一进程立即可获取）；VS Code 空闲回收与视图关闭同汇入 `conversationClosed`（零新代码）；Core 退出由内核释放（AC-14 同证据）。
+- **FR-001 / AC-10（同 Core 重入）** → `session_lock_tests::registry_reentry_does_not_self_lock`；e2e US-65（specs/031）在真实远端验证认领同一 Core 后重新装载会话无自锁。
+- **FR-001 / AC-11（后台运行不释放）** → `session_lock_tests::host_departure_does_not_release_the_lock`（宿主离场态另一进程抢锁必败）；锁的持有者是 Core 内会话实例（注册表 + 内核锁都不随连接走）。
+- **FR-002 / AC-4** → `session_lock_tests::rename_rejected_when_held_elsewhere`（数据零改动 + 占用通知）、`delete_rejected_when_closure_held_elsewhere`（闭包整体拒绝）、`config_change_rejected_when_held_elsewhere`（不建状态）；UiRequest 侧 smartNaming / compactArchive / spinDesignSave 的拒绝由 `main_tests::session_lock_rejects_…` 锁定。
+- **FR-002 / AC-5（纯读不受限）** → 同上 main_tests 用例断言会话列表照常返回；会话待办 / Spin 内容读路径无守卫（反向对照确认）。
+- **FR-002 / AC-6（未装载短持有）** → `session_lock_tests::unloaded_mutation_takes_a_short_lease`（锁内建档、变更结束另一进程立即可获取）。
+- **FR-003 / AC-7（崩溃接管）** → `session_lock_tests::takeover_after_holder_death`（持有者被杀后立即获取，无摘除协议）。
+- **FR-003 / AC-8（版本拒外）** → `session_lock_tests::unsupported_version_refuses_to_open`（版本 99 拒绝，与进程死活无关）；内容损坏照常持有 → `corrupt_content_still_holds`。
+- **FR-003 / AC-9（并发至多一胜）** → `session_lock_tests::concurrent_claim_has_at_most_one_winner`（他持必败；并发同抢由同一内核仲裁路径保证，用例注释在案）。
+- **FR-003 / AC-12（孤儿收尾后直接获得锁）** → `takeover_after_holder_death`（内核释放 + 残留文件无害）+ specs/031 的 `busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace`（收尾路径）。
+- **FR-003 / AC-14（锁文件残留不影响装载）** → 同 `takeover_after_holder_death`（残留文件在场时获取成功）。
+- **跨工作区代理派发失败（边界）** → `create_sub_agent` / `start_remote_sub_agent` 接获取、失败回 Agent 工具（`engine.rs`）；无专属单测，登记为边界路径（失败回包走既有跨工作区错误通道，specs/023）。
+
+### 偏差（已改代码，留痕）
+
+- **FR-002（clear 模式漏守卫）**：整空间清理的 `clear` 模式（清内容）同样销毁空间内会话数据，实现初版只守卫了 `remove` 模式——反向对照发现，与 FR-002「整空间清理（会话空间清空）同理」不符。修复：`ensure_space_unlocked` 提到两种模式共用（提交 9ec0731）。
+- **通知语义（Io 误发占用）**：目录解析 / 磁盘类 Io 失败不是占用，初版会误发「正被另一个窗口使用」——反向对照发现。修复：`LockError::is_rejection()`，只有 Held / 版本拒外发占用通知，Io 按技术错误原样上报（提交 9ec0731）。
+- **删除残留锁文件**：`delete_single_conversation` 不清理 `<sessionId>.session.lock`，被删会话的锁文件永久残留并被「按文件名前缀数会话」的判据（e2e US-22）数入——e2e 回归发现。修复：删除后缀清单补 `.session.lock`（提交 3855059）。
+
+### 无自动覆盖登记（实现存在，测试未覆盖，理由）
+
+- **AC-1 的宿主端到端**：双实例争用需要两个宿主进程，electron 车道单应用启动——按 spec「对需求基线的影响」的豁免口径登记，core-rs 单测矩阵 + dispatch 用例覆盖全部判定分支。
+- **跨工作区代理派发的锁失败回包**（`start_remote_sub_agent` 接获取）：需要跨 Core 装配，失败回包走既有跨工作区错误通道（specs/023），无专属单测。

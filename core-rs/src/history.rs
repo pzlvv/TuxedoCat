@@ -18,7 +18,7 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// 校验会话 id。id 由宿主生成并经帧通道传入（信任边界），
 /// 它会直接拼进文件名，因此禁止路径分隔符与 `.` / `..`，避免越出会话目录。
-fn validate_session_id(session_id: &str) -> Result<(), String> {
+pub(crate) fn validate_session_id(session_id: &str) -> Result<(), String> {
     if session_id.is_empty() {
         return Err("session id is empty".to_string());
     }
@@ -177,6 +177,66 @@ pub fn save_once_message(session_id: &str, project: &str, message: &Value) -> Re
         |metadata| {
             if let Some(object) = metadata.as_object_mut() {
                 object.insert(ONCE_MESSAGE_KEY.to_string(), message.clone());
+            }
+        },
+    )?;
+    Ok(())
+}
+
+/// `meta.json` 里记录「未读完成次数」的字段名（specs/defects/orphan-completion-unread-light）。
+///
+/// 后台运行期间会话从 running 转 idle 而宿主不在场时，daemon 检出迁移后经控制帧
+/// 通知 Core 递增；宿主装载对话列表据它补武装「任务完成」绿灯，打开对话
+/// （`conversationLoadRequested`）即视为阅读、清零。在线期间的完成不经过该路径，
+/// 计数不变化——重启后不翻旧账。
+pub const UNREAD_COMPLETIONS_KEY: &str = "unreadCompletions";
+
+/// 逐会话把未读完成计数 +1（daemon 控制帧 `orphanCompletions` 的落点）。
+///
+/// meta.json 仍是 Core 单进程写：daemon 只发控制帧，不直接写盘。meta 缺失时
+/// `update_metadata` 会建档，但 `messageCount === 0` 的条目不进对话列表，无副作用。
+pub fn record_unread_completions(session_ids: &[String], project: &str) -> Result<(), String> {
+    for session_id in session_ids {
+        update_metadata(
+            session_id,
+            project,
+            || json!({ "sessionId": session_id, "project": project }),
+            |metadata| {
+                let current = metadata
+                    .get(UNREAD_COMPLETIONS_KEY)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if let Some(object) = metadata.as_object_mut() {
+                    object.insert(
+                        UNREAD_COMPLETIONS_KEY.to_string(),
+                        Value::from(current + 1),
+                    );
+                }
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// 未读完成清零（打开对话即视为阅读）：计数已是 0 / 字段缺失 / meta 不存在时不落盘。
+pub fn clear_unread_completions(session_id: &str, project: &str) -> Result<(), String> {
+    let current = load_metadata(session_id, project)
+        .and_then(|metadata| {
+            metadata
+                .get(UNREAD_COMPLETIONS_KEY)
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(0);
+    if current == 0 {
+        return Ok(());
+    }
+    update_metadata(
+        session_id,
+        project,
+        || json!({ "sessionId": session_id, "project": project }),
+        |metadata| {
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(UNREAD_COMPLETIONS_KEY.to_string(), Value::from(0));
             }
         },
     )?;
@@ -418,7 +478,7 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
 
 /// 删除单个会话的落盘数据（**不处理子对话**，对齐 `deleteSingleConversation` 的落盘部分）
 fn delete_single_conversation(dir: &std::path::Path, session_id: &str) -> Result<(), String> {
-    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl"] {
+    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl", ".session.lock"] {
         let path = dir.join(session_file_name(session_id, suffix)?);
         if path.exists() {
             std::fs::remove_file(&path)

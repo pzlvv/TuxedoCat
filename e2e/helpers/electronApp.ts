@@ -109,6 +109,8 @@ interface SpawnedApp {
   homeDir: string;
   /** 隔离 userData 里的 workspace-state.json（预置 / 断言宿主落盘状态用） */
   stateFile: string;
+  /** home 是否由 close 清理（`keepHomeOnClose` / `reuseHomeDir` 时归用例所有） */
+  ownsHomeDir: boolean;
 }
 
 /** 等待子进程输出里出现某行（stderr + stdout 合并监听） */
@@ -147,8 +149,15 @@ async function spawnApp(options: {
   stateOverrides?: Record<string, unknown>;
   /** 权限模式（缺省 manual：工具调用弹确认）；auto 让工具免确认自动执行 */
   agentMode?: 'manual' | 'risk' | 'auto';
+  /**
+   * 复用既有沙箱 home（缺省每次新建 mkdtemp）：跨重启用例（离场完成 / 状态恢复）
+   * 第二次启动必须落在同一个 home 上，否则会话落盘对不上号。
+   */
+  reuseHomeDir?: string;
+  /** close 时不清理沙箱 home：第一段启动要给第二段留会话落盘（跨重启用例用） */
+  keepHomeOnClose?: boolean;
 }): Promise<SpawnedApp> {
-  const homeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuxedo-e2e-home-'));
+  const homeDir = options.reuseHomeDir ?? await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuxedo-e2e-home-'));
   writeSettings(homeDir, options.mockLlm, options.agentMode ?? 'manual');
 
   // 实例后缀必须与 main.ts 的过滤规则一致（[^A-Za-z0-9_-] 剔除 + 截断 32），
@@ -227,7 +236,14 @@ async function spawnApp(options: {
 
   const nodeWs = await waitForOutput(child, /Debugger listening on (ws:\/\/\S+)/, 30_000);
   const devtoolsWs = await waitForOutput(child, /DevTools listening on (ws:\/\/\S+)/, 30_000);
-  return { child, nodeWs, devtoolsWs, homeDir, stateFile };
+  return {
+    child,
+    nodeWs,
+    devtoolsWs,
+    homeDir,
+    stateFile,
+    ownsHomeDir: !options.reuseHomeDir && !options.keepHomeOnClose,
+  };
 }
 
 /** 经 Node inspector 在主进程执行表达式（拉起主窗口渲染器） */
@@ -266,6 +282,10 @@ export async function launchApp(options: {
   stateOverrides?: Record<string, unknown>;
   /** 权限模式（缺省 manual：工具调用弹确认）；auto 让工具免确认自动执行 */
   agentMode?: 'manual' | 'risk' | 'auto';
+  /** 复用既有沙箱 home（跨重启用例第二次启动用，见 `spawnApp` 同名注释） */
+  reuseHomeDir?: string;
+  /** close 时不清理沙箱 home（跨重启用例第一段启动用，见 `spawnApp` 同名注释） */
+  keepHomeOnClose?: boolean;
 }): Promise<AppHandle> {
   const spawned = await spawnApp(options);
 
@@ -432,7 +452,9 @@ export async function launchApp(options: {
           spawned.child.kill('SIGKILL');
         }
       }
-      await fs.promises.rm(spawned.homeDir, { recursive: true, force: true }).catch(() => undefined);
+      if (spawned.ownsHomeDir) {
+        await fs.promises.rm(spawned.homeDir, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
   };
 

@@ -481,19 +481,19 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 
 | 事实 | owner | 说明 |
 | --- | --- | --- |
-| 全局配置 `~/<CONFIG_DIR_NAME>/settings.json` | UI | 读与写都在 UI；Core 只消费快照 |
-| MCP 配置 `~/<CONFIG_DIR_NAME>/mcp.json` | UI | 读与写都在 UI；Core 只消费快照 |
+| 全局配置 / MCP 配置 `~/<CONFIG_DIR_NAME>/{settings,mcp}.json` | UI | 读与写都在 UI；Core 只消费快照 |
 | 配置快照 | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided`，一次全量 |
 | 内置模型注册表 | UI | 合并进快照的 `modelLimits`；Core 不持有 |
 | 项目清单 `<conversations>/<project>/workspace.meta.json` | Core | 在 Core 数据目录内，读与写都在 Core |
 | 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式（meta.json / JSONL），宿主侧 `src/shared/history/` 是同一格式的 TS 读写库 |
+| 会话独占锁 `<conversations>/<project>/<sessionId>.session.lock` | Core | OS 建议性文件锁（`core-rs/src/session_lock.rs`）；宿主侧不读写。文件内容（版本 / pid / 启动时刻）只作诊断与版本拒外（specs/032） |
 | Spin 设计 `<conversations>/<project>/spin.json` | Core | 读与写都经 `UiRequest.spinDesignRequested` / `spinDesignSaveRequested`；宿主不直接读盘 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |
-| ripgrep | Core | 随 Core 分发并定位：与 Core 可执行文件同级（`<exe 目录>/ripgrep/`），本地起进程与远端上传的是同一个目录 |
+| ripgrep | Core | 随 Core 分发：与可执行文件同级（`<exe 目录>/ripgrep/`），本地与远端上传是同一目录 |
 | 宿主环境（extensionPath / logToConsole / configDirName） | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided` |
 | 会话工作目录 | UI 提供，Core 消费 | 经 `UiEvent.sessionWorkspaceAssigned` |
-| 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；标准错误仅用于诊断 |
-| 界面表现（diff / Mermaid / 外部链接 / 另存为） | UI | 不进 Core |
+| 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；stderr 仅诊断 |
+| 界面表现（diff / Mermaid / 外链 / 另存为） | UI | 不进 Core |
 | i18n（翻译表与语言选择） | UI | Core 不感知语言，面向用户的文本以键 + 参数表达 |
