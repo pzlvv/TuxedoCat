@@ -148,8 +148,8 @@ Connection 持有：
 | --- | --- |
 | 打开工作区 | 建立 Connection：本机直接以 `stdio` 起一个 Core 进程，远程经该 endpoint 的 daemon 开 channel |
 | 重复打开同一工作区 | 不新建 Connection；激活已有视图 |
-| 关闭工作区 | 销毁 Connection；关闭 Core 进程（daemon 计数递减） |
-| 宿主退出 | 销毁全部 Connection；关闭所有 Core |
+| 关闭工作区 | 销毁 Connection。远程项按释放形态分叉（[specs/031](../../specs/031-remote-detached-tasks/spec.md)）：`close` 走现行路径关闭 Core 进程（daemon 计数递减）；`detach`（后台运行）只摘路由不发 `closeWorkspace`，Core 留在 daemon 孤儿表继续执行，本地项只有 `close` |
+| 宿主退出 | 销毁全部 Connection；退出确认链的决策表（`workspaceRefKey → close / detach`）随销毁应用——`detach` 的远程项只断控制链，Core 孤儿化存活；弹不出确认链的出口决策表为空，全部只断链 |
 | 工作区切换 | 不允许；只能关闭再打开 |
 
 - `connectionId` 自动生成；`local-` / `remote-` 前缀用于区分来源。取值不进入总线载荷，
@@ -236,7 +236,9 @@ Connection 持有：
   活动项
   不因不可用而回退；可用的引用（含远程）交给 `Client.openWorkspace` 建立 Connection，
   远程项按落盘凭证重新走一遍 SSH 引导（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）。连不上不影响
-  其它工作区。
+  其它工作区。该 endpoint 的 daemon 上若有上次离场留下的孤儿 Core，`openWorkspace`
+  认领它（不开新进程；重放缓存帧、挂起请求重弹，[specs/031](../../specs/031-remote-detached-tasks/spec.md)），随后照常走
+  既有的连接态重放路径（握手、宿主环境重放、逐会话打开）。
 - **最近列表**：本地项在读取时过滤掉已不存在的目录；远程项无法本地检查，原样保留。
   关闭标签页只从打开集合移除，不抹掉最近列表里的凭证。
 - 读取口径：形状不合法（缺 host、端口越界、认不出的凭证种类等）的项整项丢弃，
@@ -249,7 +251,8 @@ Connection 持有：
 - 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
 - SSH 的密钥 / agent 认证（当前只有口令）；
 - 远程 daemon 的部署由 Host 自动完成（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）；
-- 断线重连（含远程工作区在重启后连不上时的自动重试）；
+- 宿主进程内对断网的自动重连（远程工作区在重启后连不上时保留占位页与重连按钮，
+  重试由用户动作触发）；
 - 多 Connection 的界面呈现（归属标识、切换入口）。
 
 ---

@@ -36,6 +36,7 @@ import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../shared/history/Conversation';
 import type { SessionRuntimeState } from '../shared/AssistantEventBus';
 import { remoteWorkspaceRef, localWorkspaceRef, type WorkspaceEndpoint, type WorkspaceRef } from '../host/workspaceRef';
+import type { WorkspaceChange } from '../host/UIHost';
 import { createChecker, runTests } from './helpers/harness';
 import { createTestHost, type TestHost } from './helpers/fixtures';
 
@@ -276,7 +277,7 @@ async function run(): Promise<void> {
   const openedRefs: WorkspaceRef[] = [remoteRef, localRef];
   // 持有器规避 TS 控制流收窄（赋值发生在回调里，调用点会被误判为恒 null）
   const workspaceEvents: {
-    listener: ((change: { type: 'opened' | 'closed' | 'activated'; ref: WorkspaceRef }) => void) | null;
+    listener: ((change: WorkspaceChange) => void) | null;
   } = { listener: null };
 
   const host: TestHost = createTestHost({

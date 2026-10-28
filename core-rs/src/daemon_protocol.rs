@@ -2,7 +2,8 @@
 //!
 //! 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧（与内层帧通道同一口径）。
 //! 控制通道上只有一条连接；每个 Core 的帧通道是它上面的一条逻辑 channel。
-//! daemon 不解读内层帧，只按 channel 转发。
+//! daemon 除忙闲快照缓存与请求帧暂存两处只读窥探外不解读内层帧，只按 channel
+//! 转发（specs/031，见 `docs/adr/0012-daemon-frame-peek.md`）。
 //!
 //! 协议没有版本握手：daemon 与 Host 随同一份产物分发，版本由分发保证；
 //! 内层 Core 与 Host 的协议版本校验仍在各自 channel 的 `hello` / `ready` 上完成。
@@ -22,6 +23,9 @@ pub enum HostToDaemonFrame {
     },
     /// 关闭工作区：向该 Core 发 `shutdown`，超时后强制结束
     CloseWorkspace { channel: u64 },
+    /// 后台运行（specs/031）：把该 Core 移入孤儿表继续执行，连接与其余 channel 不受影响；
+    /// daemon 回 `workspaceClosed { reason: 'detached' }`
+    DetachWorkspace { channel: u64 },
     /// 转发一帧内层帧（Host → Core）
     Frame { channel: u64, frame: Value },
     /// 列出远端目录（远程目录选择器用）；`path` 为 `null` 时从主目录开始
@@ -134,6 +138,8 @@ pub enum WorkspaceCloseReason {
     Crashed,
     /// 重启次数超过上限 / 无法启动
     Failed,
+    /// 后台运行（specs/031）：Core 已转入孤儿表继续执行，只是本 channel 摘除
+    Detached,
 }
 
 impl DaemonToHostFrame {

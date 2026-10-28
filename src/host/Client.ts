@@ -39,11 +39,19 @@ import {
   type WorkspaceRef,
 } from './workspaceRef.js';
 
+/**
+ * Core 通道的释放形态（specs/031）：
+ * - `close`：现行路径，终止 Core 进程 / 关闭 daemon channel；
+ * - `detach`：远程通道向 daemon 发 `detachWorkspace`，Core 移入孤儿表继续执行
+ *   （本地通道没有「后台」可去，等同 `close`）。
+ */
+export type CoreChannelCloseMode = 'close' | 'detach';
+
 /** 已打开的 Core 通道（Standalone：一个工作区一个 Core 进程 / daemon channel） */
 export interface OpenedCoreChannel {
   bus: AssistantEventBus;
-  /** 释放通道（关闭 Core 进程 / channel） */
-  dispose: () => Promise<void>;
+  /** 释放通道（关闭 Core 进程 / channel；`detach` 为后台运行） */
+  dispose: (mode: CoreChannelCloseMode) => Promise<void>;
 }
 
 export interface ClientOptions {
@@ -186,7 +194,7 @@ export class Client implements AssistantEventBus {
     if (!isEmptyWorkspaceRef(ref)) {
       for (const connection of [...this.connections.values()]) {
         if (isEmptyWorkspaceRef(connection.workspaceRef)) {
-          void this.closeConnection(connection);
+          void this.closeConnection(connection, 'close');
         }
       }
     }
@@ -202,7 +210,7 @@ export class Client implements AssistantEventBus {
   private createConnection(
     ref: WorkspaceRef,
     bus: AssistantEventBus,
-    disposeBus: () => Promise<void>,
+    disposeBus: (mode: CoreChannelCloseMode) => Promise<void>,
   ): Connection {
     const id = `${ref.endpoint ? 'remote' : 'local'}-${this.nextConnectionSeq}`;
     this.nextConnectionSeq += 1;
@@ -240,22 +248,33 @@ export class Client implements AssistantEventBus {
     return connection;
   }
 
-  /** 关闭工作区：销毁 Connection（Standalone 下关闭 Core 进程） */
-  async closeWorkspace(ref: WorkspaceRef): Promise<void> {
+  /**
+   * 关闭工作区：销毁 Connection（Standalone 下关闭 Core 进程；`detach` 为后台
+   * 运行，specs/031）。
+   */
+  async closeWorkspace(ref: WorkspaceRef, mode: CoreChannelCloseMode = 'close'): Promise<void> {
     const key = workspaceRefKey(ref);
     const id = this.workspaceToConnection.get(key);
     if (!id) return;
     this.workspaceToConnection.delete(key);
     const connection = this.connections.get(id);
     if (!connection) return;
-    await this.closeConnection(connection);
+    await this.closeConnection(connection, mode);
   }
 
-  /** 关闭全部 Connection（宿主退出路径） */
-  async closeAll(): Promise<void> {
+  /**
+   * 关闭全部 Connection（宿主退出路径）。`decisions` 按 workspaceRefKey 给出各
+   * 工作区的释放形态（后台运行 / 立即关闭，specs/031）；未登记的工作区按
+   * `close` 处理——弹不出确认链的出口（窗口已销毁）传空表即全部只断链，
+   * daemon 默认策略接管。
+   */
+  async closeAll(
+    decisions?: ReadonlyMap<string, CoreChannelCloseMode>,
+  ): Promise<void> {
     const connections = [...this.connections.values()];
     for (const connection of connections) {
-      await this.closeConnection(connection);
+      const mode = decisions?.get(workspaceRefKey(connection.workspaceRef)) ?? 'close';
+      await this.closeConnection(connection, mode);
     }
   }
 
@@ -269,9 +288,12 @@ export class Client implements AssistantEventBus {
    * 抛错（`docs/core/client-connection.md` 第 6 节），也会让 `connectionForWorkspacePath`
    * 命中一个已关闭的 Connection。
    */
-  private async closeConnection(connection: Connection): Promise<void> {
+  private async closeConnection(
+    connection: Connection,
+    mode: CoreChannelCloseMode,
+  ): Promise<void> {
     this.detachConnection(connection);
-    await connection.dispose();
+    await connection.dispose(mode);
   }
 
   /**

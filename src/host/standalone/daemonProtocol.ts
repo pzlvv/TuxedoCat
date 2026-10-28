@@ -3,7 +3,8 @@
  *
  * 编码与内层帧通道同口径：UTF-8，换行分隔的 JSON，一行一帧。
  * 控制通道上只有一条连接；每个 Core 的帧通道是它上面的一条逻辑 channel。
- * daemon 不解读内层帧，只按 channel 转发。
+ * daemon 除忙闲快照缓存与请求帧暂存两处只读窥探外不解读内层帧，只按 channel
+ * 转发（specs/031，见 `docs/adr/0012-daemon-frame-peek.md`）。
  *
  * 本模块只做类型与校验，不含进程与业务逻辑，无宿主依赖。
  */
@@ -55,6 +56,11 @@ export type ChannelDescriptor =
 export type HostToDaemonFrame =
   | { kind: 'openWorkspace'; id: number; workspaceRef: WorkspaceRef }
   | { kind: 'closeWorkspace'; channel: number }
+  /**
+   * 后台运行（specs/031）：把该 Core 移入 daemon 的孤儿表继续执行，连接与其余
+   * channel 不受影响；daemon 回 `workspaceClosed { reason: 'detached' }`。
+   */
+  | { kind: 'detachWorkspace'; channel: number }
   | { kind: 'frame'; channel: number; frame: UiToCoreFrame }
   | { kind: 'listDirectories'; id: number; path: string | null }
   | { kind: 'createDirectory'; id: number; path: string }
@@ -70,7 +76,7 @@ export type HostToDaemonFrame =
   | { kind: 'ping' };
 
 /** channel 关闭原因 */
-export type WorkspaceCloseReason = 'closed' | 'crashed' | 'failed';
+export type WorkspaceCloseReason = 'closed' | 'crashed' | 'failed' | 'detached';
 
 /** 目录列举的一项（只列子目录） */
 export interface DirectoryEntry {
@@ -183,7 +189,10 @@ export function isDaemonToHostFrame(value: unknown): value is DaemonToHostFrame 
     case 'workspaceClosed':
       return (
         typeof value['channel'] === 'number'
-        && (value['reason'] === 'closed' || value['reason'] === 'crashed' || value['reason'] === 'failed')
+        && (value['reason'] === 'closed'
+          || value['reason'] === 'crashed'
+          || value['reason'] === 'failed'
+          || value['reason'] === 'detached')
       );
     case 'channelReset':
       return typeof value['channel'] === 'number' && typeof value['reason'] === 'string';

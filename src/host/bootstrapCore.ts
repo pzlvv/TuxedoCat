@@ -27,6 +27,7 @@
 import type { AssistantEventBus, UiEvent } from '../shared/AssistantEventBus.js';
 import { requireEventBus, setGlobalEventBus } from '../shared/AssistantEventBus.js';
 import { CONFIG_DIR_NAME } from '../config/project.js';
+import type { CoreChannelCloseMode } from './Client.js';
 import { Client, type OpenedCoreChannel } from './Client.js';
 import type { Connection } from './Connection.js';
 import { primeHostLocale, readUiLanguage } from './coreFacts.js';
@@ -241,7 +242,8 @@ export function bootstrapCore(
         openWorkspace(change.ref);
       } else if (change.type === 'closed') {
         ui.onWorkspaceUnavailable(change.ref);
-        void client.closeWorkspace(change.ref);
+        // closeMode 承载三选对话框的决策（specs/031）：detach = 后台运行
+        void client.closeWorkspace(change.ref, change.closeMode);
       } else {
         client.activateWorkspace(change.ref);
       }
@@ -284,7 +286,8 @@ function openStandaloneChannel(
     });
     return {
       bus,
-      dispose: () => bus.shutdown(),
+      // 本地进程没有 daemon、没有「后台」可去（specs/031 非目标）：detach 等同现行终止
+      dispose: (mode) => (mode === 'detach' ? bus.shutdown() : bus.shutdown()),
     };
   }
   const daemon = remoteDaemonForEndpoint(ref, options);
@@ -292,7 +295,7 @@ function openStandaloneChannel(
   const bus = createCoreChannelBus(transport, log);
   return {
     bus,
-    dispose: () => bus.shutdown(),
+    dispose: (mode) => (mode === 'detach' ? transport.detach() : bus.shutdown()),
   };
 }
 
@@ -561,9 +564,13 @@ function markConnectionSessionsFailed(
 
 /**
  * 释放 core 侧的进程级资源：关闭全部 Connection（Core 进程 / daemon channel）。
- * 宿主退出钩子调用一次。
+ * 宿主退出钩子调用一次。`decisions` 按 workspaceRefKey 给出退出确认链的决策
+ * （specs/031：后台运行 = detach，Core 孤儿化存活；立即关闭 = close）。弹不出
+ * 对话框的出口（窗口已销毁）传空 / 不传：全部只断链，daemon 默认策略接管。
  */
-export function shutdownCore(): Promise<void> {
+export function shutdownCore(
+  decisions?: ReadonlyMap<string, CoreChannelCloseMode>,
+): Promise<void> {
   const client = activeClient;
   activeClient = null;
   for (const unsubscribe of workspaceUnsubscribers) {
@@ -576,7 +583,7 @@ export function shutdownCore(): Promise<void> {
   workspaceUnsubscribers.clear();
 
   const tasks: Array<Promise<void>> = [];
-  if (client) tasks.push(client.closeAll());
+  if (client) tasks.push(client.closeAll(decisions));
   // 远程 daemon：只断开自己的控制链路，**不发 shutdown**——任一连接的 shutdown 在
   // daemon 侧是全局停机，多客户端接入下会连坐杀掉其它客户端的会话；SSH 引导的
   // daemon 自带 idle-exit，最后一条链路断开后自行退出并清状态文件

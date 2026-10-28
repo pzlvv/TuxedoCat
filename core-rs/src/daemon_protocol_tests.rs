@@ -23,6 +23,10 @@ fn host_frames_decode_with_camel_case_fields() {
         serde_json::from_value(json!({ "kind": "closeWorkspace", "channel": 3 })).unwrap();
     assert!(matches!(close, HostToDaemonFrame::CloseWorkspace { channel: 3 }));
 
+    let detach: HostToDaemonFrame =
+        serde_json::from_value(json!({ "kind": "detachWorkspace", "channel": 5 })).unwrap();
+    assert!(matches!(detach, HostToDaemonFrame::DetachWorkspace { channel: 5 }));
+
     let frame: HostToDaemonFrame = serde_json::from_value(json!({
         "kind": "frame",
         "channel": 1,
@@ -87,6 +91,20 @@ fn daemon_frames_encode_with_camel_case_fields() {
         serde_json::from_str(closed.encode().unwrap().trim_end()).unwrap();
     assert_eq!(value["kind"], "workspaceClosed");
     assert_eq!(value["reason"], "failed");
+}
+
+#[test]
+fn workspace_closed_encodes_the_detached_reason() {
+    // specs/031：后台运行的收尾帧——宿主据此不算 fatal
+    let frame = DaemonToHostFrame::WorkspaceClosed {
+        channel: 4,
+        reason: WorkspaceCloseReason::Detached,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(frame.encode().unwrap().trim_end()).unwrap();
+    assert_eq!(value["kind"], "workspaceClosed");
+    assert_eq!(value["channel"], 4);
+    assert_eq!(value["reason"], "detached");
 }
 
 #[test]
