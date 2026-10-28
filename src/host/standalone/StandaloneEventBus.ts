@@ -95,6 +95,12 @@ export interface CoreChannelTransport {
   start(): void;
   send(frame: UiToCoreFrame): void;
   stop(): Promise<void>;
+  /**
+   * 后台运行（specs/031）：终止与宿主的控制关系但让 Core 侧继续执行。
+   * 远程实现是向 daemon 发 `detachWorkspace`；本地进程没有「后台」可去
+   * （specs/031 非目标），语义就是现行终止。
+   */
+  detach(): Promise<void>;
   isReady(): boolean;
   isStopped(): boolean;
 }
@@ -158,6 +164,12 @@ class CoreProcessTransport implements CoreChannelTransport {
   }
 
   stop(): Promise<void> {
+    return this.process.stop();
+  }
+
+  detach(): Promise<void> {
+    // 本地进程没有 daemon、没有孤儿语义可去（specs/031 非目标）：后台运行的
+    // 选项只对远程工作区出现，这里等同现行终止
     return this.process.stop();
   }
 

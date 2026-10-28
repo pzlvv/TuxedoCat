@@ -3,7 +3,7 @@
 //! 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧（与内层帧通道同一口径）。
 //! 控制通道上只有一条连接；每个 Core 的帧通道是它上面的一条逻辑 channel。
 //! daemon 除忙闲快照缓存与请求帧暂存两处只读窥探外不解读内层帧，只按 channel
-//! 转发（specs/031，见 `docs/adr/0006-daemon-frame-peek.md`）。
+//! 转发（specs/031，见 `docs/adr/0012-daemon-frame-peek.md`）。
 //!
 //! 协议没有版本握手：daemon 与 Host 随同一份产物分发，版本由分发保证；
 //! 内层 Core 与 Host 的协议版本校验仍在各自 channel 的 `hello` / `ready` 上完成。

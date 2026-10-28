@@ -18,9 +18,10 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createChecker, runTests } from './helpers/harness';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from '../host/bootstrapCore';
-import { Client } from '../host/Client';
+import { Client, type CoreChannelCloseMode } from '../host/Client';
 import type { Connection } from '../host/Connection';
-import { emptyWorkspaceRef, localWorkspaceRef, remoteWorkspaceRef, type WorkspaceRef } from '../host/workspaceRef';
+import type { WorkspaceChange } from '../host/UIHost';
+import { emptyWorkspaceRef, localWorkspaceRef, remoteWorkspaceRef, workspaceRefKey, type WorkspaceRef } from '../host/workspaceRef';
 import { createStandaloneCoreBus } from '../host/standalone/StandaloneEventBus';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
@@ -114,6 +115,8 @@ interface ClientHarness {
   client: Client;
   channels: RecordingBus[];
   disposed: number;
+  /** 每次 dispose 收到的释放形态（specs/031：detach = 后台运行） */
+  disposeModes: CoreChannelCloseMode[];
   /** 让所有 Connection 就绪（模拟 Core 处理完快照） */
   readyAll(): void;
   /** 触发一个 CoreEvent 到指定连接 */
@@ -123,6 +126,7 @@ interface ClientHarness {
 function createClientHarness(): ClientHarness {
   const channels: RecordingBus[] = [];
   let disposed = 0;
+  const disposeModes: CoreChannelCloseMode[] = [];
   const client = new Client({
     log: () => undefined,
     hostEnvironment: () => ({
@@ -140,8 +144,9 @@ function createClientHarness(): ClientHarness {
       channels.push(channel);
       return {
         bus: channel.bus,
-        dispose: async () => {
+        dispose: async (mode) => {
           disposed += 1;
+          disposeModes.push(mode);
         },
       };
     },
@@ -193,6 +198,9 @@ function createClientHarness(): ClientHarness {
     channels,
     get disposed() {
       return disposed;
+    },
+    get disposeModes() {
+      return disposeModes;
     },
     readyAll: () => {
       for (const channel of channels) {
@@ -403,6 +411,29 @@ async function run(): Promise<void> {
     await harness.client.closeAll();
   }
 
+  // ── 6a. 释放形态决策表（specs/031：detach = 后台运行）──
+  {
+    const harness = createClientHarness();
+    harness.client.openWorkspace(WS_A);
+    harness.client.openWorkspace(WS_B);
+    const decisions = new Map([[workspaceRefKey(WS_A), 'detach' as const]]);
+    await harness.client.closeAll(decisions);
+    check('closeAll 关闭全部 Connection', harness.disposed === 2);
+    check('决策表命中的工作区走 detach', harness.disposeModes[0] === 'detach');
+    check('未登记的工作区走现行 close', harness.disposeModes[1] === 'close');
+
+    const single = createClientHarness();
+    single.client.openWorkspace(WS_A);
+    await single.client.closeWorkspace(WS_A, 'detach');
+    check('closeWorkspace 透传 detach 形态', single.disposeModes[0] === 'detach');
+
+    const silent = createClientHarness();
+    silent.client.openWorkspace(WS_A);
+    // 弹不出确认链的出口传空决策表：全部按现行 close 处理
+    await silent.client.closeAll(new Map());
+    check('空决策表全部走现行 close', silent.disposeModes[0] === 'close');
+  }
+
   // ── 6b. 启动期空引用占位 Connection：打开真实工作区时销毁 ──
   {
     const harness = createClientHarness();
@@ -471,7 +502,7 @@ async function run(): Promise<void> {
     let spawnCount = 0;
     const openedRefs: WorkspaceRef[] = [WS_A, WS_B];
     const workspaceEvents: {
-      listener: ((change: { type: 'opened' | 'closed' | 'activated'; ref: WorkspaceRef }) => void) | null;
+      listener: ((change: WorkspaceChange) => void) | null;
     } = { listener: null };
     const host = createTestHost({
       getWorkspacePath: () => openedRefs[0]?.path,

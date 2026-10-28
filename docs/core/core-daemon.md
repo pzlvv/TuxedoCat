@@ -7,8 +7,9 @@ last_reviewed: 2026-10-11
 
 本规格描述 Core 进程的 daemon：Standalone Core 进程由 daemon 启动、监督与终止，帧通道
 在 daemon 上多路复用。一个 endpoint 对应一个 daemon，同时服务多条控制连接（每条连接
-是一个客户端）；每（连接, 工作区）一个 Core 进程。一条连接断开只结束该连接的全部 Core，
-任一连接发 `shutdown` 才结束整个 daemon（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
+是一个客户端）；每（连接, 工作区）一个 Core 进程。一条连接断开时，连接上非 idle 的 Core
+孤儿化存活（后台运行，[specs/031](../../specs/031-remote-detached-tasks/spec.md)），全 idle
+的 Core 照旧终止；任一连接发 `shutdown` 才结束整个 daemon（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
 
 Standalone Core 的进程形态与帧协议见 `docs/core/standalone-core.md`；连接模型见
 `docs/core/client-connection.md`；Core 与 UI 的分离形态见 `docs/architecture/core-ui-separation.md`；
@@ -103,8 +104,9 @@ Host B ── 控制通道 ──┘           └── Core B1（B 连接的 c
 
 - 每个 Host 与 daemon 之间一条控制通道；daemon 同时服务多条，每条连接一个服务线程，
   一条连接里的任何等待（目录列举、Core 重启）不阻塞其它连接。
-- 每条 channel 上跑的帧与 [docs/core/standalone-core.md 第 5.2 节](standalone-core.md#52-帧类型)完全一致；daemon 不解读
-  内层帧，只按 channel 转发。
+- 每条 channel 上跑的帧与 [docs/core/standalone-core.md 第 5.2 节](standalone-core.md#52-帧类型)完全一致；daemon 除忙闲快照缓存
+  与请求帧暂存两处只读窥探外不解读内层帧，只按 channel 转发（窥探的动机与边界见
+  [第 5 节](#5-生命周期与计数)与 [docs/adr/0012-daemon-frame-peek.md](../adr/0012-daemon-frame-peek.md)）。
 - channel id 由 daemon 分配，在**一条控制通道内**唯一且**稳定**：Core 崩溃重启后沿用
   同一个 channel id（第 6 节）；不同连接的编号空间互相独立（都从 1 起）。
 - channel 是双向的；两侧的帧按写入顺序转发，不丢帧、不合并（沿用
@@ -130,7 +132,9 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | 收到 `openWorkspace` | 启动一个 Core 进程，分配 channel，回 `workspaceOpened` |
 | 收到 `closeWorkspace` | 向该 Core 发 `shutdown`；超时后强制结束；channel 关闭；计数递减 |
 | Core 进程退出 | channel 关闭；按第 6 节决定是否重启 |
-| 控制连接断开（Host 退出 / 崩溃 / 心跳空闲超时） | 关闭该连接上的全部 channel 与 Core；服务线程结束，daemon 继续服务其它连接 |
+| 控制连接断开（Host 退出 / 崩溃 / 心跳空闲超时） | 逐 channel 分叉：最近快照存在非 idle 会话的 Core 孤儿化存活（移入孤儿表，继续执行会话工作），全部 idle（或无快照）的 Core 照旧关闭；服务线程结束，daemon 继续服务其它连接 |
+| 收到 `detachWorkspace` | 把该 Core 移入孤儿表（后台运行）、回 `workspaceClosed { reason: 'detached' }`；连接与其余 channel 不受影响 |
+| `openWorkspace` 命中孤儿 | 不开新进程：把孤儿 Core 的句柄移交本连接（摘表与移交原子，同路径多条取最早一条），重放孤儿期间缓存的快照与挂起请求 |
 | 收到 `shutdown` | 结束整个 daemon：全部连接各自关闭自己的全部 channel 与 Core 后，进程退出（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)） |
 
 计数与退出：
@@ -141,14 +145,28 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   计时器；到期后该连接的会话结束。grace 期避免「关一个工作区又开一个」时反复启停。
 - 远程 daemon 的连接**不启用** grace 退出（`DaemonOptions.idle_exit = false`）：控制
   通道本身是生命周期边界，目录选择期间可以长时间没有工作区（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
-- Host 断开后不给 Core 留存活口子：连接断开即关闭该连接的全部 Core。允许 Core 在
-  Host 断开后存活是重连场景的需求，不在本规格范围内（第 9 节）。
+- **孤儿化与认领**（[specs/031](../../specs/031-remote-detached-tasks/spec.md)）：连接断开或
+  收到 `detachWorkspace` 时，最近快照存在非 idle 会话的 Core 移入**孤儿表**继续执行
+  （键 = 工作区路径 + 原连接标识，同一 endpoint 两个客户端的孤儿互不覆盖；登记冲突
+  落诊断并按现行关闭兜底）。孤儿表按连接共享，daemon 进程内唯一；对孤儿 Core 的帧
+  保持排水（Core 不因无宿主而阻塞），期间仅缓存两类帧——`sessionRuntimeChanged`
+  快照（更新忙闲判据，解析失败按忙 fail-safe）与用户请求帧（暂存，超过 Core 应答
+  时效 1 小时的不再重放）。对存在孤儿的工作区再次 `openWorkspace` 时认领：不开新
+  进程，重放缓存帧（按到达序；缓冲安静时补放最新快照一帧）。孤儿 Core 崩溃不重启，
+  移出孤儿表。
+- **孤儿收尾**：全 idle 的孤儿满 30s 宽限（沿 US-33 口径，短暂 idle 可能紧随提交）后
+  终止并移出孤儿表；daemon 的空闲退出判定为「无控制连接**且**无非 idle 孤儿」持续
+  30s（[docs/core/core-remote.md 第 2.2 节](core-remote.md#22-选项)）；`shutdown` 与 daemon 停机时孤儿一并收尾。
+  两个客户端并发打开同一工作区仍是两个互相独立的 Core，各自装载会话的互斥由会话锁
+  承担（specs/032 会话跨实例独占打开）。
 
 ---
 
 ## 6. 重启
 
-- **触发**：Core 进程在收到 `shutdown` 之前退出。
+- **触发**：连接上的 Core 进程在收到 `shutdown` 之前退出。孤儿表里的 Core 退出不重启
+  （孤儿没有宿主在等它，崩溃即移出孤儿表，之后对该工作区的 `openWorkspace` 按无孤儿
+  处理新起 Core）。
 - **策略**：daemon 以退避策略重启该 channel 的 Core 进程（沿用现有
   `CoreProcess.ts` 的 `restartPolicy`：时间窗口 + 最大次数）。
 - **上限**：时间窗口内重启次数超过上限时停止重启，关闭该 channel 并向 Host 报告原因，
@@ -175,7 +193,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | daemon → Host | `workspaceOpened` | `{ kind: 'workspaceOpened', id: number, channel: number, descriptor: ChannelDescriptor }` |
 | daemon → Host | `workspaceFailed` | `{ kind: 'workspaceFailed', id: number, error: string }` |
 | Host → daemon | `closeWorkspace` | `{ kind: 'closeWorkspace', channel: number }` |
-| daemon → Host | `workspaceClosed` | `{ kind: 'workspaceClosed', channel: number, reason: 'closed' \| 'crashed' \| 'failed' }` |
+| Host → daemon | `detachWorkspace` | `{ kind: 'detachWorkspace', channel: number }`（后台运行，[specs/031](../../specs/031-remote-detached-tasks/spec.md)：Core 移入孤儿表，连接与其余 channel 不受影响） |
+| daemon → Host | `workspaceClosed` | `{ kind: 'workspaceClosed', channel: number, reason: 'closed' \| 'crashed' \| 'failed' \| 'detached' }` |
 | daemon → Host | `channelReset` | `{ kind: 'channelReset', channel: number, reason: string }` |
 | 双向 | `frame` | `{ kind: 'frame', channel: number, frame: <内层帧> }` |
 | Host → daemon | `listDirectories` | `{ kind: 'listDirectories', id: number, path: string \| null }`（`null` 从主目录开始） |
@@ -229,10 +248,8 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 - 远程凭证的加密存储（宿主把 SSH 口令明文写进 `workspace-state.json`，
   见 [docs/core/client-connection.md 第 9 节](client-connection.md#9-落盘与恢复宿主侧)；钥匙串集成不在范围内）；
 - SSH 的密钥 / agent 认证（当前只有口令一种凭证）；
-- 断线重连（SSH 断开与 TCP 断开同口径：一条连接结束即关闭它自己的全部 Core，其余
-  连接不受影响）；
+- 宿主侧对断网的自动重连（重连由启动恢复、最近列表、重连按钮三类用户动作触发）；
 - `{ kind: 'direct' }` 描述符对应的直连形态；
-- Host 断开后 Core 的存活与重连；
 - daemon 自身的监督（daemon 崩溃时其上所有 Core 一起死，这是接受的语义）；
 - daemon 的版本协商与热升级。
 
@@ -244,9 +261,11 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 2. 两个工作区对应两个 channel、两个 Core 进程，且互不影响。
 3. 关闭工作区后 channel 关闭、Core 退出，该连接上活着的 Core 进程数递减。
 4. 连接上活着的 Core 进程归零后 daemon 在 grace 期结束时退出；grace 期内新开工作区则继续服务。
-5. 控制连接断开时，该连接的全部 Core 被关闭，服务线程结束，daemon 继续服务其它连接。
+5. 控制连接断开时，非 idle 的 Core 孤儿化存活、全 idle 的 Core 被关闭；服务线程结束，
+   daemon 继续服务其它连接。孤儿在下次 `openWorkspace` 时被认领（不开新进程、重放缓存
+   帧），崩溃的孤儿不重启。
 6. Core 崩溃后 daemon 在同一 channel 上重启它；超过重启上限时关闭 channel 并报告。
-7. 内层帧与 [docs/core/standalone-core.md 第 5.2 节](standalone-core.md#52-帧类型)逐项一致，daemon 不解读内层帧。
+7. 内层帧与 [docs/core/standalone-core.md 第 5.2 节](standalone-core.md#52-帧类型)逐项一致，daemon 除忙闲快照缓存与请求帧暂存两处只读窥探外不解读内层帧。
 8. 单条 channel 的拥塞不阻塞其它 channel；一条连接的等待不阻塞其它连接。
 9. daemon 恒绑 `127.0.0.1`、端口交给内核分配。
 10. 控制通道上的 `listDirectories` 返回目标机器上的子目录（连接后即可弹出远端目录选择）。
@@ -265,9 +284,14 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 16. 连上后一直不发帧的探活连接不阻塞后续接入：下一条连接立即得到服务。
 17. 任一连接发 `shutdown` 即结束整个 daemon 进程：结束前该 daemon 上全部连接的 Core 都
     被各自的会话关闭。
-18. 空闲退出（`--idle-exit 30`，SSH 引导）：daemon 启动后一直没有连接、或最后一条连接
-    断开后满 30s，daemon 自行退出并清掉状态文件；期间任何新连接取消计时，断开后重新
-    起算；`shutdown` 与空闲死线同时逼近时 `shutdown` 先到按停机处理。
+18. 空闲退出（`--idle-exit 30`，SSH 引导）：daemon 启动后一直没有连接、或「最后一条
+    连接断开**且**没有非 idle 孤儿」后满 30s，daemon 自行退出并清掉状态文件；期间任何
+    新连接取消计时，断开后重新起算；`shutdown` 与空闲死线同时逼近时 `shutdown` 先到
+    按停机处理。全 idle 的孤儿满 30s 宽限后被终止并移出孤儿表。
+21. `detachWorkspace` 把该 Core 移入孤儿表并回 `workspaceClosed { reason: 'detached' }`；
+    被 detach 的 Core 进程不退出，同连接其余 channel 的帧照常转发。
+22. 同一 endpoint 两个客户端各自的孤儿在孤儿表里按连接标识各占一条，互不覆盖；并发
+    认领同一孤儿至多一胜，败者按无孤儿处理（新起 Core）。
 19. 并发首次引导：两台机器的客户端同时对同一台未部署的服务器引导，同指纹只拉起一个
     daemon（`start` 的按指纹互斥锁，[docs/core/core-remote.md 第 2.3 节](core-remote.md#23-状态文件)）；并发部署产物互不损坏（客户端唯一
     暂存名 + 原子换名，[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）。
@@ -284,6 +308,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | --- | --- |
 | 动作分派 | `core-rs/src/main.rs`（`stdio` / `start` / `start-daemon` / `kill`） |
 | daemon 进程与 channel 管理 | `core-rs/src/daemon.rs` |
+| 孤儿表 / 认领 / detach | `core-rs/src/daemon.rs`（`OrphanRegistry` / `RoutableSink`） |
 | 远程服务（后台 daemon、状态文件、目录列举） | `core-rs/src/remote.rs` |
 | 控制通道协议 | `core-rs/src/daemon_protocol.rs`、`src/host/standalone/daemonProtocol.ts` |
 | Host 侧 daemon 客户端 | `src/host/standalone/CoreDaemon.ts` |

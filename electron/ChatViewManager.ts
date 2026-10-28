@@ -278,14 +278,19 @@ export class ChatViewManager {
     this.openNewConversation(id);
   }
 
-  /** 关闭一个工作区：销毁该目录下所有已打开的对话视图（卸内存 + 中止运行中查询） */
-  closeWorkspace(id: string): void {
+  /** 关闭一个工作区：销毁该目录下所有已打开的对话视图（卸内存 + 中止运行中查询）。
+ *
+ * `releaseSessions: false`（后台运行 detach，specs/031）只销毁视图、不向 core 发
+ * `conversationClosed`——会话与在跑任务留在（孤儿的）Core 里继续执行，视图的
+ * per-session UI 状态照常清掉。
+ */
+  closeWorkspace(id: string, opts?: { releaseSessions?: boolean }): void {
     const keys = [...this.views.keys()].filter((key) =>
       this.isSameWorkspace(this.viewWorkspaces.get(key), id),
     );
     const closedCurrent = !!this.currentSessionId && keys.includes(this.currentSessionId);
     for (const key of keys) {
-      this.destroyViewEntry(key);
+      this.destroyViewEntry(key, { releaseSession: opts?.releaseSessions !== false });
     }
     if (closedCurrent) {
       // 当前视图被销毁：清掉悬挂引用，由宿主（closeWorkspace → setActiveWorkspace）
@@ -853,18 +858,22 @@ export class ChatViewManager {
     opts?: {
       removeFromLru?: boolean;
       closeIfAlive?: boolean;
+      /** false = 后台运行（specs/031）：不发 conversationClosed，任务留在 Core 里继续跑 */
+      releaseSession?: boolean;
     },
   ): void {
     // 销毁视图前先卸内存（core：abort + 引擎出池 + MCP 释放），
     // 再做纯视图销毁（不再依赖视图层内部 abort/release，见 docs/hosts/host-matrix.md 第 6 节）
-    try {
-      if (this.closeConversation) {
-        this.closeConversation(key);
-      } else {
-        this.abortSession(key);
+    if (opts?.releaseSession !== false) {
+      try {
+        if (this.closeConversation) {
+          this.closeConversation(key);
+        } else {
+          this.abortSession(key);
+        }
+      } catch (err) {
+        console.error(`[chat-view] release before destroy failed (${key}):`, err);
       }
-    } catch (err) {
-      console.error(`[chat-view] release before destroy failed (${key}):`, err);
     }
     try {
       const view = this.views.get(key);

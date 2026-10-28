@@ -134,6 +134,11 @@ function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> 
           }
           continue;
         }
+        if (frame['kind'] === 'detachWorkspace') {
+          // specs/031：后台运行——Core「留在远端」，只回 detached 关闭帧
+          send({ kind: 'workspaceClosed', channel: frame['channel'], reason: 'detached' });
+          continue;
+        }
         if (frame['kind'] === 'shutdown') {
           socket.end();
         }
@@ -480,6 +485,47 @@ async function run(): Promise<void> {
     check('沉默判死后重连：重开 channel 重新就绪', await waitFor(() => second.isReady(), 3_000));
     check('沉默判死后重连：重开未再 fatal', secondFailure.error === null);
     check('沉默判死后重连：重开是全新连接', fake.connections() === 2);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- specs/031：detach（后台运行）----------
+  {
+    const fake = await startFakeRemote({ pong: true });
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    let exited = false;
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+      onExit: () => {
+        exited = true;
+      },
+    };
+    transport.start();
+    check('detach 用例完成握手', await waitFor(() => transport.isReady()));
+    const detachPromise = transport.detach();
+    check('detach 发出 detachWorkspace 帧', await waitFor(() =>
+      fake.received().some((line) => line.includes('"detachWorkspace"'))));
+    check('detach 不发 closeWorkspace 帧', !fake.received().some((line) => line.includes('"closeWorkspace"')));
+    await detachPromise;
+    check('detach 等到 workspaceClosed(detached) 后收尾', transport.isStopped());
+    // detached 是宿主主动选择的后台运行：onExit 按预期退出上报，不触发 fatal
+    //（Core 仍在 daemon 孤儿表里跑，报 fatal 会把忙会话标记成失败）
+    check('detached 不触发 fatal', failure.error === null);
+    check('detached 按预期退出上报', exited);
     await daemon.shutdown();
     await fake.close();
   }

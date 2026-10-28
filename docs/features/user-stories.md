@@ -23,7 +23,7 @@ last_reviewed: 2026-10-20
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
-| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～63 |
+| [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～65 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
 
 ---
@@ -68,6 +68,7 @@ last_reviewed: 2026-10-20
 | `e2e/webview/userChoicePaging.spec.ts` | US-58（分页进度 / 单选翻页 / 多选与其他并存 / Enter 语义 / answers 载荷） | webview UI |
 | `e2e/webview/spinModeInput.spec.ts` | US-39（spin 输入禁用的渲染层：禁用 + placeholder + 停止按钮转黄 + 单向不退出） | webview UI |
 | `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 他区忙碌汇总确认） | Electron 整应用 |
+| `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 
 未覆盖 e2e 的 US（US-33 的托盘图标像素外观与原生右键菜单弹窗——状态点三色、任务结束
 闪烁与左键唤出由 `e2e/electron/desktopShell.spec.ts` 桩住 `Tray` 原型断言，颜色聚合口径由
@@ -88,6 +89,9 @@ shell 退出后窗口关闭由 `e2e/electron/remoteSshExecution.spec.ts` 覆盖�
 git 口径（变更集 / 行数 / 未跟踪文档）与 commit 后的自动刷新由
 `e2e/electron/remoteSshExecution.spec.ts` 覆盖，本地 git 行数口径由
 `src/test/sidebarDocViewGit.test.ts`（临时真实 git 仓）与 `src/test/sidebarDocWatch.test.ts`
-锁定）。
+锁定；US-64 / US-65 的退出逐区三选混合决策（多远程工作区各选各的）、孤儿期间挂起
+请求的重弹与 1 小时超时不再重弹、daemon 空闲判定的宽限口径——`remoteTaskSurvival.spec.ts`
+覆盖对话框与主链路，其余场景依赖真实远端的多实例与长等待，由 `core-rs` 的 `daemon_tests`
+（孤儿化 / 认领 / 空闲判定 / 并发认领）与 `src/test/remoteCoreDaemon.test.ts` 锁定）。
 
 运行方式与前置构建见 `e2e/README.md`。

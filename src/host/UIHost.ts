@@ -20,6 +20,7 @@
 
 import type { CoreEvent } from '../shared/AssistantEventBus.js';
 import type { HostToWebviewMessage } from './webviewMessages.js';
+import type { CoreChannelCloseMode } from './Client.js';
 import type { WorkspaceRef } from './workspaceRef.js';
 
 /** 极简日志通道（兼容 vscode.OutputChannel 的形状） */
@@ -83,7 +84,11 @@ export class WebviewViewHandle {
 /** 工作区变化：打开 / 关闭 / 激活（`docs/core/client-connection.md` 第 5 节） */
 export type WorkspaceChange =
   | { type: 'opened'; ref: WorkspaceRef }
-  | { type: 'closed'; ref: WorkspaceRef }
+  /**
+   * 关闭（`closeMode` 为 specs/031 的释放形态：后台运行 = detach，Core 留在
+   * daemon 孤儿表继续执行；立即关闭 = close，现行终止路径）
+   */
+  | { type: 'closed'; ref: WorkspaceRef; closeMode: CoreChannelCloseMode }
   | { type: 'activated'; ref: WorkspaceRef };
 
 /**

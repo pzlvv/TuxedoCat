@@ -86,6 +86,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/hosts/webview-ui.md` | `WebViewUI` 实现与会话级 UI 状态 `SessionUiState` |
 | `docs/hosts/webview-facts.md` | webview 的事实与等待态：宿主决定事实、webview 不猜值 |
 | `docs/hosts/electron-multi-workspace.md` | Electron 多工作目录（对话的工作区属性、视图生命周期） |
+| `docs/hosts/workspace-close-menus.md` | 工作区标签页右键菜单的关闭动作（候选、确认与批量判定） |
 | `docs/hosts/vscode-idle-close.md` | VS Code 单视图宿主的空闲对话回收 |
 | `docs/hosts/tui.md` | TUI（第三个宿主，纯 Rust，直连帧通道） |
 | `docs/hosts/product-identity.md` | 产品身份的唯一来源与去字面化契约（占位符约定） |
