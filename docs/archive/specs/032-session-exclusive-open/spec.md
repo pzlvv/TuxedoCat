@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：会话跨实例独占打开
@@ -151,8 +151,32 @@ Windows `LockFileEx` 一类的非阻塞独占锁），获取与持有都由内�
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+（2026-10-29 /converge，逐 AC 核对 + 实现反向对照。）
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+### 已满足
+
+- **FR-001 / AC-1** → `main_tests::session_lock_rejects_mutating_and_loading_requests`（`conversationLoadRequested` 被拒回 Err + 占用通知，通知带持有者 pid）；`ensure_loaded` 同口径（`on_conversation_opened` 拒绝不建状态）。**无双实例端到端**：双实例场景依赖两个宿主进程，按 spec「对需求基线的影响」登记豁免，锁语义由 core-rs 单测锁定。
+- **FR-001 / AC-2** → `session_lock_tests::different_sessions_do_not_contend`（同目录另一会话不受牵连）；锁文件按会话 id 命名是结构性保证。
+- **FR-001 / AC-3 / AC-13** → `session_lock_tests::drop_session_releases_the_lock`（会话关闭后另一进程立即可获取）；VS Code 空闲回收与视图关闭同汇入 `conversationClosed`（零新代码）；Core 退出由内核释放（AC-14 同证据）。
+- **FR-001 / AC-10（同 Core 重入）** → `session_lock_tests::registry_reentry_does_not_self_lock`；e2e US-65（specs/031）在真实远端验证认领同一 Core 后重新装载会话无自锁。
+- **FR-001 / AC-11（后台运行不释放）** → `session_lock_tests::host_departure_does_not_release_the_lock`（宿主离场态另一进程抢锁必败）；锁的持有者是 Core 内会话实例（注册表 + 内核锁都不随连接走）。
+- **FR-002 / AC-4** → `session_lock_tests::rename_rejected_when_held_elsewhere`（数据零改动 + 占用通知）、`delete_rejected_when_closure_held_elsewhere`（闭包整体拒绝）、`config_change_rejected_when_held_elsewhere`（不建状态）；UiRequest 侧 smartNaming / compactArchive / spinDesignSave 的拒绝由 `main_tests::session_lock_rejects_…` 锁定。
+- **FR-002 / AC-5（纯读不受限）** → 同上 main_tests 用例断言会话列表照常返回；会话待办 / Spin 内容读路径无守卫（反向对照确认）。
+- **FR-002 / AC-6（未装载短持有）** → `session_lock_tests::unloaded_mutation_takes_a_short_lease`（锁内建档、变更结束另一进程立即可获取）。
+- **FR-003 / AC-7（崩溃接管）** → `session_lock_tests::takeover_after_holder_death`（持有者被杀后立即获取，无摘除协议）。
+- **FR-003 / AC-8（版本拒外）** → `session_lock_tests::unsupported_version_refuses_to_open`（版本 99 拒绝，与进程死活无关）；内容损坏照常持有 → `corrupt_content_still_holds`。
+- **FR-003 / AC-9（并发至多一胜）** → `session_lock_tests::concurrent_claim_has_at_most_one_winner`（他持必败；并发同抢由同一内核仲裁路径保证，用例注释在案）。
+- **FR-003 / AC-12（孤儿收尾后直接获得锁）** → `takeover_after_holder_death`（内核释放 + 残留文件无害）+ specs/031 的 `busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace`（收尾路径）。
+- **FR-003 / AC-14（锁文件残留不影响装载）** → 同 `takeover_after_holder_death`（残留文件在场时获取成功）。
+- **跨工作区代理派发失败（边界）** → `create_sub_agent` / `start_remote_sub_agent` 接获取、失败回 Agent 工具（`engine.rs`）；无专属单测，登记为边界路径（失败回包走既有跨工作区错误通道，specs/023）。
+
+### 偏差（已改代码，留痕）
+
+- **FR-002（clear 模式漏守卫）**：整空间清理的 `clear` 模式（清内容）同样销毁空间内会话数据，实现初版只守卫了 `remove` 模式——反向对照发现，与 FR-002「整空间清理（会话空间清空）同理」不符。修复：`ensure_space_unlocked` 提到两种模式共用（提交 9ec0731）。
+- **通知语义（Io 误发占用）**：目录解析 / 磁盘类 Io 失败不是占用，初版会误发「正被另一个窗口使用」——反向对照发现。修复：`LockError::is_rejection()`，只有 Held / 版本拒外发占用通知，Io 按技术错误原样上报（提交 9ec0731）。
+- **删除残留锁文件**：`delete_single_conversation` 不清理 `<sessionId>.session.lock`，被删会话的锁文件永久残留并被「按文件名前缀数会话」的判据（e2e US-22）数入——e2e 回归发现。修复：删除后缀清单补 `.session.lock`（提交 3855059）。
+
+### 无自动覆盖登记（实现存在，测试未覆盖，理由）
+
+- **AC-1 的宿主端到端**：双实例争用需要两个宿主进程，electron 车道单应用启动——按 spec「对需求基线的影响」的豁免口径登记，core-rs 单测矩阵 + dispatch 用例覆盖全部判定分支。
+- **跨工作区代理派发的锁失败回包**（`start_remote_sub_agent` 接获取）：需要跨 Core 装配，失败回包走既有跨工作区错误通道（specs/023），无专属单测。

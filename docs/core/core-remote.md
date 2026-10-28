@@ -46,7 +46,7 @@ last_reviewed: 2026-10-17
 
 - `--idle-exit <秒>`：空闲退出——「没有任何控制连接**且**没有非 idle 的孤儿 Core」持续
   该秒数后 daemon 自行退出（0 视为没给；孤儿语义见
-  [specs/031](../../specs/031-remote-detached-tasks/spec.md)）。SSH 引导固定传 30（见 12.8）：
+  [specs/031](../archive/specs/031-remote-detached-tasks/spec.md)）。SSH 引导固定传 30（见 12.8）：
   客户端异常退出（crash / 断电）后远端不留常驻进程——在跑任务的孤儿由 daemon 陪跑到
   任务结束，之后照常走空闲退出。缺省不设：daemon 常驻，只有 `shutdown`（`kill`）结束。
 - 没有绑定地址 / 端口 / 凭证选项：daemon 恒绑 `127.0.0.1`、端口交给内核分配（见第 2.3 节）。
@@ -101,7 +101,7 @@ last_reviewed: 2026-10-17
   （ping/pong）都按连接持有，互相隔离；两个客户端打开同一工作区得到两个互相独立的
   Core 进程（对齐本地多窗口语义，不做跨客户端共享）。
 - 连接断开时，该连接上非 idle 的 Core 孤儿化存活（移入 daemon 的孤儿表继续执行，
-  [specs/031](../../specs/031-remote-detached-tasks/spec.md)），全部 idle 的 Core 照旧关闭；
+  [specs/031](../archive/specs/031-remote-detached-tasks/spec.md)），全部 idle 的 Core 照旧关闭；
   服务线程结束，daemon 进程继续监听并服务其它连接。孤儿期间 Core 发出的用户请求
   （权限确认 / AskUserQuestion）无人应答时挂起，会话处于 waiting（应答等待沿用
   Core 的 1 小时上限，超时按既有失败路径收尾）；孤儿期间后台 Bash 任务的完成通知

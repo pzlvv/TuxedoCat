@@ -8,7 +8,7 @@ last_reviewed: 2026-10-11
 本规格描述 Core 进程的 daemon：Standalone Core 进程由 daemon 启动、监督与终止，帧通道
 在 daemon 上多路复用。一个 endpoint 对应一个 daemon，同时服务多条控制连接（每条连接
 是一个客户端）；每（连接, 工作区）一个 Core 进程。一条连接断开时，连接上非 idle 的 Core
-孤儿化存活（后台运行，[specs/031](../../specs/031-remote-detached-tasks/spec.md)），全 idle
+孤儿化存活（后台运行，[specs/031](../archive/specs/031-remote-detached-tasks/spec.md)），全 idle
 的 Core 照旧终止；任一连接发 `shutdown` 才结束整个 daemon（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
 
 Standalone Core 的进程形态与帧协议见 `docs/core/standalone-core.md`；连接模型见
@@ -145,7 +145,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   计时器；到期后该连接的会话结束。grace 期避免「关一个工作区又开一个」时反复启停。
 - 远程 daemon 的连接**不启用** grace 退出（`DaemonOptions.idle_exit = false`）：控制
   通道本身是生命周期边界，目录选择期间可以长时间没有工作区（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
-- **孤儿化与认领**（[specs/031](../../specs/031-remote-detached-tasks/spec.md)）：连接断开或
+- **孤儿化与认领**（[specs/031](../archive/specs/031-remote-detached-tasks/spec.md)）：连接断开或
   收到 `detachWorkspace` 时，最近快照存在非 idle 会话的 Core 移入**孤儿表**继续执行
   （键 = 工作区路径 + 原连接标识，同一 endpoint 两个客户端的孤儿互不覆盖；登记冲突
   落诊断并按现行关闭兜底）。孤儿表按连接共享，daemon 进程内唯一；对孤儿 Core 的帧
@@ -193,7 +193,7 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
 | daemon → Host | `workspaceOpened` | `{ kind: 'workspaceOpened', id: number, channel: number, descriptor: ChannelDescriptor }` |
 | daemon → Host | `workspaceFailed` | `{ kind: 'workspaceFailed', id: number, error: string }` |
 | Host → daemon | `closeWorkspace` | `{ kind: 'closeWorkspace', channel: number }` |
-| Host → daemon | `detachWorkspace` | `{ kind: 'detachWorkspace', channel: number }`（后台运行，[specs/031](../../specs/031-remote-detached-tasks/spec.md)：Core 移入孤儿表，连接与其余 channel 不受影响） |
+| Host → daemon | `detachWorkspace` | `{ kind: 'detachWorkspace', channel: number }`（后台运行，[specs/031](../archive/specs/031-remote-detached-tasks/spec.md)：Core 移入孤儿表，连接与其余 channel 不受影响） |
 | daemon → Host | `workspaceClosed` | `{ kind: 'workspaceClosed', channel: number, reason: 'closed' \| 'crashed' \| 'failed' \| 'detached' }` |
 | daemon → Host | `channelReset` | `{ kind: 'channelReset', channel: number, reason: string }` |
 | 双向 | `frame` | `{ kind: 'frame', channel: number, frame: <内层帧> }` |

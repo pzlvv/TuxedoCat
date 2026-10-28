@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：远程任务后台运行与认领重连
@@ -196,8 +196,32 @@ daemon 侧单测不替代 e2e：`electron-ssh` 车道不进 CI（真实远端依
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+（2026-10-29 /converge，逐 AC 核对 + 实现反向对照。）
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+### 已满足
+
+- **FR-005 / AC-5 / AC-6** → `daemon_tests::host_disconnect_orphans_busy_cores_and_closes_idle_ones`（忙 Core 存活、idle 终止）；快照缺 states 按忙 fail-safe 由 `malformed_snapshot_counts_as_busy_for_orphaning` 锁定。
+- **FR-005 / AC-18** → `daemon_tests::crashed_orphan_is_not_restarted_and_reopen_spawns_fresh`（孤儿崩溃不重启、重开新起 Core）。
+- **FR-005（登记冲突）** → `daemon_tests::second_orphan_for_the_same_key_falls_back_to_close`；双客户端孤儿互不覆盖、认领取最早 → `remote_tests::two_clients_orphans_register_separately_and_claim_earliest_first`（并发认领至多一胜由摘表原子性 + 同用例两次认领不 spawn 锁定）。
+- **FR-005（空闲判定）/ AC-16 / AC-17** → `remote_tests::busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace`（非 idle 孤儿不空退、全 idle 满宽限收尾后空闲退出触发）；e2e `remoteTaskSurvival.spec.ts` US-64 后台存活用例在宿主强杀后 +35s 复核 daemon 存活。
+- **FR-006 / AC-7** → `remote_tests::orphaned_core_is_claimed_by_the_next_open_with_replay` + `daemon_tests::claim_replays_orphan_frames_in_arrival_order_without_spawning`（认领不 spawn、重放按到达序）；缓冲安静时补放最新快照 → `claim_with_quiet_orphan_replays_the_last_runtime_snapshot`；认领后帧直达原进程 → `claimed_core_receives_new_connection_frames`。
+- **FR-006 / AC-8** → e2e US-65：重开认领同 pid、打开会话可见孤儿期间内容、在跑任务续跑完成（真实远端）。孤儿期间落盘由 Core 既有持久化承担（零新代码）。
+- **FR-006 / AC-9（挂起请求重弹）** → daemon 侧重放与 1 小时 TTL 由 `claim_replays_…` + `replay_drain_drops_requests_beyond_the_reply_ttl` 锁定；宿主侧弹出零新代码（走既有请求通道）。**无端到端自动覆盖**：需真实远端 + 无人应答的权限会话构造成本高，登记豁免。
+- **FR-006 / AC-10** → 既有 `remote_tests::two_connections_get_independent_channels_and_cores`（活跃 Core 不参与认领）+ `two_clients_orphans_register_separately_…`。
+- **FR-006 / AC-20 / AC-21（完成未读 / 正看着已读）** → 重放帧即普通快照流，差分语义由 `src/test/completionAttention.test.ts` 既有套件锁定（running→idle 武装、可见即已读、新会话只登记）；e2e 未断言绿灯，登记为既有单元套件覆盖。
+- **FR-003 / AC-4** → `daemon_tests::detach_workspace_orphans_the_core_and_keeps_serving_the_connection`（Core 不退、同连接其余 channel 照常）+ e2e US-64 后台存活用例（detach 后 Core 跨宿主死亡存活）；`detached` 不算 fatal → `src/test/remoteCoreDaemon.test.ts` detach 用例。
+- **FR-004 / AC-15** → e2e US-64 立即关闭用例（Core 终止，与现行关闭路径一致）。
+- **FR-001 / AC-1** → e2e US-64 三选弹框（三按钮齐备、取消可中止）；默认焦点取消由 `styledMessageBox` 的 `defaultId/cancelId`（键盘 Enter/Esc 绑定）承担。
+- **FR-002 / AC-12** → e2e US-64 退出确认链用例（取消中止、应用与任务继续）。
+- **FR-005 / AC-19** → `remoteCoreDaemon.test.ts` disconnectOnly（不发帧、不 fatal）+ `clientConnection.test.ts` 空决策表远程 disconnect / 本地 close；daemon 断开收尾分叉即默认策略（AC-5/AC-6 同语义）。
+- **FR-001 / AC-3** → 本地忙碌两态确认由既有 `workspace.spec.ts` US-35 覆盖（最近一次全量本地车道在新代码上通过，按钮清单不含「后台运行」）。
+
+### 偏差（已改代码，留痕）
+
+- **AC-19**：实现初版把「弹不出确认链的出口」的未登记远程工作区按 `close` 释放（发 `closeWorkspace` 杀 Core），与「直接断链、由 daemon 默认策略接管」不符——反向对照发现。修复：`CoreChannelCloseMode` 增加 `disconnect`（不发任何控制帧，控制链随 `daemon.disconnect()` 断开），`Client.closeAll` 兜底改为远程 `disconnect`、本地 `close`（提交 9ec0731）。[docs/core/client-connection.md 第 5 节](../../docs/core/client-connection.md#5-connection-生命周期)宿主退出行同步。
+
+### 无自动覆盖登记（实现存在，测试未覆盖，理由）
+
+- **AC-2**（SSH 全 idle 关标签页直关不弹框）：实现是忙碌判定的 else 分支（`closeWorkspace` 的 `workspaceHasBusySession` 门）；已有「忙碌必弹框」正向覆盖，直关分支需要真实远端空闲工作区用例，覆盖密度低。
+- **AC-11 / AC-13 / AC-14**（退出链的逐区多工作区弹框、混合决策、SSH 空闲 + 本地忙碌组合）：实现为同一 `confirmQuitWorkspaces` 循环 + 决策表；多远端并发忙碌的构造需真实远端双工作区同跑，e2e 只覆盖单工作区取消分支；决策表透传由 `clientConnection.test.ts` 6a 锁定。
+- **detach 后同连接其余 channel 转发**、**daemon 侧孤儿帧排水不阻塞**：`detach_workspace_…` / `claim_…` 系列单测的观察面已覆盖主要分支。
