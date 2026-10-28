@@ -28,8 +28,12 @@ daemon 与 Core 是同一二进制（`docs/core/core-daemon.md` 第 1 节第 8 �
 「除忙闲快照缓存与请求帧暂存两处只读窥探外不解读内层帧」。
 建议就此进 ADR（见文末）。
 
-**孤儿化**：daemon 增加全局孤儿表（`HashMap<workspace_path, OrphanEntry>`，键为
-`openWorkspace` 携带的 `workspace_ref.path`，per-endpoint daemon 内唯一）。两条进入路径：
+**孤儿化**：daemon 增加全局孤儿表（`HashMap<OrphanKey, OrphanEntry>`，`OrphanKey` =
+`openWorkspace` 携带的 `workspace_ref.path` + 原连接标识，per-endpoint daemon 内唯一）。
+键必须带连接标识：同一 endpoint 上两个客户端各开同一工作区是两个独立 Core（AC-10 的
+多窗口语义），只用 path 作键时第二次孤儿化会覆盖第一条，被覆盖的 Core 既不在表里也不会
+被关闭，泄漏成无主进程——该进程不退则它持有的会话锁（specs/032）不会释放，会话对所有
+实例永久不可装载。同键重复插入是错误，落诊断并拒绝插入，不静默覆盖。两条进入路径：
 
 1. **连接断开**（现有 `close_all` 调用点）：逐 channel 查 `last_runtime`——存在非 idle
    会话 → 孤儿化；全 idle 或无快照 → 现行关闭。孤儿化 = 该 channel 的
@@ -49,10 +53,13 @@ AC-14 / AC-15）。缓冲有上限（如最近 200 帧，超限丢最旧并落�
 `last_runtime` 一帧，保证新宿主拿到全量当前状态（FR-006 的「重放完成后推送全量快照」
 由这条重放承担，Core 无感知）。
 
-**认领**：`open_workspace`（daemon.rs 第 634 行）先查孤儿表，命中且进程存活 → 不 spawn，
-把 `CoreProcessHandle` 移入本连接的 channel 表，重放缓冲（按原序：先快照后请求，保持
-相对顺序）到新连接出口，然后清缓冲。未命中或进程已死（孤儿崩溃从表中移除，AC-13）→
-现行 spawn 路径。活跃连接的 channel 不进孤儿表，AC-12 的多窗口语义天然保持。
+**认领**：`open_workspace`（daemon.rs 第 634 行）先查孤儿表，命中的候选按 path 精确匹配，
+若同 path 有多条孤儿，取进入孤儿表最早的一条（后来的都是同工作区的独立 Core，留给它自己
+的客户端认领或空闲回收）。命中且进程存活 → 不 spawn，把 `CoreProcessHandle` 移入本连接的
+channel 表，重放缓冲（按原序：先快照后请求，保持相对顺序）到新连接出口，然后清缓冲。
+「摘表 + 句柄移交」在同一把锁内完成，同一孤儿并发认领至多一胜，败者重查孤儿表后按无孤儿
+处理。未命中或进程已死（孤儿崩溃从表中移除，AC-13）→ 现行 spawn 路径。活跃连接的 channel
+不进孤儿表，AC-12 的多窗口语义天然保持。
 
 **空闲判定（FR-007）**：daemon 的空闲死线（`remote.rs` 起算、`run_daemon` 定时器驱动）
 从「无控制连接」改为「无控制连接**且**孤儿表内无非 idle Core」；孤儿快照转全 idle 后
@@ -105,6 +112,12 @@ Connection 走新路径——不调 `disposeBus`（即不向 daemon 发 `closeWo
 `closeConnection`。弹不出对话框的出口（窗口已毁）：决策表为空 = 全部只断链，
 daemon 默认策略接管（spec AC-15）。
 
+**与 specs/032 会话锁的咬合**：detach / 孤儿化不触碰 Core 内任何会话状态，会话锁的
+注册表与内核锁原样保留（锁的持有者是 Core 内的会话实例，宿主断开不释放）；认领是同
+Core 重入，宿主侧逐会话打开的重放路径在 Core 侧命中既有锁注册表、不自锁。他实例对
+后台会话的装载 / 变更拒绝由 032 的锁守卫产生，daemon 侧无新增逻辑，本方案不改
+`core-rs` 会话引擎即自然成立。
+
 **完成未读（FR-006 末段）**：宿主侧**零新机制**——认领重放的快照序列经既有总线进入
 `completionAttention` 的差分（空表登记 → 后续 running → idle 触发武装），绿灯、已读
 判定、武装条件全部复用。一个风险与对策：启动恢复路径的认领发生在窗口尚未聚焦时，
@@ -116,7 +129,7 @@ daemon 默认策略接管（spec AC-15）。
 
 | 模块 / 文件 | 改动 | 契约影响 |
 | --- | --- | --- |
-| `core-rs/src/daemon.rs` | 孤儿表、`OrphanSink` 帧出口路由、窥探点、重放缓冲、认领、空闲判定、孤儿崩溃不重启 | 无 |
+| `core-rs/src/daemon.rs` | 孤儿表（键 = path + 原连接标识，登记冲突拒绝插入）、`OrphanSink` 帧出口路由、窥探点、重放缓冲、认领（摘表与移交原子化）、空闲判定、孤儿崩溃不重启 | 无 |
 | `core-rs/src/daemon_protocol.rs` | 新增 `detachWorkspace` 帧；`WorkspaceCloseReason` 增加 `'detached'` | daemon 控制协议（帧表见 [docs/core/core-daemon.md 第 7.2 节](../../docs/core/core-daemon.md#72-帧类型)） |
 | `core-rs/src/remote.rs` | 空闲死线起算条件纳入孤儿忙闲 | 无 |
 | `src/host/standalone/daemonProtocol.ts` | 与 Rust 侧同步两个协议成员 | 同上 |
@@ -169,6 +182,10 @@ daemon 默认策略接管（spec AC-15）。
    `completionAttention` 的差分机制本来就要吃快照序列，否决。
 6. **孤儿 detached 存续上限（24h）**：spec 评审中否决——等待用户的孤儿让 daemon 陪跑
    是接受的语义，`kill` 是兜底出口。
+7. **孤儿表纯 path 作键**：实现最简，但同一 endpoint 两个客户端各开同一工作区时第二次
+   孤儿化覆盖第一条（AC-10 的两独立 Core 是合法形态），被覆盖的 Core 泄漏成无主进程——
+   它不退则 `specs/032-session-exclusive-open` 的会话锁不释放，会话对所有实例永久不可
+   装载。修订为 path + 原连接标识复合键、登记冲突拒绝插入，否决纯 path 键。
 
 **建议进 ADR**：「daemon 对内层帧的两类只读窥探」（忙闲快照缓存 + 请求帧暂存）修正
 「daemon 不解读内层帧」不变量——这是跨 Core 与 daemon 边界的架构决策，值得记录背景与
