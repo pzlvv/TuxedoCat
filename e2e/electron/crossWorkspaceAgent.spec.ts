@@ -173,10 +173,11 @@ test('US-56 跨工作区对话打开后输入禁用、返回发起方按 creator
   await row.click();
   const chatB = await app.chatPage({ sessionIncludes: rowSid2 ?? '' });
 
-  // 输入框禁用 + placeholder「非用户创建对话无法输入」（specs/025 FR-004）
+  // 输入框禁用 + placeholder「对话已结束」（user-message-pipeline FR-008：
+  // 非用户创建的会话收尾后输入关闭；子代理此时已 Reply 收尾，转入空闲禁用）
   const textareaB = chatB.locator('textarea.input-textarea');
   await expect(textareaB).toBeDisabled({ timeout: 20_000 });
-  await expect(textareaB).toHaveAttribute('placeholder', '非用户创建对话无法输入');
+  await expect(textareaB).toHaveAttribute('placeholder', '对话已结束');
 
   // 「返回发起方」按钮按 creator 跳转（specs/025 FR-005）：切回工作区 A 并打开发起方对话
   const back = chatB.getByTitle(/返回父对话|Back to parent/);

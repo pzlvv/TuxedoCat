@@ -143,7 +143,7 @@ export const zhDict: Record<string, string> = {
   'messages.jumpToBottom': '跳到底部',
   'inputArea.placeholder': '输入消息，Shift+Enter 换行',
   'inputArea.placeholderSpinMode': 'Spin 模式下不响应用户输入',
-  'inputArea.placeholderNotUserCreated': '非用户创建对话无法输入',
+  'inputArea.placeholderConversationEnded': '对话已结束',
   'inputArea.placeholderNeedConfigPrefix': '请先配置模型服务，',
   'inputArea.placeholderNeedConfigClick': '点击设置',
   'inputArea.placeholderNeedConfigTitle': '请先配置模型服务，点击设置',

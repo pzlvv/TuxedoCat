@@ -1,12 +1,14 @@
 /**
- * 主输入框的禁用与 placeholder 决策（specs/016 FR-004；specs/025 FR-004）。
+ * 主输入框的禁用与 placeholder 决策（specs/016 FR-004；specs/025 FR-004；US-51 /
+ * US-56 的输入口径见 docs/features/user-message-pipeline.md 第 3.3 节）。
  *
  * 纯函数，InputArea 与测试共用一份实现（与 `host/abortButtonState.ts` 同模式），
- * 不在组件里另写一遍 `if`。三个禁用来源用判别原因区分（方案区分，specs/025 FR-004）：
+ * 不在组件里另写一遍 `if`。禁用来源用判别原因区分（方案区分，specs/025 FR-004）：
  * - provider 未配置：禁用 + 引导覆盖层（打开设置）；
  * - spin 模式：禁用 + placeholder 提示（会话不受理输入），无覆盖层；
- * - 非用户创建（creator 为 agent 形态）：禁用 + placeholder 提示——对话由创建方
- *   Agent 驱动，目标侧用户不输入（specs/025 FR-004）。
+ * - 非用户创建且已结束（creator 为 agent 形态 + 运行时快照 idle）：禁用 + placeholder
+ *   提示「对话已结束」。非用户创建的会话**运行中可输入**（忙时走既有排队语义），
+ *   Reply 检出与驱动收尾后由 core 拒收并丢弃排队消息（UI 禁用随空闲态到达）。
  */
 
 import type { SessionCreator } from '../shared/sessionCreator';
@@ -18,33 +20,38 @@ export interface InputAreaDisableFacts {
   workMode: 'normal' | 'spin';
   /** 会话是否非用户创建（creator 为 agent 形态；specs/025 FR-004） */
   notUserCreated: boolean;
+  /**
+   * 会话是否已结束（运行时快照 `idle`；快照未到达按已结束处理——不猜「可输入」，
+   * 等待态宁禁勿放）。仅对非用户创建的会话参与禁用判定。
+   */
+  sessionEnded: boolean;
 }
 
 /** 输入禁用的判别原因（specs/025 FR-004：与 spin / 未配置服务商方案区分） */
-export type InputDisabledReason = 'providerNotConfigured' | 'spinMode' | 'notUserCreated';
+export type InputDisabledReason = 'providerNotConfigured' | 'spinMode' | 'conversationEnded';
 
 /**
  * 输入禁用原因；`null` = 可输入。
- * 优先级沿用既有次序并在其后插入（specs/025 FR-004）：Spin > 非用户创建 > 未配置
- * 服务商（引导覆盖层只属于 provider 分支，仅作用于可输入会话）。
+ * 优先级沿用既有次序并在其后插入（specs/025 FR-004）：Spin > 非用户创建已结束 >
+ * 未配置服务商（引导覆盖层只属于 provider 分支，仅作用于可输入会话）。
  */
 export function resolveInputDisabledReason(facts: InputAreaDisableFacts): InputDisabledReason | null {
   if (facts.workMode === 'spin') return 'spinMode';
-  if (facts.notUserCreated) return 'notUserCreated';
+  if (facts.notUserCreated && facts.sessionEnded) return 'conversationEnded';
   if (facts.providerConfigured === false) return 'providerNotConfigured';
   return null;
 }
 
 /**
- * placeholder 文案按禁用原因选择：spin / 非用户创建换提示文案，provider 未配置取
- * 空串（引导由覆盖层负责，specs/016 FR-004），可输入取默认文案。
+ * placeholder 文案按禁用原因选择：spin / 非用户创建已结束换提示文案，provider 未配置
+ * 取空串（引导由覆盖层负责，specs/016 FR-004），可输入取默认文案。
  */
 export function resolveInputPlaceholderText(
   reason: InputDisabledReason | null,
-  texts: { default: string; spin: string; notUserCreated: string },
+  texts: { default: string; spin: string; conversationEnded: string },
 ): string {
   if (reason === 'spinMode') return texts.spin;
-  if (reason === 'notUserCreated') return texts.notUserCreated;
+  if (reason === 'conversationEnded') return texts.conversationEnded;
   if (reason === 'providerNotConfigured') return '';
   return texts.default;
 }

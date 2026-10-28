@@ -83,11 +83,25 @@ test('US-35 多工作区标签页：恢复打开集合、切换活动工作区�
   // 60s：一轮完整轮次在慢机器负载下可超 30s（实测）
   await expect(betaChat.getByText(/收到：工作区 B/).first()).toBeVisible({ timeout: 60_000 });
 
+  // 会话按目录隔离（US-35 验收 3：独立对话上下文）的判定口径是「消息流（.jsonl）
+  // 只出现在 B 的项目目录」：启动期 A 的预载对话会被会话级配置下发兜底建档（0 消息
+  // meta.json，specs/defects/session-config-lost-before-first-message），A 的项目目录
+  // 可能先于任何消息出现，目录数量不再等于发过消息的工作区数。
   const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
   const projectDirs = fs.readdirSync(conversationsRoot);
-  expect(projectDirs.length).toBe(1);
-  const dirName = projectDirs[0];
-  expect(decodeURIComponent(dirName)).toContain('e2e-ws-beta');
+  const betaDir = projectDirs.find((dir) => decodeURIComponent(dir).includes('e2e-ws-beta'));
+  expect(betaDir, 'B 工作区的项目目录应存在').toBeDefined();
+  if (betaDir === undefined) return;
+  const betaFiles = fs.readdirSync(path.join(conversationsRoot, betaDir));
+  expect(betaFiles.some((file) => file.endsWith('.jsonl')), 'B 目录里应有 B 消息的会话流').toBe(true);
+  for (const dir of projectDirs) {
+    if (dir === betaDir) continue;
+    const otherFiles = fs.readdirSync(path.join(conversationsRoot, dir));
+    expect(
+      otherFiles.some((file) => file.endsWith('.jsonl')),
+      `B 的消息串进了别的目录：${decodeURIComponent(dir)}`,
+    ).toBe(false);
+  }
 
   await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
