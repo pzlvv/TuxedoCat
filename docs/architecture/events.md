@@ -238,7 +238,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | | `conversationStarted` | `conversationOpened` |
 | --- | --- | --- |
 | 时机 | 用户点「新建对话」，会话还没有任何内容 | 用户点开一个已有会话 |
-| 磁盘状态 | meta.json / .jsonl 都不存在（第一条消息时由落盘创建；显式改名 / spin 改名同样建档） | 已存在，需要从磁盘加载 |
+| 磁盘状态 | meta.json 通常不存在（第一条消息时由落盘创建；显式改名 / spin 改名同样建档；首条消息前改动会话级配置时由 `history.update_context` 兜底建档，见 [docs/features/web-search.md 第 2 节](../features/web-search.md#fr-004开关语义)），`.jsonl` 不存在 | 已存在，需要从磁盘加载 |
 | core 侧动作 | 预创建引擎（MCP 引用随 `start_conversation` 建立） | 加载会话、恢复引擎、建立 MCP 引用（`on_conversation_opened`） |
 | UI 侧动作 | 设空标题、查余额、下发 settings.json 默认配置、必要时弹 LLM 配置引导 | 渲染消息、恢复输入草稿与 session 状态 |
 

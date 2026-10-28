@@ -5246,6 +5246,56 @@ fn message_payload_overrides_apply_after_metadata_except_established_web_search(
     assert_eq!(state.web_search, Some(false));
 }
 
+/// 会话级配置在 meta.json 建档前（首条消息前）也要落盘并可恢复
+/// （specs/defects/session-config-lost-before-first-message）：
+/// 新建对话只建内存引擎，磁盘无 meta.json；窗口内切配置曾静默丢失。
+#[test]
+fn session_config_persists_before_first_message_and_restores() {
+    let sandbox = Sandbox::new("engine-config-before-first-message");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    let harness = EngineHarness::allow_all();
+
+    // 新建对话：只建内存引擎，不落任何盘
+    harness.core.session("s1");
+    assert!(
+        history::load_metadata("s1", &workspace).is_none(),
+        "测试前提：会话尚未建档"
+    );
+
+    // 首条消息前切配置（与 webview 五个 set 消息同路径）
+    harness.core.on_session_config_changed("s1", &json!({ "key": "webSearch", "value": false }));
+    harness.core.on_session_config_changed("s1", &json!({ "key": "agentMode", "value": "auto" }));
+    harness.core.on_session_config_changed("s1", &json!({ "key": "thinkingEffort", "value": "high" }));
+    harness.core.on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "minimal" }));
+
+    // 配置变化即兜底建档：五字段全部落进 context
+    let metadata = history::load_metadata("s1", &workspace).expect("配置应建档 meta.json");
+    assert_eq!(metadata["context"]["webSearch"], false);
+    assert_eq!(metadata["context"]["agentMode"], "auto");
+    assert_eq!(metadata["context"]["thinkingMode"], "high");
+    assert_eq!(metadata["context"]["promptMode"], "minimal");
+
+    // 兜底建档不出现在对话列表：messageCount 0 且无 clearedAt 被过滤
+    assert!(
+        history::load_conversation_list(Some(&workspace))
+            .iter()
+            .all(|item| item["sessionId"] != "s1"),
+        "零消息的配置建档不应出现在对话列表"
+    );
+
+    // 模拟 Core 重启后重开：ensure_loaded 从 meta.json 恢复
+    drop(harness);
+    let harness = EngineHarness::allow_all();
+    harness.core.ensure_loaded("s1").unwrap();
+    let state = harness.core.session("s1");
+    let state = state.lock().unwrap();
+    assert_eq!(state.web_search, Some(false));
+    assert_eq!(state.agent_mode, "auto");
+    assert_eq!(state.thinking_effort.as_deref(), Some("high"));
+    assert_eq!(state.prompt_mode.as_deref(), Some("minimal"));
+}
+
 // ==================== 事件粒度 ====================
 
 /// 内部 diff：状态没变不发事件。

@@ -26,6 +26,7 @@ import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/shared/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
 import { watchWorkspaceFile, unwatchWorkspaceFile } from '../src/host/coreFacts.js';
+import { viewerWindowWebPreferences } from './viewerWindowPrefs.js';
 import { tt } from '../src/host/i18n.js';
 import { imageMimeFor } from './fileTypes.js';
 import { remoteFileReaderFor, sharedClientFor } from './sidebarFilesRemote.js';
@@ -700,12 +701,7 @@ export class ElectronUIHost implements UIHost {
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
-      webPreferences: {
-        sandbox: false,
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, 'imageViewerPreload.cjs'),
-      },
+      webPreferences: viewerWindowWebPreferences('image'),
     });
     guardViewNavigation(win.webContents, 'image-viewer');
     await win.loadFile(indexPath);
@@ -739,10 +735,7 @@ export class ElectronUIHost implements UIHost {
       autoHideMenuBar: true,
       // 与 markdownHtml 的暗色底色一致：页面加载完成前不闪另一主题的色块
       backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
-      webPreferences: {
-        sandbox: true,
-        preload: path.join(__dirname, 'markdownPreload.cjs'),
-      },
+      webPreferences: viewerWindowWebPreferences('markdown'),
     });
     // 预览页里的 http(s) / mailto 链接是 target=_blank：不拦的话 Electron 会新开一个
     // 应用内窗口装外部页面（默认 setWindowOpenHandler 行为），这里统一交给系统浏览器
@@ -787,12 +780,7 @@ export class ElectronUIHost implements UIHost {
       // 兜底底色与 Monaco 的 vs / vs-dark 编辑器底色一致（见 electron/monaco/main.ts），
       // 页面加载完成前不闪另一种主题的色块
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
-      webPreferences: {
-        sandbox: false,
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, 'monacoPreload.cjs'),
-      },
+      webPreferences: viewerWindowWebPreferences('text'),
     });
     // 页面注入 monacoPreload（读盘 / 写文件）：同其他应用自有页面一样拒绝窗口内导航
     guardViewNavigation(win.webContents, 'monaco');
