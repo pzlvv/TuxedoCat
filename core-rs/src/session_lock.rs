@@ -35,6 +35,16 @@ pub enum LockError {
     Io(String),
 }
 
+impl LockError {
+    /// 是否为「他持 / 版本拒外」——占用通知只对这两类发；Io 是技术失败不发。
+    pub fn is_rejection(&self) -> bool {
+        matches!(
+            self,
+            LockError::Held { .. } | LockError::UnsupportedVersion { .. }
+        )
+    }
+}
+
 impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

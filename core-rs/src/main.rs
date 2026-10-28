@@ -302,11 +302,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             // specs/032 FR-002：变更全锁——被其他实例持有时拒绝；未装载时取
             // 短持有租约，写入期间持锁，结束即释放
             let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
-                core.emit_locked_notice(
-                    session_id,
-                    crate::core_text::SESSION_LOCKED_CHANGE,
-                    &error.to_string(),
-                );
+                lock_change_rejection_notice(core, session_id, &error);
                 error.to_string()
             })?;
             let result = smart_naming::smart_name_session(session_id);
@@ -321,11 +317,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .ok_or_else(|| "compactArchiveRequested without sessionId".to_string())?;
             // specs/032 FR-002：手动压缩是变更入口——同 smartNaming 的短持有守卫
             let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
-                core.emit_locked_notice(
-                    session_id,
-                    crate::core_text::SESSION_LOCKED_CHANGE,
-                    &error.to_string(),
-                );
+                lock_change_rejection_notice(core, session_id, &error);
                 error.to_string()
             })?;
             let result = compact_archive_display(session_id);
@@ -363,16 +355,16 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .map(Ok)
                 .unwrap_or_else(|| core.project_of(session_id));
             if let Ok(project) = project_dir {
-                crate::session_lock::acquire_for_core(core, session_id, &project).map_err(
-                    |error| {
-                        core.emit_locked_notice(
+                crate::session_lock::acquire_for_core(core, session_id, &project)
+                    .map_err(|error| {
+                        lock_rejection_notice(
+                            core,
                             session_id,
+                            &error,
                             crate::core_text::SESSION_LOCKED_OPEN,
-                            &error.to_string(),
                         );
                         format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error)
-                    },
-                )?;
+                    })?;
             }
             Ok(conversation_load_payload(core, session_id))
         }
@@ -412,11 +404,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .ok_or_else(|| "spinDesignSaveRequested without data".to_string())?;
             // specs/032 FR-002：Spin 设计写入是变更入口——同 smartNaming 的守卫
             let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
-                core.emit_locked_notice(
-                    session_id,
-                    crate::core_text::SESSION_LOCKED_CHANGE,
-                    &error.to_string(),
-                );
+                lock_change_rejection_notice(core, session_id, &error);
                 error.to_string()
             })?;
             let result = spin_design_save_payload(session_id, data);
@@ -587,6 +575,20 @@ fn spin_design_save_payload(session_id: &str, data: &Value) -> Value {
 /// - 没有归档 → `null`（宿主据此提示「没有可展开的内容」）；
 /// - 归档里已带摘要（新格式）→ `归档 + 当前保留区`；
 /// - 归档里没有摘要（旧格式）→ `归档 + 主 JSONL 里的摘要 + 当前保留区`。
+/// specs/032：锁拒绝的占用通知只对「他持 / 版本拒外」发——Io 失败（目录解析 /
+/// 磁盘错误）不是占用，发占用文案会误导；按技术错误原样上报。
+fn lock_rejection_notice(core: &Core, session_id: &str, error: &crate::session_lock::LockError, key: &str) {
+    if error.is_rejection() {
+        core.emit_locked_notice(session_id, key, &error.to_string());
+    } else {
+        eprintln!("[core] session lock io error for {session_id}: {error}");
+    }
+}
+
+fn lock_change_rejection_notice(core: &Core, session_id: &str, error: &crate::session_lock::LockError) {
+    lock_rejection_notice(core, session_id, error, crate::core_text::SESSION_LOCKED_CHANGE);
+}
+
 /// specs/032 FR-002：整空间删除前逐会话取变更锁验证。已装载（Registered）放行；
 /// 目录解析不出的条目无数据可锁，放行；他持即拒。
 fn ensure_space_unlocked(core: &Core, dir_name: &str) -> Result<(), String> {
@@ -803,22 +805,20 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 .and_then(Value::as_str)
                 .unwrap_or(&session_id)
                 .to_string();
-            let outcome = if mode == "remove" {
-                // specs/032 FR-002：整空间删除是变更入口——空间内任一会话被其他
-                // 实例持有时整体拒绝、数据零改动
-                match ensure_space_unlocked(core, &dir_name) {
-                    Err(error) => {
-                        core.emit_locked_notice(
-                            &session_id,
-                            crate::core_text::SESSION_LOCKED_CHANGE,
-                            &error,
-                        );
-                        Err(format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error))
-                    }
-                    Ok(()) => history::remove_conversation_space(&dir_name),
+            // specs/032 FR-002：整空间清理是变更入口（clear 清内容、remove 删目录，
+            // 两者都销毁空间内的会话数据）——空间内任一会话被其他实例持有时整体
+            // 拒绝、数据零改动
+            let outcome = match ensure_space_unlocked(core, &dir_name) {
+                Err(error) => {
+                    core.emit_locked_notice(
+                        &session_id,
+                        crate::core_text::SESSION_LOCKED_CHANGE,
+                        &error,
+                    );
+                    Err(format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error))
                 }
-            } else {
-                history::clear_conversation_space(&dir_name)
+                Ok(()) if mode == "remove" => history::remove_conversation_space(&dir_name),
+                Ok(()) => history::clear_conversation_space(&dir_name),
             };
             // 成功与失败都必须发 `conversationSpaceCleared` 回执（判别联合）：
             // webview 设置面板的「删除中」按钮靠它解除——UiEvent 是 fire-and-forget，

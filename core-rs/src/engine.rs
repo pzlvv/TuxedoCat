@@ -1966,8 +1966,12 @@ impl Core {
         // 本 Core 已装载（Registered）放行；未装载取短持有租约，锁内写入
         let lease = match crate::session_lock::begin_mutation(self, session_id) {
             Ok(lease) => lease,
+            // Io（目录解析 / 磁盘错误）不是占用：静默返回（与既有行为一致），
+            // 只有锁拒绝发占用通知
             Err(error) => {
-                self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                if error.is_rejection() {
+                    self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                }
                 return;
             }
         };
@@ -1997,8 +2001,11 @@ impl Core {
         // specs/032 FR-002：会话配置变更是变更入口——被其他实例持有时拒绝
         let lease = match crate::session_lock::begin_mutation(self, session_id) {
             Ok(lease) => lease,
+            // Io 不是占用：静默返回，只有锁拒绝发占用通知
             Err(error) => {
-                self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                if error.is_rejection() {
+                    self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                }
                 return;
             }
         };

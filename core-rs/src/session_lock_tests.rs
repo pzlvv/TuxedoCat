@@ -167,6 +167,20 @@ fn registry_reentry_does_not_self_lock() {
 }
 
 #[test]
+fn different_sessions_do_not_contend() {
+    // AC-2（FR-001）：锁是会话级——同目录的另一个会话不被他持会话牵连
+    let _env = test_env();
+    let project = unique_project("session-level");
+    let (_path, mut child) = held_by_child(&project, "s-a");
+    let handle = session_lock::acquire(&lock_file(&project, "s-b"))
+        .expect("同目录的另一个会话必须可获取");
+    drop(handle);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(temp_dir("session-level"));
+}
+
+#[test]
 fn drop_session_releases_the_lock() {
     let _env = test_env();
     let project = unique_project("release");

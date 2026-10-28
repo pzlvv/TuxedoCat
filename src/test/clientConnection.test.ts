@@ -215,6 +215,10 @@ function createClientHarness(): ClientHarness {
 
 const WS_A: WorkspaceRef = localWorkspaceRef('D:/repo/a');
 const WS_B: WorkspaceRef = localWorkspaceRef('D:/repo/b');
+const WS_REMOTE: WorkspaceRef = remoteWorkspaceRef(
+  { host: 'remote.test', port: 22, user: 'u', auth: { kind: 'sshPassword', password: 'p' } },
+  '/repo',
+);
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
@@ -429,9 +433,15 @@ async function run(): Promise<void> {
 
     const silent = createClientHarness();
     silent.client.openWorkspace(WS_A);
-    // 弹不出确认链的出口传空决策表：全部按现行 close 处理
+    // 弹不出确认链的出口传空决策表：本地终止（AC-6 / AC-19 的兜底语义）
     await silent.client.closeAll(new Map());
-    check('空决策表全部走现行 close', silent.disposeModes[0] === 'close');
+    check('空决策表本地走现行 close', silent.disposeModes[0] === 'close');
+
+    const remote = createClientHarness();
+    remote.client.openWorkspace(WS_REMOTE);
+    // 未登记的远程工作区只断链：daemon 的断开收尾按默认策略分叉（AC-19）
+    await remote.client.closeAll(new Map());
+    check('空决策表远程走 disconnect 只断链', remote.disposeModes[0] === 'disconnect');
   }
 
   // ── 6b. 启动期空引用占位 Connection：打开真实工作区时销毁 ──

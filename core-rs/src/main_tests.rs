@@ -1835,6 +1835,14 @@ fn session_lock_rejects_mutating_and_loading_requests() {
         assert!(result.is_err(), "must reject: {request}");
     }
 
+    // 纯读不受限（AC-5）：会话列表照常返回
+    let list = dispatch_ui_request(
+        &core,
+        &json!({ "type": "conversationListRequested", "workspacePath": null }),
+    )
+    .expect("reads are not restricted by the session lock");
+    assert!(list.is_array());
+
     // 占用通知（键 + 参数）：装载走 lockedOpen，三个变更走 lockedChange
     let notices: Vec<Value> = sink
         .events()

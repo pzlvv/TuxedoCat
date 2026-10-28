@@ -286,8 +286,9 @@ function openStandaloneChannel(
     });
     return {
       bus,
-      // 本地进程没有 daemon、没有「后台」可去（specs/031 非目标）：detach 等同现行终止
-      dispose: (mode) => (mode === 'detach' ? bus.shutdown() : bus.shutdown()),
+      // 本地进程没有 daemon、没有「后台」可去（specs/031 非目标）：detach /
+      // disconnect 等同现行终止
+      dispose: (_mode) => bus.shutdown(),
     };
   }
   const daemon = remoteDaemonForEndpoint(ref, options);
@@ -295,7 +296,12 @@ function openStandaloneChannel(
   const bus = createCoreChannelBus(transport, log);
   return {
     bus,
-    dispose: (mode) => (mode === 'detach' ? transport.detach() : bus.shutdown()),
+    dispose: (mode) =>
+      mode === 'detach'
+        ? transport.detach()
+        : mode === 'disconnect'
+          ? transport.disconnectOnly()
+          : bus.shutdown(),
   };
 }
 
@@ -565,8 +571,9 @@ function markConnectionSessionsFailed(
 /**
  * 释放 core 侧的进程级资源：关闭全部 Connection（Core 进程 / daemon channel）。
  * 宿主退出钩子调用一次。`decisions` 按 workspaceRefKey 给出退出确认链的决策
- * （specs/031：后台运行 = detach，Core 孤儿化存活；立即关闭 = close）。弹不出
- * 对话框的出口（窗口已销毁）传空 / 不传：全部只断链，daemon 默认策略接管。
+ * （specs/031：后台运行 = detach，Core 孤儿化存活；立即关闭 = close）。未登记的
+ * 远程工作区按 `disconnect` 只断链——daemon 的断开收尾按默认策略分叉（非 idle
+ * 孤儿化、idle 终止，AC-6 / AC-19）；本地工作区终止。
  */
 export function shutdownCore(
   decisions?: ReadonlyMap<string, CoreChannelCloseMode>,

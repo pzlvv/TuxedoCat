@@ -212,6 +212,20 @@ class DaemonChannel implements CoreChannelTransport {
   }
 
   /**
+   * 只断链（specs/031 AC-19：弹不出确认链的退出口径）：不发任何控制帧——
+   * 控制链随 daemon.disconnect() 断开后，daemon 的断开收尾按默认策略分叉
+   * （非 idle 孤儿化、idle 终止）。标记 failed 抑制随后的 daemon-gone fatal
+   * （进程正在退出，忙会话的失败标记没有意义）。
+   */
+  async disconnectOnly(): Promise<void> {
+    if (this.stopped) return;
+    this.stopping = true;
+    this.failed = true;
+    this.clearHandshakeTimer();
+    this.stopped = true;
+  }
+
+  /**
    * 后台运行（specs/031）：向 daemon 发 `detachWorkspace`，等
    * `workspaceClosed { reason: 'detached' }`。Core 进程留在 daemon 的孤儿表里
    * 继续执行；channel 尚未建立时无可 detach，按现行 `stop()` 收尾（刚拉起的

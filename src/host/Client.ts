@@ -43,9 +43,11 @@ import {
  * Core 通道的释放形态（specs/031）：
  * - `close`：现行路径，终止 Core 进程 / 关闭 daemon channel；
  * - `detach`：远程通道向 daemon 发 `detachWorkspace`，Core 移入孤儿表继续执行
- *   （本地通道没有「后台」可去，等同 `close`）。
+ *   （本地通道没有「后台」可去，等同 `close`）；
+ * - `disconnect`：只断链（AC-19 弹不出确认链的退出口径）——不发任何控制帧，
+ *   daemon 的断开收尾按默认策略分叉（非 idle 孤儿化、idle 终止）。
  */
-export type CoreChannelCloseMode = 'close' | 'detach';
+export type CoreChannelCloseMode = 'close' | 'detach' | 'disconnect';
 
 /** 已打开的 Core 通道（Standalone：一个工作区一个 Core 进程 / daemon channel） */
 export interface OpenedCoreChannel {
@@ -264,16 +266,19 @@ export class Client implements AssistantEventBus {
 
   /**
    * 关闭全部 Connection（宿主退出路径）。`decisions` 按 workspaceRefKey 给出各
-   * 工作区的释放形态（后台运行 / 立即关闭，specs/031）；未登记的工作区按
-   * `close` 处理——弹不出确认链的出口（窗口已销毁）传空表即全部只断链，
-   * daemon 默认策略接管。
+   * 工作区的释放形态（后台运行 / 立即关闭，specs/031）。未登记的工作区按
+   * 「远程只断链、本地终止」兜底（AC-6 / AC-19）：远程的断开让 daemon 的收尾
+   * 按默认策略分叉——非 idle 孤儿化存活、idle 照旧终止；确认链弹不出的出口
+   * （窗口已销毁）因此自动落进同一语义。
    */
   async closeAll(
     decisions?: ReadonlyMap<string, CoreChannelCloseMode>,
   ): Promise<void> {
     const connections = [...this.connections.values()];
     for (const connection of connections) {
-      const mode = decisions?.get(workspaceRefKey(connection.workspaceRef)) ?? 'close';
+      const mode =
+        decisions?.get(workspaceRefKey(connection.workspaceRef)) ??
+        (connection.workspaceRef.endpoint !== null ? 'disconnect' : 'close');
       await this.closeConnection(connection, mode);
     }
   }

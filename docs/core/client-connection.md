@@ -149,7 +149,7 @@ Connection 持有：
 | 打开工作区 | 建立 Connection：本机直接以 `stdio` 起一个 Core 进程，远程经该 endpoint 的 daemon 开 channel |
 | 重复打开同一工作区 | 不新建 Connection；激活已有视图 |
 | 关闭工作区 | 销毁 Connection。远程项按释放形态分叉（[specs/031](../../specs/031-remote-detached-tasks/spec.md)）：`close` 走现行路径关闭 Core 进程（daemon 计数递减）；`detach`（后台运行）只摘路由不发 `closeWorkspace`，Core 留在 daemon 孤儿表继续执行，本地项只有 `close` |
-| 宿主退出 | 销毁全部 Connection；退出确认链的决策表（`workspaceRefKey → close / detach`）随销毁应用——`detach` 的远程项只断控制链，Core 孤儿化存活；弹不出确认链的出口决策表为空，全部只断链 |
+| 宿主退出 | 销毁全部 Connection；退出确认链的决策表（`workspaceRefKey → close / detach`）随销毁应用——`detach` 的远程项只断控制链，Core 孤儿化存活。未登记的远程项只断链（daemon 的断开收尾按默认策略分叉：非 idle 孤儿化、idle 终止），本地项终止——确认链弹不出的出口（窗口已销毁）落进同一语义 |
 | 工作区切换 | 不允许；只能关闭再打开 |
 
 - `connectionId` 自动生成；`local-` / `remote-` 前缀用于区分来源。取值不进入总线载荷，
