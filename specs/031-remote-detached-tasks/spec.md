@@ -99,13 +99,20 @@ SSH 工作区全部会话 idle 时不弹框直接关闭。
 消费孤儿 Core 的帧通道（Core 不因无宿主而阻塞）；Core 发出的用户请求（权限确认 /
 AskUserQuestion）无人应答时挂起，会话处于 waiting；孤儿 Core 崩溃不重启，移出孤儿表。
 
+孤儿表按「工作区路径 + 原连接标识」登记，同一 endpoint 上两个客户端各自的孤儿互不覆盖；
+登记冲突（同键已存在）落诊断并拒绝插入，不静默覆盖——被覆盖的孤儿 Core 会泄漏成无主
+进程，它持有的会话锁（`specs/032-session-exclusive-open`）也不会释放。认领的摘表与句柄
+移交是原子的一步，同一孤儿并发认领至多一胜，败者按无孤儿处理。
+
 ### FR-006：认领与恢复
 
 对存在孤儿 Core 的工作区发起 `openWorkspace` 时，daemon 不开新进程，把新 channel 指向
 该孤儿 Core 并从孤儿表摘除；宿主随后走既有的连接态重放路径（握手、宿主环境重放、逐会话
 打开），Core 在重放完成后推送全量会话运行时快照，并把孤儿期间挂起的用户请求重新发给
 宿主。三条重开入口（启动恢复的打开集合、最近列表、不可用工作区的重新连接按钮）行为一致。
-活跃连接的 Core 不参与认领：两个客户端并发打开同一工作区仍是两个互相独立的 Core。
+活跃连接的 Core 不参与认领：两个客户端并发打开同一工作区仍是两个互相独立的 Core，各自
+装载的会话的互斥由 `specs/032-session-exclusive-open` 的会话锁承担（后装载者收到占用
+错误，不因工作区可并发打开而放宽）。
 
 孤儿期间完成的会话不因宿主离场而被吞：恢复认领后按既有「任务完成」未读语义武装——
 对话列表项与未激活的标签页亮绿色呼吸灯，与本地任务完成同一表现，阅读（激活标签页 /
@@ -130,7 +137,14 @@ SSH daemon 的空闲退出判定从「无控制连接持续 30 秒」改为「�
 - 挂起用户请求的应答等待沿用 Core 既有上限（1 小时）：孤儿超过 1 小时无人应答，该轮按
   既有超时失败路径收尾；之后的认领不再弹出该请求（Core 已无此待决 id）。
 - 两个 Electron 实例连同一 endpoint：各自连接独立，「立即关闭」只终止自己连接上的 Core
-  （daemon 的按连接隔离语义既有）。
+  （daemon 的按连接隔离语义既有）；两边的孤儿在孤儿表里按连接标识各占一条，互不覆盖、
+  各自被自己的客户端认领。
+- 后台运行 / 孤儿化的 Core 连同其中的会话实例继续存活，其装载的会话锁不释放：其他实例
+  此时装载、变更这些会话会被拒（`specs/032-session-exclusive-open` 的占用错误，键 + 参数，
+  能指认持有者 pid 则带上）。任务结束 Core 转全 idle 后还有 30 秒宽限期（FR-007），期间
+  会话仍不可装载；之后 Core 退出、锁随内核释放。
+- 宿主对孤儿 Core 的退出收尾：客户端重开即认领，或等空闲判定 / `kill` 收场；宿主侧不
+  主动向 daemon 查询孤儿清单（非目标的清单管理 UI 延续）。
 - 孤儿 Core 全部收尾后，daemon 的状态文件随空闲退出清理；此前的 `kill` / 状态文件语义
   （[docs/core/core-remote.md 第 2.1 / 2.3 节](../../docs/core/core-remote.md#21-动作)）不变。
 - macOS 关闭窗口而应用不退出：与现有窗口关闭确认同挂点，同样走本规格的确认链。
@@ -167,7 +181,7 @@ daemon 侧单测不替代 e2e：`electron-ssh` 车道不进 CI（真实远端依
 | FR-002 | `electron/main.ts`（退出确认链与决策表） | `e2e/electron/remoteTaskSurvival.spec.ts` | 自动 |
 | FR-003 | `src/host/Client.ts`、`src/host/bootstrapCore.ts`（`shutdownCore` 决策表入参） | `e2e/electron/remoteTaskSurvival.spec.ts` | 自动 |
 | FR-004 | `src/host/Client.ts`（现行关闭路径复用） | `e2e/electron/remoteTaskSurvival.spec.ts` | 自动 |
-| FR-005 | `core-rs/src/daemon.rs`（孤儿表、断开收尾分叉） | `core-rs/src/daemon_tests.rs`、`e2e/electron/remoteTaskSurvival.spec.ts` | 自动 |
+| FR-005 | `core-rs/src/daemon.rs`（孤儿表、断开收尾分叉） | `core-rs/src/daemon_tests.rs`（含：同 path 两次孤儿化不互相覆盖、并发认领至多一胜）、`e2e/electron/remoteTaskSurvival.spec.ts` | 自动 |
 | FR-006 | `core-rs/src/daemon.rs`（认领）、`src/host/standalone/`（重放路径复用）、`electron/completionAttention.ts`（离场完成的武装来源） | `core-rs/src/daemon_tests.rs`、`src/test/completionAttention.test.ts`、`e2e/electron/remoteTaskSurvival.spec.ts` | 自动 |
 | FR-007 | `core-rs/src/daemon.rs`（空闲判定、孤儿上限） | `core-rs/src/daemon_tests.rs` | 自动 |
 
@@ -176,7 +190,9 @@ daemon 侧单测不替代 e2e：`electron-ssh` 车道不进 CI（真实远端依
 （无——四个设计决策已随本 spec 定稿：孤儿存活为 daemon 默认策略、只认领孤儿不认领
 活跃 Core、daemon 控制协议仅新增 `detachWorkspace` 一帧与 `detached` 枚举值（总线协议
 零变化）、范围限 Electron 宿主；孤儿不设 detached 存续上限。等待用户输入而用户不再
-回来的孤儿会让 daemon 一直陪跑，是接受的语义。）
+回来的孤儿会让 daemon 一直陪跑，是接受的语义。修订补记：孤儿表键带原连接标识、认领
+摘表与移交原子化，是与 `specs/032-session-exclusive-open` 互斥锁对齐后的修订——纯 path
+键会让第二次孤儿化覆盖第一条，泄漏的孤儿 Core 不退则它持有的会话锁不释放。）
 
 ## 收敛记录
 
