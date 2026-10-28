@@ -288,6 +288,13 @@ export interface ConversationMetadata {
    * 加载时随 `conversationLoaded` 载荷下发，webview 据此恢复输入框禁用态。
    */
   workMode?: 'normal' | 'spin';
+  /**
+   * 未读完成次数（specs/defects/orphan-completion-unread-light）：后台运行期间会话
+   * running → idle 而宿主不在场时由 core 递增（daemon 检出迁移后经控制帧通知），
+   * 打开对话（conversationLoadRequested）即清零。缺失即 0（存量会话 / 在线完成的
+   * 会话恒为 0——在线完成不经过该路径，重启后不翻旧账）。宿主只读，不写 meta.json。
+   */
+  unreadCompletions?: number;
 }
 
 /**

@@ -725,3 +725,52 @@ fn replay_drain_drops_requests_beyond_the_reply_ttl() {
     assert_eq!(lines.len(), 1, "过时效的请求帧不再重放");
     assert!(lines[0].contains("sessionRuntimeChanged"));
 }
+
+// ==================== 孤儿期未读完成（specs/defects/orphan-completion-unread-light）====================
+
+#[test]
+fn orphan_running_to_idle_transition_notifies_the_core() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    // 连接期 running 快照照常转发（消费掉帧序；连接态窥探点把快照种进 channel 状态，
+    // detach 时作为孤儿条目的上一份快照）
+    harness.emit_line(0, &runtime_snapshot(false, false));
+    harness.next_frame();
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    harness.next_frame();
+
+    // 孤儿期 idle 快照：running → idle 迁移检出，Core 的 stdin 收到控制帧
+    harness.emit_line(0, &runtime_snapshot(true, false));
+    let lines = harness.wait_for_lines(0, 1);
+    let control: Value = serde_json::from_str(lines.last().unwrap()).expect("control frame");
+    assert_eq!(control["kind"], "orphanCompletions");
+    assert_eq!(control["workspace"], "D:/repo/w");
+    assert_eq!(control["sessions"], json!(["s1"]));
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}
+
+#[test]
+fn orphan_waiting_to_idle_transition_is_not_a_completion() {
+    let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
+    harness.command(open(1, "D:/repo/w"));
+    harness.next_frame();
+    // 上一份快照是 waiting（等用户应答）
+    harness.emit_line(0, &runtime_snapshot(false, true));
+    harness.next_frame();
+    harness.command(json!({ "kind": "detachWorkspace", "channel": 1 }));
+    harness.next_frame();
+
+    // waiting → idle：应答 / 中止的结果，不算完成，不发控制帧；
+    // idle → running 与再次 running → idle 才发——用后者确认链路活着，前者确实没发
+    harness.emit_line(0, &runtime_snapshot(true, false));
+    harness.emit_line(0, &runtime_snapshot(false, false));
+    harness.emit_line(0, &runtime_snapshot(true, false));
+    let lines = harness.wait_for_lines(0, 1);
+    assert_eq!(lines.len(), 1, "只有最后一对 running → idle 产生控制帧");
+    let control: Value = serde_json::from_str(&lines[0]).expect("control frame");
+    assert_eq!(control["sessions"], json!(["s1"]));
+
+    assert_eq!(harness.shutdown(), ChannelExit::Stop);
+}

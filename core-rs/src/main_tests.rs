@@ -1860,3 +1860,123 @@ fn session_lock_rejects_mutating_and_loading_requests() {
         assert!(notice["params"]["pid"].is_string(), "{notice}");
     }
 }
+
+// ==================== 孤儿期未读完成（specs/defects/orphan-completion-unread-light）====================
+
+/// daemon 控制帧 `orphanCompletions` 逐会话递增 meta.json 的 `unreadCompletions`；
+/// 帧形状不对（缺 workspace / sessions）只丢弃不写盘。
+#[test]
+fn orphan_completions_control_frame_increments_unread_counts() {
+    let sandbox = Sandbox::new("main-orphan-completions");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+
+    handle_orphan_completions(json!({
+        "kind": "orphanCompletions",
+        "workspace": project,
+        "sessions": ["s1", "s2"],
+    }));
+    assert_eq!(
+        history::load_metadata("s1", &project).expect("meta s1")["unreadCompletions"],
+        1
+    );
+    // s2 没有 meta：建档只带计数，messageCount 0 不进对话列表，无副作用
+    assert_eq!(
+        history::load_metadata("s2", &project).expect("meta s2")["unreadCompletions"],
+        1
+    );
+
+    // 再次迁移继续累加
+    handle_orphan_completions(json!({
+        "kind": "orphanCompletions",
+        "workspace": project,
+        "sessions": ["s1"],
+    }));
+    assert_eq!(
+        history::load_metadata("s1", &project).unwrap()["unreadCompletions"],
+        2
+    );
+
+    // 形状不对只丢弃
+    handle_orphan_completions(json!({ "kind": "orphanCompletions", "sessions": ["s1"] }));
+    handle_orphan_completions(json!({ "kind": "orphanCompletions", "workspace": project }));
+    assert_eq!(
+        history::load_metadata("s1", &project).unwrap()["unreadCompletions"],
+        2
+    );
+}
+
+/// 控制帧走的是帧循环的真实路径：daemon 写进 Core stdin 的一行，在 decode 之前被拦截。
+#[test]
+fn frame_loop_intercepts_orphan_completions_control_frame() {
+    let sandbox = Sandbox::new("main-loop-orphan-completions");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::ensure_project_conversation_dir(&project).unwrap();
+    let harness = EngineHarness::allow_all();
+
+    let input = format!(
+        "{{\"kind\":\"orphanCompletions\",\"workspace\":\"{}\",\"sessions\":[\"s1\"]}}\n",
+        project.replace('\\', "/")
+    );
+    assert_eq!(run_loop(&harness, &input), 0);
+
+    // 项目路径经 config 哈希映射到对话目录：meta 落在 project_conversation_dir 下
+    let session_dir = config::project_conversation_dir(&project).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(session_dir.join("s1.meta.json")).expect("meta written"),
+    )
+    .unwrap();
+    assert_eq!(meta["unreadCompletions"], 1);
+    assert!(harness.sink.frames().is_empty(), "控制帧不产生任何总线帧");
+}
+
+/// 装载即阅读：`conversationLoadRequested` 成功后计数清零；已为 0 时不重复落盘。
+#[test]
+fn conversation_load_clears_unread_completions() {
+    let sandbox = Sandbox::new("main-load-clears-unread");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+    history::append_message(
+        "s1",
+        &project,
+        &json!({ "type": "user", "uuid": "u1", "message": { "role": "user", "content": "hi" } }),
+        None,
+    )
+    .unwrap();
+    history::record_unread_completions(&["s1".to_string()], &project).unwrap();
+    assert_eq!(
+        history::load_metadata("s1", &project).unwrap()["unreadCompletions"],
+        1
+    );
+
+    dispatch_ui_request(&test_core(), &json!({
+        "type": "conversationLoadRequested",
+        "sessionId": "s1",
+    }))
+    .unwrap();
+    assert_eq!(
+        history::load_metadata("s1", &project).unwrap()["unreadCompletions"],
+        0
+    );
+
+    // 已为 0：再次装载走免落盘路径，计数保持 0
+    dispatch_ui_request(&test_core(), &json!({
+        "type": "conversationLoadRequested",
+        "sessionId": "s1",
+    }))
+    .unwrap();
+    assert_eq!(
+        history::load_metadata("s1", &project).unwrap()["unreadCompletions"],
+        0
+    );
+}

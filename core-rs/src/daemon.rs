@@ -32,7 +32,7 @@ use std::sync::mpsc::{channel as mpsc_channel, Receiver, RecvTimeoutError, Sende
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::daemon_protocol::{
     ChannelDescriptor, DaemonToHostFrame, DirectoryFailureReason, HostToDaemonFrame,
@@ -151,7 +151,6 @@ struct BufferedFrame {
 /// [`OrphanRegistry`] 的锁内。锁序恒为 registry → sink.route → entry，
 /// 读者线程（route → entry）与认领 / 清扫（registry → route → entry）不构成环。
 pub struct OrphanEntry {
-    #[allow(dead_code)]
     workspace_path: String,
     /// 存活的 Core 进程句柄；清扫收尾时 take 掉
     handle: Option<Box<dyn CoreProcessHandle>>,
@@ -396,11 +395,69 @@ impl RoutableSink {
     }
 }
 
+/// 孤儿快照里单个会话的忙闲级别（对齐 TS 侧 `sessionBusyLevel`：waiting 优先）。
+enum OrphanLevel {
+    Idle,
+    Running,
+    Waiting,
+}
+
+fn snapshot_level(state: &Value) -> OrphanLevel {
+    if state.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
+        OrphanLevel::Waiting
+    } else if state
+        .get("idle")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        OrphanLevel::Idle
+    } else {
+        OrphanLevel::Running
+    }
+}
+
+/// 孤儿期 running → idle 的会话迁移检出：对比前后两份全量快照逐会话比级别。
+///
+/// 只算 running → idle——waiting → idle 是用户应答 / 中止的结果，不算完成，与
+/// 宿主差分 `diffCompletionAttention` 同口径（specs/defects/orphan-completion-unread-light）。
+/// 前一份快照缺失（新会话登记）与形状解不出都不计：漏计只是少亮一次灯，
+/// 误计会让已读完成在重启后翻旧账。
+fn completed_sessions(previous: Option<&Value>, latest: &Value) -> Vec<String> {
+    let Some(states) = latest.get("states").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let Some(previous) = previous.and_then(|snapshot| snapshot.get("states").and_then(Value::as_array))
+    else {
+        return Vec::new();
+    };
+    let previous_levels: HashMap<&str, OrphanLevel> = previous
+        .iter()
+        .filter_map(|state| {
+            let id = state.get("sessionId").and_then(Value::as_str)?;
+            Some((id, snapshot_level(state)))
+        })
+        .collect();
+    states
+        .iter()
+        .filter_map(|state| {
+            let id = state.get("sessionId").and_then(Value::as_str)?;
+            match (previous_levels.get(id), snapshot_level(state)) {
+                (Some(OrphanLevel::Running), OrphanLevel::Idle) => Some(id.to_string()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// 孤儿帧喂入：窥探点（快照更新忙闲并进重放缓冲、请求帧暂存），其余帧只丢弃。
 fn feed_orphan_line(entry: &Mutex<OrphanEntry>, line: String) {
     let mut entry = entry.lock().unwrap();
     match peek_frame(&line) {
         Some(PeekedFrame::RuntimeSnapshot(event)) => {
+            // 宿主不在场的完成：孤儿期的帧不进任何连接，宿主差分永远看不到迁移；
+            // daemon 是唯一观察者，检出后经 Core 的 stdin 控制帧让 Core 记入
+            // meta.json 的 unreadCompletions（重开后宿主按它补武装绿灯）
+            let completed = completed_sessions(entry.runtime.as_ref(), &event);
             entry.runtime = Some(event);
             entry.runtime_line = Some(line.clone());
             entry.busy = entry
@@ -416,6 +473,18 @@ fn feed_orphan_line(entry: &Mutex<OrphanEntry>, line: String) {
                 at: Instant::now(),
                 is_request: false,
             });
+            if !completed.is_empty() {
+                if let Some(handle) = entry.handle.as_ref() {
+                    let frame = json!({
+                        "kind": "orphanCompletions",
+                        "workspace": entry.workspace_path,
+                        "sessions": completed,
+                    });
+                    if let Err(err) = handle.send_line(&frame.to_string()) {
+                        diag!("[daemon] orphan completion notice failed: {err}");
+                    }
+                }
+            }
         }
         Some(PeekedFrame::PendingRequest) => {
             push_replay(&mut entry.replay, BufferedFrame {

@@ -196,6 +196,19 @@ fn run_frame_loop(
             continue;
         }
 
+        // daemon 的内部控制帧（specs/defects/orphan-completion-unread-light）：孤儿期
+        // 检出的「宿主不在场的完成」逐会话递增 meta.json 的 unreadCompletions。它不是
+        // `UiToCoreFrame`（TS 宿主从不发送，decode 会按 malformed 丢弃），在 decode 之前
+        // 拦截；子串预筛避免给热路径（连接态的流式帧转发）多付一次完整 JSON 解析。
+        if trimmed.contains("orphanCompletions") {
+            if let Ok(control) = serde_json::from_str::<Value>(&sanitize_json_surrogates(trimmed)) {
+                if control.get("kind").and_then(Value::as_str) == Some("orphanCompletions") {
+                    handle_orphan_completions(control);
+                    continue;
+                }
+            }
+        }
+
         let frame: UiToCoreFrame = match decode_frame(trimmed) {
             Ok(frame) => frame,
             Err(err) => {
@@ -253,6 +266,31 @@ fn run_frame_loop(
         }
     }
     0
+}
+
+/// daemon 控制帧 `orphanCompletions` 的落点：孤儿期检出「宿主不在场的完成」后，
+/// 逐会话把 `meta.json` 的 `unreadCompletions` 递增（specs/defects/orphan-completion-unread-light）。
+/// 工作目录由 daemon 随帧给出（孤儿键的一半，即 Core 的 project）；帧形状不对只记
+/// 诊断不猜测——漏计只是少亮一次灯。
+fn handle_orphan_completions(control: Value) {
+    let Some(project) = control.get("workspace").and_then(Value::as_str) else {
+        eprintln!("[core] orphanCompletions without workspace; dropped");
+        return;
+    };
+    let Some(sessions) = control.get("sessions").and_then(Value::as_array) else {
+        eprintln!("[core] orphanCompletions without sessions; dropped");
+        return;
+    };
+    let session_ids: Vec<String> = sessions
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
+    if session_ids.is_empty() {
+        return;
+    }
+    if let Err(err) = history::record_unread_completions(&session_ids, project) {
+        eprintln!("[core] orphanCompletions recording failed: {err}");
+    }
 }
 
 /// 把 `balanceRequested` 交给独立线程执行，应答异步回写（同 id 走 pending 表）。
@@ -365,6 +403,11 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                         );
                         format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error)
                     })?;
+                // 打开对话即视为阅读（US-65 验收第 4 条）：未读完成清零；锁被拒时
+                // 走 error_response，不算阅读、不清零
+                if let Err(err) = history::clear_unread_completions(session_id, &project) {
+                    eprintln!("[core] clear unread completions failed: {err}");
+                }
             }
             Ok(conversation_load_payload(core, session_id))
         }

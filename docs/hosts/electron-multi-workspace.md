@@ -243,6 +243,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 未读完成呼吸的武装来源是「相邻两次全量快照的 running → idle 差分」：后台运行
   （specs/031）的工作区重开认领后，孤儿期间的完成经重放快照序列进入同一差分，绿灯
   照常武装；启动恢复的认领落定前抑制托盘提醒音（绿灯不受影响）。
+- **离场完成的补武装**（specs/defects/orphan-completion-unread-light）：daemon 空退后重开的是全新 Core，重放差分无从谈起——daemon 检出迁移、经控制帧记 `unreadCompletions`，宿主装载列表补武装绿灯、打开即清零；完整口径见 [docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主固有差异有意保留)。
 - 子对话树的默认展开：当前活动会话的祖先链展开（保证选中项可见）；活动会话自身的
   直接子会话数达到 5 时不默认展开（阈值与 webview 对话列表共用
   `src/host/ui/conversationTreeDefaults.ts`），用户点击折叠按钮显式设置后不再被默认

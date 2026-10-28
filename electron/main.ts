@@ -79,7 +79,7 @@ import { createTrayStatusIcon, deriveTrayStatusFromStates, type TrayStatus } fro
 import { diffSessionEndEvents, shouldFireCompletion, type SessionBusyRecord, type SessionLevel } from './trayAttention.js';
 import { createAttentionSound, traySoundEnabled } from './trayAttentionSound.js';
 import { createTraySoundPlayer } from './traySoundWindow.js';
-import { diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
+import { backfillCompletionAttention, diffCompletionAttention, pickReadCompletions, type CompletionAttentionFacts } from './completionAttention.js';
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   selectClosableIdleSessions,
@@ -1067,6 +1067,7 @@ function createMainWindow(): void {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
       // 该对话成为当前对话 = 阅读了它的未读完成：清掉并同步（侧栏 / webview 灯条随之熄灭）
       if (sessionId && unreadCompletionSessions.delete(sessionId)) syncCompletionAttention();
+      if (sessionId) completionsReadInRun.add(sessionId);
       // 同步 UI 侧的「当前活跃会话」：切到已打开的视图不会再走 loadConversation /
       // startNewConversation，不同步的话按会话解析的数据（project skills / MCP 启用
       // 列表）会停在旧视图，取到别的标签页的工作目录。
@@ -1339,6 +1340,12 @@ let completionAttentionLevels = new Map<string, SessionLevel>();
 const unreadCompletionTabs = new Set<string>();
 /** 未读完成的对话（sessionId）：成为当前对话、或回窗聚焦时正看着即视为阅读 */
 const unreadCompletionSessions = new Set<string>();
+/**
+ * 本次运行已阅读的会话：补武装（`backfillCompletionAttention`）的护栏。打开对话
+ * 即清掉 core 侧的 `unreadCompletions` 计数，但清零落盘与下一次列表刷新之间存在
+ * 在途窗口——护栏挡住窗口期的重复武装，重启后 core 已清零，护栏不需要持久化。
+ */
+const completionsReadInRun = new Set<string>();
 
 /**
  * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
@@ -1615,6 +1622,7 @@ function reconcileCompletionAttention(): void {
   let removed = false;
   for (const sessionId of pickReadCompletions([...unreadCompletionSessions], completionFactsOf)) {
     if (unreadCompletionSessions.delete(sessionId)) removed = true;
+    completionsReadInRun.add(sessionId);
   }
   if (removed) syncCompletionAttention();
 }
@@ -5528,7 +5536,26 @@ function initCore(): void {
       // 重命名 / 智能命名 / 从侧栏打开对话都按会话 id 反查该索引解析工作目录，不在这里
       // 补记，这些操作对晚到的会话会解析不到归属（批量关闭空闲会话不走该索引，它按
       // 已打开的会话视图枚举）。
-      if (channel === 'sidebar:conversations-updated') syncSessionWorkspaceIndex();
+      if (channel === 'sidebar:conversations-updated') {
+        syncSessionWorkspaceIndex();
+        // 离场完成的补武装（specs/defects/orphan-completion-unread-light）：列表一到达
+        // 就按 meta.json 的 unreadCompletions 补绿灯——先刷新会话归属索引，标签页灯的
+        // 激活判定才有依据；本次运行已阅读的会话不再补（清零落盘的在途窗口护栏）
+        const armed = backfillCompletionAttention(
+          [...unreadCompletionSessions],
+          payload as ReadonlyArray<{ sessionId: string; unreadCompletions?: number; creator?: import('../src/shared/sessionCreator.js').SessionCreator }>,
+          completionFactsOf,
+        );
+        fileLogger.info(
+          'completion-backfill',
+          `list=${(payload as unknown[]).length} armed=${armed.sessions.length} [${armed.sessions.join(',')}]`,
+        );
+        if (armed.sessions.length > 0) {
+          for (const sessionId of armed.sessions) unreadCompletionSessions.add(sessionId);
+          for (const key of armed.tabs) unreadCompletionTabs.add(key);
+          syncCompletionAttention();
+        }
+      }
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);
       }

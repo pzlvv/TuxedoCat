@@ -209,7 +209,9 @@ function armSleepTaskHandler(mockLlm: MockLlm): void {
     return {
       kind: 'tool',
       name: 'Bash',
-      args: { command: 'sleep 90 && printf orphan-survival-ok', description: 'background survival probe' },
+      // sleep 取 180s（超过 Bash 工具 2 分钟默认超时，由超时收口出工具结果）：
+      // 认领重开（SSH 引导 + 建链）要几十秒，任务必须撑过重开完成后的断言窗口
+      args: { command: 'sleep 180 && printf orphan-survival-ok', description: 'background survival probe' },
     };
   });
 }
@@ -297,6 +299,12 @@ test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、
 // hover→click 之间点击会落空（与 sessions.spec 的 waitForSidebarQuiet 同一坑）
   const sidebar = await app!.sidebarPage();
   await expect(sidebar.locator(SIDEBAR_ITEM)).toHaveCount(1, { timeout: 60_000 });
+  // 认领重放的全量运行时快照（FR-006）要照亮三个消费者：侧栏行灯、标签页灯、
+  // webview 的 abort 按钮。任务（sleep）仍在跑，运行灯应亮（蓝）；此时对话还没
+  // 打开过——快照先于对话列表到达，正落在「推送早于索引/视图就绪」最坏的时序上。
+  await expect(sidebar.locator(SIDEBAR_ITEM).first().locator('.running-bar')).toBeVisible({ timeout: 30_000 });
+  const titlebar = await app!.titlebarPage();
+  await expect(titlebar.locator('#workspaceTabs [role="tab"]').first()).toHaveClass(/activity-running/, { timeout: 30_000 });
   await waitForSidebarQuiet(sidebar);
   const sessionId = await sidebar
     .locator(SIDEBAR_ITEM)
@@ -310,9 +318,58 @@ test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、
     60_000,
   );
   await expect(loadedPage.getByText('后台存活探针').first()).toBeVisible({ timeout: 60_000 });
+  // webview 读同一份运行时快照（abort 按钮三态，docs/features/abort-button.md）：
+  // 任务在跑 → 终止按钮可用；若快照在认领后丢失，这里会退回灰色不可点
+  await expect(loadedPage.locator('button[title="终止"]')).toBeEnabled({ timeout: 30_000 });
 
   // 在跑任务继续执行直至完成：sleep 到点 → 工具结果回传 → 终答（AC-7 消息流恢复）
   await expect(loadedPage.getByText('SURVIVAL-DONE').first()).toBeVisible({ timeout: 180_000 });
+  mockLlm.close();
+});
+
+test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色未读完成灯（AC-4）', async () => {
+  test.setTimeout(420_000);
+  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  armSleepTaskHandler(mockLlm);
+  const chatPage = await launch(mockLlm);
+  await startLongTask(chatPage);
+
+  // 关标签页选「后台运行」：任务在孤儿期继续执行，宿主不在场——孤儿帧不进任何
+  // 连接，宿主差分永远看不到完成迁移；mock LLM 必须活着等孤儿期终答
+  const tabs = (await app!.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await tabs.first().hover();
+  await tabs.first().locator('.ws-tab-close').click();
+  const box = await waitForMessageBox(app!);
+  await clickMessageBoxButton(box, 0);
+  await expect(tabs).toHaveCount(0, { timeout: 20_000 });
+
+  // 等任务在孤儿期跑完：daemon 检出 running → idle 迁移，经控制帧让 core 把
+  // 未读完成记进 meta.json；随后孤儿转 idle，满 30s 宽限被 daemon 收尾
+  await pollRemote(
+    async () => !(await remoteCoreProcesses()).some((p) => p.cmd.includes(' stdio')),
+    260_000,
+    '孤儿 Core 在任务完成 + 30s 空闲宽限后收尾',
+  );
+
+  // 关闭应用（断开最后一条控制链路），daemon 无连接且无孤儿 → 空退并清状态文件：
+  // 重开拉起的是全新 Core，绿灯证据只剩 meta.json（缺陷报告的场景）
+  await closeApp();
+  await pollRemote(
+    async () => (await remoteCoreProcesses()).length === 0,
+    60_000,
+    'daemon 空退（无连接且无孤儿）',
+  );
+
+  // 重开工作区：全新 Core，对话行应亮绿色未读完成灯（AC-4）
+  await launch(mockLlm);
+  const sidebar = await app!.sidebarPage();
+  const item = sidebar.locator(SIDEBAR_ITEM).first();
+  await expect(item).toHaveCount(1, { timeout: 60_000 });
+  await expect(item.locator('.running-bar--completed')).toBeVisible({ timeout: 15_000 });
+
+  // 打开对话即阅读：绿灯熄灭
+  await item.click();
+  await expect(item.locator('.running-bar--completed')).toHaveCount(0, { timeout: 15_000 });
   mockLlm.close();
 });
 

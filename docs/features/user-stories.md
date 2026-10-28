@@ -68,7 +68,8 @@ last_reviewed: 2026-10-20
 | `e2e/webview/userChoicePaging.spec.ts` | US-58（分页进度 / 单选翻页 / 多选与其他并存 / Enter 语义 / answers 载荷） | webview UI |
 | `e2e/webview/spinModeInput.spec.ts` | US-39（spin 输入禁用的渲染层：禁用 + placeholder + 停止按钮转黄 + 单向不退出） | webview UI |
 | `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 他区忙碌汇总确认） | Electron 整应用 |
-| `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
+| `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成 / 离场完成后重开绿灯） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
+| `e2e/electron/completionAfterRestart.spec.ts` | US-65（离场完成的未读绿灯：重开按 `unreadCompletions` 补武装 / 打开即阅读清除） | Electron 整应用（本地车道，meta.json 计数预置） |
 
 未覆盖 e2e 的 US（US-33 的托盘图标像素外观与原生右键菜单弹窗——状态点三色、任务结束
 闪烁与左键唤出由 `e2e/electron/desktopShell.spec.ts` 桩住 `Tray` 原型断言，颜色聚合口径由
