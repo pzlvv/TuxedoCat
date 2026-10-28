@@ -1004,6 +1004,15 @@ impl TestClient {
         opened["channel"].as_u64().expect("channel id")
     }
 
+    /// 后台运行（specs/031）：发 `detachWorkspace`，等 `workspaceClosed { detached }`。
+    /// 连接保持存活——孤儿在「有连接在册」的状态下进入孤儿表。
+    fn detach_workspace(&mut self, channel: u64) {
+        self.send(&json!({ "kind": "detachWorkspace", "channel": channel }));
+        let closed = self.next_frame();
+        assert_eq!(closed["kind"], "workspaceClosed", "{closed}");
+        assert_eq!(closed["reason"], "detached", "{closed}");
+    }
+
     /// 断言 `duration` 内没有任何入站帧（channel 不 reset、Core 不重启的观察面）
     fn assert_no_frame_within(&mut self, duration: Duration) {
         // 超时必须设到真正执行读的句柄上：Windows 上克隆 socket 句柄各自持有选项
@@ -1393,4 +1402,45 @@ fn busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace() {
         .expect("idle waiter should return after the orphan closes");
     assert!(!stopped, "应报空闲退出，而不是 shutdown");
     daemon.wait_killed(0);
+}
+
+/// 有连接在册时，满 TTL 的全 idle 孤儿也要被收尾
+/// （specs/defects/idle-orphan-linger-while-connected）：监听循环在「有连接、无孤儿」
+/// 分支若阻塞等待而不按 1s 轮询，detach 后任务完成转 idle 的孤儿在连接存活期间
+/// 永远无人收尾。
+#[test]
+fn idle_orphan_is_swept_while_a_connection_is_alive() {
+    let daemon = TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
+    // 监听循环（清扫的宿主）生产里跑在 start-daemon 主线程；测试里单独拉起。
+    // 先等它停进 wait_timeout：register 的 notify 先于等待到达会丢（一次性 30s
+    // 空窗），测试要的是循环随即开始按 1s 轮询
+    {
+        let runtime = Arc::clone(&daemon.runtime);
+        std::thread::spawn(move || {
+            let _ = runtime.wait_for_stop_or_idle(Some(Duration::from_secs(30)));
+        });
+    }
+    thread::sleep(Duration::from_millis(100));
+    let mut first = daemon.connect();
+    let channel = first.open_workspace(1, "D:/repo/w");
+    // 任务在跑：running 快照进连接态忙闲缓存（连接态照常转发给宿主，消费掉帧序）
+    daemon.emit_line(0, &orphan_snapshot(false));
+    let forwarded = first.next_frame();
+    assert_eq!(forwarded["kind"], "frame", "{forwarded}");
+    // detach：孤儿插入时连接仍在册——监听循环此刻停在「有连接、无孤儿」分支
+    first.detach_workspace(channel);
+    daemon.wait_orphans(1);
+    // 任务完成：孤儿转 idle，宽限 TTL 起算
+    daemon.emit_line(0, &orphan_snapshot(true));
+    // TTL 满后被收尾：Core 收到 shutdown 并被 kill（连接全程存活，无 unregister 唤醒）
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let probe = daemon.runtime.orphans.sweep(Duration::from_secs(30));
+        eprintln!("[probe] alive={} has_busy={}", probe.alive, probe.has_busy);
+        if daemon.child(0).killed.load(Ordering::SeqCst) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "idle orphan was not reaped in time");
+        thread::sleep(Duration::from_millis(100));
+    }
 }

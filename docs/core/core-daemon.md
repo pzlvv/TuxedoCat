@@ -154,9 +154,19 @@ Host 侧只在取帧通道时读描述符，上层（Connection / 总线适配�
   时效 1 小时的不再重放）。对存在孤儿的工作区再次 `openWorkspace` 时认领：不开新
   进程，重放缓存帧（按到达序；缓冲安静时补放最新快照一帧）。孤儿 Core 崩溃不重启，
   移出孤儿表。
+- **离场完成计数**（[specs/defects/orphan-completion-unread-light](../../specs/defects/orphan-completion-unread-light.md)）：
+  孤儿期的 `sessionRuntimeChanged` 不进任何连接，宿主侧的完成差分永远看不到迁移——
+  daemon 在喂入孤儿帧的窥探点上对比前后两份快照逐会话比忙闲级别（口径与宿主差分
+  一致：waiting 优先，只算 running → idle），检出迁移即经 Core 的 stdin 控制帧
+  `orphanCompletions` 通知 Core 把该会话的 `meta.json` 字段 `unreadCompletions`
+  递增（meta.json 仍是 Core 单进程写）；宿主重开后按它补武装「任务完成」绿灯，
+  打开对话即清零。控制帧不经 UI 总线契约，宿主 TS 侧从不发送。
 - **孤儿收尾**：全 idle 的孤儿满 30s 宽限（沿 US-33 口径，短暂 idle 可能紧随提交）后
   终止并移出孤儿表；daemon 的空闲退出判定为「无控制连接**且**无非 idle 孤儿」持续
   30s（[docs/core/core-remote.md 第 2.2 节](core-remote.md#22-选项)）；`shutdown` 与 daemon 停机时孤儿一并收尾。
+  清扫与空闲退出共用监听循环：孤儿忙闲变化没有事件通道，等待一律按 1s 封顶轮询，
+  收尾不依赖连接事件——连接存活期间满宽限的全 idle 孤儿照常收尾
+  （specs/defects/idle-orphan-linger-while-connected）。
   两个客户端并发打开同一工作区仍是两个互相独立的 Core，各自装载会话的互斥由会话锁
   承担（specs/032 会话跨实例独占打开）。
 

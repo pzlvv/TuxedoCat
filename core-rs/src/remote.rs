@@ -1097,6 +1097,11 @@ impl DaemonRuntime {
         table.next_id += 1;
         let id = table.next_id;
         table.entries.insert(id, entry);
+        drop(table);
+        // 唤醒监听循环：连接到达改变「无连接」的空闲退出前提——首条连接落在
+        // 初始 wait 窗口内时，不唤醒会让循环睡满整个窗口才开始清扫与判定
+        // （specs/defects/idle-orphan-linger-while-connected）
+        self.drained.notify_all();
         Some(id)
     }
 
@@ -1175,8 +1180,14 @@ impl DaemonRuntime {
                     continue;
                 }
             } else {
-                // 有连接：取消空闲计时，等最后一条断开再重新起算
+                // 有连接：取消空闲计时。等待按 1s 封顶轮询——孤儿忙闲变化没有事件
+                // 通道（读线程只写孤儿表），插入与翻转也不会唤醒本循环，阻塞等待
+                // 会让「满 TTL 的全 idle 孤儿」在有连接存活期间永远无人收尾
+                // （specs/defects/idle-orphan-linger-while-connected）
                 idle_deadline = None;
+                let (guard, _) = self.drained.wait_timeout(table, POLL).unwrap();
+                table = guard;
+                continue;
             }
             table = self.drained.wait(table).unwrap();
         }
