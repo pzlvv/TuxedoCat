@@ -115,3 +115,83 @@ fn active_provider_is_ignored() {
 fn balance_url_is_the_official_endpoint() {
     assert_eq!(balance_url(), "https://api.deepseek.com/user/balance");
 }
+
+/// 超时上限 3 秒（specs/defects/balance-fetch-blocks-frame-loop）：状态条装饰性
+/// 信息，挂住的请求不值得让任何等待方等更久。
+#[test]
+fn balance_timeout_is_three_seconds() {
+    assert_eq!(BALANCE_TIMEOUT_SECS, 3);
+}
+
+/// HTTP 分支：假服务器返回合法响应体时解析成余额；超时 / 非 2xx / 缺字段回 None。
+#[test]
+fn fetch_balance_parses_a_served_response() {
+    let sandbox = Sandbox::new("balance-served");
+    sandbox.write_settings(json!({
+        "llm": {
+            "providers": {
+                "official": { "baseURL": "https://api.deepseek.com", "apiKey": "deepseek-key" },
+            },
+        },
+    }));
+    let base = serve_once(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n\
+         {\"balance_infos\":[{\"total_balance\":\"12.34\",\"currency\":\"CNY\"}],\
+         \"is_available\":true,\"is_unlimited\":false}",
+    );
+    set_base_url_for_test(Some(&base));
+
+    let balance = fetch_balance().expect("合法响应应解析出余额");
+    set_base_url_for_test(None);
+    assert_eq!(balance["totalBalance"], json!(12.34));
+    assert_eq!(balance["currency"], json!("CNY"));
+    assert_eq!(balance["isUnlimited"], json!(false));
+    assert!(balance["fetchedAt"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn fetch_balance_returns_none_when_the_server_fails() {
+    let sandbox = Sandbox::new("balance-server-error");
+    sandbox.write_settings(json!({
+        "llm": {
+            "providers": {
+                "official": { "baseURL": "https://api.deepseek.com", "apiKey": "deepseek-key" },
+            },
+        },
+    }));
+    // 非 2xx：按失败处理（宿主清空旧余额）
+    let base = serve_once("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    set_base_url_for_test(Some(&base));
+    assert!(fetch_balance().is_none());
+    set_base_url_for_test(None);
+}
+
+/// 起一个只应答一次的 HTTP 假服务器，返回其 base url。
+///
+/// 读到请求头结束（空行）后一次性写出 `response` 并关闭连接——
+/// 与 `web_search_tests` 的假服务器同一手法。
+fn serve_once(response: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind one-shot server");
+    let url = format!("http://{}", listener.local_addr().expect("local addr"));
+    std::thread::spawn(move || {
+        let Ok((mut socket, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 1024];
+        // 读到请求头结束即可应答（不看请求体）
+        loop {
+            match socket.read(&mut buf) {
+                Ok(0) => return,
+                Ok(_) => {
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+        let _ = socket.write_all(response.as_bytes());
+    });
+    url
+}

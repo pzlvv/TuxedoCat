@@ -359,6 +359,8 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
   `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：
   宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。未知类型一律回 `ok:false` 的响应，
   不做静默降级。
+  - `balanceRequested`：唯一的异步应答——请求交独立线程执行、应答异步回写同 `id` 的
+    `response` 帧；整体超时 3 秒，超时 / 非 2xx / 缺 `balance_infos` 都回 `null`。
   - `spinDesignRequested { sessionId }`：按会话工作目录读 `spin.json` + 设计器技能清单；
     返回 `{ status: 'ok', data, skills }`（`data: null` = 没有设计文件）或
     `{ status: 'error', message }`。
@@ -385,9 +387,8 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 
 ### 5.1 帧
 
-- 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧。
-- 帧内换行以 JSON 转义表达；帧边界只由 `\n` 决定。
-- 无帧大小上限，按行读取。
+- 编码：UTF-8，换行（`\n`）分隔的 JSON，一行一帧；帧内换行以 JSON 转义表达，帧边界
+  只由 `\n` 决定；无帧大小上限，按行读取。
 
 ### 5.2 帧类型
 
@@ -404,8 +405,8 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 | UI → Core | `shutdown` | `{ kind: 'shutdown' }` |
 
 - `request` 的 `id` 由**发起方**生成（Core 发 `CoreRequest`、UI 发 `UiRequest` 各自编号），
-  在单个连接内唯一；`response` 回带同一个 `id`。
-- 同一方向上的帧按写入顺序处理。
+  在单个连接内唯一；`response` 回带同一个 `id`。帧按写入顺序处理，但 `request` 的应答
+  顺序不受此约束——`balanceRequested` 在独立线程查余额，应答可晚于其后帧的应答（第 4 节）。
 
 ### 5.3 握手
 

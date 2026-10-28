@@ -890,9 +890,13 @@ fn model_ref_reads_flat_fields_then_context() {
 #[test]
 fn update_context_writes_nested_context_and_flattens_model_identity() {
     let _sandbox = Sandbox::new("history-update-context");
-    // 没有 meta.json 时静默跳过
+    // 没有 meta.json 时兜底建档（specs/defects/session-config-lost-before-first-message）：
+    // 首条消息前切配置也要能从对话恢复；建档带 user 归属（specs/025 FR-002）
     update_context("missing", PROJECT, &[json!({ "key": "model", "value": "m" })]).unwrap();
-    assert!(load_metadata("missing", PROJECT).is_none());
+    let fallback = load_metadata("missing", PROJECT).expect("配置更新应兜底建档");
+    assert_eq!(fallback["creator"], json!({ "kind": "user" }));
+    assert_eq!(fallback["context"]["model"], "m");
+    assert_eq!(fallback["model"], "m", "模型身份保持顶层扁平双写");
 
     create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
     update_context(

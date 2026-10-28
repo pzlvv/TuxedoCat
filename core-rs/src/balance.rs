@@ -17,9 +17,35 @@ use crate::util;
 /// DeepSeek 官方 baseURL（对齐 `DEEPSEEK_BASE_URL`）
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 
+/// 余额请求整体超时（秒）：状态条装饰性信息，超时按失败处理
+/// （specs/defects/balance-fetch-blocks-frame-loop）
+pub const BALANCE_TIMEOUT_SECS: u64 = 3;
+
+/// 余额接口基地址（路径挂在它下面）。
+///
+/// 生产恒为 `DEEPSEEK_BASE_URL`；测试可临时改指向本地假服务器
+/// （`set_base_url_for_test`），HTTP 分支因此可被用例覆盖。
+static BASE_URL_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 余额接口（路径挂在 baseURL 下）
+fn balance_base_url() -> String {
+    BASE_URL_OVERRIDE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone()
+        .unwrap_or_else(|| DEEPSEEK_BASE_URL.to_string())
+}
+
 /// 余额接口（路径挂在 baseURL 下）
 fn balance_url() -> String {
-    format!("{DEEPSEEK_BASE_URL}/user/balance")
+    format!("{}/user/balance", balance_base_url())
+}
+
+/// 测试钩子：临时改余额接口基地址（`None` 恢复官方地址）
+#[cfg(test)]
+pub fn set_base_url_for_test(base_url: Option<&str>) {
+    *BASE_URL_OVERRIDE.lock().unwrap_or_else(|err| err.into_inner()) =
+        base_url.map(|value| value.to_string());
 }
 
 /// 取 baseURL 的 hostname（小写）；解析失败或为空返回空串
@@ -71,11 +97,15 @@ fn now_ms() -> u64 {
 /// 返回 `{ totalBalance, currency, isUnlimited, fetchedAt }`；未配置
 /// `api.deepseek.com` provider、请求失败或响应里没有 `balance_infos` 时返回 `None`
 /// （调用方据此清空 UI 上的旧余额）。
+///
+/// 由 `main.rs` 的 `dispatch_ui_request` 在独立线程调用（specs/defects/
+/// balance-fetch-blocks-frame-loop）：余额是状态条装饰性信息，超时 3 秒即按失败
+/// 处理（宿主清空显示），不值得让帧循环等更久。
 pub fn fetch_balance() -> Option<Value> {
     let api_key = deepseek_provider_api_key()?;
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(BALANCE_TIMEOUT_SECS))
         .build()
         .ok()?;
     let response = client

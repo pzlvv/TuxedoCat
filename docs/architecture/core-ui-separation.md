@@ -172,6 +172,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | MCP 配置 `~/<CONFIG_DIR_NAME>/mcp.json` | host | 读与写都在 UI |
 | 项目清单 `<conversations>/<project>/workspace.meta.json` | core | 在 Core 数据目录内，读与写都在 Core：`workspacePath` 建目录时写一次，`modifiedDocs`（被工具修改过的 md 集合，specs/030 FR-004）由工具成功修改非 git 工作区内的 md 后更新；宿主只读（`src/shared/workspaceMeta.ts`） |
 | 宿主本地偏好 `theme` / `shortcut` | host | 落宿主本机（Electron 为 `userData/workspace-state.json`），不进 `settings.json` |
+| 会话级配置 `<conversations>/<project>/<sid>.meta.json` 的 `context.*` | core | 唯一写入点是 `Core` 的配置事件处理器（`on_session_config_changed` / `on_context_updated`）；宿主经 `UiEvent` 请求、只读 `conversationLoadRequested` 的结果。档案缺失时由 `history.update_context` 兜底建档（首条消息前改配置也要能从对话恢复），零消息条目被对话列表的空对话过滤排除 |
 
 - Core 侧没有配置文件写入口，也没有配置文件读入口。
 - UI 侧是唯一写入点；写操作串行化，按调用顺序排队。

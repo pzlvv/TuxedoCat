@@ -1292,18 +1292,25 @@ pub fn model_ref_of_session(session_id: &str, project: &str) -> (Option<String>,
 }
 
 /// 会话上下文的部分更新（写回 `meta.json` 顶层扁平字段）
+///
+/// meta.json 缺失时兜底建档（specs/defects/session-config-lost-before-first-message）：
+/// meta.json 按设计由首条消息建档（`touch_metadata` / `update_title_if_needed`），
+/// 但「新建对话 → 首条消息」窗口内的会话级配置（agentMode / thinkingMode /
+/// promptMode / webSearch / mcpEnabled / 模型身份）同样要能从对话恢复——档案缺
+/// `title` / `messageCount` / `updatedAt`（由首条消息建档时补齐），
+/// 零消息条目被 `load_conversation_list` 的空对话过滤天然排除。
 pub fn update_context(
     session_id: &str,
     project: &str,
     changes: &[Value],
 ) -> Result<(), String> {
-    if !metadata_path(session_id, project)?.exists() {
-        return Ok(());
-    }
     update_metadata(
         session_id,
         project,
-        || json!({ "sessionId": session_id, "project": project }),
+        // 兜底建档写 user 归属（specs/025 FR-002：meta 必带 creator）：子代理 / 跨工作区
+        // 会话的 meta 由创建方预建，`update_context` 的兜底只可能命中用户路径
+        // （与 `touch_metadata` 兜底同一论证）
+        || json!({ "sessionId": session_id, "project": project, "creator": { "kind": "user" } }),
         |metadata| {
             // 模型身份在 meta.json 顶层保持扁平：先收集，再单独写回，避免同一对象两次可变借用
             let mut flat: Vec<(String, Value)> = Vec::new();
