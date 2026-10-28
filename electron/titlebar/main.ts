@@ -69,6 +69,8 @@ interface TitlebarState extends TitlebarModeState {
   activeWorkspace?: string | null;
   /** 标签页流水灯状态（初始渲染用；后续变化走 titlebar:workspace-activity） */
   activity?: WorkspaceActivity;
+  /** 未读完成的标签页集合（初始补拉用；后续变化走 titlebar:workspace-completion） */
+  completion?: string[];
   /** 快照版本号（与 TitlebarWorkspacesState 的 version 同源，见 applyWorkspacesSnapshot） */
   version?: number;
 }
@@ -661,6 +663,9 @@ async function init(): Promise<void> {
     brandLogoEl.addEventListener('error', () => { brandLogoEl.style.display = 'none'; });
   }
   renderMenubar(state.sections ?? []);
+  // 未读完成集合的初始化补拉：推送早于订阅（页面加载期）的窗口由 get-state 快照
+  // 补上，离场完成的标签页灯不因加载时序丢失（幂等整体替换，早到的推送不回退）
+  if (Array.isArray(state.completion)) applyWorkspaceCompletion(state.completion);
   // 打开集合走同一份快照入口：get-state 回包与推送可能乱序（回包在途期间标红推送
   // 先到），陈旧回包由 applyWorkspacesSnapshot 按版本号丢弃，不覆盖新状态
   applyWorkspacesSnapshot({

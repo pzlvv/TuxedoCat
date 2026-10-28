@@ -150,6 +150,7 @@ interface SidebarAPI {
   smartNameConversation: (sessionId: string) => Promise<{ ok: boolean; title?: string; error?: string }>;
   onConversationsUpdated: (cb: (list: ConversationMeta[]) => void) => void;
   onSessionStatesUpdated: (cb: (states: SessionRuntimeState[]) => void) => void;
+  getSessionCompletion: () => Promise<string[]>;
   /** 未读完成的会话集合（「任务完成」绿色呼吸；对话成为当前对话后由主进程清除） */
   onSessionCompletion: (cb: (sessionIds: string[]) => void) => void;
   onSessionLoadedChanged: (cb: (sessionIds: string[]) => void) => void;
@@ -1853,11 +1854,12 @@ async function init(): Promise<void> {
   // 其余数据依赖 core，可能较慢或挂起：工作区 UI 已经渲染，这里失败 / 挂起都不再
   // 影响打开集合的展示。
   try {
-    const [list, active, loaded, states] = await Promise.all([
+    const [list, active, loaded, states, completion] = await Promise.all([
       window.sidebarAPI.getConversations(),
       window.sidebarAPI.getActiveSession(),
       window.sidebarAPI.getLoadedSessions(),
       window.sidebarAPI.getSessionStates(),
+      window.sidebarAPI.getSessionCompletion(),
     ]);
     // 初始化期间用户已切换工作目录（workspaces-changed 已把状态更新并重新拉取）：
     // 这批结果属于旧状态，丢弃，避免覆盖新目录的列表
@@ -1869,6 +1871,10 @@ async function init(): Promise<void> {
     // 不主动拉一次就会永远缺这份快照，流水灯 / 等待标记不亮。
     // 仅在本进程尚无推送时播种，避免晚到的旧快照覆盖订阅期间收到的更新状态。
     if (sessionStates.size === 0) sessionStates = normalizeSessionStates(states);
+    // 未读完成集合与列表 / 状态不同：它是全局事实（不随活动目录切换），整体替换
+    // 幂等——补上「补武装推送早于订阅（页面加载期）」的空档，离场完成的绿灯不因
+    // 加载时序丢失；不必理会代次（applySessionCompletion 保留已有条目的到达时刻）
+    applySessionCompletion(completion);
     render();
   } catch (err) {
     // 对话列表拉取失败不覆盖已经渲染好的工作区 UI，只记日志

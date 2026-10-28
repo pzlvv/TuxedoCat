@@ -4795,6 +4795,9 @@ function setupIpc(): void {
       activeWorkspace: workspacePath ? refKey(workspacePath) : null,
       // 标签页流水灯：每个工作目录的聚合运行时状态（waiting 优先，其次 running）
       activity: collectWorkspaceActivity(),
+      // 未读完成的标签页集合：推送早于标题栏订阅（页面加载期）的窗口由这份
+      // 初始快照补上，离场完成的标签页灯不因加载时序丢失
+      completion: [...unreadCompletionTabs],
       // 标题栏是独立页面，拿不到 core 的 i18n 上下文：文案由主进程按当前语言下发，
       // 避免中文 tooltip 与英文 aria-label 混排（原先写死在页面里）。
       labels: {
@@ -4973,6 +4976,11 @@ function setupIpc(): void {
   ipcMain.handle('sidebar:get-session-states', () => {
     return conversations?.getSessionStatesSnapshot() ?? [];
   });
+
+  // 未读完成集合流与状态流同构：「变化时才推」，侧栏初始化 / 重载时主动拉一次，
+  // 补上「补武装推送早于侧栏订阅（页面加载期）」造成的空档，否则离场完成的绿灯
+  // 一直不亮（specs/defects/orphan-completion-unread-light）
+  ipcMain.handle('sidebar:get-session-completion', () => [...unreadCompletionSessions]);
 
   ipcMain.handle('sidebar:get-active-session', () => {
     return chatViews?.getActiveSessionId() ?? null;

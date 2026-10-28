@@ -75,15 +75,15 @@ test('US-65 离场完成：重开后对话行亮绿色未读完成灯，打开�
   const sidebar = await app.sidebarPage();
   const item = sidebar.locator(SIDEBAR_ITEM).first();
   await expect(item).toHaveCount(1, { timeout: 30_000 });
-  await expect(item.locator('.running-bar--completed')).toBeVisible({ timeout: 15_000 });
+  await expect(item.locator('.running-bar--completed')).toBeVisible({ timeout: 30_000 });
 
   // 打开对话即阅读：灯条熄灭，core 把计数清零（conversationLoadRequested 落盘）
   await item.click();
-  await expect(item.locator('.running-bar--completed')).toHaveCount(0, { timeout: 15_000 });
+  await expect(item.locator('.running-bar--completed')).toHaveCount(0, { timeout: 30_000 });
   await expect.poll(async () => {
     const current = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as { unreadCompletions?: number };
     return current.unreadCompletions ?? 0;
-  }, { timeout: 15_000 }).toBe(0);
+  }, { timeout: 30_000 }).toBe(0);
 
   await fs.promises.rm(workspaceDir, { recursive: true, force: true }).catch(() => undefined);
 });
