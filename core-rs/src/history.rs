@@ -18,7 +18,7 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// 校验会话 id。id 由宿主生成并经帧通道传入（信任边界），
 /// 它会直接拼进文件名，因此禁止路径分隔符与 `.` / `..`，避免越出会话目录。
-fn validate_session_id(session_id: &str) -> Result<(), String> {
+pub(crate) fn validate_session_id(session_id: &str) -> Result<(), String> {
     if session_id.is_empty() {
         return Err("session id is empty".to_string());
     }

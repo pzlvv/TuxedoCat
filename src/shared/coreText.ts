@@ -29,6 +29,10 @@ export const CoreNoticeKeys = {
   spinInvalid: 'notice.spin.invalid',
   /** Spin 主循环跑完 */
   spinAllCompleted: 'notice.spin.allCompleted',
+  /** 会话被其他实例占用，无法装载（specs/032）；参数 `pid` 为持有者 */
+  sessionLockedOpen: 'notice.session.lockedOpen',
+  /** 会话被其他实例占用，变更被拒绝（specs/032）；参数 `pid` 为持有者 */
+  sessionLockedChange: 'notice.session.lockedChange',
 } as const;
 
 /** 内置命令描述的键（斜杠补全列表的 `description`） */

@@ -480,6 +480,9 @@ pub struct Core {
     session_order: Mutex<Vec<String>>,
     /// 上一次已推送的运行时快照；无变化时不重发（对齐 `pushIfChanged` 的 diff）。
     last_runtime: Mutex<Vec<Value>>,
+    /// 会话独占锁注册表（specs/032）：键 = sessionId，持有者 = 会话实例。
+    /// 宿主断开 / detach / 孤儿化（specs/031）不动它——认领换宿主是同 Core 重入。
+    pub session_locks: Mutex<HashMap<String, crate::session_lock::SessionLockHandle>>,
 }
 
 impl Core {
@@ -490,7 +493,30 @@ impl Core {
             file_watch: crate::file_watch::FileWatchRegistry::new(),
             session_order: Mutex::new(Vec::new()),
             last_runtime: Mutex::new(Vec::new()),
+            session_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 会话被占用的通知（specs/032）：键 + 参数交 UI 翻译，`pid` 从错误文案提取
+    /// （`LockError` 的 Display 都带 `(pid=…)`；读不出为 `unknown`）。
+    pub fn emit_locked_notice(&self, session_id: &str, key: &str, error: &str) {
+        let pid = error
+            .split("pid=")
+            .nth(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+            })
+            .filter(|pid| !pid.is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        self.emit(json!({
+            "type": "notice",
+            "sessionId": session_id,
+            "key": key,
+            "params": { "pid": pid },
+            "level": "error",
+        }));
     }
 
     // ==================== 会话 ====================
@@ -522,6 +548,10 @@ impl Core {
     }
 
     pub fn drop_session(&self, session_id: &str) {
+        // 会话实例释放即释放会话锁（specs/032）：句柄 Drop 解内核锁；
+        // 崩溃 / 被杀路径由内核兜底。删除流程先走这里再删目录（Windows 上活动
+        // 句柄会挡住目录删除）
+        self.session_locks.lock().unwrap().remove(session_id);
         // 会话已从快照移除；进程级待压缩注册表也要清理，避免 id 复用时残留
         compact::unmark_pending_compact(session_id);
         // 该会话作为子代理的登记条目随会话终结注销（只注销自身、不级联：
@@ -771,7 +801,14 @@ impl Core {
     }
 
     pub fn on_conversation_opened(&self, session_id: &str) {
-        let _ = self.ensure_loaded(session_id);
+        if let Err(error) = self.ensure_loaded(session_id) {
+            // specs/032 FR-001：会话被其他实例持有——硬拒绝：发占用通知、
+            // 不建会话状态、不建 MCP 引用
+            if crate::session_lock::is_lock_rejection(&error) {
+                self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_OPEN, &error);
+            }
+            return;
+        }
         // MCP：会话被打开 → 按该会话的启用列表建立引用（幂等，后台串行执行）。
         // MCP 的生命周期由 core 的会话生命周期驱动，
         // 不绑在 UI 的视图生命周期上。
@@ -1319,6 +1356,10 @@ impl Core {
         let project = self.project_of(&creator)?;
         let sub_session_id = crate::subagent::generate_sub_session_id();
         config::set_session_workspace(&sub_session_id, Some(project.clone()));
+        // specs/032：子代理会话同为锁持有者（与父会话同 Core，重入放行）
+        if let Err(error) = crate::session_lock::acquire_for_core(self, &sub_session_id, &project) {
+            return Err(error.to_string());
+        }
 
         // 继承创建者的会话级配置：agent mode（`inheritAgentMode`：完整继承父会话的
         // manual / risk / auto，子代理只是主对话的执行延伸，权限策略必须与主对话一致，
@@ -1806,6 +1847,23 @@ impl Core {
             .as_deref()
             .map(|project| history::conversation_closure(session_id, project))
             .unwrap_or_else(|| vec![session_id.to_string()]);
+        // specs/032 FR-002：删除是变更入口——闭包内任一会话被其他实例持有则整体
+        // 拒绝、数据零改动（含子孙对话）。已装载（Registered）放行；目录解析不出
+        // 的会话无数据可锁，放行
+        for id in &closure {
+            match crate::session_lock::begin_mutation(self, id) {
+                Ok(lease) => drop(lease),
+                Err(crate::session_lock::LockError::Io(_)) => {}
+                Err(error) => {
+                    self.emit_locked_notice(
+                        session_id,
+                        crate::core_text::SESSION_LOCKED_CHANGE,
+                        &error.to_string(),
+                    );
+                    return;
+                }
+            }
+        }
         for id in &closure {
             self.abort_session_scope(id, &mut HashSet::new());
             self.drop_session(id);
@@ -1904,6 +1962,16 @@ impl Core {
     }
 
     pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
+        // specs/032 FR-002：变更全锁——被其他实例持有时拒绝，数据零改动。
+        // 本 Core 已装载（Registered）放行；未装载取短持有租约，锁内写入
+        let lease = match crate::session_lock::begin_mutation(self, session_id) {
+            Ok(lease) => lease,
+            Err(error) => {
+                self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                return;
+            }
+        };
+        let _ = &lease;
         // meta.json 缺失时建档
         // （标题先落盘），再照常广播事件——UI 只消费真实数据变更后的事件。
         if !self.write_conversation_title(session_id, title) {
@@ -1926,6 +1994,15 @@ impl Core {
         let Some(key) = change.get("key").and_then(Value::as_str) else {
             return;
         };
+        // specs/032 FR-002：会话配置变更是变更入口——被其他实例持有时拒绝
+        let lease = match crate::session_lock::begin_mutation(self, session_id) {
+            Ok(lease) => lease,
+            Err(error) => {
+                self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                return;
+            }
+        };
+        let _ = &lease;
         let value = change.get("value").cloned().unwrap_or(Value::Null);
         let state = self.session(session_id);
         // 广播给 UI 的 change 与 TS 契约逐字段对齐：model 用 `ref` 承载身份，其余用 `value`。
@@ -2253,6 +2330,11 @@ impl Core {
     /// 载入会话消息（首次打开时从磁盘读）
     pub fn ensure_loaded(&self, session_id: &str) -> Result<(), String> {
         let project = self.project_of(session_id)?;
+        // specs/032 FR-001：装载先取会话锁；被其他实例持有时硬拒绝。
+        // 前缀供 `is_lock_rejection` 判别（调用方只对锁拒绝发占用通知）
+        if let Err(error) = crate::session_lock::acquire_for_core(self, session_id, &project) {
+            return Err(format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error));
+        }
         let state = self.session(session_id);
         let mut state = state.lock().unwrap();
         if state.project.is_none() {

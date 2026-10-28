@@ -376,4 +376,6 @@ export const enDict: Record<string, string> = {
   'notice.spin.variableNoValueWithNames': 'Variables without a value ({names}), please fill in their values in the Spin Designer and retry.',
   'notice.spin.invalid': 'spin.json is invalid, please check the file content.',
   'notice.spin.allCompleted': 'All tasks completed!',
+  'notice.session.lockedOpen': 'This conversation is already open in another window (pid {pid}). A conversation can only be used in one window at a time.',
+  'notice.session.lockedChange': 'This conversation is in use by another window (pid {pid}); the change was rejected.',
 };

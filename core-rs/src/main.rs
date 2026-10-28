@@ -44,6 +44,7 @@ mod remote;
 mod replay;
 mod responses;
 mod rollback;
+mod session_lock;
 mod settings;
 mod shell;
 mod shell_env;
@@ -298,7 +299,19 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "smartNamingRequested without sessionId".to_string())?;
-            smart_naming::smart_name_session(session_id)
+            // specs/032 FR-002：变更全锁——被其他实例持有时拒绝；未装载时取
+            // 短持有租约，写入期间持锁，结束即释放
+            let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
+                core.emit_locked_notice(
+                    session_id,
+                    crate::core_text::SESSION_LOCKED_CHANGE,
+                    &error.to_string(),
+                );
+                error.to_string()
+            })?;
+            let result = smart_naming::smart_name_session(session_id);
+            drop(lease);
+            result
         }
         "balanceRequested" => Ok(balance::fetch_balance().unwrap_or(Value::Null)),
         "compactArchiveRequested" => {
@@ -306,7 +319,18 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "compactArchiveRequested without sessionId".to_string())?;
-            Ok(compact_archive_display(session_id))
+            // specs/032 FR-002：手动压缩是变更入口——同 smartNaming 的短持有守卫
+            let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
+                core.emit_locked_notice(
+                    session_id,
+                    crate::core_text::SESSION_LOCKED_CHANGE,
+                    &error.to_string(),
+                );
+                error.to_string()
+            })?;
+            let result = compact_archive_display(session_id);
+            drop(lease);
+            Ok(result)
         }
         // MCP 面板列表：配置（快照）+ 会话生效的启用状态 + 运行时状态
         // 。
@@ -331,6 +355,25 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "conversationLoadRequested without sessionId".to_string())?;
+            // specs/032 FR-001：装载入口先取会话锁——被其他实例持有时发占用通知
+            // 并回错误（`error_response`），不回内容、不建只读视图
+            // 目录解析不出的会话（不存在 / 无工作目录登记）没有可锁的数据：照旧走
+            // 「空消息 + null 元数据」的新对话路径
+            let project_dir = history::project_of_session(session_id)
+                .map(Ok)
+                .unwrap_or_else(|| core.project_of(session_id));
+            if let Ok(project) = project_dir {
+                crate::session_lock::acquire_for_core(core, session_id, &project).map_err(
+                    |error| {
+                        core.emit_locked_notice(
+                            session_id,
+                            crate::core_text::SESSION_LOCKED_OPEN,
+                            &error.to_string(),
+                        );
+                        format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error)
+                    },
+                )?;
+            }
             Ok(conversation_load_payload(core, session_id))
         }
         // 会话当前的 Todo 清单（`docs/features/todo-list.md` FR-002）：表里有就直接给，
@@ -367,7 +410,18 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             let data = request
                 .get("data")
                 .ok_or_else(|| "spinDesignSaveRequested without data".to_string())?;
-            Ok(spin_design_save_payload(session_id, data))
+            // specs/032 FR-002：Spin 设计写入是变更入口——同 smartNaming 的守卫
+            let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
+                core.emit_locked_notice(
+                    session_id,
+                    crate::core_text::SESSION_LOCKED_CHANGE,
+                    &error.to_string(),
+                );
+                error.to_string()
+            })?;
+            let result = spin_design_save_payload(session_id, data);
+            drop(lease);
+            Ok(result)
         }
         // 远程工作区文件监听（specs/018 FR-002 / FR-003）：注册 / 注销由宿主驱动，
         // Core 只维护监听表并通过 `workspaceFileChanged` 上报事实。
@@ -533,6 +587,26 @@ fn spin_design_save_payload(session_id: &str, data: &Value) -> Value {
 /// - 没有归档 → `null`（宿主据此提示「没有可展开的内容」）；
 /// - 归档里已带摘要（新格式）→ `归档 + 当前保留区`；
 /// - 归档里没有摘要（旧格式）→ `归档 + 主 JSONL 里的摘要 + 当前保留区`。
+/// specs/032 FR-002：整空间删除前逐会话取变更锁验证。已装载（Registered）放行；
+/// 目录解析不出的条目无数据可锁，放行；他持即拒。
+fn ensure_space_unlocked(core: &Core, dir_name: &str) -> Result<(), String> {
+    let root = config::conversations_root().map_err(|error| error.to_string())?;
+    let entries = std::fs::read_dir(root.join(dir_name))
+        .map_err(|error| format!("cannot read conversation space {dir_name}: {error}"))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(session_id) = name.strip_suffix(".meta.json") else {
+            continue;
+        };
+        match crate::session_lock::begin_mutation(core, session_id) {
+            Ok(lease) => drop(lease),
+            Err(crate::session_lock::LockError::Io(_)) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
 fn compact_archive_display(session_id: &str) -> Value {
     let Some(project) = history::project_of_session(session_id) else {
         return Value::Null;
@@ -730,7 +804,19 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 .unwrap_or(&session_id)
                 .to_string();
             let outcome = if mode == "remove" {
-                history::remove_conversation_space(&dir_name)
+                // specs/032 FR-002：整空间删除是变更入口——空间内任一会话被其他
+                // 实例持有时整体拒绝、数据零改动
+                match ensure_space_unlocked(core, &dir_name) {
+                    Err(error) => {
+                        core.emit_locked_notice(
+                            &session_id,
+                            crate::core_text::SESSION_LOCKED_CHANGE,
+                            &error,
+                        );
+                        Err(format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error))
+                    }
+                    Ok(()) => history::remove_conversation_space(&dir_name),
+                }
             } else {
                 history::clear_conversation_space(&dir_name)
             };

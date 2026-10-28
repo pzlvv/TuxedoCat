@@ -1806,3 +1806,49 @@ fn ui_request_answers_session_todos() {
 
     crate::tools::clear_session_todos("s1");
 }
+
+// ==================== specs/032：会话锁拒绝 ====================
+
+#[test]
+fn session_lock_rejects_mutating_and_loading_requests() {
+    let sandbox = Sandbox::new("session-lock-reject");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let session_id = "s-dispatch-lock";
+    config::set_session_workspace(session_id, Some(project.clone()));
+    // 本进程直接持锁（模拟另一实例持有）：注册表为空的 Core 走盘上获取必败
+    let path = crate::session_lock::lock_path(&project, session_id).expect("lock path");
+    let _holder = crate::session_lock::acquire(&path).expect("hold in-process");
+
+    let sink = crate::test_support::Capture::new();
+    let core = Core::new(Arc::new(Mutex::new(CoreBus::<FrameWriter>::new(
+        sink.writer(),
+    ))));
+
+    // 变更类入口（FR-002）与装载入口（FR-001）一律 Err
+    for request in [
+        json!({ "type": "smartNamingRequested", "sessionId": session_id }),
+        json!({ "type": "compactArchiveRequested", "sessionId": session_id }),
+        json!({ "type": "spinDesignSaveRequested", "sessionId": session_id, "data": {} }),
+        json!({ "type": "conversationLoadRequested", "sessionId": session_id }),
+    ] {
+        let result = dispatch_ui_request(&core, &request);
+        assert!(result.is_err(), "must reject: {request}");
+    }
+
+    // 占用通知（键 + 参数）：装载走 lockedOpen，三个变更走 lockedChange
+    let notices: Vec<Value> = sink
+        .events()
+        .into_iter()
+        .filter(|event| event["type"] == "notice")
+        .collect();
+    assert_eq!(notices.len(), 4, "{notices:?}");
+    // 请求顺序 = smart / compact / spin（变更）→ load（装载）
+    assert_eq!(notices[0]["key"], crate::core_text::SESSION_LOCKED_CHANGE);
+    assert_eq!(notices[1]["key"], crate::core_text::SESSION_LOCKED_CHANGE);
+    assert_eq!(notices[2]["key"], crate::core_text::SESSION_LOCKED_CHANGE);
+    assert_eq!(notices[3]["key"], crate::core_text::SESSION_LOCKED_OPEN);
+    for notice in &notices {
+        assert_eq!(notice["sessionId"], session_id);
+        assert!(notice["params"]["pid"].is_string(), "{notice}");
+    }
+}

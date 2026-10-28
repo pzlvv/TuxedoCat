@@ -92,6 +92,10 @@ git 口径（变更集 / 行数 / 未跟踪文档）与 commit 后的自动刷�
 锁定；US-64 / US-65 的退出逐区三选混合决策（多远程工作区各选各的）、孤儿期间挂起
 请求的重弹与 1 小时超时不再重弹、daemon 空闲判定的宽限口径——`remoteTaskSurvival.spec.ts`
 覆盖对话框与主链路，其余场景依赖真实远端的多实例与长等待，由 `core-rs` 的 `daemon_tests`
-（孤儿化 / 认领 / 空闲判定 / 并发认领）与 `src/test/remoteCoreDaemon.test.ts` 锁定）。
+（孤儿化 / 认领 / 空闲判定 / 并发认领）与 `src/test/remoteCoreDaemon.test.ts` 锁定；
+US-66 的双实例争用——双实例场景依赖两个宿主进程（electron 车道单应用启动），e2e 豁免，
+锁语义由 core-rs `session_lock_tests`（双进程争用、崩溃接管、并发接管至多一胜、同 Core
+重入、未知版本拒外、宿主离场不释放、变更守卫）锁定，占用文案键由 `core_text_tests`
+对照 `core-rs/fixtures/coreTextKeys.json` 锁定）。
 
 运行方式与前置构建见 `e2e/README.md`。

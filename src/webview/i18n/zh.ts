@@ -376,4 +376,6 @@ export const zhDict: Record<string, string> = {
   'notice.spin.variableNoValueWithNames': '存在未赋值的变量（{names}），请在 Spin 设计器中填写变量值后重试。',
   'notice.spin.invalid': 'spin.json 格式不合法，请检查文件内容。',
   'notice.spin.allCompleted': '所有任务已完成！',
+  'notice.session.lockedOpen': '该对话已被另一个窗口打开（pid {pid}），同一对话同时只能在一个窗口使用。',
+  'notice.session.lockedChange': '该对话正被另一个窗口使用（pid {pid}），变更被拒绝。',
 };
