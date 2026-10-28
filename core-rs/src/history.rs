@@ -418,7 +418,7 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
 
 /// 删除单个会话的落盘数据（**不处理子对话**，对齐 `deleteSingleConversation` 的落盘部分）
 fn delete_single_conversation(dir: &std::path::Path, session_id: &str) -> Result<(), String> {
-    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl"] {
+    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl", ".session.lock"] {
         let path = dir.join(session_file_name(session_id, suffix)?);
         if path.exists() {
             std::fs::remove_file(&path)
