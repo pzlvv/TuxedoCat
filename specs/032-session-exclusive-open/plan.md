@@ -2,11 +2,12 @@
 
 技术路线：Core 在会话数据目录放 `session.lock`，互斥用 OS 建议性文件锁（Unix `flock` /
 Windows `LockFileEx`，手写 FFI、零新依赖），锁的生命周期归内核——持有进程退出即释放，
-接管退化为「再次获取」，无摘除-重建协议。锁文件内容（版本 / pid / 进程启动时刻）只作
-占用诊断与版本拒外，不参与互斥。获取收口在会话装载与子代理创建入口，注册表去重同
-Core 重入，`drop_session` 统一释放；变更入口经统一守卫探锁拒绝。宿主与总线协议零改动，
-用户可见文案走既有 `CoreEvent.notice` 键 + 参数通道。需求与验收见同目录
-[spec.md](spec.md)。
+接管退化为「再次获取」，无摘除-重建协议。锁的持有者是 Core 进程内的会话实例：宿主
+detach / 孤儿化只断控制连接，锁与注册表都不动（specs/031 的认领是同 Core 重入）。
+锁文件内容（版本 / pid / 进程启动时刻）只作占用诊断与版本拒外，不参与互斥。获取收口在
+会话装载与子代理创建入口，注册表去重同 Core 重入，`drop_session` 统一释放；变更入口经
+统一守卫在锁内写入后释放。宿主与总线协议零改动，用户可见文案走既有 `CoreEvent.notice`
+键 + 参数通道。需求与验收见同目录 [spec.md](spec.md)。
 
 ## 技术方案
 
@@ -51,23 +52,24 @@ Core 重入，`drop_session` 统一释放；变更入口经统一守卫探锁拒
 ### 变更守卫（FR-002）
 
 新增 `ensure_can_mutate(core, session_id) -> Result<(), LockError>`：注册表命中放行；
-未命中对盘上锁做探测性 try-lock（拿到即立刻放，不获取——变更完成后无状态可挂），
-他持即拒。接入六个变更入口：`on_conversation_renamed`、`on_conversation_deleted`、
-`sessionConfigChanged` 链路、`smartNamingRequested`、`compactArchiveRequested`、
-`spinDesignSaveRequested`；同一守卫套到 `conversationSpaceCleared` 的 `remove` 模式
-（整空间删除是变更类入口，spec FR-002「一切变更类入口一律拒绝」的原则覆盖：空间内任
-一会话他持即整体拒绝，数据零改动——不被拒时锁文件随目录删除自然消失）。四个 UiRequest
-入口拒绝时回 `Err`，UiEvent 入口拒绝时落 notice + 诊断日志。探测与实际写入之间他实例
-恰好获取的窗口按 spec FR-002 口径接受：拒绝语义以校验时刻的持有状态为准（变更本身是
-毫秒级元数据操作）。删除自己持有的会话：先 Drop 句柄再删目录，避免 Windows 上活动
-句柄与目录删除竞态。
+未命中走「取锁 → 写入 → 释放」的短持有路径（spec FR-002：未装载的会话按先取锁再改处理，
+不留下长期持有），取不到即拒。接入六个变更入口：`on_conversation_renamed`、
+`on_conversation_deleted`、`sessionConfigChanged` 链路、`smartNamingRequested`、
+`compactArchiveRequested`、`spinDesignSaveRequested`；同一守卫套到
+`conversationSpaceCleared` 的 `remove` 模式（整空间删除是变更类入口，spec FR-002「一切
+变更类入口一律拒绝」的原则覆盖：空间内任一会话他持即整体拒绝，数据零改动——不被拒时
+锁文件随目录删除自然消失）。四个 UiRequest 入口拒绝时回 `Err`，UiEvent 入口拒绝时落
+notice + 诊断日志。删除自己持有的会话：先 Drop 句柄再删目录，避免 Windows 上活动句柄
+与目录删除竞态。
 
-### 释放（FR-001 / AC-11）
+### 释放（FR-001 / AC-3 / AC-13 / AC-14）
 
 `drop_session`（`on_conversation_closed` 调用）移除注册表条目 → 句柄 Drop →
-unlock + close。视图关闭 / VS Code 空闲回收 / 工作区关闭都汇入 `conversationClosed`；
-崩溃 / 被杀 / SSH 断连由内核随进程退出释放（AC-6 / AC-10），残留锁文件不影响下一次
-装载。
+unlock + close。视图关闭 / VS Code 空闲回收都汇入 `conversationClosed`；崩溃 / 被杀 /
+任一路径下 Core 进程退出由内核释放（AC-7 / AC-14），残留锁文件不影响下一次装载。
+宿主断开不触发释放：`detach` / 孤儿化只断控制连接（specs/031），Core 与其中的会话实例
+都还在，注册表与内核锁都不动（AC-10 / AC-11）；认领换宿主时注册表照旧命中，同 Core
+重入放行。
 
 ### 错误文案（既有通道，宿主零改动）
 
@@ -86,13 +88,15 @@ unlock + close。视图关闭 / VS Code 空闲回收 / 工作区关闭都汇入 
 | 用例 | 验证 |
 | --- | --- |
 | 原语互斥 | 绕过注册表，同进程第二柄 try-lock 必败 |
-| 同 Core 重入 | 注册表两次 acquire 同 sid 返回同一持有（AC-9） |
+| 同 Core 重入 | 注册表两次 acquire 同 sid 返回同一持有（AC-10） |
 | 释放 | Drop 后立即可再获取 |
-| 崩溃接管 | 子进程持锁被杀 → 父立即获取（AC-6） |
-| 并发至多一胜 | 父持锁期间子进程抢锁必败（AC-8） |
-| 版本拒外 | 盘上 `version:99` 锁文件（无内核锁）→ 获取成功但立即释放并拒（AC-7，进程死活无关） |
+| 宿主离场不释放 | 同 Core 上模拟 `conversationClosed` 之外的断链（注册表与句柄都不动）→ 另一进程仍抢锁失败（AC-11） |
+| 崩溃接管 | 子进程持锁被杀 → 父立即获取（AC-7） |
+| 并发至多一胜 | 父持锁期间子进程抢锁必败（AC-9） |
+| 版本拒外 | 盘上 `version:99` 锁文件（无内核锁）→ 获取成功但立即释放并拒（AC-8，进程死活无关） |
 | 内容损坏 | 空文件 / 坏 JSON → 照常持有 + 落诊断（边界） |
 | 变更守卫 | 子进程持目标会话锁 → 六入口 + 空间清除拒绝、数据零改动（FR-002，engine 级） |
+| 未装载变更 | 目标会话未在本 Core 装载 → 变更入口取锁写入后释放，随后另一进程可获取（AC-6） |
 
 ## 受影响模块与契约
 
@@ -110,18 +114,18 @@ unlock + close。视图关闭 / VS Code 空闲回收 / 工作区关闭都汇入 
 
 ## 宪章检查
 
-- [x] 分层与依赖（AGENTS.md 第 1 节）：改动全落 `core-rs/`（Core 层）与
+- [x] 分层与依赖（[AGENTS.md 第 1 节](../../AGENTS.md#1-分层与依赖评审必查)）：改动全落 `core-rs/`（Core 层）与
       `src/webview/i18n/`（用户可见文案的既有资源层）；宿主零改动，core 不 import
       host 实现，无 `host.kind` 嗅探，不新增注入点。
-- [x] 架构铁律（AGENTS.md 第 4 节）：锁获取失败直接拒绝不静默降级；「内容损坏照常
+- [x] 架构铁律（[AGENTS.md 第 4 节](../../AGENTS.md#4-架构铁律docsarchitectureprinciplesmddocsarchitectureprinciplesmd)）：锁获取失败直接拒绝不静默降级；「内容损坏照常
       持有」是 spec 边界明文的设计态且落诊断；无新契约成员、无新增可选；锁的持有
       事实唯一写入点是 `Core.session_locks`；webview 只翻译 key + params，不持锁
       事实；不涉及配置默认值。
-- [x] Core 行为与落盘格式同步义务（AGENTS.md 第 5 节）：行为改动全在 `core-rs/` 并
+- [x] Core 行为与落盘格式同步义务（[AGENTS.md 第 5 节](../../AGENTS.md#5-工作流)）：行为改动全在 `core-rs/` 并
       同步 Rust 单测；`session.lock` 是 Core 独有文件，不属 meta.json / 对话 JSONL
       落盘格式，`src/shared/history/` 不读写它（spec 影响基线 standalone-core.md 行）；
       ADR-0007 后 Core 只有 core-rs 一套，无双实现 parity 义务。
-- [x] 文档同步义务（AGENTS.md 第 0 节）：与代码同一提交更新
+- [x] 文档同步义务（[AGENTS.md 第 0 节](../../AGENTS.md#0-文档要求)）：与代码同一提交更新
       [client-connection.md 第 5 节](../../docs/core/client-connection.md#5-connection-生命周期)
       （连接独立、会话独占）、
       [standalone-core.md 第 7 节](../../docs/core/standalone-core.md#7-事实归属)
