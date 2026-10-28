@@ -1,2 +1,7 @@
 # Git LFS: resources 目录下的文件统一使用 LFS 管理
 resources/** filter=lfs diff=lfs merge=lfs -text
+
+# .gitignore 固定 LF：Windows 上 autocrlf 展成 CRLF 后，blob 里的空行变成
+# 孤立 \r 行，git 2.53 check-ignore 把它当目录通配模式，所有带尾斜杠的
+# 查询意外命中（豁免判定翻转，docsLintLocalOnlyPaths RT-2 变红的根源）
+.gitignore -text
