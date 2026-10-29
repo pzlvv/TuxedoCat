@@ -224,7 +224,7 @@ function startBridgingFakeRemote(): Promise<FakeRemote> {
 // ==================== 装配 ====================
 
 class StubConversationManager extends ConversationManager {
-  protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {
+  protected async dispatchList(_list: readonly ConversationMetadata[], _workspace: string | undefined): Promise<void> {
     /* 桩：不分发 */
   }
 

@@ -30,8 +30,11 @@ export class SingleWebViewConversationManager extends ConversationManager {
     super(host);
   }
 
-  /** 流 1：纯磁盘列表 → webview conversationsData */
-  protected async dispatchList(list: readonly ConversationMetadata[]): Promise<void> {
+  /** 流 1：纯磁盘列表 → webview conversationsData（单工作区宿主，装载即活动目录） */
+  protected async dispatchList(
+    list: readonly ConversationMetadata[],
+    _workspace: string | undefined,
+  ): Promise<void> {
     this.host.sendToWebview({
       type: 'conversationsData',
       conversations: list.map((c) => ({

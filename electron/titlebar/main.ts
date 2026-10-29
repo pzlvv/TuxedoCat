@@ -270,13 +270,16 @@ function normalizeWorkspaceActivity(activity: unknown): WorkspaceActivity {
  * 标签页未激活 / 非当前对话）就记为未读，武装即推——可见但未聚焦的窗口当场
  * 挂灯，不回窗不补亮——呼吸一次后保持常亮，直到激活该标签页（主进程清除并重推，
  * class 随之摘掉）。集合要在本地持有：标签页区重建（renderWorkspaces）时按它
- * 恢复 class，不依赖推送时序。
+ * 恢复 class，不依赖推送时序。**武装规则归主进程**：在线完成不武装激活中的
+ * 标签页，离场完成（specs/defects/restart-tab-lights-incomplete）激活中的也算
+ * 未读——渲染层照集合显示，不再自判「活动项不亮」（那是规则的第二份拷贝，
+ * 会把主进程有意武装的激活标签页吞掉）。
  */
 const completionAttention = new Set<string>();
 
-/** 把未读完成状态写进标签页 class；活动项不亮（正在看的标签页无需提醒） */
-function applyTabCompletion(tab: HTMLElement, id: string | undefined, isActive: boolean): void {
-  tab.classList.toggle('activity-completed', !!id && !isActive && completionAttention.has(id));
+/** 把未读完成状态写进标签页 class（照主进程下发的集合显示，不本地再判） */
+function applyTabCompletion(tab: HTMLElement, id: string | undefined): void {
+  tab.classList.toggle('activity-completed', !!id && completionAttention.has(id));
 }
 
 /** 应用一份未读完成集合快照：整体替换并就地刷新已渲染标签页（不重建 DOM） */
@@ -287,7 +290,7 @@ function applyWorkspaceCompletion(ids: unknown): void {
     if (typeof id === 'string' && id) completionAttention.add(id);
   }
   tabsEl.querySelectorAll<HTMLElement>('.ws-tab').forEach((tab) => {
-    applyTabCompletion(tab, tab.dataset.id, tab.classList.contains('active'));
+    applyTabCompletion(tab, tab.dataset.id);
   });
 }
 
@@ -382,7 +385,7 @@ function renderWorkspaces(
     // 流水灯：非 idle 点亮（黄 waiting 优先，蓝 running 次之）
     applyTabActivity(tab, workspaceActivity[ws.id]);
     // 未读完成呼吸：集合在本地持有，重建标签页时恢复 class（不依赖推送时序）
-    applyTabCompletion(tab, ws.id, isActive);
+    applyTabCompletion(tab, ws.id);
     tab.dataset.id = ws.id;
     // 不可用 / 建链中的标签页在悬停说明里给出状态（本地看目录，远程看连接）；
     // 点击它们同样切换活动项，聊天区会显示对应的占位页

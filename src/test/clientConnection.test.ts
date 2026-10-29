@@ -526,7 +526,7 @@ async function run(): Promise<void> {
       },
     });
     class StubConversationManager extends ConversationManager {
-      protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {}
+      protected async dispatchList(_list: readonly ConversationMetadata[], _workspace: string | undefined): Promise<void> {}
       protected dispatchStates(_states: readonly SessionRuntimeState[]): void {}
     }
     const stubSpinDesign: SpinDesign = { open: async () => undefined, refresh: async () => undefined };

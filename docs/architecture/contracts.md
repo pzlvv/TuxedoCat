@@ -265,14 +265,15 @@ Core 进程内另有一份内存覆盖）优先，其次全局默认（`settings
 （磁盘元数据里混进运行时状态），且每次状态变化都要重读一遍盘；托盘也只能从对话列表反推
 会话状态。拆开之后各自只在自己变化时推，托盘直接吃状态流。
 
-**用抽象类而不是接口**：`load()` 在两个宿主上一致，只有 `dispatch*()` 不同，由模板方法把
+**用抽象类而不是接口**：`loadFor()` 在两个宿主上一致，只有 `dispatch*()` 不同，由模板方法把
 共享部分固定在基类。
 
 | 成员 | 语义 |
 | --- | --- |
 | `refresh()` | 重新读取**当前活动目录**的对话列表并分发给该宿主所有需要它的界面（顺带存成该目录的快照） |
-| `load()`（protected） | 读磁盘对话列表（source of truth，两端一致） |
-| `dispatchList(list)`（abstract） | 把纯磁盘列表分发给该宿主的界面 |
+| `refreshWorkspace(workspace)` | 定向装载一个（可以不是活动项的）目录的对话列表：快照进该目录自己的键、走同一分发链（灯管线、归属索引都吃列表到达）；是否推给侧栏 / webview 由实现按「是否活动目录」判定。Electron 在**工作区建链就绪**时对非活动目录调用（离场完成的补武装唯一挂在列表到达出口，重启恢复后非当前标签页的列表由此装载，specs/defects/inactive-tab-completion-light-missing） |
+| `loadFor(workspace)`（protected） | 读磁盘对话列表（source of truth，两端一致）。请求带工作目录，按目录路由到对应的 Connection，因此也能装载非活动目录 |
+| `dispatchList(list, workspace)`（abstract） | 把纯磁盘列表分发给该宿主的界面；`workspace` 是这份列表归属的目录（活动装载传活动目录） |
 | `onConversationListChanged()` | 列表变化入口：活动目录立即重读，**已有快照**的其它目录标脏（返回重读完成；fire-and-forget 调用加 `void`） |
 | `getCachedList()` | 当前活动目录的列表快照（没有快照时为 `null`）。每个目录各留一份：多工作目录宿主（Electron）切换标签页直接命中，不再每次完整读盘 / 走 `conversationListRequested` 网络往返。Electron 的 `sidebar:get-conversations` 读它 |
 | `isCachedListStale()` | 当前目录的快照是否可能落后于磁盘（`onConversationListChanged` 标脏）。命中脏快照的约定：先返回快照让界面即时渲染，后台 `refresh()` 补读并经 `dispatchList` 推送（stale-while-revalidate） |
@@ -283,13 +284,13 @@ Core 进程内另有一份内存覆盖）优先，其次全局默认（`settings
 | `setSidebarOutlet(fn)` | 设置「推侧栏」的出口（Electron 专用） |
 | `noteSessionActivity(sessionId)` | 记录会话活动（重置空闲计时）。基类默认无操作，只有 VS Code 实现覆盖 |
 | `getSessionStatesSnapshot()` | 最近一次分发的全量会话状态快照（Electron 侧栏播种 / 宿主恢复时读） |
-| `workspaceCacheKey()`（protected） | 当前缓存目录的键：基类用工作目录路径，Electron 实现换成稳定 refKey（切目录不清快照） |
+| `workspaceCacheKey(workspace?)`（protected） | 缓存目录的键（缺省为当前活动目录）：基类用工作目录路径，Electron 实现换成稳定 refKey（切目录不清快照） |
 
 两个实现：
 
 | | `SingleWebViewConversationManager`（`src/VSCodeConversationManager.ts`） | `ElectronConversationManager`（`electron/ElectronConversationManager.ts`） |
 | --- | --- | --- |
-| `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })` | ① `sendToSidebar('sidebar:conversations-updated', list)`<br>② `host.sendToWebview({ type: 'conversationsData', ... })` |
+| `dispatchList` | `host.sendToWebview({ type: 'conversationsData', conversations })`（单工作区，装载即活动目录） | 目录是活动项：① `sendToSidebar('sidebar:conversations-updated', list)`<br>② `host.sendToWebview({ type: 'conversationsData', ... })`；任何目录：③ 注入的到达回调（灯管线——归属索引 / 标签页聚合 / 离场补武装）。非活动目录的装载不进①②，不顶掉界面上正在显示的活动列表 |
 | `dispatchStates` | `host.sendToWebview({ type: 'sessionRuntimeStates', states })`——对话树流水灯 + abort 按钮的唯一数据源 | ① `sendToSidebar('sidebar:session-states-updated', states)`<br>② `statusListener(states)`（托盘）<br>③ 广播给所有聊天视图（abort 按钮） |
 | 空闲会话回收 | 承担（见下） | 不承担 |
 

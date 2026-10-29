@@ -44,15 +44,18 @@ class TestConversationManager extends ConversationManager {
   dispatched: ConversationMetadata[][] = [];
   loadImpl: () => Promise<ConversationMetadata[]> = async () => [];
 
-  protected async load(): Promise<ConversationMetadata[]> {
+  protected override async loadFor(_workspace: string | undefined): Promise<ConversationMetadata[]> {
     return this.loadImpl();
   }
 
-  protected async dispatchList(list: readonly ConversationMetadata[]): Promise<void> {
+  protected override async dispatchList(
+    list: readonly ConversationMetadata[],
+    _workspace: string | undefined,
+  ): Promise<void> {
     this.dispatched.push([...list]);
   }
 
-  protected dispatchStates(): void {
+  protected override dispatchStates(): void {
     /* 本测试不涉及状态流 */
   }
 }
@@ -126,6 +129,26 @@ runTests('conversationListWorkspace', async () => {
   await manager.onConversationListChanged();
   workspace = 'C:/ws-a';
   check('空态期间其它目录同样标脏', manager.isCachedListStale() === true);
+
+  // 定向装载非活动目录（specs/defects/inactive-tab-completion-light-missing）：
+  // 列表只装载活动目录——重启恢复后非当前标签页的列表无人装载，离场完成的补武装
+  // 永不运行（补武装唯一挂在列表到达出口）。契约：装载目标目录的列表，快照进它
+  // 自己的键、分发链照跑（灯管线吃列表到达）；活动目录的快照与分发不受影响。
+  // 装载的是「目标目录自己的内容」由 RT-1（e2e）端到端锁定：未读计数只存在于
+  // 目标目录的 meta.json 里，行灯亮即证明读的是那份盘。
+  workspace = 'C:/ws-a';
+  manager.loadImpl = async () => [meta('session_b3', 'C:/ws-b')];
+  const dispatchedBefore = manager.dispatched.length;
+  await manager.refreshWorkspace('C:/ws-b');
+  check('定向装载触发分发链（非活动目录也到达）', manager.dispatched.length === dispatchedBefore + 1);
+  workspace = 'C:/ws-b';
+  check('定向装载把快照存进目标目录', manager.getCachedList()?.[0].sessionId === 'session_b3');
+  check('定向装载的快照是干净的', manager.isCachedListStale() === false);
+  workspace = 'C:/ws-a';
+  check(
+    '活动目录的快照不受定向装载影响',
+    manager.getCachedList()?.length === 1 && manager.getCachedList()?.[0].sessionId === 'session_a2',
+  );
 
   finish();
 });
