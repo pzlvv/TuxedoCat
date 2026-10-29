@@ -392,3 +392,105 @@ fn unloaded_mutation_takes_a_short_lease() {
     drop(handle);
     let _ = std::fs::remove_dir_all(temp_dir("short-lease"));
 }
+
+// ==================== 手动压缩入口的守卫（specs/defects/manual-compact-lock-guard）====================
+
+/// RT-1：会话被其他实例持有时，手动压缩（`compactRequested` → `request_compact`，
+/// 改写 JSONL 与归档的变更入口）必须拒绝——不产生压缩事件、数据零改动、发占用通知。
+#[test]
+fn manual_compact_rejected_when_held_elsewhere() {
+    let sandbox = crate::test_support::Sandbox::new("lock-manual-compact");
+    let llm = crate::test_support::FakeLlm::fixed(crate::test_support::openai_text_sse(&[
+        "压缩摘要",
+    ]));
+    sandbox.write_llm_settings(&llm.base_url, "auto");
+    let harness = crate::test_support::EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_session_workspace("s-compact", Some(project.clone()));
+    // 预置 40 条可压缩消息（> COMPACT_MAX_MESSAGES_TO_KEEP），与 compact_engine_tests 同口径
+    let messages: Vec<serde_json::Value> = (0..40)
+        .map(|index| {
+            json!({
+                "type": "user",
+                "message": { "role": "user", "content": format!("消息 {index}") },
+                "uuid": format!("u-{index}"),
+                "timestamp": index as u64,
+            })
+        })
+        .collect();
+    crate::history::replace_messages("s-compact", &project, &messages).expect("seed messages");
+    let state = harness.core.session("s-compact");
+    {
+        let mut state = state.lock().unwrap();
+        state.project = Some(project.clone());
+        state.messages = messages.clone();
+        state.persisted_count = messages.len();
+        state.last_uuid = Some("u-39".to_string());
+    }
+    let jsonl = crate::history::messages_path("s-compact", &project).expect("jsonl path");
+    let before = std::fs::read(&jsonl).expect("read jsonl");
+
+    // 「另一实例」持有目标会话
+    let foreign = session_lock::acquire(&lock_file(&project, "s-compact")).expect("foreign holder");
+
+    harness.core.request_compact("s-compact");
+
+    let types = harness.sink.event_types();
+    assert!(
+        !types.iter().any(|kind| kind == "compactBegin" || kind == "compactEnd"),
+        "被持会话不得进入压缩流程，实际事件：{types:?}"
+    );
+    assert!(
+        !types.iter().any(|kind| kind == "messagesReplaced"),
+        "被持会话的消息不得被压缩改写"
+    );
+    assert_eq!(
+        std::fs::read(&jsonl).expect("reread jsonl"),
+        before,
+        "FR-002：变更全拒，数据零改动"
+    );
+    let notice = last_notice(&harness.sink).expect("occupancy notice");
+    assert_eq!(notice["key"], crate::core_text::SESSION_LOCKED_CHANGE);
+    drop(foreign);
+}
+
+/// RT-2：`compactArchiveRequested` 是纯读（展开归档的展示合并）——会话被其他实例
+/// 持有时照常返回，不取变更租约、不发占用通知。
+#[test]
+fn compact_archive_read_works_when_held() {
+    let _env = test_env();
+    let project = unique_project("guard-archive-read");
+    let session_id = format!("s-read-{}", crate::util::unique_id("s"));
+    let (core, sink) = core_with_session(&project, &session_id);
+    // 预置少量消息（无归档：展示为「归档 + 保留区」的保留区段即可）
+    crate::history::replace_messages(
+        &session_id,
+        &project,
+        &[json!({
+            "type": "user",
+            "message": { "role": "user", "content": "消息" },
+            "uuid": "u-0",
+            "timestamp": 0u64,
+        })],
+    )
+    .expect("seed messages");
+
+    let foreign = session_lock::acquire(&lock_file(&project, &session_id)).expect("foreign holder");
+    let display = crate::dispatch_ui_request(
+        &core,
+        &json!({ "type": "compactArchiveRequested", "sessionId": session_id }),
+    );
+    assert!(
+        display.is_ok(),
+        "纯读不受限：他持会话的归档展开不得被拒，实际 {display:?}"
+    );
+    assert!(
+        !sink.events()
+            .into_iter()
+            .any(|event| event["type"] == "notice"),
+        "纯读不发占用通知"
+    );
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(temp_dir("guard-archive-read"));
+}
