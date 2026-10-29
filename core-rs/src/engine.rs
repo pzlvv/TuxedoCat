@@ -2257,6 +2257,23 @@ impl Core {
             self.log("compactRequested for unknown session; dropped");
             return;
         };
+        // specs/032 FR-002：手动压缩是变更入口（改写 JSONL 与压缩归档）——被其他
+        // 实例持有时拒绝、数据零改动；未装载取短持有租约，压缩期间该会话对其他
+        // 实例不可装载，结束即释放。Io（目录解析 / 磁盘失败）不是占用：静默返回，
+        // 只有锁拒绝发占用通知（specs/defects/manual-compact-lock-guard）。
+        let lease = match crate::session_lock::begin_mutation(self, session_id) {
+            Ok(lease) => lease,
+            Err(error) => {
+                if error.is_rejection() {
+                    self.emit_locked_notice(
+                        session_id,
+                        crate::core_text::SESSION_LOCKED_CHANGE,
+                        &error.to_string(),
+                    );
+                }
+                return;
+            }
+        };
         let messages = state.lock().unwrap().messages.clone();
         if !compact::has_compactable_messages(&messages, COMPACT_MAX_MESSAGES_TO_KEEP) {
             self.log("no compactable messages, ignoring compress request");

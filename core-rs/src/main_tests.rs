@@ -1824,10 +1824,11 @@ fn session_lock_rejects_mutating_and_loading_requests() {
         sink.writer(),
     ))));
 
-    // 变更类入口（FR-002）与装载入口（FR-001）一律 Err
+    // 变更类入口（FR-002）与装载入口（FR-001）一律 Err。
+    // `compactArchiveRequested`（归档展开）是纯读不在此列——真正的手动压缩
+    // 变更入口是 `compactRequested`（specs/defects/manual-compact-lock-guard）
     for request in [
         json!({ "type": "smartNamingRequested", "sessionId": session_id }),
-        json!({ "type": "compactArchiveRequested", "sessionId": session_id }),
         json!({ "type": "spinDesignSaveRequested", "sessionId": session_id, "data": {} }),
         json!({ "type": "conversationLoadRequested", "sessionId": session_id }),
     ] {
@@ -1843,18 +1844,18 @@ fn session_lock_rejects_mutating_and_loading_requests() {
     .expect("reads are not restricted by the session lock");
     assert!(list.is_array());
 
-    // 占用通知（键 + 参数）：装载走 lockedOpen，三个变更走 lockedChange
+    // 占用通知（键 + 参数）：装载走 lockedOpen，两个变更走 lockedChange
+    // （归档展开是纯读，不发通知也不被拒——specs/defects/manual-compact-lock-guard）
     let notices: Vec<Value> = sink
         .events()
         .into_iter()
         .filter(|event| event["type"] == "notice")
         .collect();
-    assert_eq!(notices.len(), 4, "{notices:?}");
-    // 请求顺序 = smart / compact / spin（变更）→ load（装载）
+    assert_eq!(notices.len(), 3, "{notices:?}");
+    // 请求顺序 = smart / spin（变更）→ load（装载）
     assert_eq!(notices[0]["key"], crate::core_text::SESSION_LOCKED_CHANGE);
     assert_eq!(notices[1]["key"], crate::core_text::SESSION_LOCKED_CHANGE);
-    assert_eq!(notices[2]["key"], crate::core_text::SESSION_LOCKED_CHANGE);
-    assert_eq!(notices[3]["key"], crate::core_text::SESSION_LOCKED_OPEN);
+    assert_eq!(notices[2]["key"], crate::core_text::SESSION_LOCKED_OPEN);
     for notice in &notices {
         assert_eq!(notice["sessionId"], session_id);
         assert!(notice["params"]["pid"].is_string(), "{notice}");

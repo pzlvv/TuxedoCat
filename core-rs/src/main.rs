@@ -353,14 +353,9 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "compactArchiveRequested without sessionId".to_string())?;
-            // specs/032 FR-002：手动压缩是变更入口——同 smartNaming 的短持有守卫
-            let lease = crate::session_lock::begin_mutation(core, session_id).map_err(|error| {
-                lock_change_rejection_notice(core, session_id, &error);
-                error.to_string()
-            })?;
-            let result = compact_archive_display(session_id);
-            drop(lease);
-            Ok(result)
+            // 归档展开是纯读（合并归档与保留区供展示），不受会话锁限制——
+            // 变更入口是 `compactRequested`（specs/defects/manual-compact-lock-guard）
+            Ok(compact_archive_display(session_id))
         }
         // MCP 面板列表：配置（快照）+ 会话生效的启用状态 + 运行时状态
         // 。
