@@ -70,12 +70,15 @@ test('US-65 离场完成：重开后对话行亮绿色未读完成灯，打开�
   meta.unreadCompletions = 1;
   await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
 
-  // 第二段：重开同一沙箱——对话行亮绿色完成灯（呼吸一次后常亮）
+  // 第二段：重开同一沙箱——对话行亮绿色完成灯（呼吸一次后常亮），标签页同亮
+  //（离场完成不适用「完成时未激活才武装标签页」的在线规则：完成时刻用户缺席）
   app = await launchApp({ repoRoot, mockLlm, workspaceDir, reuseHomeDir: homeDir, agentMode: 'auto' });
   const sidebar = await app.sidebarPage();
   const item = sidebar.locator(SIDEBAR_ITEM).first();
   await expect(item).toHaveCount(1, { timeout: 30_000 });
   await expect(item.locator('.running-bar--completed')).toBeVisible({ timeout: 30_000 });
+  const titlebar = await app.titlebarPage();
+  await expect(titlebar.locator('#workspaceTabs [role="tab"]').first()).toHaveClass(/activity-completed/, { timeout: 30_000 });
 
   // 打开对话即阅读：灯条熄灭，core 把计数清零（conversationLoadRequested 落盘）
   await item.click();

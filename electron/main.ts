@@ -1067,7 +1067,10 @@ function createMainWindow(): void {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
       // 该对话成为当前对话 = 阅读了它的未读完成：清掉并同步（侧栏 / webview 灯条随之熄灭）
       if (sessionId && unreadCompletionSessions.delete(sessionId)) syncCompletionAttention();
-      if (sessionId) completionsReadInRun.add(sessionId);
+      if (sessionId) {
+        completionsReadInRun.add(sessionId);
+        backfillArmedSessions.delete(sessionId);
+      }
       // 同步 UI 侧的「当前活跃会话」：切到已打开的视图不会再走 loadConversation /
       // startNewConversation，不同步的话按会话解析的数据（project skills / MCP 启用
       // 列表）会停在旧视图，取到别的标签页的工作目录。
@@ -1346,6 +1349,12 @@ const unreadCompletionSessions = new Set<string>();
  * 在途窗口——护栏挡住窗口期的重复武装，重启后 core 已清零，护栏不需要持久化。
  */
 const completionsReadInRun = new Set<string>();
+/**
+ * 经离场补武装进入未读集合的会话：标签页灯的补挂范围。在线差分武装的会话沿用
+ * 「完成时未激活才武装标签页」规则，不进这个集合——离场完成的完成时刻用户完全
+ * 缺席，激活中的标签页也算未读（specs/defects/orphan-completion-unread-light）。
+ */
+const backfillArmedSessions = new Set<string>();
 
 /**
  * 系统睡眠 / 休眠阻断：任一会话非 idle 时阻断（`prevent-app-suspension`，允许屏幕熄灭），
@@ -1602,6 +1611,7 @@ function updateCompletionAttentionFromStates(
   let removed = false;
   for (const sessionId of arm.gone) {
     if (unreadCompletionSessions.delete(sessionId)) removed = true;
+    backfillArmedSessions.delete(sessionId);
   }
   for (const key of arm.tabs) unreadCompletionTabs.add(key);
   for (const sessionId of arm.sessions) unreadCompletionSessions.add(sessionId);
@@ -1623,6 +1633,7 @@ function reconcileCompletionAttention(): void {
   for (const sessionId of pickReadCompletions([...unreadCompletionSessions], completionFactsOf)) {
     if (unreadCompletionSessions.delete(sessionId)) removed = true;
     completionsReadInRun.add(sessionId);
+    backfillArmedSessions.delete(sessionId);
   }
   if (removed) syncCompletionAttention();
 }
@@ -1640,6 +1651,7 @@ function reconcileCompletionAttention(): void {
  * 新可见表面补齐（集合未变，已亮的不重播呼吸）。
  */
 function syncCompletionAttention(): void {
+  fileLogger.info('completion-sync', `tabs=[${[...unreadCompletionTabs].join(',')}] sessions=${unreadCompletionSessions.size}`);
   const sessions = [...unreadCompletionSessions];
   sendToTitlebar('titlebar:workspace-completion', [...unreadCompletionTabs]);
   sidebarView?.webContents.send('sidebar:session-completion', sessions);
@@ -3844,6 +3856,7 @@ function teardownWorkspace(ref: WorkspaceRef, closeMode: CoreChannelCloseMode = 
     if (workspacePathMatches(ref, ws)) {
       sessionWorkspaces.delete(sid);
       if (unreadCompletionSessions.delete(sid)) completionCleared = true;
+      backfillArmedSessions.delete(sid);
     }
   }
   if (completionCleared) syncCompletionAttention();
@@ -5546,23 +5559,36 @@ function initCore(): void {
       // 已打开的会话视图枚举）。
       if (channel === 'sidebar:conversations-updated') {
         syncSessionWorkspaceIndex();
-        // 离场完成的补武装（specs/defects/orphan-completion-unread-light）：列表一到达
-        // 就按 meta.json 的 unreadCompletions 补绿灯——先刷新会话归属索引，标签页灯的
-        // 激活判定才有依据；本次运行已阅读的会话不再补（清零落盘的在途窗口护栏）
+        // 标签页蓝 / 黄灯的重聚合（specs/defects/restart-tab-lights-incomplete）：
+        // 重启认领场景里运行时快照早于列表到达（daemon 在 openWorkspace 应答里就
+        // 重放），聚合时归属索引为空、非 idle 会话解析不出归属被丢弃——列表到达
+        // 即索引补齐，这里重推一次聚合把窗口期的丢失填平（静默在跑的任务没有
+        // 后继快照可依赖）
+        syncTitlebarActivity();
+        // 离场完成的补武装（specs/defects/orphan-completion-unread-light）：本次运行
+        // 已阅读的会话不再补（清零落盘的在途窗口护栏）
         const armed = backfillCompletionAttention(
           [...unreadCompletionSessions],
           payload as ReadonlyArray<{ sessionId: string; unreadCompletions?: number; creator?: import('../src/shared/sessionCreator.js').SessionCreator }>,
-          completionFactsOf,
         );
-        fileLogger.info(
-          'completion-backfill',
-          `list=${(payload as unknown[]).length} armed=${armed.sessions.length} [${armed.sessions.join(',')}]`,
-        );
-        if (armed.sessions.length > 0) {
-          for (const sessionId of armed.sessions) unreadCompletionSessions.add(sessionId);
-          for (const key of armed.tabs) unreadCompletionTabs.add(key);
-          syncCompletionAttention();
+        let changed = armed.length > 0;
+        for (const sessionId of armed) {
+          unreadCompletionSessions.add(sessionId);
+          backfillArmedSessions.add(sessionId);
         }
+        // 标签页灯的补挂：离场完成不适用在线的「完成时未激活才武装」规则（完成时刻
+        // 用户完全缺席，激活中的标签页也算未读），归属可解析即武装；归属索引晚到的
+        // 会话（非活动目录的列表后到）在索引补齐后的下一次列表到达也要挂上
+        for (const sessionId of backfillArmedSessions) {
+          if (!unreadCompletionSessions.has(sessionId)) continue;
+          const facts = completionFactsOf(sessionId);
+          fileLogger.info('completion-backfill', `[probe] sid=${sessionId} wsKey=${facts.workspaceKey} tabs=[${[...unreadCompletionTabs].join(',')}]`);
+          if (facts.workspaceKey && !unreadCompletionTabs.has(facts.workspaceKey)) {
+            unreadCompletionTabs.add(facts.workspaceKey);
+            changed = true;
+          }
+        }
+        if (changed) syncCompletionAttention();
       }
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);
