@@ -74,6 +74,11 @@ daemon 重放缓存的请求帧、宿主自动应答后，会话才继续往下�
   `toolPermissionRequested` 不应答（其余照答），断言 `toolResult` success、第二轮到达、
   `queryEnd`、且 `toolPermissionRequested` 仍被发出（落点：
   `core-rs/src/engine_tests.rs` `allowed_tool_executes_without_permission_response`）
+- **RT-2**：CoreRequest waiting 登记表在真实 Core 二进制上对照——`userChoice` 在途窗口内
+  waiting=true 快照 ≥ 1，且 userChoice 到达前全程无 waiting=true（waiting 的唯一来源是
+  userChoice；发后不等后 `tool-card-roundtrip-marks-waiting` 的「卡片上架不标 waiting」
+  语义依旧成立）（落点：`src/test/coreRequestWaiting.test.ts`；先红于 CI smoke 首轮——
+  旧断言把窗口锚在权限应答上，改锚 userChoice 到达序后转绿）
 
 ## 验证记录
 
@@ -82,6 +87,7 @@ daemon 重放缓存的请求帧、宿主自动应答后，会话才继续往下�
 | 回归用例（修复前） | `cargo test allowed_tool_executes_without_permission_response`（core-rs） | 红 | `allow 工具未在无宿主应答时执行：会话卡死在权限往返上`（RT-1 用例）；诊断行显示本地策略已判 `behavior=allow`，工具仍未执行 |
 | 回归用例（修复后） | `cargo test allowed_tool_executes_without_permission_response`（core-rs） | 绿 | RT-1 通过：无宿主应答时 allow 工具照常执行、第二轮 LLM 到达、`toolPermissionRequested` 仍发出 |
 | 既有回归 | `cargo test`（core-rs 全量） | 绿 | 1028 通过 / 0 失败。8 个锁旧「宿主应答驱动决策」语义的用例按新契约改写：`permission_layer_can_rewrite_the_tool_input` → `permission_response_cannot_rewrite_the_tool_input`、`permission_deny_short_circuits_the_tool` → `permission_response_cannot_deny_a_locally_allowed_tool`、`permission_result_that_is_neither_allow_nor_deny_is_rejected` → `malformed_permission_response_cannot_affect_execution`、`permission_request_failure_is_reported` → `permission_request_failure_does_not_block_execution`（四条改为锁「应答无决策权」）；`abort_during_the_tool_loop_skips_the_next_llm_round` 的中止窗口从权限往返移到 userChoice（现存的唯一用户阻塞点）；`permission_deny_cancels_the_remaining_tools_in_the_batch` 的拒绝来源改为用户拒答；`manual_tool_permission_marks_waiting_only_while_the_choice_is_pending` 改用本地策略为 ask 的命令；`permission_denied_turns_the_tool_result_into_an_error` 的确认框选项断言改为本地 `ask_choices` 的「允许执行」（与生产回显一致） |
+| 既有回归（test:unit，真实 Core 二进制） | `npm run build:core:host` + `npm run test:unit` | 绿 | 首轮 CI smoke 的 tests job 抓到 `coreRequestWaiting` 红（RT-2 的旧窗口锚点把 userChoice 的 waiting 快照误判进权限窗口）；改锚 userChoice 到达序后本地全绿（89 通过 / 1 跳过，skip 为环境前置无关项），随本 PR 复跑 smoke 确认 |
 | docs-lint | `npm run test:unit -- docs-lint` | 绿 | [events.md 第 6 节](../../docs/architecture/events.md#6-边界语义)改写在行数棘轮内（419 ≤ 421）；缺陷规格结构与验证记录完整性通过 |
 | e2e `electron-ssh` 车道（后台运行存续 / 认领续跑） | — | not-run | 依赖可连的真实 SSH 远端，本机无环境；引擎与 daemon 侧语义由 core-rs 单测承担，宿主侧用例为既有 `e2e/electron/remoteTaskSurvival.spec.ts` |
 
