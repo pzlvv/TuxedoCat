@@ -50,15 +50,27 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-/** 锁是否已陈旧（持有者崩溃 / 锁文件过旧） */
+/**
+ * 锁是否已陈旧（持有者崩溃 / 锁文件过旧）。
+ *
+ * 只对**现存**的锁文件做判定：文件不存在（`ENOENT`）时返回 false——「不存在」不授权
+ * 任何 unlink。锁的持有者可能恰在等待者「EEXIST → 陈旧判定」的间隙完成「释放 → 重建」，
+ * 若把「不存在」当成陈旧去删路径，删掉的会是并发重建的新锁，造成双持有
+ * （specs/defects/file-lock-stale-break-destroys-recreated-lock.md）。
+ */
 export function isLockStale(lockPath: string): boolean {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(lockPath);
   } catch {
-    // 锁已不存在，可立即重试
-    return true;
+    // 锁已不存在：没有可清理的对象，调用方按正常节奏重试 create 即可
+    return false;
   }
+  return isLockStatStale(stat, lockPath);
+}
+
+/** 对一把已确认存在的锁做陈旧判定：持有者 pid 已死，或 mtime 超过过期时长 */
+function isLockStatStale(stat: fs.Stats, lockPath: string): boolean {
   if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) return true;
 
   try {
@@ -99,15 +111,16 @@ function tryCreateLock(lockPath: string): boolean {
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
-    if (isLockStale(lockPath)) {
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {
-        // 其他进程可能已抢先清理，忽略
-      }
-      return tryCreateLock(lockPath);
+    // EEXIST 只说明「创建瞬间有锁」，持有者可能恰在这个间隙完成「释放 → 重建」。
+    // 删除授权只来自对现存文件的陈旧判定（isLockStale 对已消失的锁返回 false），
+    // 否则 unlink 会删掉并发重建的新锁，造成双持有
+    if (!isLockStale(lockPath)) return false;
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // 其他进程可能已抢先清理，忽略
     }
-    return false;
+    return tryCreateLock(lockPath);
   }
 }
 
