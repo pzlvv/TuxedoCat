@@ -29,6 +29,10 @@ export const CoreNoticeKeys = {
   spinInvalid: 'notice.spin.invalid',
   /** Spin 主循环跑完 */
   spinAllCompleted: 'notice.spin.allCompleted',
+  /** 会话被其他实例独占打开（specs/032 FR-001，装载被拒；`{pid}` 为持有者进程） */
+  sessionLockedOpen: 'notice.session.lockedOpen',
+  /** 会话被其他实例独占、变更被拒（specs/032 FR-002；`{pid}` 为持有者进程） */
+  sessionLockedChange: 'notice.session.lockedChange',
 } as const;
 
 /** 内置命令描述的键（斜杠补全列表的 `description`） */

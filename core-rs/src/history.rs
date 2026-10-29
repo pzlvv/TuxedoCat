@@ -38,6 +38,47 @@ pub fn metadata_path(session_id: &str, project: &str) -> Result<PathBuf, String>
     Ok(config::project_conversation_dir(project)?.join(session_file_name(session_id, ".meta.json")?))
 }
 
+/// 会话独占锁文件路径（specs/032 FR-001）：与会话数据同目录、按会话隔离
+/// （锁是会话级不是工作区级）。
+pub fn session_lock_path(session_id: &str, project: &str) -> Result<PathBuf, String> {
+    Ok(config::project_conversation_dir(project)?
+        .join(session_file_name(session_id, ".session.lock")?))
+}
+
+/// 空间内某会话的锁文件路径（空间清除守卫用）：空间目录本身就是会话数据目录，
+/// 不经 project 再推导。目录名校验口径与 `clear_conversation_space` 一致。
+pub fn session_lock_path_in_space(dir_name: &str, session_id: &str) -> Result<PathBuf, String> {
+    let safe_base = std::path::Path::new(dir_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if dir_name.is_empty() || safe_base != dir_name || dir_name == "." || dir_name == ".." {
+        return Err("Invalid conversation space directory name".to_string());
+    }
+    Ok(config::conversations_root()?
+        .join(dir_name)
+        .join(session_file_name(session_id, ".session.lock")?))
+}
+
+/// 列出对话空间里的会话 id（specs/032 变更守卫用）：`<sid>.meta.json` 减去空间级
+/// `workspace.meta.json`（它是空间配置不是会话）。
+pub fn session_ids_in_space(dir_name: &str) -> Vec<String> {
+    let Ok(root) = config::conversations_root() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(root.join(dir_name)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let id = name.strip_suffix(".meta.json")?;
+            (!id.is_empty() && id != "workspace").then(|| id.to_string())
+        })
+        .collect()
+}
+
 /// 读取压缩归档：返回归档里的 `message` 对象。
 ///
 /// 文件不存在或读取失败时返回空表（调用方据此判定「没有归档」）。
@@ -418,7 +459,10 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
 
 /// 删除单个会话的落盘数据（**不处理子对话**，对齐 `deleteSingleConversation` 的落盘部分）
 fn delete_single_conversation(dir: &std::path::Path, session_id: &str) -> Result<(), String> {
-    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl"] {
+    // `.session.lock` 一并删除（specs/032）：残留无害但删除会话就该清干净。时序上
+    // 持有方句柄已先行释放（`Core::on_conversation_deleted` 的守卫顺序），Windows 上
+    // 活动句柄不会挡住这里的删除。
+    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl", ".session.lock"] {
         let path = dir.join(session_file_name(session_id, suffix)?);
         if path.exists() {
             std::fs::remove_file(&path)
@@ -506,11 +550,14 @@ pub fn clear_conversation_space(dir_name: &str) -> Result<(u64, u64), String> {
         let name = entry.file_name().to_string_lossy().to_string();
         let is_tool_results = name == "tool-results";
         let is_jsonl = path.is_file() && name.ends_with(".jsonl");
+        // 会话锁文件（specs/032）随内容清理一并删掉，不留残骸；时序上守卫句柄已在
+        // 删盘前释放（main.rs 的 conversationSpaceCleared 处理）
+        let is_lock = path.is_file() && name.ends_with(".session.lock");
         // workspace.meta.json 也以 .meta.json 结尾，但它是空间级配置（保留，
         // 对齐 conversation_spaces 的计数口径）
         let is_meta =
             path.is_file() && name.ends_with(".meta.json") && name != "workspace.meta.json";
-        if !is_tool_results && !is_jsonl && !is_meta {
+        if !is_tool_results && !is_jsonl && !is_meta && !is_lock {
             continue;
         }
         if is_tool_results {

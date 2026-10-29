@@ -25,13 +25,17 @@ pub const SPIN_VARIABLE_NO_VALUE_WITH_NAMES: &str = "notice.spin.variableNoValue
 pub const SPIN_INVALID: &str = "notice.spin.invalid";
 /// Spin 主循环跑完
 pub const SPIN_ALL_COMPLETED: &str = "notice.spin.allCompleted";
+/// 会话被其他实例独占打开（specs/032 FR-001，装载被拒）
+pub const SESSION_LOCKED_OPEN: &str = "notice.session.lockedOpen";
+/// 会话被其他实例独占、变更被拒（specs/032 FR-002）
+pub const SESSION_LOCKED_CHANGE: &str = "notice.session.lockedChange";
 
 /// 内置命令描述的键（斜杠补全列表的 `description`）
 pub const SPIN_COMMAND_DESCRIPTION: &str = "command.spin.description";
 
 /// Core 用到的全部界面文案键（供对等测试与键表生成；生产路径逐项直接引用常量）
 #[cfg_attr(not(test), allow(dead_code))]
-pub const CORE_TEXT_KEYS: [&str; 10] = [
+pub const CORE_TEXT_KEYS: [&str; 12] = [
     SPIN_ENGINE_NOT_WIRED,
     SPIN_DESIGN_MISSING,
     SPIN_CANNOT_READ,
@@ -41,6 +45,8 @@ pub const CORE_TEXT_KEYS: [&str; 10] = [
     SPIN_VARIABLE_NO_VALUE_WITH_NAMES,
     SPIN_INVALID,
     SPIN_ALL_COMPLETED,
+    SESSION_LOCKED_OPEN,
+    SESSION_LOCKED_CHANGE,
     SPIN_COMMAND_DESCRIPTION,
 ];
 

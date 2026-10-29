@@ -55,8 +55,9 @@ detach / 孤儿化只断控制连接，锁与注册表都不动（specs/031 的�
 未命中走「取锁 → 写入 → 释放」的短持有路径（spec FR-002：未装载的会话按先取锁再改处理，
 不留下长期持有），取不到即拒。接入六个变更入口：`on_conversation_renamed`、
 `on_conversation_deleted`、`sessionConfigChanged` 链路、`smartNamingRequested`、
-`compactArchiveRequested`、`spinDesignSaveRequested`；同一守卫套到
-`conversationSpaceCleared` 的 `remove` 模式（整空间删除是变更类入口，spec FR-002「一切
+`compactRequested`（进 `request_compact`；实施修订：手动压缩的真实写入口是 UiEvent
+`compactRequested`，`compactArchiveRequested` 是展开归档的纯读请求）、`spinDesignSaveRequested`；
+同一守卫套到 `conversationSpaceCleared` 的 `remove` 模式（整空间删除是变更类入口，spec FR-002「一切
 变更类入口一律拒绝」的原则覆盖：空间内任一会话他持即整体拒绝，数据零改动——不被拒时
 锁文件随目录删除自然消失）。四个 UiRequest 入口拒绝时回 `Err`，UiEvent 入口拒绝时落
 notice + 诊断日志。删除自己持有的会话：先 Drop 句柄再删目录，避免 Windows 上活动句柄

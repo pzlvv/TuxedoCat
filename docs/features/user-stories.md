@@ -21,7 +21,7 @@ last_reviewed: 2026-10-20
 | --- | --- | --- |
 | [对话与输入](user-stories/dialog-core.md) | EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 | US-1～11、US-46～49、US-51～52 |
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
-| [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
+| [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26、US-66 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
 | [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～63 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
@@ -88,6 +88,8 @@ shell 退出后窗口关闭由 `e2e/electron/remoteSshExecution.spec.ts` 覆盖�
 git 口径（变更集 / 行数 / 未跟踪文档）与 commit 后的自动刷新由
 `e2e/electron/remoteSshExecution.spec.ts` 覆盖，本地 git 行数口径由
 `src/test/sidebarDocViewGit.test.ts`（临时真实 git 仓）与 `src/test/sidebarDocWatch.test.ts`
-锁定）。
+锁定；US-66 的双实例争用——依赖两个宿主进程（electron 车道单应用启动），锁语义由
+core-rs `session_lock_tests` 单测锁定（双进程争用 / 崩溃接管 / 并发至多一胜 / 同 Core
+重入 / 未知版本拒外 / 宿主离场不释放））。
 
 运行方式与前置构建见 `e2e/README.md`。

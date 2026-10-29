@@ -486,7 +486,7 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 配置快照 | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided`，一次全量 |
 | 内置模型注册表 | UI | 合并进快照的 `modelLimits`；Core 不持有 |
 | 项目清单 `<conversations>/<project>/workspace.meta.json` | Core | 在 Core 数据目录内，读与写都在 Core |
-| 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式（meta.json / JSONL），宿主侧 `src/shared/history/` 是同一格式的 TS 读写库 |
+| 会话数据（元数据 / 消息 / 归档）与会话独占锁 `<conversations>/<project>/<sid>.session.lock` | Core | 落盘格式（meta.json / JSONL），宿主侧 `src/shared/history/` 是同一格式的 TS 读写库、不碰锁文件；锁由 `session_lock.rs` 的 OS 建议性文件锁承担（互斥归内核），随会话目录删除一并消失、残留无害（[ADR-0012](../adr/0012-session-lock-kernel-lock.md)） |
 | Spin 设计 `<conversations>/<project>/spin.json` | Core | 读与写都经 `UiRequest.spinDesignRequested` / `spinDesignSaveRequested`；宿主不直接读盘 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |

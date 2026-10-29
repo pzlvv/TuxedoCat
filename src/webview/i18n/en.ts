@@ -376,4 +376,6 @@ export const enDict: Record<string, string> = {
   'notice.spin.variableNoValueWithNames': 'Variables without a value ({names}), please fill in their values in the Spin Designer and retry.',
   'notice.spin.invalid': 'spin.json is invalid, please check the file content.',
   'notice.spin.allCompleted': 'All tasks completed!',
+  'notice.session.lockedOpen': 'This session is open in another instance (pid {pid}) and cannot be opened here.',
+  'notice.session.lockedChange': 'This session is open in another instance (pid {pid}); the change was rejected.',
 };

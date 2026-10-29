@@ -1,5 +1,5 @@
 ---
-status: 待评审
+status: 实施中
 ---
 
 # 改动规格：会话跨实例独占打开
@@ -73,10 +73,11 @@ Windows `LockFileEx` 一类的非阻塞独占锁），获取与持有都由内�
 
 会话被其他实例持有时，一切变更类入口一律拒绝、数据零改动：重命名（`conversationRenamed`）、
 删除（`conversationDeleted`）、会话配置变更（`sessionConfigChanged`）、手动压缩
-（`compactArchiveRequested`）、智能命名（`smartNamingRequested`）、Spin 设计写入
+（`compactRequested`，进 `request_compact`；实施修订：原稿误标为 `compactArchiveRequested`，
+后者是展开压缩归档的纯读请求）、智能命名（`smartNamingRequested`）、Spin 设计写入
 （`spinDesignSaveRequested`），整空间清理（会话空间清空）同理：空间内任一会话被他人持有时
-整体拒绝。纯读不受限：会话列表、待办、Spin 设计内容、运行时快照。自动压缩与后台任务
-发生在持有者 Core 内部，天然在锁覆盖之内。
+整体拒绝。纯读不受限：会话列表、待办、Spin 设计内容、运行时快照、压缩归档展开。自动压缩
+与后台任务发生在持有者 Core 内部，天然在锁覆盖之内。
 
 本实例未装载该会话时发起变更，按「先取锁、锁内写入、随即释放」处理：变更期间该会话对
 其他实例不可装载，变更结束即释放，不留下长期持有。

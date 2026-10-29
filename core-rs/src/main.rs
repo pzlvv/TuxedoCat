@@ -44,6 +44,7 @@ mod remote;
 mod replay;
 mod responses;
 mod rollback;
+mod session_lock;
 mod settings;
 mod shell;
 mod shell_env;
@@ -298,7 +299,16 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "smartNamingRequested without sessionId".to_string())?;
-            smart_naming::smart_name_session(session_id)
+            // specs/032 FR-002：智能命名按变更入口守卫——他持即拒（Err + notice），
+            // 未装载短持锁生成后释放（AC-6）
+            match core.guard_mutation(session_id, || smart_naming::smart_name_session(session_id))
+            {
+                Err(error) => {
+                    core.emit_session_locked_notice(session_id, &error, true);
+                    Err(format!("session {session_id} is held by another instance"))
+                }
+                Ok(named) => named,
+            }
         }
         "balanceRequested" => Ok(balance::fetch_balance().unwrap_or(Value::Null)),
         "compactArchiveRequested" => {
@@ -331,7 +341,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "conversationLoadRequested without sessionId".to_string())?;
-            Ok(conversation_load_payload(core, session_id))
+            conversation_load_payload(core, session_id)
         }
         // 会话当前的 Todo 清单（`docs/features/todo-list.md` FR-002）：表里有就直接给，
         // 没有就按会话文件里最后一条成功的 TodoWrite 重建后写表再给。
@@ -367,7 +377,15 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             let data = request
                 .get("data")
                 .ok_or_else(|| "spinDesignSaveRequested without data".to_string())?;
-            Ok(spin_design_save_payload(session_id, data))
+            // specs/032 FR-002：Spin 设计写入按变更入口守卫——他持即拒（Err + notice），
+            // 未装载短持锁写入后释放（AC-6）
+            match core.guard_mutation(session_id, || spin_design_save_payload(session_id, data)) {
+                Err(error) => {
+                    core.emit_session_locked_notice(session_id, &error, true);
+                    Err(format!("session {session_id} is held by another instance"))
+                }
+                Ok(saved) => Ok(saved),
+            }
         }
         // 远程工作区文件监听（specs/018 FR-002 / FR-003）：注册 / 注销由宿主驱动，
         // Core 只维护监听表并通过 `workspaceFileChanged` 上报事实。
@@ -406,6 +424,8 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
 
 /// 会话加载结果：消息 + 元数据 + 派生事实。
 ///
+/// - 会话被其他实例持有 → `Err`（`error_response` 回宿主）+ notice（specs/032
+///   FR-001 / AC-1）：不回内容、不建只读视图；
 /// - 会话文件不存在 → 空消息 + `metadata: null`（宿主据此走「新对话」路径）；
 /// - 会话空闲时给缺失 tool_result 的 tool_use 补「会话中断」取消结果：否则上次
 ///   崩溃时正在执行的 tool_use 没有 tool_result，webview 按「无结果且非待确认」推导为
@@ -414,17 +434,24 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
 ///   进程内待执行表（中断的工具经上一条补取消结果渲染为失败）；
 /// - `agentMode` 取 meta.json 的权威值（缺失为 null，由宿主回退默认值）；
 /// - `workMode` 取 meta.json 的 `workMode`（缺失按 normal；specs/016 FR-005）。
-fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
+fn conversation_load_payload(core: &Core, session_id: &str) -> Result<Value, String> {
+    // specs/032 FR-001：装载即取会话锁（先到先得），句柄入注册表、随
+    // `conversationClosed` → `drop_session` 释放。无盘上数据（新会话）无跨实例
+    // 争用，照常走空载荷。
     let Some(project) = history::project_of_session(session_id) else {
-        return json!({
+        return Ok(json!({
             "messages": [],
             "metadata": Value::Null,
             "pendingToolUseIds": [],
             "hasCompactArchive": false,
             "agentMode": Value::Null,
             "workMode": "normal",
-        });
+        }));
     };
+    if let Err(error) = session_lock::acquire_for_core(core, session_id, &project) {
+        core.emit_session_locked_notice(session_id, &error, false);
+        return Err(format!("session {session_id} is held by another instance"));
+    }
     let mut messages = history::load_messages(session_id, &project);
     if core.session_is_idle(session_id) {
         history::ensure_tool_results(&mut messages);
@@ -447,14 +474,14 @@ fn conversation_load_payload(core: &Core, session_id: &str) -> Value {
             ))
         })
         .unwrap_or(json!("normal"));
-    json!({
+    Ok(json!({
         "messages": messages,
         "metadata": metadata,
         "pendingToolUseIds": [],
         "hasCompactArchive": has_compact_archive,
         "agentMode": agent_mode,
         "workMode": work_mode,
-    })
+    }))
 }
 
 /// 斜杠命令与技能列表：内置命令（`isBuiltin=true`）+ 用户可主动触发的技能。
@@ -729,6 +756,45 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 .and_then(Value::as_str)
                 .unwrap_or(&session_id)
                 .to_string();
+            // specs/032 FR-002：整空间清理是变更入口（clear 删内容、remove 整目录都
+            // 动会话数据）——空间内任一会话被其他实例持有时整体拒绝（数据零改动）。
+            // 守卫句柄在删盘前释放：Windows 上活动句柄挡删除，`.session.lock` 本身
+            // 也在清理范围内。
+            let session_ids = history::session_ids_in_space(&dir_name);
+            let mut space_guards = Vec::new();
+            let mut rejected = None;
+            for sid in &session_ids {
+                let attempt = history::session_lock_path_in_space(&dir_name, sid)
+                    .map_err(crate::session_lock::LockError::Path)
+                    .and_then(|path| {
+                        crate::session_lock::acquire_short(core, sid, path)
+                    });
+                match attempt {
+                    Ok(Some(handle)) => space_guards.push(handle),
+                    Ok(None) => {}
+                    Err(error) => {
+                        rejected = Some((sid.clone(), error));
+                        break;
+                    }
+                }
+            }
+            if let Some((sid, error)) = rejected {
+                drop(space_guards);
+                core.emit_session_locked_notice(&sid, &error, true);
+                // 回执照发（判别联合的 error 形态）：webview 的「删除中」按钮靠它解除
+                emit(
+                    core,
+                    json!({
+                        "type": "conversationSpaceCleared",
+                        "dirName": dir_name,
+                        "result": {
+                            "status": "error",
+                            "message": format!("session {sid} is held by another instance"),
+                        },
+                    }),
+                );
+                return;
+            }
             let outcome = if mode == "remove" {
                 history::remove_conversation_space(&dir_name)
             } else {
@@ -742,6 +808,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     // 清掉归属该空间的内存会话，避免 UI 继续显示已删除的对话
                     clear_memory_sessions_of_space(core, &dir_name);
                     core.emit_runtime();
+                    drop(space_guards);
                     emit(
                         core,
                         json!({
@@ -757,6 +824,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                     emit(core, json!({ "type": "conversationListChanged" }));
                 }
                 Err(err) => {
+                    drop(space_guards);
                     emit(
                         core,
                         json!({

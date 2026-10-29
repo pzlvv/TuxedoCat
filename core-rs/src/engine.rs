@@ -480,6 +480,11 @@ pub struct Core {
     session_order: Mutex<Vec<String>>,
     /// 上一次已推送的运行时快照；无变化时不重发（对齐 `pushIfChanged` 的 diff）。
     last_runtime: Mutex<Vec<Value>>,
+    /// 会话独占锁注册表（specs/032 FR-001）：键 = sessionId，与 `sessions` 同键空间，
+    /// 是锁持有事实的唯一写入点。锁随会话实例存续：宿主 detach / 孤儿化只断控制
+    /// 连接（specs/031），不动注册表与内核锁；`drop_session` 按键释放，Core 进程
+    /// 退出由内核兜底。
+    pub session_locks: Mutex<HashMap<String, crate::session_lock::SessionLockHandle>>,
 }
 
 impl Core {
@@ -490,6 +495,7 @@ impl Core {
             file_watch: crate::file_watch::FileWatchRegistry::new(),
             session_order: Mutex::new(Vec::new()),
             last_runtime: Mutex::new(Vec::new()),
+            session_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -528,8 +534,73 @@ impl Core {
         // 存活的子孙会话仍靠登记保持递归中止可达，见
         // specs/defects/subagent-registry-outlives-dropped-sessions 的不变量）
         crate::subagent::unregister(session_id);
+        // 会话独占锁随会话实例释放（specs/032 FR-001 / AC-3 / AC-13）：移除注册表
+        // 条目即 Drop 句柄 → unlock + close。宿主断开不经过这里（AC-10 / AC-11）。
+        self.session_locks.lock().unwrap().remove(session_id);
         self.sessions.lock().unwrap().remove(session_id);
         self.session_order.lock().unwrap().retain(|id| id != session_id);
+    }
+
+    /// 会话锁的统一获取入口（specs/032 FR-001，装载类入口用）。
+    ///
+    /// project 推导失败说明会话还没有任何盘上数据——新会话 id 不存在跨实例争用，
+    /// 返回 `Ok(false)` 放行：project 推导同时决定数据位置与锁位置，能推导到同
+    /// 一个目录的两个实例必然拿到同一把锁，推导不到的双方也写不进同一份数据。
+    pub fn acquire_session_lock(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, crate::session_lock::LockError> {
+        match self.project_of(session_id) {
+            Ok(project) => crate::session_lock::acquire_for_core(self, session_id, &project)
+                .map(|_| true),
+            Err(_) => {
+                self.log(&format!(
+                    "[session_lock] {session_id}: no project resolved; open without lock"
+                ));
+                Ok(false)
+            }
+        }
+    }
+
+    /// 变更类入口的统一守卫（specs/032 FR-002）：会话被他实例持有时拒绝（`Err`，
+    /// 调用方发 notice / 回错误，数据零改动）；未装载走「取锁 → 锁内写入 → 随即
+    /// 释放」短持有路径（AC-6）。project 推导失败（无盘上数据）直接执行。
+    pub fn guard_mutation<T>(
+        &self,
+        session_id: &str,
+        write: impl FnOnce() -> T,
+    ) -> Result<T, crate::session_lock::LockError> {
+        match self.project_of(session_id) {
+            Ok(project) => {
+                crate::session_lock::with_mutation_lock(self, session_id, &project, write)
+            }
+            Err(_) => Ok(write()),
+        }
+    }
+
+    /// 会话被其他实例占用时的统一拒绝路径（specs/032 FR-001 / FR-002）：发「键 +
+    /// 参数」notice（能指认 pid 一并给出，读不出为 `unknown`）+ 诊断日志；
+    /// `change` 区分装载被拒（`lockedOpen`）与变更被拒（`lockedChange`）。
+    pub fn emit_session_locked_notice(
+        &self,
+        session_id: &str,
+        error: &crate::session_lock::LockError,
+        change: bool,
+    ) {
+        let key = if change {
+            crate::core_text::SESSION_LOCKED_CHANGE
+        } else {
+            crate::core_text::SESSION_LOCKED_OPEN
+        };
+        let pid = error.holder_pid().unwrap_or_else(|| "unknown".to_string());
+        self.log(&format!("[session_lock] {key} session={session_id} holder={pid}"));
+        self.emit(json!({
+            "type": "notice",
+            "sessionId": session_id,
+            "key": key,
+            "params": json!({ "pid": pid }),
+            "level": "error",
+        }));
     }
 
     /// 当前登记的全部会话 id（按创建序）。
@@ -771,6 +842,12 @@ impl Core {
     }
 
     pub fn on_conversation_opened(&self, session_id: &str) {
+        // specs/032 FR-001（AC-1）：装载即取会话锁，被拒（他持 / 未知版本）→ 明确
+        // 错误 + notice，不装载、不建状态、不降级为只读视图
+        if let Err(error) = self.acquire_session_lock(session_id) {
+            self.emit_session_locked_notice(session_id, &error, false);
+            return;
+        }
         let _ = self.ensure_loaded(session_id);
         // MCP：会话被打开 → 按该会话的启用列表建立引用（幂等，后台串行执行）。
         // MCP 的生命周期由 core 的会话生命周期驱动，
@@ -1319,6 +1396,10 @@ impl Core {
         let project = self.project_of(&creator)?;
         let sub_session_id = crate::subagent::generate_sub_session_id();
         config::set_session_workspace(&sub_session_id, Some(project.clone()));
+        // specs/032 FR-001：子代理会话同样占会话锁（与父会话同 Core，注册表重入天然
+        // 放行）。新建 id 理论上无争用，取不到（IO 错误）必须失败——不静默降级。
+        crate::session_lock::acquire_for_core(self, &sub_session_id, &project)
+            .map_err(|error| format!("acquire session lock for sub agent {sub_session_id}: {error}"))?;
 
         // 继承创建者的会话级配置：agent mode（`inheritAgentMode`：完整继承父会话的
         // manual / risk / auto，子代理只是主对话的执行延伸，权限策略必须与主对话一致，
@@ -1461,6 +1542,11 @@ impl Core {
             return Err(format!("remoteSubAgentStarted has an unknown role: {role}"));
         }
         config::set_session_workspace(&session_id, Some(workspace_path.clone()));
+        // specs/032 FR-001：跨工作区派发的目标会话同样占锁——重复派发 / 双 Core 同时
+        // 收到同一事件时后到者在此被拒，失败经 CoreRequest 回 error（Agent 工具收到
+        // 明确失败，不排队不静默）。先取锁再建内存状态（拒 = 不创建状态）。
+        crate::session_lock::acquire_for_core(self, &session_id, &workspace_path)
+            .map_err(|error| format!("acquire session lock for remote sub agent {session_id}: {error}"))?;
 
         let state = self.session(&session_id);
         {
@@ -1806,6 +1892,22 @@ impl Core {
             .as_deref()
             .map(|project| history::conversation_closure(session_id, project))
             .unwrap_or_else(|| vec![session_id.to_string()]);
+        // specs/032 FR-002：删除是变更入口——闭包内任一会话被其他实例持有时整体拒绝
+        // （数据零改动）；否则短持锁到删盘前，本 Core 已装载的成员由注册表锁覆盖。
+        let mut guards = Vec::new();
+        if let Some(project) = project.as_deref() {
+            for id in &closure {
+                match crate::session_lock::short_lock_by_project(self, id, project) {
+                    Ok(Some(handle)) => guards.push(handle),
+                    Ok(None) => {}
+                    Err(error) => {
+                        drop(guards);
+                        self.emit_session_locked_notice(id, &error, true);
+                        return;
+                    }
+                }
+            }
+        }
         for id in &closure {
             self.abort_session_scope(id, &mut HashSet::new());
             self.drop_session(id);
@@ -1814,6 +1916,9 @@ impl Core {
             crate::mcp::on_session_closed(id);
             crate::mcp_config::clear_session_mcp_override(id);
         }
+        // 短持句柄必须在删盘前释放：Windows 上活动句柄会挡住文件删除——
+        // `.session.lock` 也在删除清单里（history::delete_single_conversation）
+        drop(guards);
         if let Some(project) = project {
             let _ = history::delete_conversation(session_id, &project);
         }
@@ -1904,9 +2009,20 @@ impl Core {
     }
 
     pub fn on_conversation_renamed(&self, session_id: &str, title: &str) {
+        // specs/032 FR-002：重命名是变更入口——他持即拒（notice + 诊断，数据零改动）；
+        // 未装载短持锁写入后随即释放（AC-6）。守卫内只写 meta，事件在守卫外广播。
+        let written = match self
+            .guard_mutation(session_id, || self.write_conversation_title(session_id, title))
+        {
+            Ok(written) => written,
+            Err(error) => {
+                self.emit_session_locked_notice(session_id, &error, true);
+                return;
+            }
+        };
         // meta.json 缺失时建档
         // （标题先落盘），再照常广播事件——UI 只消费真实数据变更后的事件。
-        if !self.write_conversation_title(session_id, title) {
+        if !written {
             return;
         }
         // 对齐 `initializeCoreEvents` 的 conversationRenamed：
@@ -1923,8 +2039,32 @@ impl Core {
     }
 
     pub fn on_session_config_changed(&self, session_id: &str, change: &Value) {
+        // specs/032 FR-002：会话配置变更是变更入口——他持即拒（notice + 诊断，数据
+        // 零改动）；未装载短持锁写入后随即释放（AC-6）。事件广播在守卫外：
+        // 拒绝时不发任何事件。
+        let applied = match self.guard_mutation(session_id, || {
+            self.apply_session_config_change(session_id, change)
+        }) {
+            Ok(applied) => applied,
+            Err(error) => {
+                self.emit_session_locked_notice(session_id, &error, true);
+                return;
+            }
+        };
+        if let Some(emitted) = applied {
+            self.emit(json!({
+                "type": "sessionConfigChanged",
+                "sessionId": session_id,
+                "change": emitted,
+            }));
+        }
+    }
+
+    /// `on_session_config_changed` 的守卫内写入体：返回要广播的 change（key 缺失的
+    /// 数据异常返回 `None`，不广播）。
+    fn apply_session_config_change(&self, session_id: &str, change: &Value) -> Option<Value> {
         let Some(key) = change.get("key").and_then(Value::as_str) else {
-            return;
+            return None;
         };
         let value = change.get("value").cloned().unwrap_or(Value::Null);
         let state = self.session(session_id);
@@ -2001,11 +2141,7 @@ impl Core {
             }
             _ => change.clone(),
         };
-        self.emit(json!({
-            "type": "sessionConfigChanged",
-            "sessionId": session_id,
-            "change": emitted,
-        }));
+        Some(emitted)
     }
 
     /// 把一条会话级配置写进 `meta.json` 的 context
@@ -2169,6 +2305,18 @@ impl Core {
     ///   交由下一轮对话开始时执行
     /// - 否则：立即压缩，收尾时唤醒压缩期间入队的消息
     pub fn request_compact(self: &Arc<Self>, session_id: &str) {
+        // specs/032 FR-002：手动压缩是变更入口（改写 JSONL 与压缩归档）——他持即拒
+        // （notice + 诊断，数据零改动）；未装载短持锁压缩后释放，压缩期间该会话对
+        // 其他实例不可装载。
+        if let Err(error) = self.guard_mutation(session_id, || {
+            self.run_request_compact(session_id)
+        }) {
+            self.emit_session_locked_notice(session_id, &error, true);
+        }
+    }
+
+    /// `request_compact` 的守卫内写入体（specs/032 FR-002）。
+    fn run_request_compact(self: &Arc<Self>, session_id: &str) {
         let Some(state) = self.session_if_exists(session_id) else {
             self.log("compactRequested for unknown session; dropped");
             return;

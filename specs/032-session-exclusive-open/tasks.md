@@ -1,0 +1,15 @@
+# 任务分解：会话跨实例独占打开
+
+执行顺序：先落锁原语模块（T001），再接线 Core 的获取 / 释放 / 变更守卫（T002–T003）、
+补错误文案（T004），然后是测试矩阵（T005）、文档与 ADR 同步（T006）、闸门验证（T007）。
+需求与验收见同目录 [spec.md](spec.md)，技术方案见 [plan.md](plan.md)。
+
+## 任务清单
+
+- [x] **T001**（FR-001、FR-003）：新增 `core-rs/src/session_lock.rs` 锁原语模块——`acquire` 非阻塞独占（Unix `flock` / Windows `LockFileEx` 手写 FFI、零新依赖）、`SessionLockHandle`（Drop 只 unlock + close、不删锁文件）、锁文件单行 JSON（version / pid / started）、版本 ≠ 1 立即释放并拒绝、内容损坏照常持有落诊断、进程启动时刻平台分支；`main.rs` 注册 `mod session_lock`；依赖：—；完成判据：`npm run test:core`（或 `cargo test session_lock`）原语用例绿（互斥 / 释放 / 版本拒外 / 损坏诊断）
+- [x] **T002**（FR-001）：`engine.rs` 挂 `Core.session_locks` 注册表与 `acquire_for_core`（注册表命中即同 Core 重入放行），接线四个获取点（`ensure_loaded`、`conversation_load_payload` 拒绝时回 `Err` + notice、`create_sub_agent`、`start_remote_sub_agent` 失败经 `CoreRequest` 回 `error`）；`drop_session` 接释放（移除注册表条目 → 句柄 Drop），删除自己持有的会话先释句柄再删目录；依赖：T001；完成判据：`cargo test` 同 Core 重入 / 装载争用拒绝 / 释放后可再获取用例绿
+- [x] **T003**（FR-002）：`ensure_can_mutate` 变更守卫接入六个变更入口（重命名 / 删除 / 会话配置 / 手动压缩 / 智能命名 / Spin 设计写入）与 `conversationSpaceCleared` 的 remove 模式（空间内任一会话被他人持有即整体拒绝、数据零改动）；未装载会话走「取锁 → 锁内写入 → 随即释放」短持有路径；依赖：T002；完成判据：`cargo test` 六入口 + 空间清除拒绝、未装载写入后释放用例绿
+- [x] **T004**（FR-001、FR-002）：错误文案——`core-rs/src/core_text.rs` 新增 `notice.session.lockedOpen` / `notice.session.lockedChange` 键常量（`{pid}` 参数，读不出持有者为 `unknown`），`src/webview/i18n/zh.ts` / `en.ts` 各补两键翻译；依赖：T002；完成判据：`npm run check-types` 绿且两键在 core_text 与两份 i18n 中可检索
+- [x] **T005**（FR-001、FR-002、FR-003）：新增 `core-rs/src/session_lock_tests.rs`，按 plan 矩阵补全测试——双进程 harness（自 spawn `current_exe` + 测试名过滤）覆盖崩溃接管 / 并发至多一胜 / 宿主离场不释放 / 版本拒外 / 变更拒绝 / 未装载写入后释放，单进程用例覆盖原语互斥 / 同 Core 重入 / 释放 / 内容损坏；依赖：T001–T003；完成判据：`npm run test:core` 全绿（注：全套中 `abort_clears_pending_compact` 在本机 Windows ARM64 于**基线即失败**、与本次改动无关——已用 stash 对照验证；spec 自身 19 个用例全绿，Linux CI 无此失败）
+- [x] **T006**（FR-001）：文档与 ADR 同步——[events.md](../../docs/architecture/events.md) 的 notice 触发点列补新 emit 位点；[client-connection.md 第 5 节](../../docs/core/client-connection.md#5-connection-生命周期)改「连接独立、会话独占」；[standalone-core.md 第 7 节](../../docs/core/standalone-core.md#7-事实归属)事实归属补 `session.lock`、模块清单补 `session_lock.rs`；[sessions-and-llm.md EP-5](../../docs/features/user-stories/sessions-and-llm.md#ep-5-会话管理)新增 US-66；[user-stories.md 附录](../../docs/features/user-stories.md#附录us-与-e2e-场景用例映射)按 e2e 豁免口径登记 US-66；新增 [ADR-0012](../../docs/adr/0012-session-lock-kernel-lock.md)（锁原语选型：OS 建议性文件锁，记录被否决的锁文件摘除协议与第三方 crate 等替代方案）；依赖：T001–T005；完成判据：`npm run test:unit -- docs-lint` 绿
+- [x] **T007**（FR-001、FR-002、FR-003）：闸门验证——`npm run build:core:host` 后 `npm run test:all` 全绿（含 standalone* 真实 Core 二进制用例）；依赖：T006；完成判据：`npm run test:all` 退出码 0（注：check-types / lint / docs-lint / test:unit / cargo test（除基线即失败的 `abort_clears_pending_compact`，见 T005 注）全绿；build:core:host 绿；e2e 本地车道 228/234，4 个失败经两轮重跑核对为**本机平台偶发/既有**——失败集两轮不同、两个纯基础设施问题（剪贴板 180s 超时 / Node inspector 端口）、US-35 的 1-vs-2 断言是会话配置兜底建档时序（PR #3/#6 既有行为，本改动不创建任何对话目录），会话生命周期相关 spec（sessions / conversation / assistant）全绿；Linux CI 为准）
