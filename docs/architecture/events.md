@@ -394,16 +394,16 @@ core 侧没有对应的直接注入入口；宿主 locale 只在宿主进程内�
 | `emitToCore` 发出非 `hostEnvironmentProvided` 的事件而配置快照未就绪 | **记 log 拒绝** | Client 的就绪门禁：未收到 `coreReady` 前挂起不发（[core-ui-separation.md 第 7 节](core-ui-separation.md#7-core-就绪)）；Core 进程侧对就绪前到达的 `UiEvent` 记 log 丢弃 |
 | `emitToCore` / `onUiEvent` 对某 type 尚无 core 订阅者 | **静默丢弃** | core 侧是分散分发，允许某动作暂无消费方；这类操作不产生需要补的历史（会话内容都在磁盘上） |
 | `request()` 时 `onCoreRequests` 尚未注册，或该 type 无 handler | **立即 reject** | 与 `emitToUi` 同类：接线缺失在启动期暴露 |
-| `request()` 的 handler 已注册但响应丢失（UI reload、pending 未恢复） | **永久挂起** | 总线不内置计时器；调用点自行决定兜底（当前两个请求都不设超时，见下） |
+| `request()` 的 handler 已注册但响应丢失（UI reload、pending 未恢复） | **永久挂起** | 总线不内置计时器；调用点自行决定兜底（等待方的超时口径见下方请求超时约定） |
 
-**请求超时约定**：`request()` 本身不实现超时（总线保持纯路由），**当前两个请求都不设超时**：
+**请求超时约定**：`request()` 本身不实现超时（总线保持纯路由）；core 阻塞等待应答的只有 `userChoice` 与 `crossWorkspaceAgentRequested`（后者无应答按派发报错收敛）：
 
-- `toolPermissionRequested`：不设超时——权限确认的耗时取决于用户（可能正在看 diff），
-  没有合理的上界；设短了会把「正在看 diff 的用户」误杀。只有请求本身失败
-  （无订阅者 / 处理器异常）才按 `deny` 兜底——那是调用链坏了，不是用户还在犹豫。
-- `userChoice`：靠 `UserChoiceQueue` 的 pending 补偿（webview 重建后重新弹出），不额外加超时；
-  会话关闭时拒绝该会话的 pending，避免等待方永久挂起——Core 进程不持有宿主队列，由宿主
-  `UserChoiceManager.dropSession` 补这一刀。
+- `toolPermissionRequested`：**发后不等**——执行 / 拒绝 / 弹框按 core 本地 PermissionPolicy 的结果决定，宿主应答只承载
+  展示同步（卡片上架、`_meta`、manual 宿主 diff），迟到 / 缺失不影响执行
+  （[specs/defects/orphan-stalls-on-permission-roundtrip](../../specs/defects/orphan-stalls-on-permission-roundtrip.md)）；
+  这是「后台运行」（[specs/031](../archive/specs/031-remote-detached-tasks/spec.md)）能持续推进的前提。
+- `userChoice`：core 阻塞等待应答，不额外加超时；靠 `UserChoiceQueue` 的 pending 补偿（webview 重建后重新弹出）；
+  会话关闭时拒绝该会话的 pending——Core 进程不持有宿主队列，由宿主 `UserChoiceManager.dropSession` 补这一刀。
 
 ## 7. 新增事件时的检查清单
 

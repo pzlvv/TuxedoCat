@@ -34,12 +34,14 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 
 `waiting` 只表示**真的在等用户**：`waiting_request`（`request_user_choice`）的入队与
 `userChoicePendingChanged`（webview 弹出 / 应答）。`CoreRequest.toolPermissionRequested`
-的往返（上架工具卡片、回传权限结果）**不算**——宿主拿到 `permResult` 就返回，`ask` 也
-直接返回（真确认框随后由 `userChoice` 弹），那段时间并没有在等用户；该往返由
-`Engine::plain_request` 承担，只有 `waiting_request` 走标记 `waiting` 的路径。两个入口的
-载荷类型不同：`plain_request` 只收 `HostRenderRequest`，`waiting_request` 只收
-`UserBlockingRequest`（只能由 `user_choice` 构造），因此渲染往返在类型上就拿不到标记
-`waiting` 的入口——「这次请求算不算在等用户」由载荷类型承载，不靠发起点记不记得换入口。
+（上架工具卡片、写 Edit / Write 的 `_meta`）**不算**——它是展示同步，core 发后不等，
+执行 / 拒绝 / 弹框按本地 PermissionPolicy 的结果决定，宿主应答迟到 / 缺失都不影响
+（[specs/defects/orphan-stalls-on-permission-roundtrip](../../specs/defects/orphan-stalls-on-permission-roundtrip.md)；
+真确认框随后由 `userChoice` 弹，那段时间才算在等用户）。只有 `waiting_request` 走标记
+`waiting` 的路径。两个入口的载荷类型不同：`HostRenderRequest`（展示同步走发后不等的
+`notify_host`，需要结果的跨工作区派发走等应答的 `plain_request`）与 `UserBlockingRequest`
+（只能由 `user_choice` 构造）——「这次请求算不算在等用户」由载荷类型承载，不靠发起点
+记不记得换入口。
 
 ## 2. 对外快照
 

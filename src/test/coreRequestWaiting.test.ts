@@ -8,7 +8,8 @@
  *   不依赖手抄名单）。
  * - 登记语义对照 [docs/core/session-runtime.md 第 1 节](../../docs/core/session-runtime.md)：
  *   只有 `userChoice`（UserBlockingRequest / `waiting_request`）算等用户；
- *   `toolPermissionRequested` 的渲染往返（HostRenderRequest / `plain_request`）不算。
+ *   `toolPermissionRequested` 已发后不等（specs/defects/orphan-stalls-on-permission-roundtrip），
+ *   不存在 core 侧在途窗口。
  *
  * 需要 Standalone Core 产物（先跑 `npm run build:core:host`）；产物缺失时跳过
  * （登记表完备性检查不受影响，始终执行）。
@@ -90,9 +91,9 @@ interface Scenario {
 /**
  * 跑一轮「消息 → 工具调用 → 请求往返 → queryEnd」，返回窗口观察。
  *
- * 应答被刻意压住：在途窗口期间收到的 `sessionRuntimeChanged` 快照按帧序切片，
- * waiting 语义对不对在窗口上看才是硬断言（应答即发即答的 RT 断言锁不住「窗口内
- * 迟到的错误快照」）。
+ * 应答被刻意压住构造在途窗口；权限请求发后不等后，core 侧唯一的用户阻塞窗口是
+ * userChoice，waiting 语义对「userChoice 到达 → 应答」这个窗口看才是硬断言
+ * （应答即发即答的 RT 断言锁不住「窗口内迟到的错误快照」）。
  */
 async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'core-waiting-'));
@@ -330,19 +331,25 @@ async function runRoundtrip(scenario: Scenario): Promise<RoundtripObservation> {
     };
   }
 
-  // 用户阻塞场景：权限往返窗口内不标 waiting（渲染往返语义，回归
-  // specs/defects/tool-card-roundtrip-marks-waiting），userChoice 窗口内必须标
+  // 用户阻塞场景（specs/defects/orphan-stalls-on-permission-roundtrip 后的口径）：
+  // 权限请求发后不等，waiting 的唯一来源是 userChoice 在途——
+  // userChoice 到达前不得出现任何 waiting=true 快照（回归
+  // specs/defects/tool-card-roundtrip-marks-waiting：卡片上架不得标 waiting），
+  // userChoice 窗口内必须标。窗口按 userChoice 帧的到达序切片：权限应答是
+  // 测试自设的节拍，与 core 的推进时序无关，不能再当窗口锚点。
   if (choiceArrivedAt < 0 || choiceReleasedAt < 0) {
     problems.push(`userChoice 恰一次且已应答，实际 ${userChoices.length}`);
     return { waitingTrueDuringInflight: -1, settled: false, preconditionFailures: problems };
   }
-  const permWindowWaitingTrue = countWaitingTrue(permArrivedAt, permReleasedAt);
-  if (permWindowWaitingTrue !== 0) {
-    problems.push(`toolPermissionRequested 在途窗口出现 ${permWindowWaitingTrue} 条 waiting=true 快照`);
+  const preChoiceWaitingTrue = waitingFlags.filter(
+    (snapshot) => snapshot.at < choiceArrivedAt && snapshot.waiting,
+  ).length;
+  if (preChoiceWaitingTrue !== 0) {
+    problems.push(`userChoice 到达前出现 ${preChoiceWaitingTrue} 条 waiting=true 快照`);
   }
   const recovered = waitingFlags.some((snapshot) => snapshot.at > choiceReleasedAt && !snapshot.waiting);
   return {
-    waitingTrueDuringInflight: countWaitingTrue(permReleasedAt, choiceReleasedAt),
+    waitingTrueDuringInflight: countWaitingTrue(choiceArrivedAt, choiceReleasedAt),
     settled: recovered,
     preconditionFailures: problems,
   };
@@ -413,7 +420,7 @@ function startFakeLlm(
  * key 集合必须与联合逐成员一致（下方前两条 check 锁死双向）。
  */
 const WAITING_REGISTRY: Record<string, { waiting: boolean; run: () => Promise<RoundtripObservation> }> = {
-  // 渲染往返（`plain_request`）：上架卡片、回传 permResult，全程不算等用户
+  // 发后不等（specs/defects/orphan-stalls-on-permission-roundtrip）：上架卡片，全程不算等用户
   toolPermissionRequested: {
     waiting: false,
     run: () => runRoundtrip({ mode: 'risk', command: 'sleep 1', permHoldMs: 400, choiceHoldMs: 0 }),

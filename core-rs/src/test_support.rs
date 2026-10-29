@@ -1158,6 +1158,8 @@ pub struct EngineHarness {
     pub core: Arc<Core>,
     pub bus: SharedBus,
     pub sink: Capture,
+    /// 被跳过不应答的请求（孤儿模拟）：`(请求 id, 载荷)`。用例据此做确定性收尾。
+    pub ignored_requests: Arc<Mutex<Vec<(u64, Value)>>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -1175,6 +1177,18 @@ impl EngineHarness {
     where
         F: Fn(&Value) -> Option<Value> + Send + 'static,
     {
+        Self::start_ignoring(&[], sink, respond)
+    }
+
+    /// `ignore` 里的请求 type 不应答、留在 pending 表——模拟宿主离场（孤儿，
+    /// specs/031）：帧仍被对端排水，只是没人给出应答。其余请求照常交给 `respond`。
+    pub fn start_ignoring<F>(ignore: &[&str], sink: Capture, respond: F) -> EngineHarness
+    where
+        F: Fn(&Value) -> Option<Value> + Send + 'static,
+    {
+        let ignored: HashSet<String> = ignore.iter().map(|s| s.to_string()).collect();
+        let ignored_requests = Arc::new(Mutex::new(Vec::new()));
+        let worker_ignored = Arc::clone(&ignored_requests);
         let bus: SharedBus = Arc::new(Mutex::new(CoreBus::<FrameWriter>::new(sink.writer())));
         let core = Arc::new(Core::new(Arc::clone(&bus)));
         let stop = Arc::new(AtomicBool::new(false));
@@ -1186,6 +1200,14 @@ impl EngineHarness {
             while !worker_stop.load(Ordering::Relaxed) {
                 for (id, request) in worker_sink.requests() {
                     if !answered.insert(id) {
+                        continue;
+                    }
+                    let request_type = request
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if ignored.contains(request_type) {
+                        worker_ignored.lock().unwrap().push((id, request));
                         continue;
                     }
                     let result = respond(&request);
@@ -1207,6 +1229,7 @@ impl EngineHarness {
             core,
             bus,
             sink,
+            ignored_requests,
             stop,
             handle: Some(handle),
         }
