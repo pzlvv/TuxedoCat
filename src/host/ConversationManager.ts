@@ -53,13 +53,34 @@ export abstract class ConversationManager {
   async refresh(): Promise<void> {
     try {
       const workspace = this.host.getWorkspacePath();
-      const list = await this.load();
+      const list = await this.loadFor(workspace);
       // 读盘期间活动工作目录已切换：丢弃过期结果，等新目录自己的 refresh()
       if (this.host.getWorkspacePath() !== workspace) return;
-      this.listSnapshots.set(this.workspaceCacheKey(), { list, dirty: false });
-      await this.dispatchList(list);
+      this.listSnapshots.set(this.workspaceCacheKey(workspace), { list, dirty: false });
+      await this.dispatchList(list, workspace);
     } catch (error) {
       this.host.log(`[conversations] refresh failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * 定向装载一个（可以不是活动项的）工作区的对话列表（specs/defects/
+   * inactive-tab-completion-light-missing）：重启恢复后非当前标签页的列表无人装载，
+   * 离场完成的补武装（唯一挂在列表到达出口）永不运行，标签页绿灯不亮。宿主在工作区
+   * 建链就绪时对非活动目录调用这里，列表照常进该目录自己的快照并走分发链（灯管线、
+   * 归属索引都吃列表到达）；是否把列表推给侧栏 / webview 由子类按「是否活动目录」
+   * 判定——非活动目录的装载只喂灯管线，不顶掉界面上正在显示的活动列表。
+   *
+   * 失败自持与 `refresh()` 同一口径；没有活动目录的过期丢弃问题（装载目标就是传入
+   * 的目录，与活动项无关）。
+   */
+  async refreshWorkspace(workspace: string): Promise<void> {
+    try {
+      const list = await this.loadFor(workspace);
+      this.listSnapshots.set(this.workspaceCacheKey(workspace), { list, dirty: false });
+      await this.dispatchList(list, workspace);
+    } catch (error) {
+      this.host.log(`[conversations] refreshWorkspace failed: ${String(error)}`);
     }
   }
 
@@ -83,15 +104,20 @@ export abstract class ConversationManager {
   /**
    * 读对话列表（source of truth，两端一致）。
    *
-   * 经 `UiRequest.conversationListRequested` 向 Core 请求
-   * 向 Core 索取——宿主不直接读 core 的磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）。
+   * 经 `UiRequest.conversationListRequested` 向 Core 请求——宿主不直接读 core 的
+   * 磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）。请求带工作目录，
+   * Client 按路径路由到该目录自己的 Connection，因此这里也能装载非活动目录
+   * （`refreshWorkspace`）。
    */
-  protected async load(): Promise<ConversationMetadata[]> {
-    return loadConversationListForHost(this.host.getWorkspacePath() ?? undefined);
+  protected async loadFor(workspace: string | undefined): Promise<ConversationMetadata[]> {
+    return loadConversationListForHost(workspace);
   }
 
-  /** 把纯磁盘列表分发给该宿主的界面 */
-  protected abstract dispatchList(list: readonly ConversationMetadata[]): Promise<void>;
+  /** 把纯磁盘列表分发给该宿主的界面；workspace 是这份列表归属的工作目录（活动装载传活动目录） */
+  protected abstract dispatchList(
+    list: readonly ConversationMetadata[],
+    workspace: string | undefined,
+  ): Promise<void>;
 
   /**
    * 当前活动工作目录最近一次分发的对话列表快照（没有快照时为 null）。
@@ -116,12 +142,12 @@ export abstract class ConversationManager {
   }
 
   /**
-   * 快照缓存键：活动工作区的身份。默认用路径（单工作区宿主路径即身份）；
-   * 多工作区宿主覆写为稳定 id（`workspaceRefKey`）——同路径不同主机的两个远程
-   * 工作区不能共享一份快照（Windows 上本地规范化还会把远程路径变形归一）。
+   * 快照缓存键：工作区的身份（缺省为当前活动工作区）。默认用路径（单工作区宿主
+   * 路径即身份）；多工作区宿主覆写为稳定 id（`workspaceRefKey`）——同路径不同主机
+   * 的两个远程工作区不能共享一份快照（Windows 上本地规范化还会把远程路径变形归一）。
    */
-  protected workspaceCacheKey(): string {
-    return this.host.getWorkspacePath() ?? '';
+  protected workspaceCacheKey(workspace: string | undefined = this.host.getWorkspacePath()): string {
+    return workspace ?? '';
   }
 
   /** 丢弃指定快照键的列表快照（关闭工作目录等场景；键与 `workspaceCacheKey` 同一口径），下次拉取时重新读盘 */

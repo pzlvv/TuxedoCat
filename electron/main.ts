@@ -3611,11 +3611,16 @@ function registerCoreSessionWorkspace(sessionId: string, workspace: string): voi
 }
 
 /**
- * 用当前对话列表快照刷新宿主的「会话 → 工作目录」索引。
+ * 用对话列表快照刷新宿主的「会话 → 工作目录」索引。
  * 打开对话时按它给聊天视图注入该对话自己的工作目录。
+ *
+ * 缺省读活动目录的缓存快照；传入列表则从**那份列表**学习（specs/defects/
+ * inactive-tab-completion-light-missing）——非活动目录的定向装载（refreshWorkspace）
+ * 到达时活动目录的缓存里没有这些会话，只有条目自带的 `project` 能提供归属，
+ * 标签页灯的归属解析（resolveSessionWorkspaceRef）才有据可查。
  */
-function syncSessionWorkspaceIndex(): void {
-  const list = conversations?.getCachedList();
+function syncSessionWorkspaceIndex(from?: readonly unknown[]): void {
+  const list = from ?? conversations?.getCachedList();
   if (!list) return;
   for (const c of list as ReadonlyArray<{ sessionId?: string; project?: string }>) {
     if (c && typeof c.sessionId === 'string' && typeof c.project === 'string' && c.project) {
@@ -3768,6 +3773,13 @@ function activateWorkspace(target: WorkspaceRef | string): void {
     saveOpenWorkspaces(openWorkspaces, workspacePath);
     // 激活标签页 = 阅读了它的未读完成：清掉标签页项并同步（对话项要等各自被打开才清）
     if (unreadCompletionTabs.delete(refKey(ref))) syncCompletionAttention();
+    // 补武装来源随标签页级已读一并失效（specs/defects/inactive-tab-completion-light-missing）：
+    // 来源记录只服务「归属晚到的重试补挂」；用户已激活该标签页后，后续列表到达
+    // （新建对话 / 改名等都会触发重读）不得把标签页绿灯重新挂回——重试补挂不翻
+    // 已读的旧账。对话行未读集合不动（行灯等各自被打开才清）。
+    for (const [sid, ws] of [...sessionWorkspaces]) {
+      if (workspacePathMatches(ref, ws)) backfillArmedSessions.delete(sid);
+    }
     // 列表快照按目录各存一份：切换标签页不丢快照，侧栏直接命中（脏快照由
     // get-conversations 后台补读，见 sidebar:get-conversations）
     // 从「无工作目录」进入：销毁空态视图（--workspace= 为空），避免残留
@@ -5552,50 +5564,57 @@ function initCore(): void {
   const conversationsMgr = new ElectronConversationManager(
     host,
     (channel: string, payload: unknown) => {
-      // 工作区对话列表到达即刷新「会话 → 工作目录」索引：远程工作区建链慢，列表常
-      // 晚于工作区激活到达（首次 sidebar:get-conversations 只拿到空快照）。删除 /
-      // 重命名 / 智能命名 / 从侧栏打开对话都按会话 id 反查该索引解析工作目录，不在这里
-      // 补记，这些操作对晚到的会话会解析不到归属（批量关闭空闲会话不走该索引，它按
-      // 已打开的会话视图枚举）。
-      if (channel === 'sidebar:conversations-updated') {
-        syncSessionWorkspaceIndex();
-        // 标签页蓝 / 黄灯的重聚合（specs/defects/restart-tab-lights-incomplete）：
-        // 重启认领场景里运行时快照早于列表到达（daemon 在 openWorkspace 应答里就
-        // 重放），聚合时归属索引为空、非 idle 会话解析不出归属被丢弃——列表到达
-        // 即索引补齐，这里重推一次聚合把窗口期的丢失填平（静默在跑的任务没有
-        // 后继快照可依赖）
-        syncTitlebarActivity();
-        // 离场完成的补武装（specs/defects/orphan-completion-unread-light）：本次运行
-        // 已阅读的会话不再补（清零落盘的在途窗口护栏）
-        const armed = backfillCompletionAttention(
-          [...unreadCompletionSessions],
-          payload as ReadonlyArray<{ sessionId: string; unreadCompletions?: number; creator?: import('../src/shared/sessionCreator.js').SessionCreator }>,
-        );
-        let changed = armed.length > 0;
-        for (const sessionId of armed) {
-          unreadCompletionSessions.add(sessionId);
-          backfillArmedSessions.add(sessionId);
-        }
-        // 标签页灯的补挂：离场完成不适用在线的「完成时未激活才武装」规则（完成时刻
-        // 用户完全缺席，激活中的标签页也算未读），归属可解析即武装；归属索引晚到的
-        // 会话（非活动目录的列表后到）在索引补齐后的下一次列表到达也要挂上
-        for (const sessionId of backfillArmedSessions) {
-          if (!unreadCompletionSessions.has(sessionId)) continue;
-          const facts = completionFactsOf(sessionId);
-          fileLogger.info('completion-backfill', `[probe] sid=${sessionId} wsKey=${facts.workspaceKey} tabs=[${[...unreadCompletionTabs].join(',')}]`);
-          if (facts.workspaceKey && !unreadCompletionTabs.has(facts.workspaceKey)) {
-            unreadCompletionTabs.add(facts.workspaceKey);
-            changed = true;
-          }
-        }
-        if (changed) syncCompletionAttention();
-      }
       if (sidebarView && !sidebarView.webContents.isDestroyed()) {
         sidebarView.webContents.send(channel, payload);
       }
     },
-    // 列表快照按工作区稳定 id 分份（同路径不同主机的远程工作区互不命中）
-    () => (workspacePath ? refKey(workspacePath) : ''),
+    // 列表快照按工作区稳定 id 分份（同路径不同主机的远程工作区互不命中）；
+    // 路径反查打开集合拿引用，查不到（瞬时未登记）退回路径本身——不会误判成活动项
+    (path) => {
+      if (!path) return '';
+      const ref = openWorkspaces.find((candidate) => workspacePathMatches(candidate, path));
+      return ref ? refKey(ref) : path;
+    },
+    // 灯管线：任何目录的列表到达都走这里（specs/defects/inactive-tab-completion-light-missing）。
+    // 工作区对话列表到达即刷新「会话 → 工作目录」索引：远程工作区建链慢，列表常晚于
+    // 工作区激活到达（首次 sidebar:get-conversations 只拿到空快照）。删除 / 重命名 /
+    // 智能命名 / 从侧栏打开对话都按会话 id 反查该索引解析工作目录，不在这里补记，这些
+    // 操作对晚到的会话会解析不到归属（批量关闭空闲会话不走该索引，它按已打开的会话
+    // 视图枚举）。归属从**到达的那份列表**学习（条目自带 project）——非活动目录的
+    // 定向装载（refreshWorkspace）也在这里获得归属，标签页灯才挂得上。
+    (list) => {
+      syncSessionWorkspaceIndex(list);
+      // 标签页蓝 / 黄灯的重聚合（specs/defects/restart-tab-lights-incomplete）：
+      // 重启认领场景里运行时快照早于列表到达（daemon 在 openWorkspace 应答里就
+      // 重放），聚合时归属索引为空、非 idle 会话解析不出归属被丢弃——列表到达
+      // 即索引补齐，这里重推一次聚合把窗口期的丢失填平（静默在跑的任务没有
+      // 后继快照可依赖）
+      syncTitlebarActivity();
+      // 离场完成的补武装（specs/defects/orphan-completion-unread-light）：本次运行
+      // 已阅读的会话不再补（清零落盘的在途窗口护栏）
+      const armed = backfillCompletionAttention(
+        [...unreadCompletionSessions],
+        list,
+      );
+      let changed = armed.length > 0;
+      for (const sessionId of armed) {
+        unreadCompletionSessions.add(sessionId);
+        backfillArmedSessions.add(sessionId);
+      }
+      // 标签页灯的补挂：离场完成不适用在线的「完成时未激活才武装」规则（完成时刻
+      // 用户完全缺席，激活中的标签页也算未读），归属可解析即武装；归属索引晚到的
+      // 会话（非活动目录的列表后到）在索引补齐后的下一次列表到达也要挂上
+      for (const sessionId of backfillArmedSessions) {
+        if (!unreadCompletionSessions.has(sessionId)) continue;
+        const facts = completionFactsOf(sessionId);
+        fileLogger.info('completion-backfill', `[probe] sid=${sessionId} wsKey=${facts.workspaceKey} tabs=[${[...unreadCompletionTabs].join(',')}]`);
+        if (facts.workspaceKey && !unreadCompletionTabs.has(facts.workspaceKey)) {
+          unreadCompletionTabs.add(facts.workspaceKey);
+          changed = true;
+        }
+      }
+      if (changed) syncCompletionAttention();
+    },
   );
   conversations = conversationsMgr;
   // 托盘只吃状态流（阶段 3.6）：running / waiting 来自 core 的 sessionRuntimeChanged
@@ -5609,31 +5628,14 @@ function initCore(): void {
     sleepBlocker.update(states);
   });
 
-  // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
-  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）
-  const { ui, client } = bootstrapCore(host, spinDesign, conversationsMgr, {
-    locale: app.getLocale(),
-    log: (...args: unknown[]) => {
-      const line = args.map(a => String(a)).join(' ');
-      console.log('[WebViewUI]', line);
-      // 宿主诊断（[ssh] / [client] / [bootstrap] / [core] …）同时落盘：
-      // 只打 console 时，远端工作区这类问题在日志文件里完全看不到
-      fileLogger.info('host', line);
-    },
-    logToConsole: true,
-    extensionPath: APP_ROOT,
-    // Electron 多工作区宿主：支持跨工作区代理（specs/023 FR-009）
-    // 与跨工作区文件传输（specs/028 FR-005）
-    crossWorkspaceAgent: true,
-    crossWorkspaceTransfer: true,
-  });
-
   // 订阅 Connection 生命周期：启动恢复 / 手动重连的建连失败（从未就绪）在此落成
   // 「不可用」——endpoint 探测只覆盖「连不上 daemon」，daemon 存活但工作区 channel
   // 建失败（远端 core 起不来）等失败形态只能从这里得知。远程的运行期 lost（daemon /
   // 链路死亡、Core 重启超限）同样在这里落成不可用：重启策略在 daemon 手里，Host 侧
   // 无法自动恢复，曾就绪过也必须标红（沉默判定最迟 10s 内把 fatal 送到这里）。本地项
   // 保持豁免：Core 由 Host 侧重启策略恢复，恢复后 coreReady 会重新 markReady。
+  // 注册必须在 bootstrapCore（Client 在其中建立 Connection）之前：监听不缓存事件，
+  // 本地工作区建链快，注册晚了会错过 ready（非活动目录的列表装载就挂在 ready 上）。
   onWorkspaceConnectionState((ref, state, reason) => {
     const key = refKey(ref);
     // 空引用占位 Connection 不属于任何标签页
@@ -5654,11 +5656,36 @@ function initCore(): void {
       }
       // Core 重启 / Connection 重建后重新注册查看器文件监听（specs/018 FR-003）。
       uiHost?.onWorkspaceConnectionReady(ref);
+      // 非活动目录的列表定向装载（specs/defects/inactive-tab-completion-light-missing）：
+      // 离场完成的补武装唯一挂在列表到达出口，而列表此前只装载活动目录——重启恢复后
+      // 非当前标签页的列表无人装载，标签页绿灯永不亮。建链就绪即装载该目录的列表
+      // （启动恢复 / 重开 / 重连同一出口）；活动目录的装载仍由侧栏拉取驱动，
+      // 不在这里重复读盘。
+      if (!sameRef(workspacePath, ref)) void conversationsMgr.refreshWorkspace(ref.path);
     } else if (ref.endpoint) {
       // 运行期致命走 runtime 落定（撤销就绪豁免）；从未就绪的建链失败走默认守卫。
       // 落定时顺带清掉建链中：否则这次标红推送的仍是黄态，黄点要等下一次全量刷新才消失
       markWorkspaceUnavailable(ref, { kind: 'generic', detail: reason }, 'runtime');
     }
+  });
+
+  // 共享启动接线：locale / 日志 / 总线 / core 侧订阅 / WebViewUI / 历史 / 会话队列 /
+  // 等待用户读取器 / 配置目录 / 环境预热 / MCP 残留清理（docs/architecture/events.md 第 5 节；宿主专属接线见 `docs/hosts/host-bootstrap.md` 第 1 节）
+  const { ui, client } = bootstrapCore(host, spinDesign, conversationsMgr, {
+    locale: app.getLocale(),
+    log: (...args: unknown[]) => {
+      const line = args.map(a => String(a)).join(' ');
+      console.log('[WebViewUI]', line);
+      // 宿主诊断（[ssh] / [client] / [bootstrap] / [core] …）同时落盘：
+      // 只打 console 时，远端工作区这类问题在日志文件里完全看不到
+      fileLogger.info('host', line);
+    },
+    logToConsole: true,
+    extensionPath: APP_ROOT,
+    // Electron 多工作区宿主：支持跨工作区代理（specs/023 FR-009）
+    // 与跨工作区文件传输（specs/028 FR-005）
+    crossWorkspaceAgent: true,
+    crossWorkspaceTransfer: true,
   });
 
   host.setMainWindow(mainWindow!);

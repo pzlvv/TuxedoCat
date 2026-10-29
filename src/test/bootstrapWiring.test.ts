@@ -21,7 +21,7 @@ import { getSettingsStore, resetSettingsStore } from '../host/SettingsStore';
 import { getHostLocale } from '../host/i18n';
 
 class StubConversationManager extends ConversationManager {
-  protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {
+  protected async dispatchList(_list: readonly ConversationMetadata[], _workspace: string | undefined): Promise<void> {
     /* 桩：不分发 */
   }
 

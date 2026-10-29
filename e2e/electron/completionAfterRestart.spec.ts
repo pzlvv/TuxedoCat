@@ -90,3 +90,74 @@ test('US-65 离场完成：重开后对话行亮绿色未读完成灯，打开�
 
   await fs.promises.rm(workspaceDir, { recursive: true, force: true }).catch(() => undefined);
 });
+
+test('US-65 离场完成：非当前标签页重开后标签页亮绿色未读完成灯，激活即已读', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  // 双工作区：B 里离场完成的对话，重开后 B 不是活动标签页（specs/defects/
+  // inactive-tab-completion-light-missing——列表只装载活动工作区，B 的补武装
+  // 永不运行，标签页绿灯不亮）
+  const aDir = await makeWorkspace({}, 'e2e-ws-away-idle');
+  const bDir = await makeWorkspace({}, 'e2e-ws-away-done');
+  mockLlm = await startMockLlm({ workspaceDir: bDir });
+  mockLlm.setHandler(() => ({ kind: 'text', text: '离场完成探针回复' }));
+
+  // 第一段：在 B（活动）里造一个已完成过的对话，关闭应用（沙箱留给第二段）
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: bDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: bDir,
+    agentMode: 'auto', keepHomeOnClose: true,
+  });
+  const chatPage = await app.chatPage({ workspaceIncludes: 'e2e-ws-away-done', emptyState: true });
+  await chatPage.fill('textarea.input-textarea', '离场完成探针');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('离场完成探针回复').first()).toBeVisible({ timeout: 60_000 });
+  const homeDir = app.homeDir;
+  await app.close();
+  app = null;
+
+  // 宿主不在场的完成：手工把计数写进 meta.json（与 completionAfterRestart 首用例
+  // 同一份磁盘事实；应用已关闭，手工写无并发）
+  const metaPath = await findConversationMeta(homeDir);
+  const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as {
+    sessionId?: string;
+    unreadCompletions?: number;
+  };
+  expect(meta.sessionId, '会话已建档').toBeTruthy();
+  meta.unreadCompletions = 1;
+  await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+
+  // 第二段：重开同一沙箱，活动项是 A——B 以非当前标签页恢复。B 的标签页要**不点开**
+  // 就亮绿色未读完成灯（列表在其建链就绪时装载、补武装沿既有出口运行、归属从到达
+  // 的那份列表解析）
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: bDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: aDir,
+    reuseHomeDir: homeDir, agentMode: 'auto',
+  });
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 30_000 });
+  const tabB = tabs.nth(1);
+  await expect(tabB).not.toHaveClass(/active/, { timeout: 10_000 });
+  await expect(tabB).toHaveClass(/activity-completed/, { timeout: 60_000 });
+
+  // 激活 B 即已读：标签页绿灯摘除（既有规则），对话行绿灯亮（补武装的行级事实）
+  await tabB.click();
+  await expect(tabB).not.toHaveClass(/activity-completed/, { timeout: 30_000 });
+  const sidebar = await app.sidebarPage();
+  const item = sidebar.locator(SIDEBAR_ITEM).first();
+  await expect(item).toHaveCount(1, { timeout: 30_000 });
+  await expect(item.locator('.running-bar--completed')).toBeVisible({ timeout: 30_000 });
+
+  // 打开对话即阅读：行灯熄灭，盘上计数清零
+  await item.click();
+  await expect(item.locator('.running-bar--completed')).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => {
+    const current = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as { unreadCompletions?: number };
+    return current.unreadCompletions ?? 0;
+  }, { timeout: 30_000 }).toBe(0);
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});

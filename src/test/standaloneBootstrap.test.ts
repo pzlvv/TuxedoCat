@@ -24,7 +24,7 @@ import { createChecker, runTests } from './helpers/harness';
 import { createTestHost } from './helpers/fixtures';
 
 class StubConversationManager extends ConversationManager {
-  protected async dispatchList(_list: readonly ConversationMetadata[]): Promise<void> {
+  protected async dispatchList(_list: readonly ConversationMetadata[], _workspace: string | undefined): Promise<void> {
     /* 桩：不分发 */
   }
 
