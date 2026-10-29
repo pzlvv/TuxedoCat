@@ -84,6 +84,17 @@ impl<W: Write> CoreBus<W> {
         Some((id, receiver))
     }
 
+    /// 发一条 `CoreRequest` 但**不登记 pending**（发后不等）。
+    ///
+    /// 展示同步类请求（`toolPermissionRequested`）用：core 不以应答为执行前置，
+    /// 宿主的应答回来时 `handle_response` 查不到条目，静默丢弃。
+    /// 请求 id 照常递增，保持 wire 上 id 唯一。
+    pub fn request_detached(&mut self, request: Value) -> bool {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send(&CoreToUiFrame::Request { id, request })
+    }
+
     /// 放弃一个未决请求（等待超时）；避免 `pending` 表无界增长。
     pub fn cancel_request(&mut self, id: u64) {
         if self.pending.remove(&id).is_some() {

@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::test_support::{
-    anthropic_sse, minimal_png_bytes, openai_text_sse, openai_tool_sse, EngineHarness, FakeLlm,
-    Sandbox,
+    anthropic_sse, minimal_png_bytes, openai_text_sse, openai_tool_sse, Capture, EngineHarness,
+    FakeLlm, Sandbox,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -2492,14 +2492,81 @@ fn permission_denied_turns_the_tool_result_into_an_error() {
     let choices = harness.sink.requests_of("userChoice");
     assert_eq!(choices.len(), 1, "ask 之后应当弹确认框");
     assert_eq!(choices[0]["options"]["toolName"], "Bash");
-    // 假宿主回的是不带 choices 的 `{ behavior: "ask" }`，引擎按缺省选项兜底
-    assert_eq!(choices[0]["options"]["choices"][0]["label"], "允许");
+    // 确认框选项来自本地 PermissionPolicy 的 ask_choices（宿主应答不参与决策，
+    // specs/defects/orphan-stalls-on-permission-roundtrip.md）
+    assert_eq!(choices[0]["options"]["choices"][0]["label"], "允许执行");
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "error");
     let output = result["output"].as_str().unwrap();
     assert!(output.contains("用户拒绝操作"), "got {output}");
     assert!(output.contains("太危险了"), "拒绝原因应当带上: {output}");
+}
+
+#[test]
+fn allowed_tool_executes_without_permission_response() {
+    // RT-1（specs/defects/orphan-stalls-on-permission-roundtrip.md）：孤儿（后台运行）
+    // 期间没有宿主应答 `toolPermissionRequested`，本地 allow 的工具必须照常执行、
+    // 消费循环照常推进——执行决策取 core 本地 PermissionPolicy，不取宿主回包。
+    let sandbox = Sandbox::new("engine-orphan-perm-roundtrip");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            anthropic_sse("", "", Some(("toolu_1", "Bash", r#"{"command":"echo orphan"}"#)))
+        } else {
+            anthropic_sse("", "完成", None)
+        }
+    });
+    sandbox.write_settings(json!({
+        "defaultAgentMode": "auto",
+        "llm": {
+            "activeProvider": "fake",
+            "providers": {
+                "fake": {
+                    "baseURL": llm.base_url,
+                    "apiKey": "k",
+                    "defaultModel": "m",
+                    "modelConfigs": { "m": { "apiType": "Anthropic" } }
+                }
+            }
+        }
+    }));
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+
+    // 模拟孤儿：除 toolPermissionRequested 外都应答——它留在 pending 表无人理睬
+    // （对端排水但不代答，specs/031 FR-005 的帧排水语义）。
+    let harness = EngineHarness::start_ignoring(
+        &["toolPermissionRequested"],
+        Capture::new(),
+        |_request| Some(json!({})),
+    );
+    submit(&harness, "s1", "后台跑一下", "u-1");
+
+    assert!(
+        harness.wait_for(
+            |sink| sink.event_types().iter().any(|kind| kind == "toolResult"),
+            std::time::Duration::from_secs(5)
+        ),
+        "allow 工具未在无宿主应答时执行：会话卡死在权限往返上"
+    );
+    assert!(harness.wait_query_end());
+    // 展示职责保留：请求本身仍发出（宿主在线时上架卡片；孤儿期间由 daemon 缓存待重放）
+    assert_eq!(harness.sink.requests_of("toolPermissionRequested").len(), 1);
+    let result = harness.sink.event_of("toolResult").unwrap();
+    assert_eq!(result["status"], "success");
+    let stream_end = harness
+        .sink
+        .events_of("streamEnd")
+        .into_iter()
+        .find(|event| event["data"]["role"] == "assistant" && event["data"]["accumulated"] == "完成")
+        .expect("第二轮 LLM 应到达");
+    assert_eq!(stream_end["data"]["accumulated"], "完成");
+
+    // 确定性收尾：对留在 pending 表的请求补发失败应答。修复后引擎已不等它，是 no-op；
+    // 修复前（红）走不到这里——断言已失败，Drop 的中止链兜底。
+    for (id, _) in harness.ignored_requests.lock().unwrap().drain(..) {
+        let mut bus = harness.bus.lock().unwrap();
+        bus.handle_response(id, false, Value::Null, Some("test cleanup".to_string()));
+    }
 }
 
 #[test]
@@ -2585,7 +2652,10 @@ fn permission_denied_without_a_reason_uses_the_default_message() {
 }
 
 #[test]
-fn permission_layer_can_rewrite_the_tool_input() {
+fn permission_response_cannot_rewrite_the_tool_input() {
+    // 宿主对 `toolPermissionRequested` 的应答只承载展示同步，没有决策权
+    // （specs/defects/orphan-stalls-on-permission-roundtrip.md）：
+    // 应答里带的 `updatedInput` 不参与执行，工具按本地策略（含本地规范化入参）执行。
     let sandbox = Sandbox::new("engine-permission-rewrite");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
@@ -2594,7 +2664,7 @@ fn permission_layer_can_rewrite_the_tool_input() {
             openai_text_sse(&["好了"])
         }
     });
-    prepare(&sandbox, &llm.base_url, "manual");
+    prepare(&sandbox, &llm.base_url, "auto");
 
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         "toolPermissionRequested" => Some(json!({
@@ -2608,13 +2678,18 @@ fn permission_layer_can_rewrite_the_tool_input() {
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "success");
-    assert!(result["output"].as_str().unwrap().contains("rewritten"), "got {result}");
-    // 确认框不应出现（权限层直接放行）
+    // 执行的是原始入参（touch marker.txt），不是应答里改写的 echo
+    assert!(
+        sandbox.workspace.join("marker.txt").exists(),
+        "工具应当按原始入参执行"
+    );
+    // 确认框不应出现（本地策略直接放行）
     assert!(harness.sink.requests_of("userChoice").is_empty());
 }
 
 #[test]
-fn permission_deny_short_circuits_the_tool() {
+fn permission_response_cannot_deny_a_locally_allowed_tool() {
+    // 宿主应答 `deny` 不能否决本地策略放行的工具（决策权在本地 PermissionPolicy）
     let sandbox = Sandbox::new("engine-permission-deny");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
@@ -2623,7 +2698,7 @@ fn permission_deny_short_circuits_the_tool() {
             openai_text_sse(&["好的"])
         }
     });
-    prepare(&sandbox, &llm.base_url, "manual");
+    prepare(&sandbox, &llm.base_url, "auto");
 
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         "toolPermissionRequested" => Some(json!({ "behavior": "deny", "message": "策略禁止" })),
@@ -2633,12 +2708,14 @@ fn permission_deny_short_circuits_the_tool() {
     assert!(harness.wait_query_end());
 
     let result = harness.sink.event_of("toolResult").unwrap();
-    assert_eq!(result["status"], "error");
-    assert_eq!(result["output"], "策略禁止");
+    assert_eq!(result["status"], "success");
+    assert!(sandbox.workspace.join("marker.txt").exists());
+    assert!(harness.sink.requests_of("userChoice").is_empty());
 }
 
 #[test]
-fn permission_result_that_is_neither_allow_nor_deny_is_rejected() {
+fn malformed_permission_response_cannot_affect_execution() {
+    // 应答 behavior 非法（既非 allow 也非 deny）时执行不受影响——决策取本地策略
     let sandbox = Sandbox::new("engine-permission-unknown");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
@@ -2647,7 +2724,7 @@ fn permission_result_that_is_neither_allow_nor_deny_is_rejected() {
             openai_text_sse(&["好的"])
         }
     });
-    prepare(&sandbox, &llm.base_url, "manual");
+    prepare(&sandbox, &llm.base_url, "auto");
 
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         "toolPermissionRequested" => Some(json!({ "behavior": "maybe" })),
@@ -2657,12 +2734,14 @@ fn permission_result_that_is_neither_allow_nor_deny_is_rejected() {
     assert!(harness.wait_query_end());
 
     let result = harness.sink.event_of("toolResult").unwrap();
-    assert_eq!(result["status"], "error");
-    assert_eq!(result["output"], "Permission request failed.");
+    assert_eq!(result["status"], "success");
+    assert!(sandbox.workspace.join("marker.txt").exists());
 }
 
 #[test]
-fn permission_request_failure_is_reported() {
+fn permission_request_failure_does_not_block_execution() {
+    // 宿主对所有请求都回失败（ok:false，模拟调用链坏了）：展示同步静默降级，
+    // 执行决策仍按本地策略推进——孤儿（后台运行）期间的「无人应答」同理。
     let sandbox = Sandbox::new("engine-permission-failure");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
@@ -2671,16 +2750,15 @@ fn permission_request_failure_is_reported() {
             openai_text_sse(&["好的"])
         }
     });
-    prepare(&sandbox, &llm.base_url, "manual");
+    prepare(&sandbox, &llm.base_url, "auto");
 
-    // 宿主回失败应答（respond 返回 None → harness 回 ok:false）
     let harness = EngineHarness::start(|_| None);
     submit(&harness, "s1", "跑一下", "u-1");
     assert!(harness.wait_query_end());
 
     let result = harness.sink.event_of("toolResult").unwrap();
-    assert_eq!(result["status"], "error");
-    assert_eq!(result["output"], "Permission request failed.");
+    assert_eq!(result["status"], "success");
+    assert!(sandbox.workspace.join("marker.txt").exists());
 }
 
 #[test]
@@ -3536,16 +3614,18 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
     });
     prepare(&sandbox, &llm.base_url, "manual");
 
-    // 权限确认时顺手取消：工具**不执行**，补 `Command was aborted before execution` 的取消结果，
-    // 并且不再回到 LLM 要第二轮。
+    // 用户确认框在途时顺手取消：工具**不执行**，且不再回到 LLM 要第二轮。
+    // 权限往返已发后不等，工具循环里唯一阻塞等用户的窗口就是 userChoice
+    // （specs/defects/orphan-stalls-on-permission-roundtrip.md）。
     let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
     let responder_slot = Arc::clone(&slot);
     let harness = EngineHarness::start(move |request| {
-        if request["type"] == "toolPermissionRequested" {
+        if request["type"] == "userChoice" {
             if let Some(core) = responder_slot.lock().unwrap().as_ref() {
                 core.on_abort("s1");
             }
-            return Some(json!({ "behavior": "allow" }));
+            // abort 后宿主拒绝挂起的选择框：按失败应答收敛
+            return None;
         }
         Some(json!({}))
     });
@@ -3561,35 +3641,11 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
     );
     let result = harness.sink.event_of("toolResult").expect("toolResult");
     assert_eq!(result["status"], "error");
-    assert_eq!(result["output"], "Command was aborted before execution");
     assert_eq!(harness.sink.events_of("toolResult").len(), 1);
     // 工具没有真的执行
     assert!(!sandbox.workspace.join("should-not-run").exists());
 
-    // 落盘：tool_result 带 exit_code -1 / is_canceled true，并补一条 `*User Interrupted*`
-    let workspace = sandbox.workspace.to_string_lossy().to_string();
-    let messages = history::load_messages("s1", &workspace);
-    let tool_result = messages
-        .iter()
-        .find(|message| {
-            message.get("type").and_then(Value::as_str) == Some("user")
-                && message
-                    .get("message")
-                    .and_then(|inner| inner.get("content"))
-                    .and_then(Value::as_array)
-                    .map(|blocks| {
-                        blocks.iter().any(|block| {
-                            block.get("type").and_then(Value::as_str) == Some("tool_result")
-                        })
-                    })
-                    .unwrap_or(false)
-        })
-        .expect("persisted tool_result");
-    let block = &tool_result["message"]["content"][0];
-    assert_eq!(block["content"], "Command was aborted before execution");
-    assert_eq!(block["exit_code"], -1);
-    assert_eq!(block["is_canceled"], true);
-
+    // 中止提示照常上报（一次性通知，不落 jsonl）
     let system = harness
         .sink
         .events_of("message")
@@ -3597,20 +3653,11 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
         .find(|event| event["data"]["role"] == "system")
         .expect("interrupted system message");
     assert_eq!(system["data"]["content"], "*User Interrupted*");
-    // 一次性通知：UI 事件带 once 标记；记 meta.json 的 `onceMessage`，不落 jsonl
-    // （`docs/hosts/webview-ui.md` 第 11 节）
     assert_eq!(system["data"]["once"], true);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     assert_eq!(
         history::load_metadata("s1", &workspace).expect("meta")["onceMessage"]["content"],
         "*User Interrupted*"
-    );
-    assert!(
-        !history::load_messages("s1", &workspace)
-            .iter()
-            .any(|message| message["type"] == "system"
-                && message["content"] == "*User Interrupted*"),
-        "中断提示不得落盘"
     );
 }
 
@@ -3975,7 +4022,7 @@ fn openai_multi_tool_sse(calls: &[(&str, &str, &str)]) -> String {
 
 #[test]
 fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
-    // 一个工具被 deny 时，
+    // 一个工具被拒（用户在确认框拒答且带原因）时，
     // 剩余工具不再执行、也不请求权限，而是逐条补发取消结果（is_canceled=true）。
     let sandbox = Sandbox::new("engine-permission-cancel-remaining");
     let llm = FakeLlm::start(|index, _| {
@@ -3991,13 +4038,8 @@ fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
     prepare(&sandbox, &llm.base_url, "manual");
 
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
-        "toolPermissionRequested" => {
-            if request["toolUseId"] == "call_1" {
-                Some(json!({ "behavior": "deny", "message": "策略禁止" }))
-            } else {
-                Some(json!({ "behavior": "allow" }))
-            }
-        }
+        // 决策取本地（manual + 写文件 → ask）：确认框拒答带原因 → 不终止本轮
+        "userChoice" => Some(json!({ "index": 1, "reply": "策略禁止" })),
         _ => Some(json!({})),
     });
     submit(&harness, "s1", "跑两条", "u-1");
@@ -4006,7 +4048,7 @@ fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
     let results = harness.sink.events_of("toolResult");
     assert_eq!(results.len(), 2, "被拒工具 + 剩余工具都要有 toolResult");
     assert_eq!(results[0]["toolUseId"], "call_1");
-    assert_eq!(results[0]["output"], "策略禁止");
+    assert_eq!(results[0]["output"], "用户拒绝操作，原因：策略禁止");
     assert_eq!(results[0]["status"], "error");
     assert_eq!(results[1]["toolUseId"], "call_2");
     assert_eq!(
@@ -4043,7 +4085,7 @@ fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
     assert_eq!(blocks[1]["is_canceled"], true);
     assert_eq!(blocks[1]["exit_code"], -1);
 
-    // checkPermissions / UI deny 不设置 shouldTerminate：结果仍交回 LLM
+    // checkPermissions / 用户拒答不设置 shouldTerminate：结果仍交回 LLM
     assert_eq!(harness.sink.events_of("aiBegin").len(), 2);
 }
 
@@ -6857,16 +6899,15 @@ fn manual_tool_permission_marks_waiting_only_while_the_choice_is_pending() {
     let sandbox = Sandbox::new("engine-waiting-manual");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
         } else {
             openai_text_sse(&["好的"])
         }
     });
     prepare(&sandbox, &llm.base_url, "manual");
 
+    // manual + 写文件在本地策略是 ask：卡片请求发后不等，真确认框（userChoice）才标 waiting
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
-        // 上架卡片 → 保持 ask（真确认框随后由 userChoice 弹）
-        "toolPermissionRequested" => Some(json!({ "behavior": "ask" })),
         "userChoice" => Some(json!({ "index": 0 })),
         _ => Some(json!({})),
     });
@@ -6876,7 +6917,7 @@ fn manual_tool_permission_marks_waiting_only_while_the_choice_is_pending() {
     assert_eq!(harness.sink.requests_of("toolPermissionRequested").len(), 1);
     assert_eq!(harness.sink.requests_of("userChoice").len(), 1);
     // 快照序列应为：(running,waiting=false) → (running,waiting=true) → (running,waiting=false) → idle
-    // 即 waiting 只在真确认框在途期间为真（1 条）；卡片往返若也标记会变成 2 条
+    // 即 waiting 只在真确认框在途期间为真；权限请求已发后不等，不存在第二个 waiting 窗口
     assert_eq!(
         waiting_snapshots(&harness, "s1"),
         1,
@@ -6889,7 +6930,8 @@ fn manual_tool_permission_marks_waiting_only_while_the_choice_is_pending() {
 // 缺陷：入参校验失败与未知工具两条分支同样用 `waiting_request` 发 `toolPermissionRequested`，
 // 在途期间把会话标成 waiting → 托盘黄点闪一下、窗口在后台时响一声提醒音，而界面上
 // 只有一张失败卡片、没有任何要用户回答的东西。口径见 `docs/core/session-runtime.md` 第 1 节：
-// 该往返由 `plain_request` 承担，不碰 `sessionRuntime`。
+// 该往返不碰 `sessionRuntime`（如今更是发后不等，
+// specs/defects/orphan-stalls-on-permission-roundtrip.md）。
 
 /// RT-1：结构非法（`choices` 项带多余字段）的 AskUserQuestion 只产出 `InputValidationError`，
 /// 全程不标记 waiting、不弹提问框。

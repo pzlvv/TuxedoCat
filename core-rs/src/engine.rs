@@ -2450,7 +2450,10 @@ impl Core {
     ) -> PermissionOutcome {
         // 无论 allow / deny / ask，都先发一次
         // `toolPermissionRequested`（UI 借此上架工具卡片、写 Edit / Write 的 `_meta`、
-        // 在 manual 模式下打开宿主 diff），再按回传的 behavior 决定执行 / 拒绝 / 弹框。
+        // 在 manual 模式下打开宿主 diff）；执行 / 拒绝 / 弹框按**本地** behavior 决定，
+        // 不等宿主回包——回包历来是纯回显（决策全部由 PermissionPolicy 本地算出），
+        // 阻塞等它只会让孤儿（后台运行，specs/031）期间的会话冻结在权限往返上
+        // （specs/defects/orphan-stalls-on-permission-roundtrip.md）。
         let (perm_result, display_args) =
             permission::resolve_tool_permission(tool_name, input, agent_mode, cwd, session_id);
         // 权限决策留痕：allow/ask 不弹任何 UI 之外的可观测信号，宿主日志与 daemon 日志
@@ -2463,7 +2466,7 @@ impl Core {
             agent_mode,
             perm_result.get("behavior").and_then(Value::as_str).unwrap_or("?")
         ));
-        let perm_result = self.request_tool_permission(
+        self.request_tool_permission(
             session_id,
             tool_use_id,
             tool_name,
@@ -2471,12 +2474,6 @@ impl Core {
             &display_args,
             agent_mode,
         );
-        let Some(perm_result) = perm_result else {
-            return PermissionOutcome::Denied {
-                message: "Permission request failed.".to_string(),
-                terminate: false,
-            };
-        };
         match perm_result.get("behavior").and_then(Value::as_str) {
             Some("allow") => PermissionOutcome::Allowed {
                 updated_input: perm_result.get("updatedInput").cloned(),
@@ -2505,9 +2502,14 @@ impl Core {
         }
     }
 
-    /// `CoreRequest.toolPermissionRequested`：UI 上架工具卡片并回传权限结果
+    /// `CoreRequest.toolPermissionRequested`：UI 上架工具卡片——**发后不等**
     ///
-    /// 走 `plain_request`：这段往返不算「等用户」（真确认框由随后的 `userChoice` 弹），
+    /// 这段请求只承载展示同步（上架卡片、写 Edit / Write 的 `_meta`、manual 下打开宿主
+    /// diff），core 不以宿主应答为执行前置：回包历来是纯回显（`ToolHandler` 原样返回
+    /// permResult，决策全部由 PermissionPolicy 本地算出），阻塞等它只会让孤儿
+    /// （后台运行，specs/031）期间的会话冻结在权限往返上
+    /// （specs/defects/orphan-stalls-on-permission-roundtrip.md）。
+    /// 不改会话的 `waiting`：这段往返不算「等用户」（真确认框由随后的 `userChoice` 弹），
     /// 否则每次工具调用都会凭空多出一次 `running → waiting` 迁移——托盘 / 侧栏会闪一下，
     /// （`docs/core/session-runtime.md` 第 1 节）。
     fn request_tool_permission(
@@ -2518,8 +2520,8 @@ impl Core {
         perm_result: &Value,
         display_args: &Value,
         agent_mode: &str,
-    ) -> Option<Value> {
-        self.plain_request(HostRenderRequest::new(json!({
+    ) {
+        self.notify_host(HostRenderRequest::new(json!({
             "type": "toolPermissionRequested",
             "sessionId": session_id,
             "toolUseId": tool_use_id,
@@ -2527,7 +2529,7 @@ impl Core {
             "permResult": perm_result,
             "displayArgs": display_args,
             "agentMode": agent_mode,
-        })))
+        })));
     }
 
     /// `CoreRequest.userChoice`：弹确认框，index 0 = 允许，其余 = 拒绝
@@ -2618,13 +2620,23 @@ impl Core {
         response
     }
 
+    /// 发一次「宿主只是展示」的请求，**发后不等**
+    ///
+    /// 只接受 `HostRenderRequest`：给「core 不取应答」的请求用
+    /// （`toolPermissionRequested`：上架工具卡片、写 Edit / Write 的 `_meta`、manual 下
+    /// 打开宿主 diff）——宿主的应答回来时总线查不到 pending 条目，静默丢弃。
+    /// 这段请求不算「等用户」、不改变会话的 `waiting`：
+    /// `docs/core/session-runtime.md` 第 1 节。
+    fn notify_host(&self, request: HostRenderRequest) {
+        let mut bus = self.bus.lock().unwrap();
+        bus.request_detached(request.0);
+    }
+
     /// 发一次 `CoreRequest` 并等待应答，**不改变**会话的 `waiting`
     ///
-    /// 只接受 `HostRenderRequest`：给「宿主只是渲染 / 回传」的请求用
-    /// （`toolPermissionRequested`：上架工具卡片、写 Edit / Write 的 `_meta`、manual 下
-    /// 打开宿主 diff）——宿主拿到 `permResult` 就返回，`ask` 也直接返回（真确认框随后由
-    /// `userChoice` 弹），这段往返里并没有在等用户：
-    /// `docs/core/session-runtime.md` 第 1 节。
+    /// 现存唯一用户是 `crossWorkspaceAgentRequested`（宿主在目标工作区创建子代理并
+    /// 回传 sessionId）：需要结果，但不算「等用户」——真确认框才走 `waiting_request`
+    /// （`docs/core/session-runtime.md` 第 1 节）。
     fn plain_request(&self, request: HostRenderRequest) -> Option<Value> {
         let (id, receiver) = self.send_request(request.0)?;
         self.await_response(id, receiver)
@@ -2675,11 +2687,12 @@ impl Core {
     }
 }
 
-/// 宿主只是渲染 / 回传的请求（`CoreRequest.toolPermissionRequested` 一族）。
+/// 不标记 `waiting` 的宿主请求（`toolPermissionRequested` / `crossWorkspaceAgentRequested`）。
 ///
-/// 往返期间不改变 `sessionRuntime.waiting`。与 [`UserBlockingRequest`] 分成两个类型，
-/// 是为了让「这次请求算不算在等用户」由载荷类型承载，而不是由发起点记不记得换 helper
-/// 决定——渲染往返在类型上就拿不到标记 `waiting` 的入口
+/// 与 [`UserBlockingRequest`] 分成两个类型，是为了让「这次请求算不算在等用户」由载荷
+/// 类型承载，而不是由发起点记不记得换 helper 决定：这个类型在入口上就拿不到标记
+/// `waiting` 的路径。两个出口按「取不取应答」分叉——展示同步发后不等
+/// （[`Core::notify_host`]），跨工作区派发等应答（[`Core::plain_request`]）
 /// （`docs/core/session-runtime.md` 第 1 节）。
 struct HostRenderRequest(Value);
 
@@ -4855,9 +4868,9 @@ fn run_query_loop(
             if !is_known_tool(&tool_name) {
                 // 工具不存在时不跑工具自身权限校验，
                 // permResult 恒为 allow，displayArgs 仍按工具名做路径展开。
-                // 复用 `request_tool_permission`（内部走 `plain_request`）：这段往返只是让
-                // UI 上架失败卡片，没有在等用户（`docs/core/session-runtime.md` 第 1 节）。
-                let _ = core.request_tool_permission(
+                // 复用 `request_tool_permission`（发后不等）：只是让 UI 上架失败卡片，
+                // 没有在等用户（`docs/core/session-runtime.md` 第 1 节）。
+                core.request_tool_permission(
                     session_id,
                     &tool_use_id,
                     &tool_name,
@@ -4949,9 +4962,9 @@ fn run_query_loop(
                         project,
                         session_id,
                     );
-                // 同样只是让 UI 上架失败卡片：复用 `request_tool_permission`（内部走
-                // `plain_request`），不标记 `waiting`（`docs/core/session-runtime.md` 第 1 节）。
-                let _ = core.request_tool_permission(
+                // 同样只是让 UI 上架失败卡片：复用 `request_tool_permission`（发后不等），
+                // 不标记 `waiting`（`docs/core/session-runtime.md` 第 1 节）。
+                core.request_tool_permission(
                     session_id,
                     &tool_use_id,
                     &tool_name,
