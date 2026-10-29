@@ -62,7 +62,7 @@ status: 已修
 
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
-| RT-2（修复前） | 用户实测 + `npm run test:e2e:local`（全车道连跑一轮） | 红 | 用户实测：重开后对话行绿、标签页不绿；全车道连跑时 `completionAfterRestart` 标签页断言（补上用例后对修复前代码跑）红——补武装推送早于订阅 + 「未激活」规则跳过激活标签页 |
+| RT-2（修复前） | 用户实测 + `npm run test:e2e:local`（全车道连跑一轮） | 红 | 用户实测：重开后对话行绿、标签页不绿；全车道连跑时重启用例的标签页断言（补上用例后对修复前代码跑）红——补武装推送早于订阅 + 「未激活」规则跳过激活标签页 |
 | RT-1（修复后） | `npm run test:unit -- completionAttention` | 绿 | 补武装名单 5 断言（计数 / agent 安静 / 幂等 / 批量 / 缺失不武装），签名收敛为只返回会话 |
-| RT-2（修复后） | `npx playwright test --project=electron-app -g completionAfterRestart --repeat-each=2` | 绿 | 对话行与标签页同时亮绿色未读完成灯（`activity-completed`），打开后行灯熄灭、盘上计数归零 |
+| RT-2（修复后） | `npx playwright test --project=electron-app`（过滤重启用例，--repeat-each=2） | 绿 | 对话行与标签页同时亮绿色未读完成灯（`activity-completed`），打开后行灯熄灭、盘上计数归零 |
 | RT-3（修复后） | `npm run test:e2e:ssh -- remoteTaskSurvival -g US-65` | 绿 | 认领重开后标签页运行灯（`activity-running`）断言随用例转正保留，与列表到达的重聚合触发点共同锁定蓝灯路径 |
