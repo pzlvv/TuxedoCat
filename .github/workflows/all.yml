@@ -8,6 +8,10 @@
 # 真实远端差异太大（SSH 服务配置 / 网络 / 权限模型），按现状判定为本地车道
 # （npm run test:e2e:ssh，需要 e2e/environments.json）。接回 CI 前先在
 # e2e/README.md 的 CI 车道表里补回对应 job。
+#
+# pycharm-plugin（specs/035 的 PyCharm 插件宿主）同为本地车道：需要本机 PyCharm
+# （e2e/environments.json 的 pycharm 段）与 npm run package:pycharm 产物，runner 两者皆无
+# （npm run test:e2e:pycharm）。接回 CI 前先在 e2e/README.md 的 CI 车道表里补回对应 job。
 name: all
 
 on:

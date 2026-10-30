@@ -118,6 +118,7 @@
     "test:e2e:webview": "playwright test -c e2e/playwright.config.ts --project=webview-ui",
     "test:e2e:electron": "playwright test -c e2e/playwright.config.ts --project=electron-app",
     "test:e2e:ssh": "playwright test -c e2e/playwright.config.ts --project=electron-ssh",
+    "test:e2e:pycharm": "playwright test -c e2e/playwright.config.ts --project=pycharm-plugin",
     "test:e2e:remoteWorkspace": "playwright test -c e2e/playwright.config.ts --project=remote-workspace-ui",
     "test:e2e:terminal": "playwright test -c e2e/playwright.config.ts --project=terminal-ui",
     "check-types:e2e": "tsc --noEmit -p e2e/tsconfig.json",
@@ -125,6 +126,7 @@
     "tui": "cargo run --release --manifest-path tui-rs/Cargo.toml",
     "package:tui": "npm run build:tui && node scripts/build-tui-installer.mjs",
     "package:tui:x64": "npm run build:tui && node scripts/build-tui-installer.mjs --arch x64",
+    "package:pycharm": "node scripts/build-pycharm.mjs",
     "test:e2e:tui": "playwright test -c e2e/playwright.config.ts --project=tui-installer"
   },
   "devDependencies": {

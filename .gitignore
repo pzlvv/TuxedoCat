@@ -32,3 +32,10 @@ e2e/environments.json
 # .zcode/skills 只是本机指向它的 junction，不穿透提交（避免同一份技能两份 blob）
 .zcode/*
 .zcodeignore
+
+# PyCharm 插件宿主（specs/035）：Gradle 构建产物 / 缓存 / 机器相关覆盖 / 本机工具链与发行包
+pycharm-plugin/.gradle/
+pycharm-plugin/build/
+pycharm-plugin/local.properties
+pycharm-plugin/.intellijPlatform/
+.gradle-dist/

@@ -88,5 +88,8 @@ export default defineConfig({
     { name: 'terminal-ui', testMatch: /terminal[\\/].+\.spec\.ts/ },
     // TUI 安装程序（无浏览器：构建 → 自解压 → 载荷可执行 → TUI 启动守卫）
     { name: 'tui-installer', testMatch: /tui[\\/].+\.spec\.ts/ },
+    // PyCharm 插件宿主（specs/035，本地车道：要 e2e/environments.json 的 pycharm 段 +
+    // package:pycharm 产物，不进 CI——runner 没有 PyCharm 也不该构建整个插件）
+    { name: 'pycharm-plugin', testMatch: /pycharm[\\/].+\.spec\.ts/ },
   ],
 });

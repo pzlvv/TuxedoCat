@@ -28,6 +28,17 @@ export interface SshTestEnvironment {
   llmAdvertiseHost?: string;
 }
 
+/** 本机 PyCharm 安装（pycharm-plugin 车道，specs/035）：沙箱拉起与 CDP 驱动的宿主 IDE */
+export interface PycharmTestEnvironment {
+  /** IDE 可执行文件路径（Windows 下形如 ...\bin\pycharm64.exe） */
+  idePath: string;
+  /**
+   * mock LLM 对外广播的主机（可选）：语义同 ssh 段的 llmAdvertiseHost，
+   * 插件面板里的 Core 回连本机 mock LLM 时 baseURL 用它。
+   */
+  llmAdvertiseHost?: string;
+}
+
 const ENV_FILE_NAME = 'environments.json';
 
 function environmentFilePath(): string {
@@ -109,6 +120,47 @@ export function requireSshEnvironment(): SshTestEnvironment {
     password: ssh.password as string,
     ...(ssh.llmAdvertiseHost !== undefined
       ? { llmAdvertiseHost: ssh.llmAdvertiseHost as string }
+      : {}),
+  };
+}
+
+/**
+ * 取本机 PyCharm 测试环境；文件缺失 / pycharm 段形状非法时抛错，错误信息列出全部问题。
+ *
+ * 口径同 requireSshEnvironment：报错即失败（pycharm-plugin 是本地车道，见 e2e/README.md
+ * 的 CI 车道表），不回退 PATH 探测、不补默认安装路径、不做连通性探测——IDE 能否拉起
+ * 是用例自己的「环境有效性判断」（pycharmIde.ts 的启动前置）。
+ */
+export function requirePycharmEnvironment(): PycharmTestEnvironment {
+  const root = loadEnvironmentFile();
+  const section = root.pycharm;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    throw new Error(
+      `E2E 环境配置缺少可用的 pycharm 段：${environmentFilePath()}。`
+      + `请参照 e2e/environments.example.json 补充 idePath（本机 PyCharm 可执行文件路径）。`,
+    );
+  }
+  const pycharm = section as Record<string, unknown>;
+  const problems: string[] = [];
+  requireNonEmptyString(pycharm, 'idePath', 'pycharm.idePath', problems);
+  if (pycharm.idePath !== undefined && typeof pycharm.idePath === 'string' && pycharm.idePath.length > 0) {
+    if (!fs.existsSync(pycharm.idePath)) {
+      problems.push(`pycharm.idePath 指向的文件不存在（当前：${pycharm.idePath}）`);
+    }
+  }
+  if (pycharm.llmAdvertiseHost !== undefined) {
+    requireNonEmptyString(pycharm, 'llmAdvertiseHost', 'pycharm.llmAdvertiseHost', problems);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `E2E 环境配置的 pycharm 段不合法（${environmentFilePath()}）：\n  - ${problems.join('\n  - ')}\n`
+      + `请修正后重跑；不做修复、不使用部分可用的字段。`,
+    );
+  }
+  return {
+    idePath: pycharm.idePath as string,
+    ...(pycharm.llmAdvertiseHost !== undefined
+      ? { llmAdvertiseHost: pycharm.llmAdvertiseHost as string }
       : {}),
   };
 }

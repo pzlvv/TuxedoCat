@@ -1,0 +1,6 @@
+# 机器相关构建覆盖的样例：复制为 local.properties（gitignore）并按本机填写。
+# - pycharmLocalPath：本机 PyCharm 安装目录（intellijPlatform local 依赖，免下载整平台；
+#   与 e2e/environments.json 的 pycharm.idePath 同源可互填）。缺省走远程坐标 PY 2026.2.4。
+# - jdk25Path：JDK 25 安装目录（2026.2 平台类文件为 Java 25；缺省要求以 JDK 25 运行 Gradle）。
+#pycharmLocalPath=D:/Program Files/JetBrains/PyCharm <version>
+#jdk25Path=D:/path/to/jdk-25
