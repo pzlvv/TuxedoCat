@@ -148,10 +148,12 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   dispatch，复用 smoke.yml 的两个 job，另跑 e2e 三车道：`prepare` 构建产物，之后
   `ui` / `electron` / `tui` 并行（electron 车道跑在 `xvfb-run` 里）。
   `electron-ssh`（真实 SSH 远端）是本地车道、不进 CI：它要一台可连的外部机器，runner 内
-  临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。本地 `npm run test:all` 已把
-  `test:e2e:local`（除 `electron-ssh` 外的全部车道，与 CI 三车道同集）收进最大入口。
-  新增 e2e project 时同步 all.yml、`test:e2e:local` 的 project 清单与
-  [e2e/README.md](e2e/README.md#ci-车道githubworkflowsallyml)。
+  临时起的 sshd 替代不了（`npm run test:e2e:ssh`）。`pycharm-plugin`（PyCharm 插件宿主，
+  specs/035）同为本地车道：要本机 PyCharm（`e2e/environments.json` 的 pycharm 段）与
+  `npm run package:pycharm` 产物（`npm run test:e2e:pycharm`）。本地 `npm run test:all`
+  已把 `test:e2e:local`（除 `electron-ssh` 与 `pycharm-plugin` 外的全部车道，与 CI
+  三车道同集）收进最大入口。新增 e2e project 时同步 all.yml、`test:e2e:local` 的
+  project 清单与 [e2e/README.md](e2e/README.md#ci-车道githubworkflowsallyml)。
 - **发布产物走 Actions**（`.github/workflows/release.yml`）：手动 `workflow_dispatch`，
   在 Windows runner 上跑 `npm run package` 后把 .vsix / NSIS x64+arm64 / TUI 安装器四平台
   上传到 tag `v<version>` 的 GitHub Release（默认草稿）。版本号只从 `package.json` 取，

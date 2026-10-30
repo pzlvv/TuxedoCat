@@ -24,6 +24,7 @@ last_reviewed: 2026-10-20
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
 | [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～65 |
+| [PyCharm 宿主](user-stories/pycharm-plugin.md) | EP-15 PyCharm 插件宿主 | US-68～72 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
 
 ---
@@ -70,8 +71,14 @@ last_reviewed: 2026-10-20
 | `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 他区忙碌汇总确认） | Electron 整应用 |
 | `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成 / 离场完成后重开绿灯） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 | `e2e/electron/completionAfterRestart.spec.ts` | US-65（离场完成的未读绿灯：重开按 `unreadCompletions` 补武装 / 打开即阅读清除） | Electron 整应用（本地车道，meta.json 计数预置） |
+| `e2e/pycharm/pluginPackage.spec.ts` | US-68（zip 内 jar / 四平台 Core + fingerprint + ripgrep / webview 资源 / 图标 / plugin.xml 身份派生 / 无外部运行时引用） | PyCharm 插件分发（本地车道） |
+| `e2e/pycharm/pluginInIde.spec.ts` | US-68（安装后面板就绪）、US-69（对话轮渲染）、US-70（manual：IDE diff 打开不夺焦 / 应答关闭 / 落盘；auto：不弹 diff）、US-71（卡片路径跳转，log 证据） | PyCharm 插件 IDE 内链路（本地车道） |
 
-未覆盖 e2e 的 US（US-33 的托盘图标像素外观与原生右键菜单弹窗——状态点三色、任务结束
+未覆盖 e2e 的 US（US-68 的「解压即用」中 CEF 初始化时序与真实装机兼容性——pluginPackage 层
+只锁 zip 内容与身份派生，pluginInIde 层以本机 PyCharm 2026.2 真跑，其余版本区间未测；
+US-72 的面板修改配置落盘后其它宿主读到同一份新值——写路径由 Gradle 单测
+SettingsAndLockTest 锁定读写语义与跨进程锁格式，跨宿主实测未自动化；US-69 的会话切换 /
+多 project 独立面板——面板就绪与对话轮已锁，切换交互未补 e2e，US-33 的托盘图标像素外观与原生右键菜单弹窗——状态点三色、任务结束
 闪烁与左键唤出由 `e2e/electron/desktopShell.spec.ts` 桩住 `Tray` 原型断言，颜色聚合口径由
 `src/test/trayStatusIcon.test.ts` 锁定，只剩图标渲染与原生菜单外观人工验证；US-38 的远程
 查看器自动刷新（验收 6 的远程口径）——需要真实 SSH 远端，本地刷新与窗口名额 / 矩形记忆由

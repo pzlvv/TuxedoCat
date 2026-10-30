@@ -43,6 +43,18 @@ repositories {
 }
 
 dependencies {
+    // org.cef 原生绑定类（CefResourceHandler 等）在 bundled plugin 的 libraries jar 里，
+    // bundledPlugin() 的 maven 解析不带它——local() 模式下直接把该 jar 加进编译类路
+    // （运行期由 IDE 的插件类加载器提供，compileOnly 即可）
+    if (pycharmLocalPath != null) {
+        compileOnly(files(
+            // org.cef 原生绑定类（CefResourceHandler 等）
+            "$pycharmLocalPath/plugins/jcef-plugin/lib/modules/intellij.libraries.jcef.jar",
+            // diff 编辑器承载（DiffVirtualFile 编辑器 tab）：diff 的 impl jar 不在 local() 的
+            // 默认编译类路里（2026.2 的 runtime product 布局只暴露 API jar）
+            "$pycharmLocalPath/lib/intellij.platform.diff.impl.jar",
+        ))
+    }
     intellijPlatform {
         // 平台依赖与 e2e 验收环境严格一致（plan「构建平台与工具链」）：本机安装优先
         if (pycharmLocalPath != null) local(pycharmLocalPath) else create("PY", "2026.2.4")
@@ -133,6 +145,17 @@ sourceSets.main {
 }
 
 tasks {
+    test {
+        useJUnitPlatform()
+    }
+    // 自包含分发（FR-008）：webview 静态资源与四平台 Core 产物（含 fingerprint/ripgrep）
+    // 一并装进插件目录——zip 解压即用，不依赖外部运行时。产物缺失由 build-pycharm.mjs
+    // 在链上前置校验并给出构建命令（铁律 1：缺什么报什么，不静默出残包）
+    prepareSandbox {
+        from(repoRoot.resolve("dist/webview")) { into("${rootProject.name}/webview") }
+        from(repoRoot.resolve("dist/resources/core")) { into("${rootProject.name}/core") }
+    }
+
     compileKotlin { dependsOn(generateProductIdentity) }
     processResources {
         dependsOn(derivePluginIcon, deriveToolWindowIcon)

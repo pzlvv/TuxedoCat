@@ -2,8 +2,9 @@
 
 以真实用户操作（输入、点击、悬停、快捷键）驱动的场景级端到端测试，需求基线是
 `docs/features/user-stories.md`（每条用例标题标注覆盖的 `US-xx`，`US ↔ 用例` 映射与
-未覆盖豁免段见该文件的附录）。六个 project 对应五层（`electron-app` 与 `electron-ssh`
-同属整应用层：后者要外部 SSH 环境，拆开是为了让没有远端机器的开发机与 CI 车道各自独立跑）：
+未覆盖豁免段见该文件的附录）。七个 project 对应六层（`electron-app` 与 `electron-ssh`
+同属整应用层：后者要外部 SSH 环境，拆开是为了让没有远端机器的开发机与 CI 车道各自独立跑；
+`pycharm-plugin` 为本地车道，见下表末行）：
 
 | project | 层级 | 驱动对象 | 宿主侧 |
 | --- | --- | --- | --- |
@@ -13,6 +14,7 @@
 | `remote-workspace-ui` | 远端目录选择器页面 | Chromium 加载构建产物 `dist/remoteWorkspace/index.html`（`electron/remoteWorkspace/`） | 假 `window.remoteWorkspaceAPI`（内存目录树）：这一步要连真实 SSH 才走得到，整应用 e2e 覆盖不了 |
 | `terminal-ui` | 远程终端页面 | Chromium 加载构建产物 `dist/terminal/index.html`（`electron/terminal/`） | 假 `window.terminalAPI`（内存标签表 + 回显 shell）：同上，真实链路要连 SSH |
 | `tui-installer` | TUI 分发 | TUI 版安装程序（`release/tui-installer/`，用例内构建宿主平台） | 内嵌 Core / ripgrep / TUI bundle 的自解压安装与启动（`docs/features/tui-installer.md`） |
+| `pycharm-plugin` | PyCharm 插件分发 + IDE 内链路 | 分发 zip 结构核验（无 IDE）；本机 PyCharm 沙箱化拉起，JCEF 面板经 CDP 驱动 | 插件自带 standalone core（zip 内四平台产物）+ 本地 mock LLM（`helpers/pycharmIde.ts`） |
 
 ## 运行
 
@@ -28,6 +30,7 @@ npm run test:e2e:local      # 除真实 SSH 远端外的五个 project（= CI �
 npm run test:e2e:webview    # 仅 webview UI 级
 npm run test:e2e:electron   # 仅 Electron 整应用（不需要 SSH 环境）
 npm run test:e2e:ssh        # 仅真实 SSH 远端车道（需要 e2e/environments.json）
+npm run test:e2e:pycharm    # 仅 PyCharm 插件车道（本地车道：需要 e2e/environments.json 的 pycharm 段 + npm run package:pycharm 产物）
 npm run test:e2e:remoteWorkspace   # 仅远端目录选择器页面
 npm run test:e2e:terminal   # 仅远程终端页面
 npm run test:e2e:tui        # 仅 TUI 安装程序
@@ -64,6 +67,11 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 远端在服务配置 / 网络 / 权限模型上差异太大，判定为本地车道——本地跑
 `npm run test:e2e:ssh`（前置见下节）。要接回 CI 时，在 `.github/workflows/all.yml` 里加回
 job 并同步本表。
+
+`pycharm-plugin` 同为**本地车道**：要本机 PyCharm（`environments.json` 的 `pycharm` 段，
+至少 `idePath`）与 `npm run package:pycharm` 产出的分发 zip，runner 两者皆无。前置：
+JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / local.properties /
+常见安装位探测）。要接回 CI 时，在 `.github/workflows/all.yml` 里加回 job 并同步本表。
 
 ## 测试环境配置（environments.json）
 

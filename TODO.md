@@ -46,3 +46,11 @@
   快照同款 version 防护；双击二选一（删自绘处理器交原生，或标题栏改 `no-drag` 自行实现拖动）。
   验收判据：snap / 托盘往返 / 最小化还原后图标与 `isMaximized()` 一致且能自愈；双击标题栏空白区
   恰好切换一次最大化；electron 车道 e2e 锁定两条行为。
+
+- **tui-rs 配置快照缺 multimodal 被 core 拒收**（specs/012 修订漏改 tui-rs，specs/035 plan 宪章检查发现）：
+  `tui-rs/src/settings.rs` 的 `snapshot_to_payload` 产出的 `modelLimits` / `modelLimitsFallback`
+  条目缺必选 `multimodal` 字段，core-rs serde 拒收 → TUI 挂在就绪握手。修复方向：对齐
+  `src/shared/settingsSnapshot.ts` 的 `DEFAULT_MODEL_MULTIMODAL`，`normalize_model_configs`
+  保留 multimodal 覆盖；Kotlin 侧（specs/035）已用「快照字段名单对照测试」防同款漂移，
+  tui-rs 补同款对照。验收判据：`cargo test` 空配置快照含 `multimodal: true`、provider 覆盖
+  可带 `multimodal: false`、payload 字段名单与 `src/shared/settingsSnapshot.ts` 一致。

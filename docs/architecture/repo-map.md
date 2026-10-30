@@ -54,6 +54,7 @@ last_reviewed: 2026-10-18
 | `electron/sidebar/` + `electron/sidebarPreload.ts` | Electron 专属：原生侧栏（头部搜索框 + 新对话按钮；对话列表；空态「打开本地工作区」+ 最近工作目录；底部可折叠的文件浏览器分区，`electron/sidebarFiles.ts` 提供路径校验与目录读取；`electron/sidebarDocView.ts` 文档视图取数、`electron/sidebarDocWatch.ts` git 哨兵监听、`electron/toolResultSideEffects.ts` Write 新建的旁路观察，specs/030；`src/shared/workspaceMeta.ts` 是 `workspace.meta.json` 的宿主侧只读库） |
 | `src/extension.ts` / `electron/main.ts` | 各自的 bootstrap：构造三契约与宿主句柄 → 调用共享骨架 `bootstrapCore` → 执行宿主专属接线（[docs/hosts/host-bootstrap.md 第 1 节](../hosts/host-bootstrap.md#1-宿主接线)） |
 | `tui-rs/` | TUI 宿主实现（第三个宿主，纯 Rust，[docs/hosts/tui.md](../hosts/tui.md)）：直连 Standalone Core 的 stdio 帧通道；`host.rs` 译层（core 帧 ↔ 渲染动作，WebViewUI 行为的移植）；`store.rs` 纯 reducer（Action → 唯一渲染事实）；`settings.rs` 配置快照（`settings.json` / `mcp.json` 规范化 + 模型注册表）；`core_root.rs` Core 产物定位；`app.rs` ratatui 渲染与键盘路由；`composer.rs` / `markdown.rs` / `diffview.rs` 纯函数子集 |
+| `pycharm-plugin/` | PyCharm 插件宿主（第四宿主，Kotlin/Gradle，[docs/hosts/pycharm-plugin.md](../hosts/pycharm-plugin.md)）：JCEF 面板承载 `dist/webview`（内嵌 HttpServer + 运行期注入）、Core 直连（协议 v2）、settings/FileLock 移植、Edit/Write 的 IDE diff 与跳转、确认流；身份常量构建期生成（`build/`） |
 | `installer-rs/` | TUI 版安装程序（[docs/features/tui-installer.md](../features/tui-installer.md)）：纯 Rust 自解压安装器，构建期把 Core / ripgrep / TUI 二进制烧进单文件；`.cargo/config.toml` 配 musl 的 rust-lld |
 | `scripts/build-tui-installer.mjs` | 安装程序构建：按目标确保 Core 产物与 TUI 二进制就位 → cargo 交叉构建 → 落位 `release/tui-installer/`（四目标：Windows x64/arm64、Linux x64/arm64 musl） |
 
