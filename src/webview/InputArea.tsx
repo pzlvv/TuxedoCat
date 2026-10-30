@@ -8,6 +8,7 @@ import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
 import type { TodoProgress } from '../host/todoProgress';
+import { TODO_STATUS_COLOR } from './tools/TodoWrite';
 import { resolveInputDisabledReason, resolveInputPlaceholderText, resolvePromptModeLocked, resolveSessionOptionsLocked } from './inputAreaState';
 import { isAgentCreator, type SessionCreator } from '../shared/sessionCreator';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
@@ -2641,14 +2642,20 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           >
             <div className="flex flex-col gap-1" style={{ maxHeight: 240, overflowY: 'auto' }}>
               {todoProgress.items.map((todo, index) => (
-                <div key={index} className="flex items-start gap-2 ui-fs-11">
+                <div
+                  key={index}
+                  className="flex items-start gap-2 ui-fs-12"
+                  style={{ opacity: todo.status === 'completed' ? 0.6 : 1 }}
+                >
+                  {/* 状态图标取 TODO_STATUS_COLOR（与消息流 TodoWrite 卡片同一份常量），
+                    两个渲染面颜色一致（docs/features/todo-list.md FR-004） */}
                   <span
                     className="flex-shrink-0 mt-0.5"
                     style={{
                       color: todo.status === 'in_progress'
-                        ? colors.harness
+                        ? TODO_STATUS_COLOR.in_progress
                         : todo.status === 'completed'
-                          ? colors.timelineStatusSuccess
+                          ? TODO_STATUS_COLOR.completed
                           : colors.textSystem,
                     }}
                   >
@@ -2665,18 +2672,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                     style={{
                       color: todo.status === 'completed' ? colors.textSystem : colors.textPrimary,
                       textDecoration: todo.status === 'completed' ? 'line-through' : 'none',
+                      fontWeight: todo.status === 'in_progress' ? 700 : undefined,
                       wordBreak: 'break-word',
                     }}
                   >
                     {todo.content}
-                    {todo.status === 'in_progress' && todo.activeForm && (
-                      <span
-                        className="block ui-fs-11 italic mt-0.5"
-                        style={{ color: colors.harness }}
-                      >
-                        {todo.activeForm}
-                      </span>
-                    )}
                   </span>
                 </div>
               ))}

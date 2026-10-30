@@ -230,10 +230,6 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
    - in_progress: Currently working on (limit to ONE task at a time)
    - completed: Task finished successfully
 
-   **IMPORTANT**: Task descriptions must have two forms:
-   - content: The imperative form describing what needs to be done (e.g., "Run tests", "Build the project")
-   - activeForm: The present continuous form shown during execution (e.g., "Running tests", "Building the project")
-
 2. **Task Management**:
    - Update task status in real-time as you work
    - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
@@ -255,9 +251,8 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
    - Create specific, actionable items
    - Break complex tasks into smaller, manageable steps
    - Use clear, descriptive task names
-   - Always provide both forms:
+   - Provide each item as:
      - content: "Fix authentication bug"
-     - activeForm: "Fixing authentication bug"
      - status: "pending"
 
 When in doubt, use this tool. Being proactive with task management demonstrates attentiveness and ensures you complete all requirements successfully.

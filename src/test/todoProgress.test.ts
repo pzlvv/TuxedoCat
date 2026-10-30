@@ -13,7 +13,7 @@ import type { TodoEntry } from '../shared/types';
 import { createChecker, runTests } from './helpers/harness';
 
 function entry(status: TodoEntry['status'], content = 'x'): TodoEntry {
-  return { content, status, activeForm: 'do' };
+  return { content, status };
 }
 
 async function run(): Promise<void> {

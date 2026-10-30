@@ -4253,7 +4253,7 @@ fn field_level_json_string_input_is_unwrapped_and_persisted_as_an_update() {
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             let todos = serde_json::to_string(&json!([
-                { "content": "写测试", "activeForm": "写测试中", "status": "pending" }
+                { "content": "写测试", "status": "pending" }
             ]))
             .unwrap();
             let args = serde_json::to_string(&json!({ "todos": todos })).unwrap();
@@ -7846,8 +7846,8 @@ fn todo_write_emits_todos_changed() {
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             let args = serde_json::to_string(&json!({ "todos": [
-                { "content": "改代码", "activeForm": "改代码中", "status": "completed" },
-                { "content": "跑测试", "activeForm": "跑测试中", "status": "in_progress" }
+                { "content": "改代码", "status": "completed" },
+                { "content": "跑测试", "status": "in_progress" }
             ] }))
             .unwrap();
             openai_tool_sse("call_1", "TodoWrite", &args)
@@ -7869,8 +7869,8 @@ fn todo_write_emits_todos_changed() {
     assert_eq!(
         pushed["todos"],
         json!([
-            { "content": "改代码", "status": "completed", "activeForm": "改代码中" },
-            { "content": "跑测试", "status": "in_progress", "activeForm": "跑测试中" }
+            { "content": "改代码", "status": "completed" },
+            { "content": "跑测试", "status": "in_progress" }
         ])
     );
     // 表与推送一致（同一份事实）

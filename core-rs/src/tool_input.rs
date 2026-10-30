@@ -523,7 +523,7 @@ fn custom_issue(path: Value, message: &str) -> Value {
     ])
 }
 
-/// 非严格 `z.object({ content, status, activeForm })`（多余字段被忽略）
+/// 非严格 `z.object({ content, status })`（多余字段被忽略）
 fn validate_todo_item(item: &Value, path: &Value) -> Result<Value, Vec<Value>> {
     let Value::Object(map) = item else {
         return Err(vec![invalid_type(
@@ -559,20 +559,6 @@ fn validate_todo_item(item: &Value, path: &Value) -> Result<Value, Vec<Value>> {
             match check_enum(value, &["pending", "in_progress", "completed"], &status_path) {
                 Ok(value) => {
                     out.insert("status".to_string(), value);
-                }
-                Err(mut errs) => issues.append(&mut errs),
-            }
-        }
-    }
-
-    // activeForm：必填 string().min(1, 'Active form cannot be empty')
-    let active_path = path_push(path, "activeForm");
-    match map.get("activeForm") {
-        None => issues.push(invalid_type("string", None, "undefined", None, active_path)),
-        Some(value) => {
-            match validate_kind(&Kind::Str(Some((1, "Active form cannot be empty"))), value, &active_path) {
-                Ok(value) => {
-                    out.insert("activeForm".to_string(), value);
                 }
                 Err(mut errs) => issues.append(&mut errs),
             }

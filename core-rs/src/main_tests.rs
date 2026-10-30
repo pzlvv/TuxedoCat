@@ -1753,8 +1753,8 @@ fn ui_request_answers_session_todos() {
                         "id": "t1",
                         "name": "TodoWrite",
                         "input": { "todos": [
-                            { "content": "改代码", "activeForm": "改代码中", "status": "completed" },
-                            { "content": "跑测试", "activeForm": "跑测试中", "status": "in_progress" }
+                            { "content": "改代码", "status": "completed" },
+                            { "content": "跑测试", "status": "in_progress" }
                         ] },
                     }],
                 },
@@ -1787,8 +1787,8 @@ fn ui_request_answers_session_todos() {
     assert_eq!(
         answered,
         json!([
-            { "content": "改代码", "status": "completed", "activeForm": "改代码中" },
-            { "content": "跑测试", "status": "in_progress", "activeForm": "跑测试中" }
+            { "content": "改代码", "status": "completed" },
+            { "content": "跑测试", "status": "in_progress" }
         ])
     );
     // 重建结果写表：第二次索取不再读盘

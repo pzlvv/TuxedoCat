@@ -38,7 +38,7 @@ async function run(): Promise<void> {
     },
     sessionTodosRequested: async (req) => {
       sent.push(req);
-      return [{ content: '跑测试', status: 'in_progress', activeForm: '跑测试中' }];
+      return [{ content: '跑测试', status: 'in_progress' }];
     },
     conversationLoadRequested: async (req) => {
       sent.push(req);
