@@ -437,6 +437,18 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 const BASH_RUN_IN_BACKGROUND_FIELD: &str =
     "设置 true 则在后台运行此命令（不会阻塞后续操作）。后台命令完成后会收到通知，无需主动轮询。";
 
+/// Bash 工具 `detach` 参数的说明文本。防护性最小口径：不展开用法与案例——
+/// 详细用法只在闸门失败文案里给（`docs/features/bash-detach.md` 第 2 节 FR-004
+/// 的最小披露要求）。
+const BASH_DETACH_FIELD: &str =
+    "仅当命令的进程必须脱离工具管理、在本会话结束后继续运行（如系统级服务）时才设为 true；其余场景不要设置，后台运行请用 run_in_background。";
+
+/// Bash 闸门的 LLM 面失败文案（specs/034-bash-detach-field FR-001，逐字锁定）。
+/// 只写模型可感知的路由判据，不写 agent 内部机制（FR-004）；`{}` 处插命中的构造名。
+const BASH_DETACH_GATE_MESSAGE: &str = "Bash: command uses `{}`.\n\
+- Need the result in this session: run in the foreground, or use run_in_background: true (notifies on completion).\n\
+- Need it to keep running after this session ends — e.g. installing/starting a system-level service or daemon: re-run the same command with detach: true.";
+
 /// 工具定义（Anthropic 风格：`name` / `description` / `input_schema`）
 pub fn definitions() -> Vec<Value> {
     vec![
@@ -449,7 +461,8 @@ pub fn definitions() -> Vec<Value> {
                     "command": { "type": "string", "description": "要执行的 shell 命令" },
                     "description": { "type": "string", "description": BASH_DESCRIPTION_FIELD },
                     "cwd": { "type": "string", "description": "工作目录，默认为当前目录" },
-                    "run_in_background": { "type": "boolean", "description": BASH_RUN_IN_BACKGROUND_FIELD }
+                    "run_in_background": { "type": "boolean", "description": BASH_RUN_IN_BACKGROUND_FIELD },
+                    "detach": { "type": "boolean", "description": BASH_DETACH_FIELD }
                 },
                 "required": ["command"]
             }
@@ -1127,6 +1140,122 @@ pub(crate) fn contains_sleep_command(command: &str) -> bool {
         .any(|segment| extract_command_name(segment) == "sleep")
 }
 
+/// 后台化构造检测（`docs/features/bash-detach.md` 第 2 节）：仓库内唯一实现，
+/// Bash 工具闸门（`run_bash`）与权限分级（`permission`）共用同一判据。
+///
+/// 返回命中的构造名供两面文案点名。段首词优先于 `&`：`nohup server &` 点名更具体的
+/// `nohup`，裸 `&` 才点名 `&`。段首词判定——`nohup` / `setsid` / `disown` 精确匹配；
+/// `Start-Process` 按 PowerShell 大小写不敏感口径；`start` 仅当第二 token 恰为
+/// `/b`（cmd 后台化开关，大小写不敏感）才命中，bash 下裸 `start` 不误拦。
+pub(crate) fn find_detach_construct(command: &str) -> Option<&'static str> {
+    for segment in crate::permission::split_by_separators(command) {
+        let first = extract_command_name(&segment);
+        let matched = match first.to_lowercase().as_str() {
+            "nohup" => Some("nohup"),
+            "setsid" => Some("setsid"),
+            "disown" => Some("disown"),
+            "start-process" => Some("Start-Process"),
+            "start" => {
+                let second = segment
+                    .split(crate::util::is_js_whitespace)
+                    .filter(|token| !token.is_empty())
+                    .nth(1);
+                (second == Some("/b") || second == Some("/B")).then_some("start /b")
+            }
+            _ => None,
+        };
+        if matched.is_some() {
+            return matched;
+        }
+    }
+    if scan_background_ampersand(command) {
+        return Some("&");
+    }
+    None
+}
+
+/// 引号感知地扫描控制操作符 `&`（后台化）。扫描口径与
+/// `permission::split_by_separators` 的引号 / `$()` / 反斜杠跳过一致：引号内不算；
+/// `$()` 内部整体跳过（`echo $(nohup x &)` 检测不到——specs/034 边界声明）。
+/// `&&`（逻辑与）、`&>` / `&>>`（bash 双流重定向，前台语义）、`>&`（fd 复制，
+/// 如 `2>&1`）都不算后台化；未加引号 URL 里的 `&` 对 shell 就是后台操作符，命中。
+fn scan_background_ampersand(command: &str) -> bool {
+    let bytes: Vec<char> = command.chars().collect();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        let ch = bytes[i];
+        if ch == '\'' || ch == '"' || ch == '`' {
+            i = scan_quoted_span(&bytes, i, ch);
+            continue;
+        }
+        if ch == '$' && i + 1 < n && bytes[i + 1] == '(' {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < n && depth > 0 {
+                let inner = bytes[j];
+                if inner == '\'' || inner == '"' || inner == '`' {
+                    j = scan_quoted_span(&bytes, j, inner);
+                    continue;
+                }
+                if inner == '(' {
+                    depth += 1;
+                } else if inner == ')' {
+                    depth -= 1;
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        if ch == '\\' && i + 1 < n {
+            i += 2;
+            continue;
+        }
+        if ch == '&' {
+            if i + 1 < n && bytes[i + 1] == '&' {
+                i += 2;
+                continue;
+            }
+            if i + 1 < n && bytes[i + 1] == '>' {
+                i += 2;
+                continue;
+            }
+            if i > 0 && bytes[i - 1] == '>' {
+                i += 1;
+                continue;
+            }
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 从 `start`（开引号位置）扫描到闭合引号之后；未闭合返回末尾。与
+/// `permission::split_by_separators` 内部的 `scan_quoted` 同一口径。
+fn scan_quoted_span(bytes: &[char], start: usize, open: char) -> usize {
+    let n = bytes.len();
+    if open == '\'' || open == '`' {
+        return match bytes[start + 1..].iter().position(|ch| *ch == open) {
+            Some(offset) => start + 1 + offset + 1,
+            None => n,
+        };
+    }
+    let mut j = start + 1;
+    while j < n {
+        if bytes[j] == '\\' {
+            j += 2;
+            continue;
+        }
+        if bytes[j] == '"' {
+            return j + 1;
+        }
+        j += 1;
+    }
+    n
+}
+
 /// 会话是否已请求中止（`abortRequested` 置位）。
 fn cancel_requested(cancel: &Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> bool {
     cancel
@@ -1174,6 +1303,15 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // `timeout` 不在对外 schema 里，仅保留内部覆盖（测试用），显式给出时优先。
     let timeout_ms = input_u64(input, "timeout")
         .unwrap_or(if contains_sleep_command(&command) { 0 } else { 60_000 });
+
+    // 后台化构造闸门（specs/034-bash-detach-field FR-001）：`detach` 缺省 / false 时，
+    // 命令中出现会让进程脱离追踪的写法直接失败。闸门在 `run_in_background` 分支之前：
+    // 后台调用里写 `nohup x &` 的孙进程同样逃出任务追踪。
+    if !js_coerce_bool(input.get("detach")) {
+        if let Some(construct) = find_detach_construct(&command) {
+            return ToolOutcome::Error(BASH_DETACH_GATE_MESSAGE.replace("{}", construct));
+        }
+    }
 
     // 后台模式（`run_in_background`）：子进程 detached、stdout/stderr 直接写输出文件，
     // 立刻返回 taskId，完成后经 `ToolContext.background.notify` 注入通知
@@ -1577,7 +1715,7 @@ fn is_word_byte(byte: u8) -> bool {
 
 /// JS `Boolean(value)`（对齐 zod 的 `z.coerce.boolean()`）：只有 `false` / `0` /
 /// `""` / `null` / `undefined` / `NaN` 为假，其余（含字符串 `"false"`）为真。
-fn js_coerce_bool(value: Option<&Value>) -> bool {
+pub(crate) fn js_coerce_bool(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
         Some(Value::Bool(flag)) => *flag,

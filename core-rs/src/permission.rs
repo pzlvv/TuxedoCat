@@ -635,7 +635,20 @@ pub fn is_operation_risky(tool_name: &str, args: &Value) -> bool {
         return false;
     }
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-    is_destructive_command(command)
+    is_destructive_command(command) || is_detach_escape(tool_name, args)
+}
+
+/// Bash 调用是否为 detach 逃生：声明脱离管理（`detach: true`）**且**命令真的命中
+/// 后台化构造（specs/034-bash-detach-field FR-003）。`detach: true` 但无构造时字段
+/// 惰性（spec AC-12），不算危险。检测与工具闸门共用 `tools::find_detach_construct`
+/// ——同一判据单源（spec FR-004）。
+fn is_detach_escape(tool_name: &str, args: &Value) -> bool {
+    if tool_name != "Bash" {
+        return false;
+    }
+    let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+    crate::tools::js_coerce_bool(args.get("detach"))
+        && crate::tools::find_detach_construct(command).is_some()
 }
 
 /// 询问时的提示文案（对齐各工具 `checkPermissions` 返回的 message）
@@ -643,7 +656,12 @@ pub fn ask_message(tool_name: &str, args: &Value, cwd: &str) -> String {
     match tool_name {
         "Bash" => {
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-            if is_destructive_command(command) {
+            if is_detach_escape(tool_name, args) {
+                // detach 逃生专用确认文案（specs/034 FR-003）：场景 + 代价，逐字锁定
+                format!(
+                    "⚠️ 请求脱离管理执行：{command}\n（进程将脱离工具追踪：无完成通知、中止会话不会杀掉它、会话结束后继续运行；适用于系统级服务等常驻场景）"
+                )
+            } else if is_destructive_command(command) {
                 format!("⚠️ 请求执行：{command}")
             } else {
                 format!("请求执行：{command}")
@@ -677,7 +695,7 @@ pub fn ask_choices(tool_name: &str, args: &Value, cwd: &str) -> Value {
     match tool_name {
         "Bash" => {
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-            if is_destructive_command(command) {
+            if is_detach_escape(tool_name, args) || is_destructive_command(command) {
                 json!([
                     { "label": "允许执行", "description": "我知道这个命令的风险，继续执行" },
                     { "label": "拒绝", "description": "取消此操作" },

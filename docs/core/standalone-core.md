@@ -347,7 +347,7 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 - 用户消息进入 core 的唯一入口是 `UiEvent.userMessageSubmitted`；宿主不直接调用会话引擎。
 - 工具权限按会话的 agentMode 加工：`manual` 保持工具自身判定（只读直接放行、写操作询问）、
   `risk` 危险操作仍询问而普通操作放行、`auto` 把询问放行——但 `AskUserQuestion` 在 `auto`
-  下直接拒绝（提问框不可用，拒绝文案由权限对照表锁定）。
+  下直接拒绝（提问框不可用，拒绝文案由权限对照表锁定）。危险操作口径（破坏性命令 / Bash detach 逃生）见 [bash-detach.md 第 2 节](../features/bash-detach.md#2-功能需求)。
   `ask` 表示「需要弹确认框」，由 Core 再发一次 `CoreRequest.userChoice` 取用户选择；
   权限结果的语义是「保持询问」而不是「拒绝」。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
