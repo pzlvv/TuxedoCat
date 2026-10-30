@@ -395,7 +395,7 @@ export type HostToWebviewMessage = {
   sessionId: string;
   /** 压缩进度: 'start' | 'complete' | 'error' */
   status: 'start' | 'complete' | 'error';
-  /** 压缩后的 token 使用量（complete 时提供） */
+  /** 压缩后上下文占用的重算值（complete 时提供；core 按压缩产物以运行时同款口径重算） */
   postCompactTokenCount?: number;
 } | {
   type: 'messagesReplaced';

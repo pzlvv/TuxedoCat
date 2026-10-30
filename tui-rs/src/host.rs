@@ -501,7 +501,15 @@ impl Host {
                 match result.get("status").and_then(Value::as_str) {
                     Some("complete") => {
                         let tokens = result.get("postCompactTokenCount").and_then(Value::as_f64);
-                        vec![self.compress_notice("complete", tokens, &session_id)]
+                        // 压缩替换了整份上下文：状态栏 tokens 直接采用 core 重算的
+                        // postCompactTokenCount，不停留旧值等到下一轮 streamEnd
+                        // （specs/defects/compact-context-facts-stale-across-views）
+                        let mut actions = Vec::new();
+                        if let Some(tokens) = tokens {
+                            actions.push(Action::SetContextTokens { session_id: session_id.clone(), tokens });
+                        }
+                        actions.push(self.compress_notice("complete", tokens, &session_id));
+                        actions
                     }
                     _ => vec![self.compress_notice("error", None, &session_id)],
                 }
@@ -528,9 +536,11 @@ impl Host {
                 let change = event.get("change").cloned().unwrap_or(Value::Null);
                 let key = change.get("key").and_then(Value::as_str).unwrap_or("");
                 match key {
-                    // wire 协议保持扁平：模型身份拆成 model / provider 两个字段
+                    // wire 协议保持扁平：模型身份拆成 model / provider 两个字段。
+                    // model 键的身份字段是 `ref`（events.md 词汇表；TS 宿主同口径），
+                    // 读 `value` 会拿到 null、模型名显示回落 `…`。
                     "model" => {
-                        let r = change.get("value").cloned().unwrap_or(Value::Null);
+                        let r = change.get("ref").cloned().unwrap_or(Value::Null);
                         vec![Action::SetModel {
                             session_id,
                             model: r.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -1508,5 +1518,65 @@ fn format_tokens(tokens: f64) -> String {
         format!("{:.1}k", tokens / 1000.0)
     } else {
         format!("{}", tokens as i64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 空配置目录的 Host：settings.json / mcp.json 缺失按「未配置」继续，不碰真实用户目录。
+    fn test_host(tag: &str) -> Host {
+        let dir = std::env::temp_dir().join(format!(
+            "tui-host-tests-{}-{tag}",
+            std::process::id()
+        ));
+        Host::new(
+            std::sync::Arc::new(Logger::new(None, false)),
+            SettingsStore::with_dir(dir),
+            "C:/work/alpha".to_string(),
+            PathBuf::from("."),
+        )
+    }
+
+    /// sessionConfigChanged 的 model 键带身份字段 `ref`（events.md 词汇表 / TS 宿主同口径）：
+    /// 译层必须读 `ref`；读 `value` 会拿到 null、模型名显示回落 `…`
+    /// （specs/defects/tui-sessionconfig-model-ref-mismatch）。
+    #[test]
+    fn session_config_model_reads_ref_field() {
+        let mut host = test_host("model-ref");
+        let actions = host.handle_event(&json!({
+            "type": "sessionConfigChanged",
+            "sessionId": "s1",
+            "change": { "key": "model", "ref": { "model": "glm-4.7", "provider": "zhipu" } }
+        }));
+        match actions.as_slice() {
+            [Action::SetModel { session_id, model, provider }] => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(model, "glm-4.7");
+                assert_eq!(provider.as_deref(), Some("zhipu"));
+            }
+            other => panic!("expected SetModel, got {other:?}"),
+        }
+    }
+
+    /// 压缩完成后状态栏 tokens 采用 core 重算的 postCompactTokenCount（通知保留）。
+    #[test]
+    fn compact_end_updates_context_tokens() {
+        let mut host = test_host("compact-tokens");
+        let actions = host.handle_event(&json!({
+            "type": "compactEnd",
+            "sessionId": "s1",
+            "result": { "status": "complete", "postCompactTokenCount": 30720 }
+        }));
+        assert!(
+            actions.iter().any(|action| matches!(action,
+                Action::SetContextTokens { session_id, tokens }
+                    if session_id == "s1" && *tokens == 30_720.0
+            )),
+            "expected SetContextTokens, got {actions:?}"
+        );
+        // 压缩完成通知保留（带 tokens 数）
+        assert!(actions.iter().any(|action| matches!(action, Action::Local(LocalAction::Notice { .. }))));
     }
 }

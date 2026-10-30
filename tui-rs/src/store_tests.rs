@@ -320,3 +320,31 @@ fn balance_update_discards_incomplete_values() {
     state = step(&state, &mut ids, &Action::BalanceUpdate { total_balance: None, currency: None });
     assert_eq!(state.balance, None);
 }
+
+#[test]
+fn session_config_and_context_tokens_updates() {
+    let mut ids = Ids::new();
+    let mut state = initial_state();
+    state = step(&state, &mut ids, &add_user("s1", "hello", None));
+    // 模型身份随 core 的收敛广播更新（sessionConfigChanged → SetModel）
+    state = step(&state, &mut ids, &Action::SetModel {
+        session_id: "s1".into(),
+        model: "glm-4.7".into(),
+        provider: Some("zhipu".into()),
+    });
+    let session = &state.sessions["s1"];
+    assert_eq!(session.model.as_deref(), Some("glm-4.7"));
+    assert_eq!(session.provider.as_deref(), Some("zhipu"));
+
+    // 压缩完成后状态栏 tokens 采用 core 重算的 postCompactTokenCount：
+    // 不更新会停留压缩前旧值直到下一轮 streamEnd
+    state = step(&state, &mut ids, &Action::StreamEnd {
+        session_id: "s1".into(),
+        role: Role::Assistant,
+        accumulated: "答".into(),
+        total_tokens: 150.0,
+        stream_id: "blk1".into(),
+    });
+    state = step(&state, &mut ids, &Action::SetContextTokens { session_id: "s1".into(), tokens: 30_720.0 });
+    assert_eq!(state.sessions["s1"].context_tokens, 30_720.0);
+}
