@@ -3777,8 +3777,14 @@ function activateWorkspace(target: WorkspaceRef | string): void {
     // 来源记录只服务「归属晚到的重试补挂」；用户已激活该标签页后，后续列表到达
     // （新建对话 / 改名等都会触发重读）不得把标签页绿灯重新挂回——重试补挂不翻
     // 已读的旧账。对话行未读集合不动（行灯等各自被打开才清）。
-    for (const [sid, ws] of [...sessionWorkspaces]) {
-      if (workspacePathMatches(ref, ws)) backfillArmedSessions.delete(sid);
+    //
+    // 归属判定与武装解析同一套查找（`resolveSessionWorkspaceRef`，含 Client 路由表
+    // 兜底）：只扫宿主索引会把「武装能解析、作废却拿不到」的会话漏掉——远程工作区
+    // 建链就绪后的列表装载是异步的，用户在列表到达前激活标签页时索引尚未登记
+    //（specs/defects/completion-tab-light-relights-after-read）。
+    for (const sessionId of [...backfillArmedSessions]) {
+      const owner = resolveSessionWorkspaceRef(sessionId);
+      if (owner && sameRef(owner, ref)) backfillArmedSessions.delete(sessionId);
     }
     // 列表快照按目录各存一份：切换标签页不丢快照，侧栏直接命中（脏快照由
     // get-conversations 后台补读，见 sidebar:get-conversations）
@@ -5595,19 +5601,31 @@ function initCore(): void {
       const armed = backfillCompletionAttention(
         [...unreadCompletionSessions],
         list,
+        [...completionsReadInRun],
       );
       let changed = armed.length > 0;
+      const freshlyArmed = new Set(armed);
       for (const sessionId of armed) {
         unreadCompletionSessions.add(sessionId);
         backfillArmedSessions.add(sessionId);
       }
-      // 标签页灯的补挂：离场完成不适用在线的「完成时未激活才武装」规则（完成时刻
-      // 用户完全缺席，激活中的标签页也算未读），归属可解析即武装；归属索引晚到的
-      // 会话（非活动目录的列表后到）在索引补齐后的下一次列表到达也要挂上
-      for (const sessionId of backfillArmedSessions) {
+      // 标签页灯的补挂：离场完成的**首次**武装不适用在线的「完成时未激活才武装」规则
+      // （完成时刻用户完全缺席，激活中的标签页也算未读），归属可解析即武装；归属索引
+      // 晚到的会话（非活动目录的列表后到）在索引补齐后的下一次列表到达补挂。
+      //
+      // 但**补挂重试**（本次列表没有新武装的、此前已在来源集合里的会话）与首次武装
+      // 口径不同：用户已经激活过该标签页就不再补亮——激活是标签页级已读，重试不翻
+      // 旧账。否则已读会话经在途旧计数重新武装后，绿灯会落到已激活标签页上而没有
+      // 熄灯入口（specs/defects/completion-tab-light-relights-after-read）。判据与
+      // 在线差分同一份（`facts.tabActive`），命中即把来源作废，后续列表到达不再重试。
+      for (const sessionId of [...backfillArmedSessions]) {
         if (!unreadCompletionSessions.has(sessionId)) continue;
         const facts = completionFactsOf(sessionId);
-        fileLogger.info('completion-backfill', `[probe] sid=${sessionId} wsKey=${facts.workspaceKey} tabs=[${[...unreadCompletionTabs].join(',')}]`);
+        fileLogger.info('completion-backfill', `[probe] sid=${sessionId} wsKey=${facts.workspaceKey} tabActive=${facts.tabActive} fresh=${freshlyArmed.has(sessionId)} tabs=[${[...unreadCompletionTabs].join(',')}]`);
+        if (facts.tabActive && !freshlyArmed.has(sessionId)) {
+          backfillArmedSessions.delete(sessionId);
+          continue;
+        }
         if (facts.workspaceKey && !unreadCompletionTabs.has(facts.workspaceKey)) {
           unreadCompletionTabs.add(facts.workspaceKey);
           changed = true;

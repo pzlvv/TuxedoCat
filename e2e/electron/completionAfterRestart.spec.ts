@@ -161,3 +161,91 @@ test('US-65 离场完成：非当前标签页重开后标签页亮绿色未读�
   await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
 });
+
+test('US-65 已读之后旧计数到达不复亮标签页绿灯', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  // 同一份离场完成场景，追加「已读之后的在途列表快照」：打开对话即阅读、core 清零要
+  // 落盘，清零与下一次读盘之间存在在途窗口，窗口内到达的列表仍带旧计数
+  //（specs/defects/completion-tab-light-relights-after-read）
+  const aDir = await makeWorkspace({}, 'e2e-ws-read-idle');
+  const bDir = await makeWorkspace({}, 'e2e-ws-read-done');
+  mockLlm = await startMockLlm({ workspaceDir: bDir });
+  mockLlm.setHandler(() => ({ kind: 'text', text: '离场完成探针回复' }));
+
+  // 第一段：在 B（活动）里造一个已完成过的对话，关闭应用（沙箱留给第二段）
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: bDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: bDir,
+    agentMode: 'auto', keepHomeOnClose: true,
+  });
+  const chatPage = await app.chatPage({ workspaceIncludes: 'e2e-ws-read-done', emptyState: true });
+  await chatPage.fill('textarea.input-textarea', '离场完成探针');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('离场完成探针回复').first()).toBeVisible({ timeout: 60_000 });
+  const homeDir = app.homeDir;
+  await app.close();
+  app = null;
+
+  const metaPath = await findConversationMeta(homeDir);
+  const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as {
+    sessionId?: string;
+    unreadCompletions?: number;
+  };
+  expect(meta.sessionId, '会话已建档').toBeTruthy();
+  meta.unreadCompletions = 1;
+  await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+
+  // 第二段：重开同一沙箱，活动项是 A——B 非当前标签页亮绿灯
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: bDir,
+    openWorkspaces: [aDir, bDir],
+    activeWorkspace: aDir,
+    reuseHomeDir: homeDir, agentMode: 'auto',
+  });
+  const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 30_000 });
+  const tabB = tabs.nth(1);
+  await expect(tabB).not.toHaveClass(/active/, { timeout: 10_000 });
+  await expect(tabB).toHaveClass(/activity-completed/, { timeout: 60_000 });
+
+  // 激活 B（标签页绿灯灭）→ 打开该对话完成阅读（行灯灭、core 清零落盘）
+  await tabB.click();
+  await expect(tabB).not.toHaveClass(/activity-completed/, { timeout: 30_000 });
+  const sidebar = await app.sidebarPage();
+  const item = sidebar.locator(SIDEBAR_ITEM).first();
+  await expect(item).toHaveCount(1, { timeout: 30_000 });
+  await expect(item.locator('.running-bar--completed')).toBeVisible({ timeout: 30_000 });
+  await item.click();
+  await expect(item.locator('.running-bar--completed')).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => {
+    const current = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as { unreadCompletions?: number };
+    return current.unreadCompletions ?? 0;
+  }, { timeout: 30_000 }).toBe(0);
+
+  // 模拟「清零落盘前的在途列表快照」：把旧计数写回盘上，再改一次标题驱动列表重读
+  //（rename → conversationListChanged → 宿主重新装载列表）。已读的会话不得复亮：
+  // 标签页仍激活，绿灯一旦挂回就没有熄灯入口
+  const stale = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as {
+    unreadCompletions?: number;
+    title?: string;
+  };
+  stale.unreadCompletions = 1;
+  await fs.promises.writeFile(metaPath, JSON.stringify(stale, null, 2), 'utf8');
+  await item.hover();
+  await item.locator('[data-action="rename"]').click();
+  const renameInput = sidebar.locator('.rename-input');
+  await expect(renameInput).toBeVisible();
+  await renameInput.fill('已读之后不应复亮');
+  await renameInput.press('Enter');
+  await expect(item).toContainText('已读之后不应复亮', { timeout: 30_000 });
+
+  // 给补武装 / 补挂重试留出跑完的时间，再断言两边都没有复亮
+  await new Promise((r) => setTimeout(r, 3_000));
+  await expect(tabB).not.toHaveClass(/activity-completed/, { timeout: 10_000 });
+  await expect(tabB).toHaveClass(/active/, { timeout: 10_000 });
+  await expect(item.locator('.running-bar--completed')).toHaveCount(0, { timeout: 10_000 });
+
+  await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+  await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+});
