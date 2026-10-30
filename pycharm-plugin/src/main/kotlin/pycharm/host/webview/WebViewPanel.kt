@@ -55,7 +55,17 @@ class WebViewPanel(
         jsQuery.addHandler { request ->
             try {
                 val message = Json.parseToJsonElement(request)
-                if (message is JsonObject) onWebviewMessage(message)
+                if (message is JsonObject) {
+                    // __cursor 是面板桥私有消息（不属于 webview 协议）：JCEF-in-IDE 的光标
+                    // 链路（CEF OnCursorChange → AWT）有断点，CSS 的 pointer 落不到系统
+                    // 光标上——由注入的 pointermove 探测补偿，见 buildBootstrap
+                    val type = (message["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    if (type == "__cursor") {
+                        applyCursor((message["cursor"] as? JsonPrimitive)?.content ?: "default")
+                    } else {
+                        onWebviewMessage(message)
+                    }
+                }
                 JBCefJSQuery.Response("ok")
             } catch (e: Exception) {
                 log("[webview] query handle failed: ${e.message}")
@@ -87,6 +97,34 @@ class WebViewPanel(
             append("window.__uiFontSize = ${jsonOf(localeState.uiFontSize)};\n")
             append("window.logoUri = ${jsonOf("./logo1.png")};\n")
             append("window.__hasWorkspace = true;\n")
+            // 光标补偿：JCEF-in-IDE 的 CEF OnCursorChange → AWT 链路有断点，CSS 的
+            // pointer 落不到系统光标。pointermove 时读悬停目标的 computed cursor，
+            // 仅在值变化时经桥通知 Java 侧设 AWT 光标（Chrome 会先应用 :hover 再派发
+            // 事件，computed 值可靠；只在变化时发，避免高频桥调用）
+            append("""
+(function() {
+  var last = null;
+  document.addEventListener('pointermove', function(e) {
+    var t = e.target;
+    var cur = t ? window.getComputedStyle(t).cursor : 'default';
+    if (cur === last) return;
+    last = cur;
+    window.__javaQuery(JSON.stringify({ type: '__cursor', cursor: cur }));
+  }, true);
+})();
+""".trimIndent())
+        }
+    }
+
+    /** 把页面 CSS 光标意图映射到 AWT 光标（pointer→手型，text→文本，其余→默认箭头） */
+    private fun applyCursor(cssCursor: String) {
+        val cursor = when (cssCursor) {
+            "pointer" -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            "text" -> java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.TEXT_CURSOR)
+            else -> java.awt.Cursor.getDefaultCursor()
+        }
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+            if (browser.component.cursor != cursor) browser.component.cursor = cursor
         }
     }
 

@@ -51,6 +51,10 @@ last_reviewed: 2026-10-31
   「JBCefApp has already been initialized!」）——http://127.0.0.1 无时序问题。
 - 下行走 `executeJavaScript(window.postMessage(<json>,'*'))`（对齐 electron preload 的
   window message 转发语义）；上行 query handler 进宿主路由。
+- 光标补偿：JCEF-in-IDE 的「CEF OnCursorChange → AWT 光标」链路有断点，页面 CSS 的
+  `cursor: pointer` 落不到系统光标（VS Code / Electron 宿主自实现了转发，无此问题）。
+  bootstrap 注入 pointermove 探测——读悬停目标的 computed cursor、仅在值变化时经桥发
+  面板私有消息 `__cursor`，Java 侧映射为 AWT 光标（pointer→手型、text→文本、其余→箭头）。
 - 项目打开后面板自动展示（`StartupActivity`，`show()` 不夺焦点，且必须在 EDT——
   ProjectActivity 包 `withContext(Dispatchers.EDT)`）。
 - 插件 `<depends>com.intellij.modules.jcef</depends>`：无 JCEF 的 IDE 在装载期明确失败，
