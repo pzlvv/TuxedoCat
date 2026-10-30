@@ -39,3 +39,4 @@ pycharm-plugin/build/
 pycharm-plugin/local.properties
 pycharm-plugin/.intellijPlatform/
 .gradle-dist/
+pycharm-plugin/.kotlin/
