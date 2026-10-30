@@ -201,6 +201,7 @@ runTests('completionAttention', async () => {
     const armed = backfillCompletionAttention(
       [],
       [{ sessionId: 'a', unreadCompletions: 1, creator: { kind: 'user' } }],
+      [],
     );
     return armed.length === 1 && armed[0] === 'a';
   })());
@@ -212,6 +213,7 @@ runTests('completionAttention', async () => {
         { sessionId: 'a', creator: { kind: 'user' } },
         { sessionId: 'b', unreadCompletions: 0, creator: { kind: 'user' } },
       ],
+      [],
     );
     return armed.length === 0;
   })());
@@ -220,6 +222,7 @@ runTests('completionAttention', async () => {
     const armed = backfillCompletionAttention(
       [],
       [{ sessionId: 'sub', unreadCompletions: 1, creator: { kind: 'agent', workspaceId: 'HOST:/a', sessionId: 'origin' } }],
+      [],
     );
     return armed.length === 0;
   })());
@@ -228,6 +231,7 @@ runTests('completionAttention', async () => {
     const armed = backfillCompletionAttention(
       ['a'],
       [{ sessionId: 'a', unreadCompletions: 1, creator: { kind: 'user' } }],
+      [],
     );
     return armed.length === 0;
   })());
@@ -239,8 +243,23 @@ runTests('completionAttention', async () => {
         { sessionId: 'a', unreadCompletions: 1, creator: { kind: 'user' } },
         { sessionId: 'b', unreadCompletions: 3, creator: { kind: 'user' } },
       ],
+      [],
     );
     return armed.length === 2;
+  })());
+
+  // 已读护栏（specs/defects/completion-tab-light-relights-after-read）：打开对话会清掉
+  // core 侧计数，但清零落盘与下一次读盘之间存在在途窗口，窗口内到达的列表仍带旧计数
+  check('补武装：本次运行已读的会话不再武装（在途旧计数不翻旧账）', (() => {
+    const armed = backfillCompletionAttention(
+      [],
+      [
+        { sessionId: 'read', unreadCompletions: 1, creator: { kind: 'user' } },
+        { sessionId: 'unread', unreadCompletions: 1, creator: { kind: 'user' } },
+      ],
+      ['read'],
+    );
+    return armed.length === 1 && armed[0] === 'unread';
   })());
 
   finish();

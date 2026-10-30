@@ -126,6 +126,14 @@ export function pickReadCompletions(
  * 与在线差分的分工天然不相交：在线完成走连接路由、core 不计数，本函数只补
  * 「宿主完全缺席」的那部分。agent 创建的会话保持安静（specs/025 FR-003，与差分
  * 同一在源头掐掉的口径）；已在未读集合里的 id 保留原到达时刻（不重复呼吸）。
+ *
+ * `read` 是本次运行已阅读的会话名单（`completionsReadInRun`）：打开对话会在 core
+ * 侧清零 `unreadCompletions`，但清零落盘与下一次列表读盘之间存在在途窗口，窗口内
+ * 到达的列表快照仍带旧计数——这份护栏把它挡住，否则已读会话会被当成一次全新的
+ * 离场完成重新武装（标签页绿灯复亮在已激活标签页上，见
+ * specs/defects/completion-tab-light-relights-after-read）。护栏只对本进程有效：
+ * 重启后 core 已清零，不需要持久化。
+ *
  * 标签页灯的归属解析需要画面事实（会话 → 工作目录归属），由调用方在武装后按
  * 未读集合统一补挂——归属索引晚到的会话（非活动目录的列表后到）在索引补齐后
  * 也要挂上，见 `electron/main.ts` 的列表到达出口。
@@ -137,11 +145,14 @@ export function backfillCompletionAttention(
     unreadCompletions?: number;
     creator?: SessionCreator;
   }>,
+  read: ReadonlyArray<string>,
 ): string[] {
   const known = new Set(existing);
+  const readInRun = new Set(read);
   const sessions: string[] = [];
   for (const item of list) {
     if (!item?.sessionId || known.has(item.sessionId)) continue;
+    if (readInRun.has(item.sessionId)) continue;
     if ((item.unreadCompletions ?? 0) <= 0) continue;
     if (item.creator !== undefined && isAgentCreator(item.creator)) continue;
     sessions.push(item.sessionId);

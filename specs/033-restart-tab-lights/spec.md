@@ -118,8 +118,8 @@ status: 起草
 两处归一（修正现状缺口，非语义变更）：
 
 - 已读护栏（`completionsReadInRun`）对**全部武装来源生效**：打开对话后，在途列表快照里
-  的旧 `unreadCompletions` 计数不再重新武装（现状护栏只写不读，窗口期的重复武装未被
-  真正挡住）；
+  的旧 `unreadCompletions` 计数不再重新武装（该护栏已先行落地，见
+  [specs/defects/completion-tab-light-relights-after-read.md](../../specs/defects/completion-tab-light-relights-after-read.md)）；
 - 补武装落定后宿主执行一次可见性清理：此刻正完全可见（聚焦 + 激活标签页 + 当前对话）
   的条目当场按已读处理——与在线武装的「聚焦即已读」同一口径，重开时用户正盯着的对话
   不亮灯。
