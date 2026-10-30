@@ -667,6 +667,8 @@ fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe
         "Bash",
         &json!({
             "command": "echo started; sleep 3 &",
+            // `&` 会命中 detach 闸门：本测试验证的是管道 EOF 机制，声明豁免
+            "detach": true,
             // 超时死线要给 shell 启动留足余量：满载的测试进程里 Git Bash 冷启动
             // 可能超过几百毫秒，死线太紧时 `echo` 还没落盘就转后台，断言
             // 「已累积输出要带过去」就变成对机器速度的断言而不是对行为的断言。
@@ -719,7 +721,12 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
     });
 
     let started = std::time::Instant::now();
-    let outcome = execute("Bash", &json!({ "command": "echo started; sleep 3 &" }), &ctx);
+    // `detach: true` 豁免闸门：`&` 在此是构造管道场景的手段，不是被测行为
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "echo started; sleep 3 &", "detach": true }),
+        &ctx,
+    );
     let elapsed = started.elapsed();
     let body = text(&outcome);
 
@@ -4074,4 +4081,174 @@ fn write_and_edit_record_modified_md_docs() {
         "只登记 md 且按字典序稳定输出"
     );
     assert_eq!(meta["workspacePath"], json!(project));
+}
+
+// ==================== detach 闸门（specs/034-bash-detach-field） ====================
+
+/// 检测纯函数点名命中的构造（FR-001 / FR-004；AC-2 / AC-3 / AC-5 的判定层）。
+#[test]
+fn find_detach_construct_names_the_matched_construct() {
+    // 段首词优先于 `&`：`nohup server &` 点名更具体的 nohup
+    assert_eq!(find_detach_construct("nohup server &"), Some("nohup"));
+    assert_eq!(find_detach_construct("setsid x"), Some("setsid"));
+    assert_eq!(find_detach_construct("disown %1"), Some("disown"));
+    // PowerShell cmdlet 大小写不敏感
+    assert_eq!(find_detach_construct("Start-Process x"), Some("Start-Process"));
+    assert_eq!(find_detach_construct("start-process x"), Some("Start-Process"));
+    // `start` 仅当第二 token 恰为 /b 才算 cmd 后台化（大小写不敏感）
+    assert_eq!(find_detach_construct("start /b x"), Some("start /b"));
+    assert_eq!(find_detach_construct("START /B x"), Some("start /b"));
+    assert_eq!(find_detach_construct("start /bin/sh x"), None);
+    // 控制操作符 &
+    assert_eq!(find_detach_construct("server &"), Some("&"));
+    assert_eq!(find_detach_construct("curl http://x?a=1&b=2"), Some("&"));
+}
+
+/// `&&` / 引号内 / 重定向操作符里的 `&` 不算后台化（AC-4）；`$()` 内部整体跳过、
+/// 换行不是分隔符——specs/034 边界声明的检测盲区。
+#[test]
+fn find_detach_construct_ignores_non_backgrounding_ampersand() {
+    assert_eq!(find_detach_construct("echo a && echo b"), None);
+    assert_eq!(find_detach_construct("grep \"a&b\" file"), None);
+    assert_eq!(find_detach_construct("cmd 2>&1"), None);
+    assert_eq!(find_detach_construct("cmd &> log"), None);
+    assert_eq!(find_detach_construct("cmd &>> log"), None);
+    assert_eq!(find_detach_construct("bash deploy.sh"), None);
+    assert_eq!(find_detach_construct("echo $(nohup x &> /dev/null)"), None);
+    assert_eq!(find_detach_construct("echo a\nnohup x"), None);
+}
+
+/// Bash schema 暴露 `detach`，说明保持一句防护性口径（FR-004：案例不得写进
+/// schema，详细用法只在闸门失败文案里给）。
+#[test]
+fn bash_schema_exposes_detach_with_minimal_description() {
+    let definition = definitions()
+        .into_iter()
+        .find(|item| item["name"] == "Bash")
+        .expect("Bash 定义必须存在");
+    let detach = &definition["input_schema"]["properties"]["detach"];
+    assert_eq!(detach["type"], "boolean");
+    let description = detach["description"].as_str().expect("description");
+    assert!(description.contains("脱离工具管理"), "got {description}");
+    assert!(
+        !description.contains("nohup") && !description.contains('&'),
+        "案例不得写进 schema: {description}"
+    );
+}
+
+/// 闸门（FR-001 / AC-1 ～ AC-3 / AC-5）：缺省 `detach` 时命中构造直接失败，文案
+/// 点名构造并给出三条出路。闸门在 spawn 之前，不产生任何进程。
+#[test]
+fn bash_gate_rejects_backgrounding_constructs_with_routing_message() {
+    let sandbox = Sandbox::new("tools-bash-detach-gate");
+
+    let outcome = execute("Bash", &json!({ "command": "nohup server" }), &context(&sandbox));
+    assert!(outcome.is_error(), "got {}", text(&outcome));
+    let body = text(&outcome);
+    assert!(body.contains("Bash: command uses `nohup`."), "got {body}");
+    assert!(
+        body.contains(
+            "- Need the result in this session: run in the foreground, or use run_in_background: true (notifies on completion)."
+        ),
+        "got {body}"
+    );
+    assert!(
+        body.contains(
+            "- Need it to keep running after this session ends — e.g. installing/starting a system-level service or daemon: re-run the same command with detach: true."
+        ),
+        "got {body}"
+    );
+
+    for (command, construct) in [
+        ("setsid server", "setsid"),
+        ("start /b server", "start /b"),
+        ("Start-Process server", "Start-Process"),
+        ("curl http://x?a=1&b=2", "&"),
+    ] {
+        let outcome = execute("Bash", &json!({ "command": command }), &context(&sandbox));
+        assert!(outcome.is_error(), "got {}", text(&outcome));
+        assert!(
+            text(&outcome).contains(&format!("Bash: command uses `{construct}`.")),
+            "got {}",
+            text(&outcome)
+        );
+    }
+}
+
+/// 闸门不误拦（AC-4）：`&&`、引号内 `&`、`&>` 照常执行。
+#[test]
+fn bash_gate_allows_quoted_ampersand_and_logical_and() {
+    let sandbox = Sandbox::new("tools-bash-detach-gate-allow");
+    for command in ["echo a && echo b", "echo \"a&b\"", "echo x &> /dev/null"] {
+        assert!(
+            !execute("Bash", &json!({ "command": command }), &context(&sandbox)).is_error(),
+            "不应拦截: {command}"
+        );
+    }
+}
+
+/// 豁免语义（FR-002 / AC-6）：`detach: true` 绕过闸门；无构造时字段惰性。
+#[test]
+fn bash_detach_true_bypasses_the_gate_and_is_inert_without_constructs() {
+    let sandbox = Sandbox::new("tools-bash-detach-escape");
+    // 同一命令：缺省被拦、true 放行
+    assert!(execute("Bash", &json!({ "command": "nohup true" }), &context(&sandbox)).is_error());
+    assert!(
+        !execute(
+            "Bash",
+            &json!({ "command": "nohup true", "detach": true }),
+            &context(&sandbox)
+        )
+        .is_error()
+    );
+    // 无构造时字段惰性（AC-6）
+    assert!(
+        !execute(
+            "Bash",
+            &json!({ "command": "echo ok", "detach": true }),
+            &context(&sandbox)
+        )
+        .is_error()
+    );
+}
+
+/// 回流（AC-8）：豁免只关闸门，不改前台生命周期——未自我脱离的长命令超时后
+/// 仍自动转后台，并按既有后台任务事实处理（登记在册、可被 abort）。
+#[test]
+fn bash_detach_true_foreground_still_auto_backgrounds_on_timeout() {
+    let sandbox = Sandbox::new("tools-bash-detach-rejoin");
+    let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
+    crate::bash_task::reset_for_test();
+
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "nohup sleep 5", "detach": true, "timeout": 300 }),
+        &context(&sandbox),
+    );
+    let body = text(&outcome);
+    assert!(!outcome.is_error(), "自动转后台不算工具失败: {body}");
+    assert!(body.contains("(task ID: bg-auto-"), "got {body}");
+    assert_eq!(crate::bash_task::running_count_for_session("s-tools"), 1);
+
+    crate::bash_task::abort_tasks_for_session("s-tools");
+    assert_eq!(crate::bash_task::running_count_for_session("s-tools"), 0);
+    restore_tmpdir(previous);
+    crate::bash_task::reset_for_test();
+}
+
+/// 闸门在 `run_in_background` 分支之前（FR-001）：后台调用里的逃逸同样被拦；
+/// 整段文案与常量逐字一致（构造名插值）。
+#[test]
+fn bash_gate_applies_before_run_in_background_branch() {
+    let sandbox = Sandbox::new("tools-bash-detach-gate-bg");
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "nohup server", "run_in_background": true }),
+        &context(&sandbox),
+    );
+    assert!(outcome.is_error(), "got {}", text(&outcome));
+    assert_eq!(
+        text(&outcome),
+        BASH_DETACH_GATE_MESSAGE.replace("{}", "nohup")
+    );
 }

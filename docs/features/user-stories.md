@@ -97,6 +97,9 @@ git 口径（变更集 / 行数 / 未跟踪文档）与 commit 后的自动刷�
 US-66 的双实例争用——双实例场景依赖两个宿主进程（electron 车道单应用启动），e2e 豁免，
 锁语义由 core-rs `session_lock_tests`（双进程争用、崩溃接管、并发接管至多一胜、同 Core
 重入、未知版本拒外、宿主离场不释放、变更守卫）锁定，占用文案键由 `core_text_tests`
-对照 `core-rs/fixtures/coreTextKeys.json` 锁定）。
+对照 `core-rs/fixtures/coreTextKeys.json` 锁定；US-67 的 detach 闸门与授权——构造判据、
+闸门文案与权限分级由 core-rs 单测（`tools_tests` / `permission_tests` 的 detach 用例）
+锁定，确认弹窗复用既有权限确认组件（US-18 的 e2e 已覆盖渲染与提交链路），不新增
+e2e 用例）。
 
 运行方式与前置构建见 `e2e/README.md`。

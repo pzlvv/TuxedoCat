@@ -106,6 +106,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/abort-button.md` | abort 按钮的状态判定与中止范围（含 spin 模式） |
 | `docs/features/spin-execution.md` | Spin 模式执行循环：子对话完成判定（Reply / 收尾 Idle）、失败分类与重试、进度反馈 |
 | `docs/features/background-bash.md` | Bash 后台任务：手工转后台（暂停 / 接续）与两类任务提醒 |
+| `docs/features/bash-detach.md` | Bash 命令的 detach 豁免：后台化构造闸门、脱离管理的授权分级与两面文案 |
 | `docs/features/tui-installer.md` | TUI 版分发与 Core 部署安装程序 |
 | `docs/features/web-search.md` | 联网搜索与网页抓取（WebSearch / WebFetch 客户端工具） |
 | `docs/features/ask-user-question.md` | AskUserQuestion 逐题提问：入参 / 答案 / 逐页选择框 / 错误路径 |

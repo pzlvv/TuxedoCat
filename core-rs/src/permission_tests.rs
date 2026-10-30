@@ -588,3 +588,57 @@ fn substitute_cwd(value: Value, cwd: &str) -> Value {
     }
 }
 
+// ==================== detach 逃生（specs/034-bash-detach-field） ====================
+
+/// detach 逃生（FR-003 / AC-9 ～ AC-11）：manual / risk 询问，auto 放行（零可见是
+/// 明示决策，与破坏性命令同待遇，见 ADR-0014）。
+#[test]
+fn detach_escape_asks_in_risk_and_manual_but_not_auto() {
+    let escape = || json!({ "command": "nohup server", "detach": true });
+    assert_eq!(decide("Bash", &escape(), "risk", CWD), Decision::Ask);
+    assert_eq!(decide("Bash", &escape(), "manual", CWD), Decision::Ask);
+    assert_eq!(decide("Bash", &escape(), "auto", CWD), Decision::Allow);
+}
+
+/// AC-12：`detach: true` 但命令没有后台化构造 → 字段惰性，不算危险。
+#[test]
+fn detach_true_without_construct_is_not_risky() {
+    assert_eq!(
+        decide(
+            "Bash",
+            &json!({ "command": "echo ok", "detach": true }),
+            "risk",
+            CWD
+        ),
+        Decision::Allow
+    );
+}
+
+/// `detach` 缺省的命令不算危险操作：拦截面在工具闸门（第一轮失败教学），权限
+/// 放行——risk 模式的完整体验是「教学 → 带 `detach: true` 重试 → 询问」。
+#[test]
+fn detach_default_command_is_not_permission_business() {
+    assert_eq!(decide("Bash", &bash("nohup server"), "risk", CWD), Decision::Allow);
+}
+
+/// detach 逃生的确认文案与选项（FR-003）：⚠️ 专用文案写场景与代价，选项沿用
+/// 危险分支的「允许执行 / 拒绝」；普通命令保持原文案与选项不变。
+#[test]
+fn detach_escape_ask_message_and_choices() {
+    let args = json!({ "command": "nohup server", "detach": true });
+    let message = ask_message("Bash", &args, CWD);
+    assert!(
+        message.starts_with("⚠️ 请求脱离管理执行：nohup server\n"),
+        "got {message}"
+    );
+    assert!(
+        message.contains("无完成通知、中止会话不会杀掉它、会话结束后继续运行"),
+        "got {message}"
+    );
+    let choices = ask_choices("Bash", &args, CWD);
+    assert_eq!(choices[0]["label"], "允许执行");
+
+    let plain = ask_message("Bash", &bash("sleep 1"), CWD);
+    assert_eq!(plain, "请求执行：sleep 1");
+}
+

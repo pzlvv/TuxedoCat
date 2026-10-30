@@ -23,6 +23,10 @@
         "run_in_background": {
           "type": "boolean",
           "description": "设置 true 则在后台运行此命令（不会阻塞后续操作）。后台命令完成后会收到通知，无需主动轮询。"
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "仅当命令的进程必须脱离工具管理、在本会话结束后继续运行（如系统级服务）时才设为 true；其余场景不要设置，后台运行请用 run_in_background。"
         }
       }
     },
