@@ -74,14 +74,22 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 3. 用归档区调 LLM 生成摘要（`COMPACT_SYSTEM_PROMPT` + `generate_compact_summary_prompt`）。
 4. 新建边界标记（`system` / `compact_boundary`）与摘要消息（`user` / `isCompactSummary`）。
 5. 组装压缩后的消息：`[边界标记, 摘要消息, ...保留区]`（`build_post_compact_messages`）。
-6. `compactEnd`（`complete`，带压缩后 token 数）与归档写盘（`history.rs` 的
+6. `compactEnd`（`complete`，带压缩后上下文占用的重算值）与归档写盘（`history.rs` 的
    `save_compact_archive`：归档区 + 摘要）在 `compact_conversation` 内完成；返回后整文件
-   重写 jsonl、标记 `meta.json` 的 `context.isCompacted = true` / `isExpanded = false`，最后
-   `replay.rs` 的 `replay_messages_to_ui` 投递 `messagesReplaced` 整批替换 UI 消息区。
+   重写 jsonl、标记 `meta.json` 的 `context.isCompacted = true` / `isExpanded = false`，
+   最后 `replay.rs` 的 `replay_messages_to_ui` 投递 `messagesReplaced` 整批替换 UI 消息区。
 
 保留区按条数截断后必须修复 `tool_use` / `tool_result` 配对（`sanitize_tool_pairing`）：
 某条 `tool_use` 被留在归档区、其 `tool_result` 落在保留区（或相反）时，会向保留区
 补一条 `is_canceled` 的合成 `tool_result`，避免下一轮请求出现孤立工具调用。
+
+**压缩后上下文占用的重算与写回**：压缩清空了保留区消息的 `usage`
+（`clear_message_usage`），真实锚点不复存在。压缩完成时 core 把压缩产物按运行时同款
+口径（`util::estimate_request_tokens` 作用在压缩后消息上）重算占用，随
+`compactEnd.postCompactTokenCount` 带给 UI、写回 `meta.json` 的
+`context.totalContextTokens`——不写回的话，从 meta 恢复用量条的视图（webview / TUI
+的 `conversationLoaded` 恢复路径）与 core 自己的估算兜底（第 1 节 FR-001 的 max 口径）
+都会拿压缩前的旧值。下一轮真实 usage 落盘后照常覆盖该估算值。
 
 ### FR-004：用户输入历史（跨多次压缩）
 
@@ -130,9 +138,10 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
                     │
                     ├─ LLM 生成摘要
                     ├─ 组装 [边界, 摘要, ...保留区]
-                    ├─ compactEnd ──▶ UI（进度提示 complete / error）
+                    ├─ 重算压缩后占用（估算）
+                    ├─ compactEnd ──▶ UI（进度提示 complete / error + 用量按新值刷新）
                     ├─ save_compact_archive（归档区 + 摘要）
-                    ├─ 整文件重写 jsonl + meta 标记
+                    ├─ 整文件重写 jsonl + meta 标记 + totalContextTokens 写回
                     └─ replay_messages_to_ui ──messagesReplaced──▶ UI（整批替换消息区）
 ```
 

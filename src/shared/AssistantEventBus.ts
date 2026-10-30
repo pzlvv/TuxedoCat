@@ -169,7 +169,7 @@ export type CoreEvent =
   | {
       type: 'compactEnd';
       sessionId: string;
-      /** 压缩结果：成功带压缩后 token 数，失败不带（错误详情走 message 事件） */
+      /** 压缩结果：成功带压缩后上下文占用的重算值（core 按压缩产物以运行时同款口径重算，与写回 meta.json 的 totalContextTokens 同值），失败不带（错误详情走 message 事件） */
       result:
         | { status: 'complete'; postCompactTokenCount: number | null }
         | { status: 'error' };

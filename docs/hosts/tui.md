@@ -186,7 +186,7 @@ tui-rs/
 | `sessionConfigChanged` | 按 change.key 转成 setModel / setThinkingMode / setPromptMode / setAgentMode / setWebSearch；mcpEnabled 触发列表重拉 |
 | `commandDispatched` | 清除该会话排队项；`spin` 命令提示设计器不支持 |
 | `notice` | 键 + 参数翻译后进通知条（第 4 节 i18n 口径） |
-| `compactBegin` / `compactEnd` | 压缩进度提示（start / complete / error） |
+| `compactBegin` / `compactEnd` | 压缩进度提示（start / complete / error）；`complete` 同时把该会话状态栏的上下文 tokens 更新为 `postCompactTokenCount`（core 重算的压缩后占用） |
 | `highlightLanguagesUsed` | 并入 settings.json 的 `highlightLanguages`（去重、上限 60）+ 重推快照 |
 | `spinDesignDataChanged` | notice 提示设计器仅在 VS Code / Electron 提供 |
 | `log` | 落文件日志（不打 stdout——stdout 是渲染面） |
@@ -258,8 +258,10 @@ tui-rs/
 - 流水灯读 `sessionRuntimeStates` 全量投影（idle/waiting/queryRunning/compacting/
   pendingCompact/backgroundRunning/subAgentRunning → ○◑●◍），abort 语义同源。
 - 上下文 tokens 读 `addMessage` / `streamEnd` 携带的 input + output（服务端值直接
-  采用，不取 max）。待压缩（`pendingCompact` 为真且未 `compacting`）时该位置显示
-  「准备压缩」（英文 `Preparing`），开始压缩或标记清除后还原。
+  采用，不取 max）；压缩完成取 `compactEnd` 的 `postCompactTokenCount`（core 重算的
+  压缩后占用，`meta.json` 同值写回，切回会话时按它恢复）。待压缩（`pendingCompact`
+  为真且未 `compacting`）时该位置显示「准备压缩」（英文 `Preparing`），开始压缩或
+  标记清除后还原。
 
 ### 7.2 编辑器与键位
 

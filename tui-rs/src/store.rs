@@ -360,6 +360,10 @@ pub enum Action {
     SetThinkingMode { session_id: String, mode: String },
     SetPromptMode { session_id: String, mode: String },
     SetWebSearch { session_id: String, enabled: bool },
+    /// 会话上下文占用的非流式更新（core 的 `compactEnd.postCompactTokenCount`）：
+    /// 压缩替换了整份上下文，状态栏 tokens 不能停留在压缩前旧值等到下一轮 streamEnd
+    /// （specs/defects/compact-context-facts-stale-across-views）。
+    SetContextTokens { session_id: String, tokens: f64 },
 }
 
 /// wire `addMessage` 的投影字段（译层从 MessageData / 乐观回显构造）。
@@ -682,6 +686,11 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
         Action::SetWebSearch { session_id, enabled } => with_session(state, session_id, |session| {
             session.web_search = Some(*enabled);
         }),
+        Action::SetContextTokens { session_id, tokens } => {
+            with_session(state, session_id, |session| {
+                session.context_tokens = *tokens;
+            })
+        }
     }
 }
 

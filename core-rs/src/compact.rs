@@ -530,6 +530,11 @@ pub struct CompactionResult {
     pub boundary_marker: Value,
     pub summary_messages: Vec<Value>,
     pub messages_to_keep: Option<Vec<Value>>,
+    /// 压缩后上下文占用的重算值（[`util::estimate_request_tokens`] 作用在压缩后消息上）。
+    /// `compactEnd.postCompactTokenCount` 与 `meta.json` 的 `totalContextTokens` 写回
+    /// 都取这个值——压缩清空了保留区 usage，没有真实锚点，估算是此刻能给出的最好
+    /// 事实，下一轮真实 usage 落盘后照常覆盖（specs/defects/compact-context-facts-stale-across-views）。
+    pub post_compact_tokens: u64,
 }
 
 /// 边界标记之后的消息（`getMessagesAfterCompactBoundary`）
@@ -775,7 +780,10 @@ fn compact_conversation_inner(
         return None;
     }
 
-    let (summary, summary_output_tokens) =
+    // 摘要生成那次调用的 output tokens 不再外发：`compactEnd.postCompactTokenCount`
+    // 的载荷语义是「压缩后上下文占用」（压缩完成后按压缩产物重算，见下方
+    // `post_compact_tokens`），摘要自身的 output 只是中间量。
+    let (summary, _summary_output_tokens) =
         generate_summary(provider, &messages_to_summarize, custom_instructions, session_id);
 
     // 提取用户输入历史，追加为摘要消息的一个章节。
@@ -840,23 +848,13 @@ fn compact_conversation_inner(
         "compactUserInputHistory": selected_user_input_history,
     });
 
-    // 通知 UI：压缩完成（带上摘要生成的真实 output tokens）
-    core.emit(json!({
-        "type": "compactEnd",
-        "sessionId": session_id,
-        "result": { "status": "complete", "postCompactTokenCount": summary_output_tokens },
-    }));
-
-    // 归档：被摘要掉的消息 + 新摘要（保留区不进归档，展开时与归档一起重放）
-    if let Ok(project) = core.project_of(session_id) {
-        let mut archive = messages_to_summarize.clone();
-        archive.push(summary_message.clone());
-        if let Err(error) = history::save_compact_archive(session_id, &project, &archive) {
-            eprintln!("[core] compact: failed to save compact archive: {error}");
-        }
-    }
-
-    Some(CompactionResult {
+    // 压缩后上下文占用：与运行时估算同一套口径重算（`build_llm_messages_from` 转换后
+    // 交给 `estimate_request_tokens`；system prompt / tools 不在压缩产物里，按消息体
+    // 估算）。清空保留区 usage（`clear_message_usage`）后没有真实锚点可用，不重算的话
+    // `totalContextTokens` 停留在压缩前的旧值——用量条从 meta 恢复的视图拿旧值，core
+    // 自己的估算兜底（与 meta 取 max）也拿旧值，手动压缩后的下一轮会被误判为仍超阈值
+    // 而立即再压一次（specs/defects/compact-context-facts-stale-across-views）。
+    let mut result = CompactionResult {
         boundary_marker,
         summary_messages: vec![summary_message],
         messages_to_keep: if recent_messages.is_empty() {
@@ -864,7 +862,33 @@ fn compact_conversation_inner(
         } else {
             Some(recent_messages)
         },
-    })
+        post_compact_tokens: 0,
+    };
+    result.post_compact_tokens = util::estimate_request_tokens(
+        Some(&Value::Array(crate::engine::build_llm_messages_from(
+            &build_post_compact_messages(&result),
+        ))),
+        "",
+        None,
+    );
+
+    // 通知 UI：压缩完成（带上压缩后上下文占用的重算值，webview / TUI 的用量显示据此刷新）
+    core.emit(json!({
+        "type": "compactEnd",
+        "sessionId": session_id,
+        "result": { "status": "complete", "postCompactTokenCount": result.post_compact_tokens },
+    }));
+
+    // 归档：被摘要掉的消息 + 新摘要（保留区不进归档，展开时与归档一起重放）
+    if let Ok(project) = core.project_of(session_id) {
+        let mut archive = messages_to_summarize.clone();
+        archive.push(result.summary_messages[0].clone());
+        if let Err(error) = history::save_compact_archive(session_id, &project, &archive) {
+            eprintln!("[core] compact: failed to save compact archive: {error}");
+        }
+    }
+
+    Some(result)
 }
 
 /// 调用 LLM 生成摘要（`generateSummary`）；失败时返回空摘要 + 0 tokens。
@@ -968,13 +992,18 @@ pub fn compact_and_apply_messages(
             .map(str::to_string);
     }
 
-    // meta.json 的压缩状态
+    // meta.json 的压缩状态 + 压缩后上下文占用写回：
+    // `totalContextTokens` 的写入方仍是 core（一个字段一个写入点），压缩是 usage 落盘
+    // 之外的第二个写入时机——不写回的话切回视图的用量条（webview / TUI 的
+    // `conversationLoaded` 恢复路径）与 core 自己的估算兜底都拿压缩前的旧值
+    // （specs/defects/compact-context-facts-stale-across-views）。
     if let Err(error) = history::update_context(
         session_id,
         project,
         &[
             json!({ "key": "isCompacted", "value": true }),
             json!({ "key": "isExpanded", "value": false }),
+            json!({ "key": "totalContextTokens", "value": result.post_compact_tokens }),
         ],
     ) {
         eprintln!("[core] compact: failed to update compact context: {error}");

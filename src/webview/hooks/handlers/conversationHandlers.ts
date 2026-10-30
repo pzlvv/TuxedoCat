@@ -471,7 +471,10 @@ export function handleConversationMessagesReplaced(
           }
           scrollToBottomBeforeRender();
           props.setMessages(msg.messages.map(toUiMessage));
-          props.setContextLength(0);
+          // 用量不在这里动：压缩场景 compressProgress(complete) 已把用量设为 core
+          // 重算的 postCompactTokenCount（先于本消息到达），展开归档场景 LLM 上下文
+          // 未变、用量本就不该变——归零会把刚刷新的值抹掉（US-9 验收 2，
+          // specs/defects/compact-context-facts-stale-across-views）。
 }
 
 export function handleConversationQueuedMessage(

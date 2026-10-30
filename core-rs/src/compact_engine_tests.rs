@@ -163,6 +163,50 @@ fn manual_compact_rewrites_the_conversation_and_archives_the_rest() {
     crate::compact::reset_for_test();
 }
 
+/// 压缩后上下文占用事实被产出（specs/defects/compact-context-facts-stale-across-views）：
+/// `compactEnd.postCompactTokenCount` 是压缩产物按运行时同款口径的重算值（不再取摘要
+/// 生成调用的 output tokens），`meta.json` 的 `context.totalContextTokens` 同步写回——
+/// 不写回的话切回视图的用量条与 core 自己的估算兜底都拿压缩前旧值。
+#[test]
+fn manual_compact_writes_post_compact_context_tokens() {
+    let sandbox = Sandbox::new("engine-compact-tokens");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    // 造一个压缩前的大占用（模拟逼近阈值的真实用量），压缩后不得停留该值
+    crate::history::update_context(
+        "s1",
+        &project,
+        &[json!({ "key": "totalContextTokens", "value": 999_999 })],
+    )
+    .unwrap();
+
+    harness.core.request_compact("s1");
+
+    let ends = harness.sink.events_of("compactEnd");
+    assert_eq!(ends.len(), 1);
+    assert_eq!(ends[0]["result"]["status"], "complete");
+    let post_compact = ends[0]["result"]["postCompactTokenCount"]
+        .as_u64()
+        .expect("postCompactTokenCount is a number");
+    assert!(post_compact > 0, "压缩产物估算应大于 0");
+    assert_ne!(post_compact, 999_999, "不得停留在压缩前旧值");
+
+    let metadata = crate::history::load_metadata("s1", &project).unwrap();
+    assert_eq!(
+        metadata["context"]["totalContextTokens"],
+        json!(post_compact),
+        "meta.json 写回与 compactEnd 同一值"
+    );
+
+    crate::compact::reset_for_test();
+}
+
 /// 多次压缩：摘要里的用户输入历史头部来自上一次持久化的历史，
 /// 会话最初的用户输入不会因为再次压缩而丢失（见 `docs/features/compaction.md`）。
 #[test]

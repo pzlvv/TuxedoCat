@@ -6381,8 +6381,9 @@ fn build_llm_messages(state: &Arc<Mutex<SessionState>>) -> Vec<Value> {
 }
 
 /// 同 [`build_llm_messages`]，但直接吃调用方已持有的消息切片：
-/// 估算路径（`estimate_next_context_tokens`）只需转换锚点之后的尾部增量。
-fn build_llm_messages_from(messages: &[Value]) -> Vec<Value> {
+/// 估算路径（`estimate_next_context_tokens`）只需转换锚点之后的尾部增量；
+/// 压缩完成后的占用重算（`compact.rs`）与估算共用同一套消息转换口径。
+pub(crate) fn build_llm_messages_from(messages: &[Value]) -> Vec<Value> {
     let mut raw = build_raw_api_messages(messages);
     ensure_thinking_blocks(&mut raw);
     merge_consecutive_same_role(raw)

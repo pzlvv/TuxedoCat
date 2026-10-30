@@ -323,6 +323,23 @@ test('US-9 待压缩时用量文本显示准备压缩且不可重复点击', asy
   await expect(page.locator('[title="点击压缩"]')).toContainText('(K)', { timeout: 10_000 });
 });
 
+test('US-9 压缩完成后用量条按新值刷新，不被随后的整批替换归零', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation', 15_000);
+  const sessionId = started.sessionId as string;
+  await expect(page.locator('[title="点击压缩"] button')).toBeVisible({ timeout: 10_000 });
+
+  // wire 顺序与真实压缩一致（compaction.md 第 3.1 节）：compactEnd(complete，core 重算的
+  // 压缩后占用) 先到，messagesReplaced（整批替换消息）后到。
+  // 30720/1024 = 30K，分母 128000/1024 = 125K。
+  // 回归 specs/defects/compact-context-facts-stale-across-views：修复前 messagesReplaced
+  // 会把用量归零，直到下一轮真实 usage 才恢复（US-9 验收 2 被推翻）。
+  await host.send({ type: 'compressProgress', sessionId, status: 'complete', postCompactTokenCount: 30_720 });
+  await host.send({ type: 'messagesReplaced', sessionId, messages: [{ role: 'user', content: '压缩后的历史' }] });
+  await expect(page.getByText('压缩后的历史')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[title="点击压缩"]')).toContainText('30/125', { timeout: 10_000 });
+});
+
 test('US-29 MCP 分组逐服务器开关，切换上报 setMcpEnabled 并刷新状态', async () => {
   const { page, host } = handle;
   await host.setMcpState({ servers: ['fs-tools', 'git-tools'], sessionEnabled: ['fs-tools'] });

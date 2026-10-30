@@ -191,6 +191,7 @@ mod parity_tests {
                 messages_to_keep: source["messagesToKeep"]
                     .as_array()
                     .cloned(),
+                post_compact_tokens: 0,
             };
             assert_eq!(
                 Value::Array(build_post_compact_messages(&result)),
