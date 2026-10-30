@@ -56,6 +56,11 @@ last_reviewed: 2026-10-31
   「JBCefApp has already been initialized!」）——http://127.0.0.1 无时序问题。
 - 下行走 `executeJavaScript(window.postMessage(<json>,'*'))`（对齐 electron preload 的
   window message 转发语义）；上行 query handler 进宿主路由。
+- 帧呈现上限：JCEF（remote 与进程内两种模式，2026.2 实测）的 rAF 帧间隔稳定锁定在
+  33.3ms（30fps）——GPU 正常（D3D11）、前台、与 DOM 体量无关，是 JBR 层的帧呈现上限
+  而非页面渲染问题（VS Code / Electron 宿主为独立进程合成器，无此上限）。手动诊断：
+  `PYCHARM_PERF=1 npm run test:e2e:pycharm -- --grep PERF`（`perfProbe.spec.ts`，输出
+  GL 渲染器 / DPR / 空闲与滚动的 rAF 帧间隔分布到 `test-results/pycharm-perf/`）。
 - 光标补偿：JCEF-in-IDE 的「CEF OnCursorChange → AWT 光标」链路有断点，页面 CSS 的
   `cursor: pointer` 落不到系统光标（VS Code / Electron 宿主自实现了转发，无此问题）。
   bootstrap 注入 pointermove 探测——读悬停目标的 computed cursor、仅在值变化时经桥发

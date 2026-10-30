@@ -96,7 +96,7 @@ function killProcessTree(pid: number): Promise<void> {
 }
 
 /** 找到 IDE 主进程 pid（按命令行里的沙箱路径过滤，避免误伤用户自己的 IDE） */
-function findIdePids(sandboxDir: string, ideName: string): Promise<number[]> {
+export function findIdePids(sandboxDir: string, ideName: string): Promise<number[]> {
   const command = process.platform === 'win32'
     ? `Get-CimInstance Win32_Process -Filter "Name='${ideName}'" | Where-Object { $_.CommandLine -like '*${sandboxDir.replace(/'/g, "''")}*' } | Select-Object -ExpandProperty ProcessId`
     : `ps -eo pid,command | grep -F '${sandboxDir}' | grep -F '${ideName}' | grep -v grep | awk '{print $1}'`;
@@ -172,15 +172,24 @@ export async function launchPycharmIde(
     `-Didea.log.path=${logDir.replace(/\\/g, '/')}`,
     `-Didea.trust.all.projects=true`,
     `-Djb.consents.confirmation.enabled=false`,
+    // 实验开关：禁用 remote CEF（out-of-process server）走进程内 JCEF
+    ...(process.env.PYCHARM_JCEF_NOREMOTE === '1' ? ['-Djcef.remote.enabled=false'] : []),
   ].join('\r\n');
   const vmoptionsPath = path.join(sandboxDir, 'e2e.vmoptions');
   fs.writeFileSync(vmoptionsPath, vmoptions, 'utf8');
   const optionsDir = path.join(configDir, 'options');
   fs.mkdirSync(optionsDir, { recursive: true });
+  const registryEntries: Array<[string, string]> = [
+    ['ide.browser.jcef.debug.port', String(cdpPort)],
+    // 实验：remote（out-of-process）CEF 的渲染路径疑似有 30fps 上限，可切回进程内对比
+    ...(process.env.PYCHARM_JCEF_INPROCESS === '1'
+      ? [['ide.browser.jcef.out-of-process.enabled', 'false'] as [string, string]]
+      : []),
+  ];
   fs.writeFileSync(path.join(optionsDir, 'ide.general.xml'), [
     '<application>',
     '  <component name="Registry">',
-    `    <entry key="ide.browser.jcef.debug.port" value="${cdpPort}" />`,
+    ...registryEntries.map(([key, value]) => `    <entry key="${key}" value="${value}" />`),
     '  </component>',
     '</application>',
   ].join('\n'));
@@ -226,55 +235,52 @@ export async function launchPycharmIde(
     await fs.promises.rm(sandboxDir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   };
-  let browser: Browser;
-  try {
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`, { timeout: 60_000 });
-  } catch (error) {
-    return failFast(error as Error);
-  }
-  const context = browser.contexts()[0];
-  if (!context) throw new Error('CDP 已连接但没有 context');
-
-  // 面板页：内嵌 HttpServer 伺服的 http://127.0.0.1:<port>/index.html（端口随面板随机，
-  // 以 URL 结尾匹配；PyCharm 自身的 JCEF 页面不会叫 index.html）
+  // 连接 + 附加存在竞态：connectOverCDP 若发生在面板页创建之前，该目标可能漏挂
+  // （context.pages() 恒空而 /json/list 里有页面，实测）。失败即断开重连——每次连接
+  // 都会重新列举 targets，直到面板页出现。
+  const consoleMessages: string[] = [];
+  let browser: Browser | undefined;
+  let panelPage: Page | undefined;
   const logTail = (): string => {
     const logPath = path.join(logDir, 'idea.log');
     return fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').slice(-1500) : '(no idea.log)';
   };
-  const findPanel = async (): Promise<Page> => {
-    const deadlineInner = Date.now() + 60_000;
-    while (Date.now() < deadlineInner) {
-      for (const page of context.pages()) {
-        if (page.url().endsWith('/index.html')) return page;
+  const findPanelDeadline = Date.now() + 180_000;
+  while (Date.now() < findPanelDeadline && !panelPage) {
+    try {
+      browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`, { timeout: 60_000 });
+      const context = browser.contexts()[0];
+      if (!context) throw new Error('CDP 已连接但没有 context');
+      context.on('page', (page) => {
+        page.on('console', (msg) => consoleMessages.push(`[${msg.type()}] ${msg.text().slice(0, 500)}`));
+        page.on('pageerror', (err) => consoleMessages.push(`[pageerror] ${err.message.slice(0, 500)}`));
+        page.on('requestfailed', (req) => consoleMessages.push(`[requestfailed] ${req.url()} ${req.failure()?.errorText}`));
+      });
+      const deadlineInner = Date.now() + 15_000;
+      while (Date.now() < deadlineInner && !panelPage) {
+        for (const page of context.pages()) {
+          if (page.url().endsWith('/index.html')) { panelPage = page; break; }
+        }
+        if (!panelPage) await new Promise((r) => setTimeout(r, 1000));
       }
-      await new Promise((r) => setTimeout(r, 1000));
+    } catch {
+      // 连接失败（JCEF 未就绪等）：走重连循环
     }
-    // 失败取证：targets + idea.log 尾部；沙箱保留（keepSandboxOnClose）供人工排查
+    if (!panelPage) {
+      await browser?.close().catch(() => undefined);
+      browser = undefined;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  if (!browser || !panelPage) {
     options.keepSandboxOnClose = true;
     let rawTargets = '';
     await httpGetOk(cdpPort, '/json/list')?.then((body) => { rawTargets = body ?? ''; });
     return failFast(new Error(
-      `未找到面板页（*/index.html）。targets=${context.pages().map((p) => p.url()).join(', ') || '(空)'}
-`
-      + `raw=/json/list: ${rawTargets || '(空)'}
-idea.log 尾部：
-${logTail()}`,
+      '未找到面板页（*/index.html）。raw=/json/list: ' + (rawTargets || '(空)')
+      + '\nidea.log 尾部：\n' + logTail(),
     ));
-  };
-  let panelPage: Page;
-  try {
-    panelPage = await findPanel();
-  } catch (error) {
-    await browser.close().catch(() => undefined);
-    return failFast(error as Error);
   }
-  const consoleMessages: string[] = [];
-  // 提前挂监听（module 脚本的早期报错发生在 findPanel 命中之后也可能错过）
-  context.on('page', (page) => {
-    page.on('console', (msg) => consoleMessages.push(`[${msg.type()}] ${msg.text().slice(0, 500)}`));
-    page.on('pageerror', (err) => consoleMessages.push(`[pageerror] ${err.message.slice(0, 500)}`));
-    page.on('requestfailed', (req) => consoleMessages.push(`[requestfailed] ${req.url()} ${req.failure()?.errorText}`));
-  });
   const debugDump = async (dir: string): Promise<void> => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'panel.html'), await panelPage.content());
@@ -307,7 +313,7 @@ ${logTail()}`,
     }
   };
 
-  return { browser, context, panelPage, consoleMessages, debugDump, sandboxDir, workspaceDir, ideaLogPath, close };
+  return { browser: browser!, context: browser!.contexts()[0]!, panelPage, consoleMessages, debugDump, sandboxDir, workspaceDir, ideaLogPath, close };
 }
 
 async function closeSandbox(sandboxDir: string, ideName: string, keep: boolean): Promise<void> {
