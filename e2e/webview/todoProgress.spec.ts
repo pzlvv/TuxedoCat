@@ -21,13 +21,13 @@ test.afterEach(async () => {
 });
 
 const TODO_FOUR = [
-  { content: '改代码', status: 'completed', activeForm: '改代码中' },
-  { content: '跑测试', status: 'in_progress', activeForm: '跑测试中' },
-  { content: '写文档', status: 'pending', activeForm: '写文档中' },
-  { content: '收敛', status: 'pending', activeForm: '收敛中' },
+  { content: '改代码', status: 'completed' },
+  { content: '跑测试', status: 'in_progress' },
+  { content: '写文档', status: 'pending' },
+  { content: '收敛', status: 'pending' },
 ];
 
-const TODO_ONE = [{ content: '只剩一件', status: 'pending', activeForm: '做这一件' }];
+const TODO_ONE = [{ content: '只剩一件', status: 'pending' }];
 
 function seedConversations(): Promise<void> {
   return handle.host.setConversations([
@@ -111,10 +111,10 @@ test('US-59 收到 todosChanged 推送即更新，不需要重新加载对话', 
     type: 'sessionTodos',
     sessionId: 'sess-todo-a',
     todos: [
-      { content: '改代码', status: 'completed', activeForm: '改代码中' },
-      { content: '跑测试', status: 'completed', activeForm: '跑测试中' },
-      { content: '写文档', status: 'pending', activeForm: '写文档中' },
-      { content: '收敛', status: 'pending', activeForm: '收敛中' },
+      { content: '改代码', status: 'completed' },
+      { content: '跑测试', status: 'completed' },
+      { content: '写文档', status: 'pending' },
+      { content: '收敛', status: 'pending' },
     ],
   });
 
@@ -130,11 +130,11 @@ test('US-59 悬停满 100ms 才显示浮层', async () => {
   await openConversation('带清单的对话');
   await expect(progressButton()).toHaveText('任务进度: 1/4');
 
-  // 悬停满 100ms → 浮层出现，条目与清单一致（进行中条目附 activeForm）
+  // 悬停满 100ms → 浮层出现，条目与清单一致 
   await progressButton().hover();
   await expect(progressTip()).toBeVisible();
   await expect(progressTip().getByText('改代码')).toBeVisible();
-  await expect(progressTip().getByText('跑测试中')).toBeVisible();
+  await expect(progressTip().getByText('跑测试')).toBeVisible();
 
   // 移出立即隐藏
   await page.mouse.move(5, 5);
@@ -146,7 +146,7 @@ test('US-59 浮层宽度随内容自适应，最宽不超过输入区宽度', as
   const longContent = '这是一个很长的任务条目，用来撑开浮层宽度'.repeat(4);
   await seedConversations();
   await host.setSessionTodos('sess-todo-a', [
-    { content: longContent, status: 'pending', activeForm: '' },
+    { content: longContent, status: 'pending' },
   ]);
   await openConversation('带清单的对话');
   await expect(progressButton()).toHaveText('任务进度: 0/1');
@@ -164,7 +164,7 @@ test('US-59 浮层宽度随内容自适应，最宽不超过输入区宽度', as
   await host.send({
     type: 'sessionTodos',
     sessionId: 'sess-todo-a',
-    todos: [{ content: '短', status: 'pending', activeForm: '' }],
+    todos: [{ content: '短', status: 'pending' }],
   });
   await expect(progressTip().getByText('短')).toBeVisible();
   const shortTipBox = await progressTip().boundingBox();

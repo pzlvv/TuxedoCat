@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-24
+last_reviewed: 2026-10-30
 ---
 
 # 规格：Todo 清单与任务进度
@@ -35,7 +35,7 @@ priority / cancelled / 依赖），也不含常驻侧栏面板。
   - **AC-11**（FR-003）：GIVEN 浮层已显示 WHEN 点击浮层内任意位置 THEN 不产生任何上行消息，固定状态不变。
   - **AC-12**（FR-003）：GIVEN 已固定 WHEN 切换到另一个对话 THEN 固定状态复位为未固定。
 - 场景 4：主题
-  - **AC-13**（FR-004）：GIVEN dark 与 light 两种主题 WHEN 渲染按钮与浮层 THEN 文字、背景、边框、状态标记都取自主题色，两种主题下都可读，且不出现硬编码色值。
+  - **AC-13**（FR-004）：GIVEN dark 与 light 两种主题 WHEN 渲染按钮与浮层 THEN 文字、背景、边框取自主题色，状态标记与消息流工具卡片同一配色，两种主题下都可读。
 - 场景 5：Explorer 的 Todo
   - **AC-14**（FR-005）：GIVEN `agentRole="Explorer"` 的子代理会话 WHEN 调用 `TodoWrite` THEN 调用成功，写入该子代理自己的会话 Todo 表并可从其会话文件重建。
   - **AC-15**（FR-005）：GIVEN 打开 Explorer 子代理会话视图 WHEN 渲染输入区 THEN 进度按钮按该子代理会话的 Todo 显示，不受父对话影响。
@@ -72,14 +72,17 @@ webview 在会话加载后索取一次，之后靠推送更新；索取应答与
 指针停留满 100ms 显示浮层，不足 100ms 移出则浮层不出现；未固定时移出立即隐藏。点击按钮固定
 浮层（常驻），再次点击取消固定并回到悬停规则。固定态是 UI 本地状态，切换对话后复位。
 
-浮层逐条一行（状态标记 + `content`，`in_progress` 条目附 `activeForm`），只读：点击不产生
-任何上行消息，也不改变固定状态；除条目本身外不显示其它文案。浮层右边缘与输入区对齐，宽度随
-条目内容自适应，最宽不超过输入区宽度。
+浮层逐条一行（状态标记 + `content`），条目字号、状态标记配色与消息流里的 `TodoWrite`
+工具卡片一致（状态标记色共用 `src/webview/tools/TodoWrite.tsx` 的 `TODO_STATUS_COLOR` 一份
+常量）；`in_progress` 条目文字颜色与其它条目一致并加粗，`completed` 条目划线置灰。浮层只读：
+点击不产生任何上行消息，也不改变固定状态；除条目本身外不显示其它文案。浮层右边缘与输入区
+对齐，宽度随条目内容自适应，最宽不超过输入区宽度。
 
 ### FR-004：按钮与浮层的配色
 
-按钮文字、浮层背景 / 边框 / 文字与状态标记全部取自既有主题色（dark / light 两套），不新增
-硬编码色值；固定态与默认态在按钮本身上有可见区分（底色变化），不靠新增文字表达。
+按钮文字、浮层背景 / 边框 / 文字取自既有主题色（dark / light 两套）；状态标记配色是
+`src/webview/tools/TodoWrite.tsx` 的 `TODO_STATUS_COLOR` 一份常量，工具卡片与浮层共用，两个
+渲染面颜色一致。固定态与默认态在按钮本身上有可见区分（底色变化），不靠新增文字表达。
 
 ### FR-005：Explorer 角色加入 TodoWrite
 
@@ -150,5 +153,5 @@ TodoWrite ──成功──▶ Core 的 sessionId → [TodoEntry] 表（唯一�
 | FR-001 | `core-rs/src/tools.rs`（`TodoEntry` / `TODOS` / `ensure_session_todos` / `rebuild_todos_from_history`）、`core-rs/src/engine.rs`（会话关闭清理） | `core-rs/src/tools_tests.rs`（`todo_rebuild_*`）、`core-rs/src/compact_engine_tests.rs`（`todo_table_survives_*`、`todo_rebuild_after_compaction_*`） | 自动 |
 | FR-002 | `src/shared/types.ts`（`TodoEntry`）、`src/shared/AssistantEventBus.ts`、`core-rs/src/main.rs`（`dispatch_ui_request`）、`core-rs/src/engine.rs`（`emit_tool_outcome`）、`src/host/coreFacts.ts`、`src/host/ui/webviewMessageHandler.ts`、`src/host/WebViewUI.ts`、`src/host/todoProgress.ts`、`src/webview/App.tsx`、`src/webview/InputArea.tsx` | `core-rs/src/engine_tests.rs`（`todo_write_emits_todos_changed`）、`core-rs/src/main_tests.rs`（`ui_request_answers_session_todos`）、`src/test/todoProgress.test.ts`、`e2e/webview/todoProgress.spec.ts` | 自动 |
 | FR-003 | `src/webview/InputArea.tsx`（悬停计时 / 固定状态 / 浮层） | `e2e/webview/todoProgress.spec.ts`（100ms 阈值、固定与取消、切换对话复位） | 自动 |
-| FR-004 | `src/webview/colors.ts` 既有主题色 + `InputArea.tsx` 取色 | `e2e/webview/todoProgress.spec.ts`（dark / light 两轮渲染） | 自动 |
+| FR-004 | `src/webview/colors.ts` 既有主题色 + `src/webview/tools/TodoWrite.tsx`（`TODO_STATUS_COLOR`，卡片与浮层共用）+ `InputArea.tsx` 取色 | `e2e/webview/todoProgress.spec.ts`（dark / light 两轮渲染） | 自动 |
 | FR-005 | `core-rs/src/tools.rs`（`sub_agent_role_tools`）、`core-rs/src/prompt.rs`（角色说明） | `core-rs/src/tools_tests.rs`（`sub_agent_role_registry_lists_roles_and_allowlists`）、`core-rs/src/prompt_tests.rs`（`explorer_role_description_matches_allowlist`）、`e2e/electron/subagentExplorer.spec.ts` | 自动 |

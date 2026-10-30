@@ -7,19 +7,22 @@ import { t } from '../i18n';
 interface TodoItem {
   content: string;
   status: 'pending' | 'in_progress' | 'completed';
-  activeForm: string;
 }
+
+/**
+ * 状态标记配色（`docs/features/todo-list.md` FR-004）：唯一一份定义，消息流工具卡片与
+ * 输入区任务进度浮层都从这里取色，保证两个渲染面颜色一致。
+ */
+export const TODO_STATUS_COLOR = {
+  pending: '',
+  in_progress: '#6366f1',
+  completed: '#22c55e',
+} as const;
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
   pending: <Icon name="square" size={12} />,
   in_progress: <Icon name="circle-dot" size={12} />,
   completed: <Icon name="check-square" size={12} />,
-};
-
-const STATUS_COLOR = {
-  pending: { dot: '', text: '' },
-  in_progress: { dot: '#6366f1', text: '#6366f1' },
-  completed: { dot: '#22c55e', text: '#22c55e' },
 };
 
 export const TodoWrite: React.FC<ToolCallProps> = ({ args, colors, status }) => {
@@ -105,36 +108,27 @@ export const TodoWrite: React.FC<ToolCallProps> = ({ args, colors, status }) => 
               className="flex-shrink-0 mt-0.5"
               style={{
                 color: todo.status === 'in_progress'
-                  ? STATUS_COLOR.in_progress.dot
+                  ? TODO_STATUS_COLOR.in_progress
                   : todo.status === 'completed'
-                    ? STATUS_COLOR.completed.dot
+                    ? TODO_STATUS_COLOR.completed
                     : colors.textSystem,
               }}
             >
               {STATUS_ICON[todo.status] || <Icon name="circle" size={12} />}
             </span>
-            
+
             {/* 任务内容 */}
             <div className="flex-1 min-w-0">
               <span
                 style={{
                   color: todo.status === 'completed' ? colors.textSystem : colors.textPrimary,
                   textDecoration: todo.status === 'completed' ? 'line-through' : 'none',
+                  fontWeight: todo.status === 'in_progress' ? 700 : undefined,
                   wordBreak: 'break-word',
                 }}
               >
                 {todo.content}
               </span>
-              
-              {/* 显示 activeForm 用于 in_progress 的任务 */}
-              {todo.status === 'in_progress' && todo.activeForm && (
-                <span
-                  className="block ui-fs-11 mt-0.5 italic"
-                  style={{ color: STATUS_COLOR.in_progress.text }}
-                >
-                  {todo.activeForm}
-                </span>
-              )}
             </div>
           </div>
         ))}

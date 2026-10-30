@@ -549,7 +549,7 @@ pub fn definitions() -> Vec<Value> {
             "name": "TodoWrite",
             "description": "Create and manage a structured task list to track progress and organize complex work.",
             // todos 只声明为 array（不展开数组元素）；
-            // 元素字段（content / activeForm / status）由运行期校验，见 run_todo_write。
+            // 元素字段（content / status）由运行期校验，见 run_todo_write。
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -4278,15 +4278,12 @@ fn run_glob(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
 /// 会话 Todo 条目（`TodoWrite` 的元素，`docs/features/todo-list.md` FR-001）。
 ///
-/// 字段名与 `src/shared/types.ts` 的 `TodoEntry` 逐字对应（`activeForm` 是 JSON 侧写法）；
-/// 三个字段全必选，缺省值由 `run_todo_write` 的校验与 `rebuild_todos_from_history`
-/// 的规范化各自补齐。
+/// 字段名与 `src/shared/types.ts` 的 `TodoEntry` 逐字对应；两个字段全必选，缺省值由
+/// `run_todo_write` 的校验与 `rebuild_todos_from_history` 的规范化各自补齐。
 #[derive(Clone, serde::Serialize)]
 pub struct TodoEntry {
     pub content: String,
     pub status: String,
-    #[serde(rename = "activeForm")]
-    pub active_form: String,
 }
 
 /// 会话 Todo 表：`sessionId → 清单`。
@@ -4352,7 +4349,7 @@ pub fn ensure_session_todos(session_id: &str) -> Value {
 /// 把 `todos` 入参规范化成清单条目；非数组 / 非对象条目按「无效」处理。
 ///
 /// 校验失败的入参不写表（`run_todo_write` 先校验再调本函数），所以这里的宽松口径只服务
-/// 重建路径——会话文件里存的是模型原始入参，可能缺 `status` / `activeForm`。
+/// 重建路径——会话文件里存的是模型原始入参，可能缺 `status`。
 fn normalize_todos(value: &Value) -> Option<Vec<TodoEntry>> {
     let items = value.as_array()?;
     let mut entries = Vec::with_capacity(items.len());
@@ -4363,14 +4360,9 @@ fn normalize_todos(value: &Value) -> Option<Vec<TodoEntry>> {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("pending");
-        let active_form = object
-            .get("activeForm")
-            .and_then(Value::as_str)
-            .unwrap_or("");
         entries.push(TodoEntry {
             content: content.to_string(),
             status: status.to_string(),
-            active_form: active_form.to_string(),
         });
     }
     Some(entries)
@@ -4483,16 +4475,6 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
         if !content_ok {
             return ToolOutcome::Error(format!(
                 "InputValidationError: todos[{index}].content: Content cannot be empty"
-            ));
-        }
-        let active_ok = item
-            .get("activeForm")
-            .and_then(Value::as_str)
-            .map(|value| !value.is_empty())
-            .unwrap_or(false);
-        if !active_ok {
-            return ToolOutcome::Error(format!(
-                "InputValidationError: todos[{index}].activeForm: Active form cannot be empty"
             ));
         }
         if let Some(status) = item.get("status") {

@@ -2060,10 +2060,10 @@ fn todo_write_renders_the_checklist() {
     let outcome = execute(
         "TodoWrite",
         &json!({ "todos": [
-            { "content": "已完成", "activeForm": "完成中", "status": "completed" },
-            { "content": "进行中", "activeForm": "进行中", "status": "in_progress" },
-            { "content": "待办", "activeForm": "待办中", "status": "pending" },
-            { "content": "未知状态", "activeForm": "处理中" }
+            { "content": "已完成", "status": "completed" },
+            { "content": "进行中", "status": "in_progress" },
+            { "content": "待办", "status": "pending" },
+            { "content": "未知状态" }
         ] }),
         &context(&sandbox),
     );
@@ -2082,19 +2082,19 @@ fn todo_write_validates_items() {
     let ctx = context(&sandbox);
     let empty_content = execute(
         "TodoWrite",
-        &json!({ "todos": [{ "content": "", "activeForm": "x" }] }),
+        &json!({ "todos": [{ "content": "" }] }),
         &ctx,
     );
     assert!(empty_content.is_error());
     assert!(text(&empty_content).contains("Content cannot be empty"));
 
-    let missing_active = execute(
+    // 缺 status 的条目合法：运行期补 'pending'（与 tool_input 校验的默认值同口径）
+    let missing_status = execute(
         "TodoWrite",
         &json!({ "todos": [{ "content": "a" }] }),
         &ctx,
     );
-    assert!(missing_active.is_error());
-    assert!(text(&missing_active).contains("Active form cannot be empty"));
+    assert!(!missing_status.is_error());
 }
 
 #[test]
@@ -2136,8 +2136,8 @@ fn todo_write_updates_the_session_table() {
     let outcome = execute(
         "TodoWrite",
         &json!({ "todos": [
-            { "content": "已完成", "activeForm": "完成中", "status": "completed" },
-            { "content": "进行中", "activeForm": "进行中", "status": "in_progress" }
+            { "content": "已完成", "status": "completed" },
+            { "content": "进行中", "status": "in_progress" }
         ] }),
         &ctx,
     );
@@ -2147,8 +2147,8 @@ fn todo_write_updates_the_session_table() {
     assert_eq!(
         stored,
         json!([
-            { "content": "已完成", "status": "completed", "activeForm": "完成中" },
-            { "content": "进行中", "status": "in_progress", "activeForm": "进行中" }
+            { "content": "已完成", "status": "completed" },
+            { "content": "进行中", "status": "in_progress" }
         ])
     );
     // 同一份清单随工具结果带回给 engine（推送 `todosChanged` 用）
@@ -2173,7 +2173,7 @@ fn todo_write_empty_list_clears_the_table() {
     };
     execute(
         "TodoWrite",
-        &json!({ "todos": [{ "content": "a", "activeForm": "b", "status": "pending" }] }),
+        &json!({ "todos": [{ "content": "a", "status": "pending" }] }),
         &ctx,
     );
     execute("TodoWrite", &json!({ "todos": [] }), &ctx);
@@ -2202,19 +2202,19 @@ fn todo_write_failure_keeps_the_previous_table() {
     };
     execute(
         "TodoWrite",
-        &json!({ "todos": [{ "content": "保留", "activeForm": "保留中", "status": "pending" }] }),
+        &json!({ "todos": [{ "content": "保留", "status": "pending" }] }),
         &ctx,
     );
     let failed = execute(
         "TodoWrite",
-        &json!({ "todos": [{ "content": "", "activeForm": "x" }] }),
+        &json!({ "todos": [{ "content": "" }] }),
         &ctx,
     );
     assert!(failed.is_error());
     // 失败不写表：清单仍是上一次成功调用的内容，也不推送 todos
     assert_eq!(
         crate::tools::session_todos("session-fail"),
-        Some(json!([{ "content": "保留", "status": "pending", "activeForm": "保留中" }]))
+        Some(json!([{ "content": "保留", "status": "pending" }]))
     );
     assert!(failed.todos().is_none());
     crate::tools::clear_session_todos("session-fail");
@@ -2277,13 +2277,13 @@ fn todo_rebuild_picks_last_successful_write() {
         &sandbox,
         "rb-last",
         vec![
-            todo_tool_use("t1", json!([{ "content": "旧清单", "activeForm": "旧", "status": "pending" }])),
+            todo_tool_use("t1", json!([{ "content": "旧清单", "status": "pending" }])),
             todo_tool_result("t1", 0),
             todo_tool_use(
                 "t2",
                 json!([
-                    { "content": "新清单 A", "activeForm": "做 A", "status": "completed" },
-                    { "content": "新清单 B", "activeForm": "做 B", "status": "in_progress" }
+                    { "content": "新清单 A", "status": "completed" },
+                    { "content": "新清单 B", "status": "in_progress" }
                 ]),
             ),
             todo_tool_result("t2", 0),
@@ -2293,8 +2293,8 @@ fn todo_rebuild_picks_last_successful_write() {
     assert_eq!(
         rebuilt,
         json!([
-            { "content": "新清单 A", "status": "completed", "activeForm": "做 A" },
-            { "content": "新清单 B", "status": "in_progress", "activeForm": "做 B" }
+            { "content": "新清单 A", "status": "completed" },
+            { "content": "新清单 B", "status": "in_progress" }
         ])
     );
     crate::tools::clear_session_todos("rb-last");
@@ -2307,15 +2307,15 @@ fn todo_rebuild_skips_failed_call_and_keeps_earlier_success() {
         &sandbox,
         "rb-fail",
         vec![
-            todo_tool_use("t1", json!([{ "content": "成功的那次", "activeForm": "做", "status": "pending" }])),
+            todo_tool_use("t1", json!([{ "content": "成功的那次", "status": "pending" }])),
             todo_tool_result("t1", 0),
-            todo_tool_use("t2", json!([{ "content": "失败的那次", "activeForm": "做", "status": "pending" }])),
+            todo_tool_use("t2", json!([{ "content": "失败的那次", "status": "pending" }])),
             todo_tool_result("t2", -1),
         ],
     );
     assert_eq!(
         crate::tools::ensure_session_todos("rb-fail"),
-        json!([{ "content": "成功的那次", "status": "pending", "activeForm": "做" }])
+        json!([{ "content": "成功的那次", "status": "pending" }])
     );
     crate::tools::clear_session_todos("rb-fail");
 }
@@ -2325,7 +2325,7 @@ fn todo_rebuild_parses_double_encoded_todos() {
     let sandbox = Sandbox::new("tools-todo-rebuild-encoded");
     // 字段级 double-encode：todos 是 JSON 字符串（与工具侧容错同口径）
     let encoded = serde_json::to_string(&json!([
-        { "content": "编码过的", "activeForm": "做", "status": "completed" }
+        { "content": "编码过的", "status": "completed" }
     ]))
     .unwrap();
     seed_conversation(
@@ -2338,7 +2338,7 @@ fn todo_rebuild_parses_double_encoded_todos() {
     );
     assert_eq!(
         crate::tools::ensure_session_todos("rb-encoded"),
-        json!([{ "content": "编码过的", "status": "completed", "activeForm": "做" }])
+        json!([{ "content": "编码过的", "status": "completed" }])
     );
     crate::tools::clear_session_todos("rb-encoded");
 }

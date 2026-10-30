@@ -796,8 +796,7 @@
         "todos": [
           {
             "content": "c",
-            "status": "pending",
-            "activeForm": "a"
+            "status": "pending"
           }
         ]
       }
@@ -812,8 +811,15 @@
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\",\n      0,\n      \"activeForm\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
-      "parsed": null
+      "error": null,
+      "parsed": {
+        "todos": [
+          {
+            "content": "c",
+            "status": "pending"
+          }
+        ]
+      }
     },
     {
       "name": "TodoWrite-71",
@@ -821,26 +827,11 @@
       "input": {
         "todos": [
           {
-            "content": "",
-            "activeForm": "a"
+            "content": ""
           }
         ]
       },
       "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      0,\n      \"content\"\n    ],\n    \"message\": \"Content cannot be empty\"\n  }\n]",
-      "parsed": null
-    },
-    {
-      "name": "TodoWrite-72",
-      "tool": "TodoWrite",
-      "input": {
-        "todos": [
-          {
-            "content": "c",
-            "activeForm": ""
-          }
-        ]
-      },
-      "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      0,\n      \"activeForm\"\n    ],\n    \"message\": \"Active form cannot be empty\"\n  }\n]",
       "parsed": null
     },
     {
@@ -850,7 +841,6 @@
         "todos": [
           {
             "content": "c",
-            "activeForm": "a",
             "status": "bad"
           }
         ]
@@ -865,7 +855,6 @@
         "todos": [
           {
             "content": "c",
-            "activeForm": "a",
             "status": "in_progress"
           }
         ]
@@ -875,8 +864,7 @@
         "todos": [
           {
             "content": "c",
-            "status": "in_progress",
-            "activeForm": "a"
+            "status": "in_progress"
           }
         ]
       }
@@ -888,7 +876,6 @@
         "todos": [
           {
             "content": "c",
-            "activeForm": "a",
             "extra": 1
           }
         ]
@@ -898,8 +885,7 @@
         "todos": [
           {
             "content": "c",
-            "status": "pending",
-            "activeForm": "a"
+            "status": "pending"
           }
         ]
       }
@@ -913,12 +899,11 @@
             "content": "c"
           },
           {
-            "content": "",
-            "activeForm": "a"
+            "content": ""
           }
         ]
       },
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"todos\",\n      0,\n      \"activeForm\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      1,\n      \"content\"\n    ],\n    \"message\": \"Content cannot be empty\"\n  }\n]",
+      "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"todos\",\n      1,\n      \"content\"\n    ],\n    \"message\": \"Content cannot be empty\"\n  }\n]",
       "parsed": null
     },
     {
@@ -927,8 +912,7 @@
       "input": {
         "todos": [
           {
-            "content": "c",
-            "activeForm": "a"
+            "content": "c"
           },
           "x"
         ]

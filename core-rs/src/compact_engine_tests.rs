@@ -809,10 +809,10 @@ fn file_has_todo_call(project: &str, session_id: &str, id: &str) -> bool {
 fn seed_with_early_todo(harness: &EngineHarness, sandbox: &Sandbox) -> (String, Value) {
     let project = sandbox.workspace.to_string_lossy().to_string();
     let todos = json!([
-        { "content": "改代码", "activeForm": "改代码中", "status": "completed" },
-        { "content": "跑测试", "activeForm": "跑测试中", "status": "in_progress" },
-        { "content": "写文档", "activeForm": "写文档中", "status": "pending" },
-        { "content": "收敛", "activeForm": "收敛中", "status": "pending" }
+        { "content": "改代码", "status": "completed" },
+        { "content": "跑测试", "status": "in_progress" },
+        { "content": "写文档", "status": "pending" },
+        { "content": "收敛", "status": "pending" }
     ]);
     seed_messages(harness, "s1", &project, 5);
     append_todo_call(harness, "s1", &project, "tu-early", todos.clone(), 0);
@@ -898,7 +898,7 @@ fn todo_table_survives_compaction_after_new_write() {
 
     // 压缩之后再写一次（真实写入路径）
     let second = json!([
-        { "content": "只剩一件", "activeForm": "做这一件", "status": "in_progress" }
+        { "content": "只剩一件", "status": "in_progress" }
     ]);
     write_todos(&sandbox, "s1", second);
     // 再压一次：第二次的清单不受影响
@@ -908,7 +908,7 @@ fn todo_table_survives_compaction_after_new_write() {
     assert_eq!(
         crate::tools::session_todos("s1"),
         Some(json!([
-            { "content": "只剩一件", "status": "in_progress", "activeForm": "做这一件" }
+            { "content": "只剩一件", "status": "in_progress" }
         ]))
     );
 
@@ -953,7 +953,7 @@ fn todo_rebuild_after_compaction_and_restart_uses_surviving_write() {
 
     // 压缩后再写一次：这次落在保留区里
     let survivor = json!([
-        { "content": "压缩后写的", "activeForm": "压缩后写", "status": "pending" }
+        { "content": "压缩后写的", "status": "pending" }
     ]);
     write_todos(&sandbox, "s1", survivor.clone());
     append_todo_call(&harness, "s1", &project, "tu-survivor", survivor, 0);
@@ -963,7 +963,7 @@ fn todo_rebuild_after_compaction_and_restart_uses_surviving_write() {
     assert_eq!(
         crate::tools::ensure_session_todos("s1"),
         json!([
-            { "content": "压缩后写的", "status": "pending", "activeForm": "压缩后写" }
+            { "content": "压缩后写的", "status": "pending" }
         ]),
         "保留区里的最后一条成功调用可以被重建出来"
     );
