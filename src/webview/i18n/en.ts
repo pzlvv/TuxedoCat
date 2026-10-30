@@ -310,7 +310,8 @@ export const enDict: Record<string, string> = {
   'tool.agent.navigateTitle': 'Click to jump to the sub-agent conversation',
 
   /* ── tools/AskUserQuestion.tsx ───────────────────────────── */
-  'tool.askUser.response': 'Response: {output}',
+  'tool.askUser.response': 'Answers: {output}',
+  'tool.askUser.noAnswer': 'No answer',
   'tool.askUser.waitingResponse': 'Waiting for user response...',
   'tool.askUser.failed': 'Failed',
 

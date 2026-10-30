@@ -310,7 +310,8 @@ export const zhDict: Record<string, string> = {
   'tool.agent.navigateTitle': '点击跳转到子代理对话',
 
   /* ── tools/AskUserQuestion.tsx ───────────────────────────── */
-  'tool.askUser.response': 'Response: {output}',
+  'tool.askUser.response': '回答：{output}',
+  'tool.askUser.noAnswer': '未作答',
   'tool.askUser.waitingResponse': 'Waiting for user response...',
   'tool.askUser.failed': 'Failed',
 
