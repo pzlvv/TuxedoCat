@@ -297,6 +297,9 @@ ${logTail()}`,
   const ideaLogPath = path.join(logDir, 'idea.log');
   const close = async (): Promise<void> => {
     await browser.close().catch(() => undefined);
+    // 等 CDP / 进程树完全退场再返回：紧跟着的下一个 IDE 实例会复用 Playwright 的
+    // 连接池，旧连接未断干净时新实例会偶发 "browser has been closed"（实测竞态）
+    await new Promise((r) => setTimeout(r, 1500));
     const pids = await findIdePids(sandboxDir, ideName);
     for (const pid of pids) await killProcessTree(pid);
     if (!options.keepSandboxOnClose) {

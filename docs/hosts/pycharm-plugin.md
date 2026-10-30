@@ -34,6 +34,11 @@ last_reviewed: 2026-10-31
   （SettingsAndLockTest）。
 - 每个 project 窗口独立面板与独立会话，会话工作目录取 project 内容根，经
   `sessionWorkspaceAssigned` 登记给 Core。
+- core 事实索取（对话列表 / 技能 / MCP / Todo / 空间统计 / 余额 / 会话加载）的应答
+  形状以 `src/host/coreFacts.ts` 为准（数组直出与对象包裹并存），requestCore 的应答
+  按形状无关传递；就绪前发送的请求会被 core 拒收且无应答帧，requestCore 先等
+  coreReady 再发。历史列表为工作区维度（core 对 workspacePath 做归一化 + 多候选
+  目录回退，跨宿主共享同一份会话）。
 
 ## 2. 面板承载与消息桥
 

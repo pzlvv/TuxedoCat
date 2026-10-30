@@ -274,7 +274,8 @@ class CoreBus(private val transport: CoreChannelTransport, private val log: (Str
     @Volatile private var ready = false
     @Volatile private var terminalError: String? = null
     private val requestId = AtomicLong(1)
-    private val pendingUiRequests = ConcurrentHashMap<Long, CompletableFuture<JsonObject?>>()
+    private val pendingUiRequests = ConcurrentHashMap<Long, CompletableFuture<kotlinx.serialization.json.JsonElement?>>()
+    private val readyResolvers = mutableListOf<CompletableFuture<Void>>()
     private val pendingCoreRequests = ConcurrentHashMap<Long, Long>() // request id -> epoch
 
     /** CoreRequest 处理表：type -> handler(payload JsonObject) -> result JsonObject（挂起） */
@@ -301,13 +302,15 @@ class CoreBus(private val transport: CoreChannelTransport, private val log: (Str
         val f = CompletableFuture<Void>()
         if (ready) f.complete(null)
         else if (terminalError != null) f.completeExceptionally(IllegalStateException(terminalError))
-        else transport.onReady = { handleReady(); f.complete(null) }
+        else synchronized(readyResolvers) { readyResolvers.add(f) }
         return f
     }
 
     private fun handleReady() {
         ready = true
         epoch++
+        val resolvers = synchronized(readyResolvers) { readyResolvers.toList().also { readyResolvers.clear() } }
+        resolvers.forEach { it.complete(null) }
         // 重放顺序（对齐 StandaloneEventBus.handleReady）：连接态事实 → openSessions → 排队事件
         connectionScopedEvent?.let { transport.send(it) }
         synchronized(openSessions) {
@@ -351,15 +354,24 @@ class CoreBus(private val transport: CoreChannelTransport, private val log: (Str
     /**
      * 发 UiRequest，返回应答 future（无内置超时，调用点兜底；调用方在 IO 协程里
      * awaitResult 挂起等待——每会话至多一个等待中的用户确认，线程占用可控）。
+     * 就绪前发送会被 core 拒收且无应答帧（请求会悬挂），因此先等 ready 再发。
+     * 应答 result 形状无关（JsonObject / JsonArray / null）——各请求的形状见 coreFacts.ts。
      */
-    fun requestCore(request: JsonObject): CompletableFuture<JsonObject?> {
-        terminalError?.let { throw IllegalStateException(it) }
-        if (transport.isStopped) throw IllegalStateException("Standalone Core bus has been shut down.")
-        val id = requestId.getAndIncrement()
-        val future = CompletableFuture<JsonObject?>()
-        pendingUiRequests[id] = future
-        transport.send(uiRequestFrame(id, request))
-        return future
+    fun requestCore(request: JsonObject): CompletableFuture<kotlinx.serialization.json.JsonElement?> {
+        val gated = CompletableFuture<kotlinx.serialization.json.JsonElement?>()
+        whenReady().whenComplete { _, error ->
+            if (error != null) { gated.completeExceptionally(error); return@whenComplete }
+            val terminal = terminalError
+            if (terminal != null) { gated.completeExceptionally(IllegalStateException(terminal)); return@whenComplete }
+            if (transport.isStopped) { gated.completeExceptionally(IllegalStateException("Standalone Core bus has been shut down.")); return@whenComplete }
+            val id = requestId.getAndIncrement()
+            val capturedEpoch = epoch
+            pendingUiRequests[id] = gated
+            gated.whenComplete { _, _ -> pendingUiRequests.remove(id) }
+            if (epoch != capturedEpoch) return@whenComplete // 就绪等待期间连接已换代
+            transport.send(uiRequestFrame(id, request))
+        }
+        return gated
     }
 
     private fun onCoreFrame(frame: JsonObject) {
@@ -397,7 +409,7 @@ class CoreBus(private val transport: CoreChannelTransport, private val log: (Str
                 val id = frame["id"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).longOrNull } ?: return
                 val future = pendingUiRequests.remove(id) ?: return
                 val ok = frame["ok"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).booleanOrNull } ?: false
-                if (ok) future.complete(frame["result"]?.let { it as? JsonObject })
+                if (ok) future.complete(frame["result"]) // 形状无关：数组 / 对象 / null 都原样交给调用方
                 else future.completeExceptionally(IllegalStateException((frame["error"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: "core request failed"))
             }
         }
@@ -408,6 +420,8 @@ class CoreBus(private val transport: CoreChannelTransport, private val log: (Str
     private fun failPendingUiRequests(reason: String) {
         for (future in pendingUiRequests.values) future.completeExceptionally(IllegalStateException(reason))
         pendingUiRequests.clear()
+        val resolvers = synchronized(readyResolvers) { readyResolvers.toList().also { readyResolvers.clear() } }
+        resolvers.forEach { it.completeExceptionally(IllegalStateException(reason)) }
     }
 
     private companion object {

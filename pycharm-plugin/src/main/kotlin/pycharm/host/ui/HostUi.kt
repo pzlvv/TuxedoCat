@@ -60,11 +60,13 @@ class ConversationManager(
     fun refresh() {
         busScope.launch {
             try {
-                val result = bus.requestCore(buildJsonObject {
+                // 应答直接是 ConversationMetadata 数组（coreFacts.ts: loadConversationListForHost）
+                val conversations = (bus.requestCore(buildJsonObject {
                     put("type", "conversationListRequested")
                     workspacePath?.let { put("workspacePath", it) }
-                })?.awaitResult()
-                val conversations = result?.get("conversations") ?: JsonArray(emptyList())
+                })?.awaitResult() as? JsonElement) ?: JsonArray(emptyList())
+                log("[conversations] list refreshed: " +
+                    ((conversations as? JsonArray)?.size ?: 0) + " entries")
                 sendToWebview(buildJsonObject {
                     put("type", "conversationsData")
                     put("conversations", conversations)
@@ -416,13 +418,15 @@ class HostUi(
                 ) { result -> buildJsonObject {
                     put("type", "sessionTodos")
                     put("sessionId", str(message, "sessionId"))
-                    put("todos", result?.get("todos") ?: JsonArray(emptyList()))
+                    // 应答直接是 TodoEntry 数组（coreFacts.ts: requestSessionTodos）
+                    put("todos", result ?: JsonArray(emptyList()))
                 } }
                 "requestSkills" -> busRequestToWebview(
                     buildJsonObject { put("type", "skillsRequested"); trackedActiveSessionId?.let { put("sessionId", it) } },
                 ) { result -> buildJsonObject {
                     put("type", "setSkills")
-                    put("skills", result?.get("skills") ?: JsonArray(emptyList()))
+                    // skillsRequested 应答是对象 {skills:[...]}
+                    put("skills", (result as? JsonObject)?.get("skills") ?: JsonArray(emptyList()))
                 } }
                 "requestMcpServers" -> pushMcpServers(optStr(message, "sessionId") ?: trackedActiveSessionId)
                 "requestModels" -> sendToWebview(buildJsonObject {
@@ -456,15 +460,17 @@ class HostUi(
                     buildJsonObject { put("type", "conversationSpacesRequested") },
                 ) { result -> buildJsonObject {
                     put("type", "conversationSpacesData")
-                    put("spaces", result?.get("spaces") ?: JsonArray(emptyList()))
+                    // 应答直接是 ConversationSpaceInfo 数组（coreFacts.ts: requestConversationSpaces）
+                    put("spaces", result ?: JsonArray(emptyList()))
                 } }
                 "expandCompact" -> busRequestToWebview(
                     buildJsonObject { put("type", "compactArchiveRequested"); put("sessionId", str(message, "sessionId")) },
                 ) { result -> buildJsonObject {
                     put("type", "expandCompactDone")
                     put("sessionId", str(message, "sessionId"))
-                    if (result?.get("messages") != null) {
-                        put("_expandPayload", result["messages"]!!)
+                    // 应答直接是 Message[] | null（coreFacts.ts: requestCompactArchive）
+                    if (result != null && result !is kotlinx.serialization.json.JsonNull) {
+                        put("_expandPayload", result)
                     }
                 } }
                 "debugLog" -> log("[Webview Debug] ${str(message, "message")}")
@@ -494,7 +500,7 @@ class HostUi(
 
     private fun JsonPrimitive.booleanOrNullCompat(): Boolean? = this.content.toBooleanStrictOrNull()
 
-    private fun busRequestToWebview(request: JsonObject, build: (JsonObject?) -> JsonObject) {
+    private fun busRequestToWebview(request: JsonObject, build: (kotlinx.serialization.json.JsonElement?) -> JsonObject) {
         busScope.launch {
             try {
                 val result = bus.requestCore(request)?.awaitResult()
@@ -598,11 +604,12 @@ class HostUi(
         busScope.launch {
             try {
                 val request = buildJsonObject { put("type", "mcpServersRequested"); sessionId?.let { put("sessionId", it) } }
-                val result = bus.requestCore(request)?.awaitResult()
+                // 应答直接是 McpServerInfo 数组（coreFacts.ts: requestMcpServers）
+                val servers = (bus.requestCore(request)?.awaitResult() as? JsonElement) ?: JsonArray(emptyList())
                 sendToWebview(buildJsonObject {
                     put("type", "setMcpServers")
                     sessionId?.let { put("sessionId", it) }
-                    put("servers", result?.get("servers") ?: JsonArray(emptyList()))
+                    put("servers", servers)
                 })
             } catch (e: Exception) {
                 log("[ui] Failed to read MCP servers: ${e.message}")
@@ -614,7 +621,7 @@ class HostUi(
         busScope.launch {
             try {
                 val result = bus.requestCore(buildJsonObject { put("type", "balanceRequested"); put("sessionId", sessionId) })?.awaitResult()
-                if (result == null || result["totalBalance"] == null) {
+                if (result == null || result !is JsonObject || result["totalBalance"] == null) {
                     postToWebview(sessionId, buildJsonObject {
                         put("type", "balanceUpdate")
                         put("totalBalance", JsonNull)
@@ -758,11 +765,13 @@ class HostUi(
                 fetchBalance(sessionId)
                 pushMcpServers(sessionId)
 
-                val metadata = loaded["metadata"] as? JsonObject
-                val messages = loaded["messages"] as? JsonElement ?: JsonArray(emptyList())
-                val pendingToolUseIds = loaded["pendingToolUseIds"] as? JsonElement ?: JsonArray(emptyList())
-                val hasCompactArchive = (loaded["hasCompactArchive"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
-                val workMode = loaded["workMode"]?.jsonPrimitive?.contentOrNull ?: "normal"
+                // conversationLoadRequested 应答是对象 {messages, metadata, pendingToolUseIds, ...}
+                val loadedObj = loaded as? JsonObject
+                val metadata = loadedObj?.get("metadata") as? JsonObject
+                val messages = loadedObj?.get("messages") as? JsonElement ?: JsonArray(emptyList())
+                val pendingToolUseIds = loadedObj?.get("pendingToolUseIds") as? JsonElement ?: JsonArray(emptyList())
+                val hasCompactArchive = (loadedObj?.get("hasCompactArchive") as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
+                val workMode = loadedObj?.get("workMode")?.jsonPrimitive?.contentOrNull ?: "normal"
 
                 val context = metadata?.get("context")?.jsonObject
                 val modelRef = metadata?.get("model")?.jsonPrimitive?.contentOrNull
@@ -779,7 +788,7 @@ class HostUi(
                     context?.let { put("savedContext", it) }
                     metadata?.get("parentSessionId")?.let { put("parentSessionId", it) }
                     metadata?.get("creator")?.let { put("creator", it) }
-                    val agentMode = loaded["agentMode"]?.jsonPrimitive?.contentOrNull
+                    val agentMode = loadedObj?.get("agentMode")?.jsonPrimitive?.contentOrNull
                         ?: context?.get("agentMode")?.jsonPrimitive?.contentOrNull
                         ?: (settingsStore.getSnapshot()["defaultAgentMode"] as? JsonPrimitive)?.contentOrNull
                     agentMode?.let { put("agentMode", it) }

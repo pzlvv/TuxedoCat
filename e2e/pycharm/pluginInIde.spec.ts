@@ -102,6 +102,9 @@ test('US-70 FR-004/FR-006 manual：Write 权限 → IDE diff 打开/应答关闭
     timeout: 60_000,
     message: '允许后 core 应执行 Write，工作区出现 notes.md',
   }).toBe(true);
+  // 历史列表：conversationListChanged → 刷新后应含刚落盘的会话（回归：应答形状
+  // 误判导致列表恒空，specs/035）
+  await waitForIdeaLogLine(ide!.ideaLogPath, /\[conversations\] list refreshed: [1-9] entries/);
 });
 
 test('US-71 FR-005 卡片文件路径点击 → 编辑器打开（log 证据）', async () => {
