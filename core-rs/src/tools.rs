@@ -35,6 +35,15 @@ const MAX_PERSISTED_SIZE: usize = 64 * 1024 * 1024;
 /// 有后台任务完成通知时，当前前台命令至少要已运行这么久才自动转后台
 /// （对齐 `Exec.ts` 的 `AUTO_BG_MIN_RUNNING_MS`）
 const AUTO_BG_MIN_RUNNING_MS: u64 = 3000;
+/// 前台 Bash 默认超时（毫秒）。含 `sleep` 子命令的命令把死线后移到
+/// `max(该值, sleep 时长总和)`（`default_bash_timeout_ms`），不注销死线。
+const DEFAULT_BASH_TIMEOUT_MS: u64 = 60_000;
+/// shell 退出后等待读线程自然结束（收割已缓冲输出 + 管道 EOF）的排水宽限。
+/// 正常命令的读线程在子进程退出后微秒级完成，宽限不会生效；孙进程继承管道
+/// 写端时（`detach: true` 放行的 daemon 等）EOF 不会到来，等满宽限后停掉读
+/// 线程、用已累积快照收尾——不设宽限就得在「丢尾部输出」与「被孙进程挂死」
+/// 之间二选一。
+const PIPE_DRAIN_GRACE_MS: u64 = 1000;
 
 /// 工具结果裁剪：超过上限时把**完整内容**落盘，返回带「前 2K + 后 2K」预览的
 /// `<persisted-output>` 消息；未超过上限时原样返回。
@@ -1065,12 +1074,13 @@ fn input_bool(input: &Value, key: &str) -> Option<bool> {
 
 // ==================== Bash ====================
 
-/// 从单个子命令段提取第一个命令名：
-/// 先去掉 `FOO=1` 形式的环境变量前缀，再取第一个空白分隔的词，最后去掉包裹引号。
-fn extract_command_name(segment: &str) -> String {
-    // 全程用 ECMAScript 空白口径（与 `SleepDetect.extractCommandName` 的
-    // `trim()` / `\s` / `split(/\s+/)` 对齐）：Rust 的 `trim` / `is_whitespace`
-    // 在 U+0085 与 U+FEFF 上与之相反。
+/// 去掉 `FOO=1` 形式的环境变量前缀，返回剩余文本。
+/// `extract_command_name` / `command_arguments` 共用的前半段。
+///
+/// 全程用 ECMAScript 空白口径（与 `SleepDetect.extractCommandName` 的
+/// `trim()` / `\s` / `split(/\s+/)` 对齐）：Rust 的 `trim` / `is_whitespace`
+/// 在 U+0085 与 U+FEFF 上与之相反。
+fn strip_env_prefixes(segment: &str) -> &str {
     let mut text = crate::util::js_trim(segment);
     loop {
         // `^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]*)\s+`
@@ -1116,6 +1126,13 @@ fn extract_command_name(segment: &str) -> String {
         }
         text = trimmed_tail;
     }
+    text
+}
+
+/// 从单个子命令段提取第一个命令名：
+/// 先去掉 `FOO=1` 形式的环境变量前缀，再取第一个空白分隔的词，最后去掉包裹引号。
+fn extract_command_name(segment: &str) -> String {
+    let text = strip_env_prefixes(segment);
     let word = text.split(crate::util::is_js_whitespace).next().unwrap_or("");
     // 对齐 JS 的 `replace(/^["']|["']$/g, '')`：首尾各最多去掉**一个**引号
     let mut result = word;
@@ -1128,16 +1145,86 @@ fn extract_command_name(segment: &str) -> String {
     result.to_string()
 }
 
+/// 段内命令名之后的参数串。环境变量前缀跳过口径与 `extract_command_name`
+/// 一致；参数从首个空白之后取（首词可能整体是包裹引号形式）。
+fn command_arguments(segment: &str) -> &str {
+    let text = strip_env_prefixes(segment);
+    match text.find(crate::util::is_js_whitespace) {
+        Some(index) => &text[index..],
+        None => "",
+    }
+}
+
 /// 命令是否包含 `sleep` 子命令（按 `;` `&&` `||` `|` 拆分后任一段首词为 `sleep`）。
 ///
-/// 含 `sleep` 的命令**不设前台超时**，
-/// 让 `sleep` 自然完成（本阶段无后台任务完成 / 子代理 Reply
-/// 通知的自动转后台通道）。
-/// 兜底提醒的门槛判定（`bash_task::qualifies_fallback_reminder`）也复用它。
+/// 前台超时的 sleep 识别（`sleep_duration_ms`）与兜底提醒的门槛判定
+/// （`bash_task::qualifies_fallback_reminder`）共用这里的切分与首词判定。
 pub(crate) fn contains_sleep_command(command: &str) -> bool {
     crate::permission::split_by_separators(command)
         .iter()
         .any(|segment| extract_command_name(segment) == "sleep")
+}
+
+/// 前台默认超时（毫秒）：命令含 `sleep` 子命令时取
+/// `max(DEFAULT_BASH_TIMEOUT_MS, sleep 时长总和)`——sleep 只把死线后移，
+/// 不注销死线；解析不出时长（变量、算术、非法参数）回退默认值。
+fn default_bash_timeout_ms(command: &str) -> u64 {
+    sleep_duration_ms(command).unwrap_or(0).max(DEFAULT_BASH_TIMEOUT_MS)
+}
+
+/// 命令中所有 `sleep` 子命令的时长总和（毫秒）；没有一个可解析的 sleep 时长时
+/// 返回 `None`（调用方回退默认超时）。
+///
+/// 切分与首词判定和 `contains_sleep_command` 同一口径；每段从命令名之后连续
+/// 解析 GNU `sleep` 的时长参数（`NUMBER[s|m|h|d]`，`s` 缺省），遇到第一个解析
+/// 不了的参数即停（重定向、变量、非法参数），一段内一个时长都没解析出来就不
+/// 贡献；多段求和是串行执行的运行时长上界。
+fn sleep_duration_ms(command: &str) -> Option<u64> {
+    let mut total: Option<u64> = None;
+    for segment in crate::permission::split_by_separators(command) {
+        if extract_command_name(&segment) != "sleep" {
+            continue;
+        }
+        let mut sum = 0u64;
+        let mut parsed_any = false;
+        for token in command_arguments(&segment)
+            .split(crate::util::is_js_whitespace)
+            .filter(|token| !token.is_empty())
+        {
+            match parse_sleep_arg_ms(token) {
+                Some(ms) => {
+                    parsed_any = true;
+                    sum = sum.saturating_add(ms);
+                }
+                None => break,
+            }
+        }
+        if parsed_any {
+            total = Some(total.unwrap_or(0).saturating_add(sum));
+        }
+    }
+    total
+}
+
+/// 解析单个 GNU `sleep` 时长参数为毫秒。`NUMBER[s|m|h|d]`（后缀只认小写、
+/// `s` 缺省，对齐 GNU `sleep`），数值是十进制浮点；`strtod` 口径还认
+/// `inf` / `infinity`，经饱和转换等效无超时。负数 / NaN / 非数 / 裸后缀
+/// 返回 `None`。
+fn parse_sleep_arg_ms(token: &str) -> Option<u64> {
+    let (number, multiplier) = match token.as_bytes().last()? {
+        b's' => (&token[..token.len() - 1], 1.0f64),
+        b'm' => (&token[..token.len() - 1], 60.0),
+        b'h' => (&token[..token.len() - 1], 3600.0),
+        b'd' => (&token[..token.len() - 1], 86_400.0),
+        _ => (token, 1.0),
+    };
+    let seconds: f64 = number.parse().ok()?;
+    if seconds.is_nan() || seconds < 0.0 {
+        return None;
+    }
+    // f64 → u64 的 `as` 转换饱和（inf → u64::MAX），`sleep infinity` 由此
+    // 等效无超时（`Instant::checked_add` 溢出 → 死线 `None`）。
+    Some((seconds * multiplier * 1000.0) as u64)
 }
 
 /// 后台化构造检测（`docs/features/bash-detach.md` 第 2 节）：仓库内唯一实现，
@@ -1271,16 +1358,41 @@ fn deadline_passed(deadline: Option<std::time::Instant>) -> bool {
         .unwrap_or(false)
 }
 
+/// shell 退出后的排水宽限（`PIPE_DRAIN_GRACE_MS`）：轮询两个读线程是否自然
+/// 结束（已缓冲输出落地 + 管道 EOF），等满宽限仍未结束返回 `false`——那只
+/// 发生在孙进程继承管道写端的场景，收尾方据此停读线程、走快照。
+fn readers_drain_within(
+    stdout: &Option<std::thread::JoinHandle<Vec<u8>>>,
+    stderr: &Option<std::thread::JoinHandle<Vec<u8>>>,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(PIPE_DRAIN_GRACE_MS);
+    loop {
+        let done = stdout
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true)
+            && stderr
+                .as_ref()
+                .map(|handle| handle.is_finished())
+                .unwrap_or(true);
+        if done || std::time::Instant::now() >= deadline {
+            return done;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// 通知驱动的自动转后台判定：
 /// - 普通命令：有后台任务完成、且本命令已运行 ≥ `AUTO_BG_MIN_RUNNING_MS` → 转后台；
-/// - sleep 命令（不设前台超时）：本会话的后台任务完成 → **立刻**转后台。
+/// - sleep 命令：本会话的后台任务完成 → **立刻**转后台（不等最短运行时长），
+///   避免 sleep 阻塞模型处理通知。
 fn should_auto_background(
-    timeout_ms: u64,
+    is_sleep: bool,
     session_completed: &std::sync::atomic::AtomicBool,
     bg_completed: &std::sync::atomic::AtomicBool,
     started: std::time::Instant,
 ) -> bool {
-    if timeout_ms == 0 {
+    if is_sleep {
         session_completed.load(Ordering::Relaxed)
     } else {
         bg_completed.load(Ordering::Relaxed)
@@ -1297,12 +1409,12 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let cwd = input_str(input, "cwd")
         .filter(|path| !path.is_empty())
         .unwrap_or_else(|| ctx.cwd.clone());
-    // 前台超时策略：
-    // - 命令含 `sleep` 子命令：不设超时（`SLEEP_NO_TIMEOUT_MS = 0`），让 sleep 自然完成；
-    // - 其余命令：默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）。
-    // `timeout` 不在对外 schema 里，仅保留内部覆盖（测试用），显式给出时优先。
+    // 前台超时策略：默认 `DEFAULT_BASH_TIMEOUT_MS`；命令含 `sleep` 子命令时把
+    // 死线后移到 sleep 时长总和（`default_bash_timeout_ms`）——sleep 自然完成
+    // 不被转后台，但后续命令仍受死线保护。`timeout` 不在对外 schema 里，仅保留
+    // 内部覆盖（测试用），显式给出时优先。
     let timeout_ms = input_u64(input, "timeout")
-        .unwrap_or(if contains_sleep_command(&command) { 0 } else { 60_000 });
+        .unwrap_or_else(|| default_bash_timeout_ms(&command));
 
     // 后台化构造闸门（specs/034-bash-detach-field FR-001）：`detach` 缺省 / false 时，
     // 命令中出现会让进程脱离追踪的写法直接失败。闸门在 `run_in_background` 分支之前：
@@ -1428,12 +1540,11 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     };
     let cancel = ctx.cancel.clone();
     let mut cancelled = false;
-    // 子进程退出不等于管道到达 EOF：孙进程可能继承了管道写端（Windows 上 detached 的常驻
-    // 进程就是这样——本二进制 `start` 拉起的 daemon 即一例；此时读线程会一直阻塞在
-    // `read`，直到孙进程退出）。因此「等子进程退出」与「等管道 EOF」共用同一套判定：
-    // 中止、前台超时、通知驱动转后台都不依赖子进程是否还活着。只在前一阶段判定的话，
-    // 一条已经退出的命令会让 abort 与前台超时全部失效
-    // 。
+    // 结束判据与后台任务同一口径（`bash_task::watch` 的 try_wait 轮询）：
+    // **shell 退出即收尾**，不等管道 EOF——孙进程继承管道写端时（Windows 上
+    // detached 的常驻进程，本二进制 `start` 拉起的 daemon 即一例）EOF 不会
+    // 到来，收尾交给下面的排水宽限（`PIPE_DRAIN_GRACE_MS`）。shell 已退出后
+    // abort / 超时 / 转后台不再生效：命令已经完成，中断与死线失去对象。
     loop {
         let child_exited = match child.try_wait() {
             Ok(status) => status.is_some(),
@@ -1445,26 +1556,17 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 return ToolOutcome::Error(format!("Bash: wait failed: {err}"));
             }
         };
-        let readers_done = stdout_handle
-            .as_ref()
-            .map(|handle| handle.is_finished())
-            .unwrap_or(true)
-            && stderr_handle
-                .as_ref()
-                .map(|handle| handle.is_finished())
-                .unwrap_or(true);
-        if child_exited && readers_done {
+        if child_exited {
             break;
         }
         // 会话被中止（`abortRequested`）：按「被中断」收尾
         // 。
-        // 子进程还活着就连树一起杀掉（Windows 上 `bash.exe` 可能是启动器，只杀直接
-        // 子进程会让真正的 shell 与命令继续跑）；子进程已退出、只是孙进程仍持有管道时，
-        // 停掉读线程、用已累积输出收尾——两种情形都要能让 abort 立刻生效。
+        // 能走到这里 shell 必然还活着（已退出在循环顶就收尾了），连树一起杀掉
+        // （Windows 上 `bash.exe` 可能是启动器，只杀直接子进程会让真正的 shell
+        // 与命令继续跑）；孙进程仍持有管道时读线程不会结束，停掉读线程、用已
+        // 累积输出收尾——abort 不被孙进程拖住。
         if cancel_requested(&cancel) {
-            if !child_exited {
-                crate::bash_task::kill_tree(&mut child, pid);
-            }
+            crate::bash_task::kill_tree(&mut child, pid);
             stop_readers.store(true, Ordering::Relaxed);
             cancelled = true;
             break;
@@ -1475,7 +1577,12 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             .unwrap_or(false);
         if manual_requested
             || deadline_passed(deadline)
-            || should_auto_background(timeout_ms, &session_completed, &bg_completed, started)
+            || should_auto_background(
+                contains_sleep_command(&command),
+                &session_completed,
+                &bg_completed,
+                started,
+            )
         {
             crate::bash_task::off_task_completed(bg_subscription);
             crate::subagent::off_reply_delivered(reply_subscription);
@@ -1497,11 +1604,19 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     unregister_manual_bg(ctx.tool_use_id.as_deref());
 
     let status = child.wait().ok().and_then(|value| value.code()).unwrap_or(-1);
-    // 被中止：**不等**管道读完。被杀的子进程可能留下仍持有管道的孙进程
-    // （Windows 上 `bash -c "sleep 30"` 的 `sleep` 就是孙进程），等待会一直阻塞到
-    // 孙进程自己退出——abort 会因此「看起来没生效」。这里用已累积的共享输出快照收尾，
-    // abort 路径直接用已累积的 `fullOutput` 收尾。
-    let (stdout, stderr) = if cancelled {
+    // 排水宽限：正常命令的读线程在 shell 退出后微秒级完成（收割已缓冲输出与
+    // EOF），宽限不生效；孙进程仍持有管道写端时读线程不会结束，停掉读线程、
+    // 用已累积快照收尾（与 abort 同口径：迟到的字节照常计入快照，见
+    // `read_pipe`，但不阻塞收尾）。
+    let readers_done = readers_drain_within(&stdout_handle, &stderr_handle);
+    if !readers_done {
+        stop_readers.store(true, Ordering::Relaxed);
+    }
+    // 被中止或读线程未结束：**不等**管道读完。被杀的 / 已退出的 shell 可能留下
+    // 仍持有管道的孙进程（Windows 上 `bash -c "sleep 30"` 的 `sleep` 就是孙进程），
+    // 等待会一直阻塞到孙进程自己退出——abort 与 exit-only 收尾会因此被拖住。
+    // 这里用已累积的共享输出快照收尾。
+    let (stdout, stderr) = if cancelled || !readers_done {
         (full_output.lock().unwrap().full.clone(), String::new())
     } else {
         let stdout = stdout_handle

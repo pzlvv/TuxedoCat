@@ -573,9 +573,10 @@ fn contains_sleep_command_splits_on_separators() {
 }
 
 #[test]
-fn bash_sleep_commands_have_no_foreground_timeout() {
-    // 命令含 sleep 子命令时不设前台超时
-    // （`SLEEP_NO_TIMEOUT_MS = 0`），让 sleep 自然完成；进度事件里的 `timeoutMs` 也是 0。
+fn bash_sleep_timeout_is_the_default_deadline_when_below_the_sleep_duration() {
+    // 命令含 sleep 子命令时前台死线取 `max(默认超时, sleep 时长总和)`；
+    // sleep 时长低于默认超时时死线就是默认超时本身（`BashProgress.timeoutMs`
+    // 与之同源）。sleep 自然完成，不被转后台也不被中断。
     let sandbox = Sandbox::new("tools-bash-sleep-timeout");
     let collected: std::sync::Arc<std::sync::Mutex<Vec<BashProgress>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -606,14 +607,78 @@ fn bash_sleep_commands_have_no_foreground_timeout() {
     let progress = collected.lock().unwrap();
     assert!(!progress.is_empty(), "printf 的块应上报一次进度");
     assert!(
-        progress.iter().all(|item| item.timeout_ms == 0),
-        "sleep 轮次的 timeoutMs 应为 0: {progress:?}"
+        progress
+            .iter()
+            .all(|item| item.timeout_ms == DEFAULT_BASH_TIMEOUT_MS),
+        "sleep 轮次的 timeoutMs 应为默认死线（sleep 时长 0.2s 低于它）: {progress:?}"
     );
 }
 
 #[test]
-fn bash_abort_kills_a_sleep_command_without_a_timeout() {
-    // `sleep` 轮次不设前台超时，abort 必须能立刻杀掉子进程并收尾
+fn parse_sleep_args_covers_gnu_suffixes() {
+    // `NUMBER[s|m|h|d]`，后缀只认小写、`s` 缺省；负数 / NaN / 非数不解析
+    assert_eq!(parse_sleep_arg_ms("5"), Some(5_000));
+    assert_eq!(parse_sleep_arg_ms("0.5"), Some(500));
+    assert_eq!(parse_sleep_arg_ms("0.25s"), Some(250));
+    assert_eq!(parse_sleep_arg_ms("1m"), Some(60_000));
+    assert_eq!(parse_sleep_arg_ms("2h"), Some(7_200_000));
+    assert_eq!(parse_sleep_arg_ms("1d"), Some(86_400_000));
+    assert_eq!(parse_sleep_arg_ms("1e1"), Some(10_000));
+    // `strtod` 口径：`sleep infinity` 合法，饱和为 u64::MAX（等效无超时）
+    assert_eq!(parse_sleep_arg_ms("infinity"), Some(u64::MAX));
+    assert_eq!(parse_sleep_arg_ms("inf"), Some(u64::MAX));
+    assert_eq!(parse_sleep_arg_ms("5S"), None, "大写后缀 GNU 不认");
+    assert_eq!(parse_sleep_arg_ms("-3"), None);
+    assert_eq!(parse_sleep_arg_ms("nan"), None);
+    assert_eq!(parse_sleep_arg_ms("abc"), None);
+    assert_eq!(parse_sleep_arg_ms("5x"), None);
+    assert_eq!(parse_sleep_arg_ms("s"), None, "裸后缀不是数值");
+}
+
+#[test]
+fn sleep_duration_sums_gnu_multi_args_and_multiple_sleeps() {
+    // 切分 / 首词判定与 `contains_sleep_command` 同口径；GNU 多参数求和，
+    // 多个 sleep 段求和
+    assert_eq!(sleep_duration_ms("sleep 5"), Some(5_000));
+    assert_eq!(sleep_duration_ms("sleep 1m 30s"), Some(90_000));
+    assert_eq!(sleep_duration_ms("echo a; sleep 1; sleep 2"), Some(3_000));
+    assert_eq!(sleep_duration_ms("FOO=1 sleep 5"), Some(5_000));
+    assert_eq!(sleep_duration_ms("echo a && sleep 0.5"), Some(500));
+    // 遇到解析不了的参数即停；重定向不贡献
+    assert_eq!(sleep_duration_ms("sleep 5 2>/dev/null"), Some(5_000));
+    assert_eq!(sleep_duration_ms("sleep $X"), None);
+    assert_eq!(sleep_duration_ms("sleep"), None);
+    // 首词不是 sleep 的段不算（与 `contains_sleep_command` 一致）
+    assert_eq!(sleep_duration_ms("echo 'sleep 5'"), None);
+    assert_eq!(sleep_duration_ms("nosleep 5"), None);
+    assert_eq!(sleep_duration_ms("/usr/bin/sleep 5"), None);
+    assert_eq!(sleep_duration_ms("echo done"), None);
+}
+
+#[test]
+fn default_bash_timeout_moves_the_deadline_past_long_sleeps_only() {
+    // sleep 只把死线后移，不注销：低于默认超时取默认，高于取 sleep 总和，
+    // 解析不出回退默认
+    assert_eq!(default_bash_timeout_ms("echo hi"), DEFAULT_BASH_TIMEOUT_MS);
+    assert_eq!(
+        default_bash_timeout_ms("sleep 0.2"),
+        DEFAULT_BASH_TIMEOUT_MS
+    );
+    assert_eq!(default_bash_timeout_ms("sleep 120"), 120_000);
+    assert_eq!(default_bash_timeout_ms("sleep 1m 30s"), 90_000);
+    assert_eq!(default_bash_timeout_ms("sleep 0.5; sleep 200"), 200_500);
+    assert_eq!(default_bash_timeout_ms("sleep $X"), DEFAULT_BASH_TIMEOUT_MS);
+    assert_eq!(
+        default_bash_timeout_ms("sleep infinity"),
+        u64::MAX,
+        "infinity 饱和为无超时"
+    );
+}
+
+#[test]
+fn bash_abort_kills_a_sleep_command() {
+    // sleep 轮次的死线被后移到 `max(默认超时, sleep 时长)`，但 abort 不等死线：
+    // 必须立刻杀掉子进程并收尾
     // 。
     let sandbox = Sandbox::new("tools-bash-abort-sleep");
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -653,51 +718,51 @@ fn bash_abort_kills_a_sleep_command_without_a_timeout() {
 }
 
 #[test]
-fn bash_timeout_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe() {
-    // 子进程退出不等于管道到达 EOF：`sleep 3 &` 让 bash 立刻退出，但后台 `sleep` 继承了
-    // 管道写端，读线程会一直阻塞到它退出（Windows 上部署的 Core 二进制 `start` 拉起的
-    // detached daemon 是同一形态，而且永不退出）。
-    // 前台超时与子进程是否已退出无关，到点就转后台。
-    let sandbox = Sandbox::new("tools-bash-timeout-grandchild-pipe");
+fn bash_returns_when_the_shell_exits_even_if_a_grandchild_holds_the_pipe() {
+    // 结束判据与后台任务同一口径（exit-only）：shell 退出即收尾，不等管道 EOF。
+    // `sleep 3 &` 让 bash 立刻退出，后台 `sleep` 继承了管道写端（Windows 上部署
+    // 的 Core 二进制 `start` 拉起的 detached daemon 是同一形态，而且永不退出）——
+    // 读线程不会自然结束，排水宽限（`PIPE_DRAIN_GRACE_MS`）后用快照收尾：
+    // 不转后台、不登记任务、不挂死。
+    let sandbox = Sandbox::new("tools-bash-exit-grandchild-pipe");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
     crate::bash_task::reset_for_test();
 
     let started = std::time::Instant::now();
+    // `&` 会命中 detach 闸门：本测试构造的是管道持有场景，声明豁免
     let outcome = execute(
         "Bash",
-        &json!({
-            "command": "echo started; sleep 3 &",
-            // `&` 会命中 detach 闸门：本测试验证的是管道 EOF 机制，声明豁免
-            "detach": true,
-            // 超时死线要给 shell 启动留足余量：满载的测试进程里 Git Bash 冷启动
-            // 可能超过几百毫秒，死线太紧时 `echo` 还没落盘就转后台，断言
-            // 「已累积输出要带过去」就变成对机器速度的断言而不是对行为的断言。
-            "timeout": 1500,
-            "description": "Grandchild holds the pipe",
-        }),
+        &json!({ "command": "echo started; sleep 3 &", "detach": true }),
         &context(&sandbox),
     );
     let elapsed = started.elapsed();
     let body = text(&outcome);
 
-    assert!(!outcome.is_error(), "自动转后台不算工具失败: {body}");
+    assert!(!outcome.is_error(), "got {body}");
     assert_eq!(outcome.exit_code(), 0);
-    assert!(body.contains("(task ID: bg-auto-"), "got {body}");
-    assert!(body.contains("started"), "转入后台前的已累积输出要带过去: {body}");
+    assert!(body.contains("started"), "已累积输出要保留: {body}");
     assert!(
-        elapsed < std::time::Duration::from_millis(2800),
-        "超时后不该等孙进程（sleep 3）自然退出，实际 {elapsed:?}"
+        !body.contains("bg-auto-"),
+        "shell 已退出，不应再转后台: {body}"
+    );
+    assert_eq!(
+        crate::bash_task::running_count_for_session("s-tools"),
+        0,
+        "shell 已完成的命令不登记后台任务"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(3_000),
+        "shell 退出后不该等孙进程（sleep 3）自然退出，实际 {elapsed:?}"
     );
 
-    crate::bash_task::abort_tasks_for_session("s-tools");
     restore_tmpdir(previous);
     crate::bash_task::reset_for_test();
 }
 
 #[test]
-fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe() {
-    // 同上：子进程已退出、孙进程仍持有管道时，abort 也必须立刻收尾
-    // 。
+fn bash_abort_still_lands_while_a_grandchild_holds_the_pipe() {
+    // shell 还活着时（`wait` 等孙进程），abort 照旧立刻杀树收尾，不被占着管道
+    // 写端的孙进程拖住：停掉读线程、用已累积快照收尾。
     let sandbox = Sandbox::new("tools-bash-abort-grandchild-pipe");
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ctx = ToolContext {
@@ -713,18 +778,17 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
         transfer: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
-    // 取消死线留给 shell 启动的余量见 `bash_timeout_applies_after_the_shell_...`：
-    // 太紧时 `echo` 还没落盘，「已累积输出要保留」就变成对机器速度的断言。
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1200));
+        std::thread::sleep(std::time::Duration::from_millis(400));
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
     let started = std::time::Instant::now();
-    // `detach: true` 豁免闸门：`&` 在此是构造管道场景的手段，不是被测行为
+    // `detach: true` 豁免闸门：`&` 在此是构造管道场景的手段，不是被测行为；
+    // `wait` 让 shell 存活到孙进程退出（否则 shell 毫秒级退出、轮次直接完成）
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo started; sleep 3 &", "detach": true }),
+        &json!({ "command": "echo started; sleep 3 & wait", "detach": true }),
         &ctx,
     );
     let elapsed = started.elapsed();
@@ -735,8 +799,50 @@ fn bash_abort_applies_after_the_shell_exits_with_a_grandchild_holding_the_pipe()
     assert!(body.contains("Command was interrupted"), "got {body}");
     assert!(body.contains("started"), "已累积输出要保留: {body}");
     assert!(
-        elapsed < std::time::Duration::from_millis(2800),
+        elapsed < std::time::Duration::from_millis(2_500),
         "abort 未生效，耗时 {elapsed:?}"
+    );
+}
+
+#[test]
+fn bash_completion_wins_over_a_cancel_that_lands_after_the_shell_exits() {
+    // exit-only 的收尾次序：shell 退出在循环顶直接收尾，之后置位的 abort 不再
+    // 生效——命令已经完成，「被中断」是错误结论（对照上一条：shell 存活时
+    // abort 照常生效）。
+    let sandbox = Sandbox::new("tools-bash-exit-beats-cancel");
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ctx = ToolContext {
+        session_id: "s-abort-exit".to_string(),
+        tool_use_id: None,
+        pause: None,
+        cwd: sandbox.workspace.to_string_lossy().to_string(),
+        on_progress: None,
+        cancel: Some(std::sync::Arc::clone(&cancel)),
+        user_choice: None,
+        background: None,
+        subagent: None,
+        transfer: None,
+    };
+    let flag = std::sync::Arc::clone(&cancel);
+    // shell 毫秒级退出，abort 在它退出之后才置位（宽限 1s 内工具已收尾）
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "echo done; sleep 3 &", "detach": true }),
+        &ctx,
+    );
+    let body = text(&outcome);
+
+    assert!(!outcome.is_status_error(), "got {body}");
+    assert_eq!(outcome.exit_code(), 0);
+    assert!(body.contains("done"), "got {body}");
+    assert!(
+        !body.contains("Command was interrupted"),
+        "shell 已完成，不应按中断收尾: {body}"
     );
 }
 
@@ -946,9 +1052,9 @@ fn bash_background_coerces_truthy_values_like_zod() {
 
 #[test]
 fn sleep_moves_to_the_background_when_a_background_task_completes() {
-    // sleep 命令不设前台超时，
-    // 但 sleep 期间若收到**本会话**的后台任务完成通知，立刻把 sleep 转入后台，
-    // 避免阻塞模型处理通知（不设最短运行时长）。
+    // sleep 命令的前台死线被后移到 `max(默认超时, sleep 时长)`，但 sleep 期间
+    // 若收到**本会话**的后台任务完成通知，立刻把 sleep 转入后台，
+    // 避免阻塞模型处理通知（不等最短运行时长）。
     let sandbox = Sandbox::new("tools-bash-sleep-notify");
     let previous = point_tmpdir_at(&sandbox.root.join("tmp"));
     crate::bash_task::reset_for_test();
@@ -1017,10 +1123,12 @@ fn foreground_command_needs_three_seconds_before_a_completion_notification_backg
     });
 
     let ctx = background_context(&sandbox, std::sync::Arc::clone(&captured));
-    // 显式前台预算（10s）远大于触发点，保证不是「超时」触发的转后台
+    // 显式前台预算（10s）远大于触发点，保证不是「超时」触发的转后台；
+    // 命令不能含 sleep——sleep 轮次收到本会话完成通知会**立刻**转后台，
+    // 走不到 3 秒门槛（`tail -f` 是等价的长跑普通命令）
     let outcome = execute(
         "Bash",
-        &json!({ "command": "sleep 20", "timeout": 10_000 }),
+        &json!({ "command": "tail -f /dev/null", "timeout": 10_000 }),
         &ctx,
     );
     let body = text(&outcome);
