@@ -78,9 +78,16 @@ last_reviewed: 2026-10-31
 - 打开行为对齐 `src/VSCodeUIHost/documentManager.ts` 四约定：不夺焦点打开；内容哈希
   去重；同一时刻至多一个 diff 视图（开新关旧）；应答 `userChoice` 后关闭
   （`closePreview` 同时机）。auto / risk 模式不弹 IDE diff（Electron 宿主空实现同口径）。
-- 焦点变化只有用户主动路径：点击卡片文件路径 → `OpenFileDescriptor.navigate(true)` 夺焦
+- 焦点变化只有用户主动路径：点击卡片文件路径 → OpenFileDescriptor navigate(true) 夺焦
   打开并选中 `startLine`–`endLine` 行区间（webview 既有 `openFile` 消息语义）。diff 与
   工具窗口的打开都不改用户焦点位置。
+- 编辑器选区联动（对齐 VS Code 宿主的 `setCurrentFile` 推送，specs/defects
+  `pycharm-editor-selection-not-synced`）：IDE 编辑器的活跃文件 / 选区变化即发
+  `setCurrentFile`（无选区 = 光标行 start===end；非本地文件编辑器发 `{filePath: ''}`
+  清芯片），并经 `UiEvent.conversationContextUpdated` 持久化到活跃会话的 meta.json；
+  webview 首条消息到达后补发一次初始状态。实现用事件载荷（SelectionEvent 的
+  editor + newRange），不回读全局 selectedTextEditor——跨编辑器切换瞬间回读会拿到
+  旧编辑器（实测竞态）；`FileJumpService` 打开目标文件后也直接触发一次推送。
 - diff 打开 / 关闭 / 去重 / 焦点决策写 idea.log 结构化诊断行（`[diff] open|close`、
   `[openFile] opened`）——e2e 的 IDE 侧断言面（Swing 不可经 CDP 断言）。
 

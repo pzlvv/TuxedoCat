@@ -116,7 +116,9 @@ const SKIP_DIRS = new Set([
   '.agents',
 ]);
 
-const SCAN_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.md', '.mjs', '.cjs']);
+// `.kt`：第四宿主（specs/035）起 Kotlin 源码（pycharm-plugin/）也是标识符与章节
+// 引用的扫描面——反引号里的 Kotlin 符号同样要能在代码里对上
+const SCAN_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.md', '.mjs', '.cjs', '.kt']);
 
 /**
  * 描述「尚未落地内容」的文档（specs/README.md 守卫口径）：TODO.md 与 specs/。

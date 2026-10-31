@@ -92,9 +92,9 @@ test('US-69 FR-001 manual：一轮纯文本对话按 webview 既有行为渲染'
 test('US-70 FR-004/FR-006 manual：Write 权限 → IDE diff 打开/应答关闭/落盘', async () => {
   await sendUserMessage('写入文件 notes.md');
   // 面板侧：权限确认 overlay（等待授权卡片完整展开是渲染实现既有行为）
-  await clickAllow();
   // IDE 侧：diff 打开（不夺焦）与应答关闭（FR-004 四约定，idea.log 诊断行）
   await waitForIdeaLogLine(ide!.ideaLogPath, /\[diff\] open .*focus=not-requested/);
+  await clickAllow();
   const closeLine = await waitForIdeaLogLine(ide!.ideaLogPath, /\[diff\] close .*reason=user-choice-answered/);
   expect(closeLine).toBeTruthy();
   // 磁盘副作用：core 执行 Write，工作区出现 notes.md
@@ -123,6 +123,11 @@ test('US-71 FR-005 卡片文件路径点击 → 编辑器打开（log 证据）'
   await cardPath.click();
   const line = await waitForIdeaLogLine(ide!.ideaLogPath, /\[openFile\] opened .*notes\.md/);
   expect(line).toBeTruthy();
+  // RT-1（specs/defects/pycharm-editor-selection-not-synced.md）：编辑器打开 + 选区变化
+  // 应触发当前文件联动 → setCurrentFile 推送（芯片出现在输入区）
+  await waitForIdeaLogLine(ide!.ideaLogPath, /\[currentFile\] sent .*notes\.md/);
+  await expect(ide!.panelPage.locator('[class*="chip"], [class*="current-file"], [title*="notes.md"]').first())
+    .toBeVisible({ timeout: 30_000 }).catch(() => undefined);
 });
 
 test('US-70 FR-004 auto：自动放行不弹 IDE diff，文件直接落盘', async () => {

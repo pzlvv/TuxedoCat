@@ -25,7 +25,11 @@ import com.intellij.openapi.vfs.LocalFileSystem
  * `beforeContent == null`（Write 新建文件）时只展示新内容单侧。
  * 打开 / 关闭 / 去重 / 焦点决策写 idea.log 结构化诊断行（e2e 断言面）。
  */
-class DiffService(private val project: Project, private val log: (String) -> Unit) {
+class DiffService(
+    private val project: Project,
+    private val runOnEdt: (Runnable) -> Unit,
+    private val log: (String) -> Unit,
+) {
 
     private var currentHash: Int? = null
     private var currentTitle: String? = null
@@ -48,16 +52,17 @@ class DiffService(private val project: Project, private val log: (String) -> Uni
                 log("[diff] open skipped (same content hash=$hash, title=$title)")
                 return
             }
-            // ModalityState.any()：后台线程的 invokeLater 若钉在某个已消失的模态上下文上
-            // 会永不执行（实测 EDT lambda 不进入），any() 免除该等待
+            // 默认 modality 从后台线程取值会把 lambda 钉死（实测不执行）；any() 又会让
+            // TransactionGuard 拒绝模型变更。用 stateForComponent：钉在面板组件的模态上，
+            // 执行时机正确且是 write-safe 上下文
             pendingRequest = true
             currentTitle = title
             currentHash = hash
-            ApplicationManager.getApplication().invokeLater({
+            runOnEdt {
                 try {
                     if (!pendingRequest) {
                         log("[diff] open cancelled (respond arrived before EDT open) title=$title")
-                        return@invokeLater
+                        return@runOnEdt
                     }
                     val contentFactory = DiffContentFactory.getInstance()
                     val request = if (beforeContent != null) {
@@ -82,7 +87,7 @@ class DiffService(private val project: Project, private val log: (String) -> Uni
                 } catch (e: Throwable) {
                     log("[diff] showDiff error: $e")
                 }
-            }, com.intellij.openapi.application.ModalityState.any())
+            }
         }
     }
 
@@ -106,11 +111,11 @@ class DiffService(private val project: Project, private val log: (String) -> Uni
         if (title == null && !cancelled) return
         if (fileToClose != null) {
             // 关闭 diff 编辑器 tab（应答即关，对齐 VS Code 宿主的 closePreview）
-            ApplicationManager.getApplication().invokeLater({
+            runOnEdt {
                 runCatching {
                     com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).closeFile(fileToClose)
                 }
-            }, com.intellij.openapi.application.ModalityState.any())
+            }
         }
         log("[diff] close title=${title ?: "(pending)"} reason=$reason")
     }
@@ -142,18 +147,24 @@ private class StaticDiffFile(name: String) : DiffVirtualFile(name) {
  * 文件跳转（FR-005）：编辑器打开文件、焦点切到编辑器、选中改动行区间。
  * 对齐 VS Code 宿主的 openFile（reveal + selection）；夺焦是用户主动行为。
  */
-class FileJumpService(private val project: Project, private val log: (String) -> Unit) {
+class FileJumpService(
+    private val project: Project,
+    private val runOnEdt: (Runnable) -> Unit,
+    private val log: (String) -> Unit,
+    private val onFileOpened: (() -> Unit)? = null,
+) {
 
     fun openFile(filePath: String, selectedLines: Pair<Int, Int>?) {
-        // ModalityState.any()：同 DiffService——后台线程的默认 modality 会钉死 lambda
-        ApplicationManager.getApplication().invokeLater({
+        // modality 说明同 DiffService.runOnEdt：navigate / VFS refresh 是模型变更，
+        // any() 会被 TransactionGuard 拒绝（实测 openFile 静默失败）
+        runOnEdt {
             log("[openFile] EDT entered path=$filePath")
             try {
                 // refreshAndFind：notes.md 由 core 子进程在 IDE 外创建，VFS 不刷新就查不到
                 val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(java.nio.file.Path.of(filePath))
                 if (file == null) {
                     log("[openFile] file not found: $filePath")
-                    return@invokeLater
+                    return@runOnEdt
                 }
                 // navigate(true) = 夺焦（对齐 VS Code openFile 语义）
                 OpenFileDescriptor(project, file, 0, 0).navigate(true)
@@ -171,9 +182,12 @@ class FileJumpService(private val project: Project, private val log: (String) ->
                     }
                 }
                 log("[openFile] opened path=$filePath lines=${selectedLines?.first}-${selectedLines?.second} focus=true")
+                // 编辑器已切到目标文件：触发当前文件联动推送（selectedTextEditor 此时
+                // 已指向目标文件，绕过编辑器切换事件的回读竞态）
+                onFileOpened?.invoke()
             } catch (e: Throwable) {
                 log("[openFile] error: $e")
             }
-        }, com.intellij.openapi.application.ModalityState.any())
+        }
     }
 }

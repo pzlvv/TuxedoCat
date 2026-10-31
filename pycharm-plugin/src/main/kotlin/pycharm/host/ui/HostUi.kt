@@ -125,7 +125,12 @@ class HostUi(
     /** webview 下行入口（PanelController 注入） */
     var sendToWebview: (message: JsonObject) -> Unit = {}
 
-    /** 当前活跃会话（UI 自己的状态，principles 第 7 节） */
+    /** webview 挂载完成（首条消息到达）的回调：宿主据此补发初始状态（对齐 VS Code
+     * 在 resolveWebviewView 时推送 setCurrentFile 的时序） */
+    var onFirstWebviewMessage: (() -> Unit)? = null
+    @Volatile private var firstMessageSeen = false
+
+    /** 当前活跃会话（UI 自己的状态，docs/architecture/principles.md 第 7 节） */
     @Volatile var trackedActiveSessionId: String? = null
 
     fun postToWebview(sessionId: String, message: JsonObject) {
@@ -329,6 +334,11 @@ class HostUi(
 
     fun handleWebviewMessage(message: JsonObject) {
         val type = str(message, "type")
+        if (!firstMessageSeen) {
+            firstMessageSeen = true
+            // 首条消息意味着 webview 的 message 监听已就绪，此时推送不丢
+            onFirstWebviewMessage?.invoke()
+        }
         try {
             when (type) {
                 // ===== UiEvent 翻译 =====

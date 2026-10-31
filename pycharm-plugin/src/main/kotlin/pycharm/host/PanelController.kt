@@ -9,6 +9,7 @@ import kotlinx.serialization.json.put
 import pycharm.host.core.CoreBus
 import pycharm.host.core.CoreProcess
 import pycharm.host.ide.DiffService
+import pycharm.host.ide.EditorSelectionWatcher
 import pycharm.host.ide.FileJumpService
 import pycharm.host.settings.SettingsSnapshot
 import pycharm.host.settings.SettingsStore
@@ -67,6 +68,27 @@ class PanelController(private val project: Project) {
             uiFontSize = settingsStore.readUiFontSize(),
         )
         val bus = createBus()
+        // 编辑器当前文件与选区联动（对齐 VS Code 宿主的 setCurrentFile 推送）；
+        // getActiveSessionId 经类属性 hostUi（此处局部 hostUi 尚未创建）
+        val watcher = EditorSelectionWatcher(
+            project = project,
+            getActiveSessionId = { this@PanelController.hostUi?.trackedActiveSessionId },
+            emitUiEvent = { event -> bus.emitToCore(event) },
+            sendToWebview = { message -> panel?.postMessage(message) },
+            log = log,
+        )
+        // runOnEdt：面板组件绑定的 modality——后台线程的默认 modality 会把 lambda 钉死，
+        // ModalityState.any() 又会被 TransactionGuard 拒绝模型变更（实测 openFile 静默失败）。
+        // panel 在下方创建；lambda 调用时机（消息驱动）晚于面板创建，读取属性即可
+        val runOnEdt: (Runnable) -> Unit = { runnable ->
+            val component = panel?.browser?.component
+            if (component != null) {
+                com.intellij.openapi.application.ApplicationManager.getApplication()
+                    .invokeLater(runnable, com.intellij.openapi.application.ModalityState.stateForComponent(component))
+            } else {
+                runnable.run()
+            }
+        }
         val hostUi = HostUi(
             project = project,
             homeDir = homeDir,
@@ -74,8 +96,8 @@ class PanelController(private val project: Project) {
             workspacePath = workspacePath,
             bus = bus,
             settingsStore = settingsStore,
-            diffService = DiffService(project, log),
-            fileJumpService = FileJumpService(project, log),
+            diffService = DiffService(project, runOnEdt, log),
+            fileJumpService = FileJumpService(project, runOnEdt, log, onFileOpened = { watcher.send() }),
             pluginRoot = pluginRoot,
             log = log,
         )
@@ -95,8 +117,12 @@ class PanelController(private val project: Project) {
         )
         this.panel = panel
         hostUi.sendToWebview = { message -> panel.postMessage(message) }
+        selectionWatcher = watcher
+        hostUi.onFirstWebviewMessage = { watcher.send() }
         return panel.browser.component
     }
+
+    private var selectionWatcher: EditorSelectionWatcher? = null
 
     /** 总线与 Core 进程装配：spawn 后立即 hostEnvironmentProvided（就绪前排队） */
     private fun createBus(): CoreBus {
