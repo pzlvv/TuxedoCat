@@ -233,7 +233,10 @@ test('US-59 压缩（messagesReplaced）后按钮不消失、计数不变', asyn
   await openConversation('带清单的对话');
   await expect(progressButton()).toHaveText('任务进度: 1/4');
 
-  // 压缩完成：消息被整批替换，但 Todo 事实在 core 的表里，不受影响
+  // 压缩完成：消息被整批替换，但 Todo 事实在 core 的表里，不受影响。
+  // 发送点刻意贴着「按钮已亮、消息未铺」的加载窗口：窗口内到达的替换由
+  // conversationLoaded 的 rAF 收尾时应用（specs/defects/messages-replaced-clobbered-by-load-raf），
+  // 不需要先等首条消息渲染——那会把本用例对压缩链路的覆盖降级成对渲染时序的等待。
   await host.send({
     type: 'messagesReplaced',
     sessionId: 'sess-todo-a',
@@ -305,7 +308,11 @@ test('US-59 固定后的浮层文字可选中复制，点击不产生上行且�
   const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
   expect(clipboardText).toContain('改代码');
 
-  // 浮层只读：点击不产生上行消息，固定态不变
+  // 浮层只读：点击不产生上行消息，固定态不变。
+  // 先等 App 挂载后 500ms 的延迟启动刷新（loadConversations + requestSessionRuntimeStates
+  // 同批发出，App.tsx 启动 effect）：CI 慢机上这对消息可能落在下面 before/after 快照的
+  // 差值窗口里，与浮层点击无关却把差值顶成 +2。
+  await host.waitForSentWhere('requestSessionRuntimeStates', () => true);
   const before = (await host.sentAll()).length;
   const tipBox = await progressTip().boundingBox();
   await page.mouse.click(tipBox!.x + 4, tipBox!.y + 4);

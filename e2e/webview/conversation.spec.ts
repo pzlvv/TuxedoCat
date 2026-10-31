@@ -157,6 +157,61 @@ test('US-4 展开的 thinking 内容限高并在框内滚动', async () => {
   expect(metrics.thumbBg).toMatch(/^rgba?\(128, 128, 128/);
 });
 
+test('US-4 thinking 流结束后内容是种子全文（specs/defects/fakehost-thinking-accumulated-chunk-only RT-2）', async () => {
+  const { page, host } = handle;
+  // chunkDelayMs: 0：全部块与 streamEnd 挤进同一批任务，webview 的 rAF 冲刷必然
+  // 晚于 streamEnd 到达——streamEnd 收尾优先取「缓冲里最后一条 streamMessage 的
+  // accumulated」。wire 契约（src/host/webviewMessages.ts 载荷注释「当前累积的
+  // 完整文本」，core-rs/src/engine.rs 的 thinking delta 事件同口径）要求它是累计
+  // 全文：契约成立时内容与到达顺序无关，恒为种子全文；发成块级值时内容缩成最后
+  // 一个块（从句中截断），本用例在两种任务编排下都红。
+  const thinking = '思考过程需要成段展开，这里是第若干句推理。'.repeat(7);
+  await host.setTurn({ thinking, text: '思考完毕。', chunkDelayMs: 0 });
+  await fillInput('校验思考全文');
+  await page.press('textarea.input-textarea', 'Enter');
+
+  const summary = page.locator('summary', { hasText: 'thinking' });
+  await expect(summary).toBeVisible({ timeout: 15_000 });
+  // 统计从 chars 切到 tok 即思考流结束（与上一条用例同一判据）
+  await expect(summary.getByText(/tok/)).toBeVisible({ timeout: 15_000 });
+
+  await summary.click();
+  const content = page.locator('.thinking-content');
+  await expect(content).toBeVisible();
+  expect(await content.innerText()).toBe(thinking);
+});
+
+test('加载窗口内到达的 messagesReplaced 不被加载快照覆盖（specs/defects/messages-replaced-clobbered-by-load-raf RT-1）', async () => {
+  const { page, host } = handle;
+  await host.setConversations([
+    {
+      sessionId: 'sess-compact-window',
+      title: '加载窗口压缩',
+      createdAt: Date.now() - 60_000,
+      updatedAt: Date.now() - 30_000,
+      messageCount: 1,
+      messages: [
+        { type: 'user', uuid: 'cw-1', parentUuid: null, timestamp: Date.now() - 60_000, message: { role: 'user', content: '加载快照的原文' } },
+      ],
+    },
+  ]);
+  // 假宿主在 conversationLoaded 应答之后**同批**补发 messagesReplaced：两条 wire
+  // 消息挤进同一批任务，webview 的 rAF 必然晚于两者处理——确定性命中「替换先落、
+  // rAF 后到」的竞态侧。整批替换在 wire 上晚于加载快照，是更晚的事实，必须生效
+  // （core 压缩后重建 / 宿主展开归档共用这条消息）。
+  await host.setLoadReplacement([
+    { role: 'user', content: '压缩后的保留区' },
+  ]);
+
+  await page.locator('button[title="对话历史"]').click();
+  await expect(page.locator('.conversation-dropdown')).toBeVisible();
+  await page.locator('.conversation-dropdown').getByText('加载窗口压缩').click();
+
+  await expect(page.getByText('压缩后的保留区')).toBeVisible({ timeout: 10_000 });
+  // 加载快照的原文不得残留
+  await expect(page.getByText('加载快照的原文')).toHaveCount(0);
+});
+
 test('US-2 中止进行中的流式回复', async () => {
   const { page, host } = handle;
   await host.setTurn({

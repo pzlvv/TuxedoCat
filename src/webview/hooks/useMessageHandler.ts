@@ -184,6 +184,9 @@ export interface UseMessageHandlerProps {
     totalBytes?: number;
   }>>;
   conversationLoadingRef: React.MutableRefObject<boolean>;
+  /** 加载窗口内到达的整批替换（messagesReplaced，键为会话 ID）：与 updateToolStatus 的
+   *  缓冲同机制，由 conversationLoaded 的 rAF 收尾时消费（specs/defects/messages-replaced-clobbered-by-load-raf） */
+  pendingMessagesReplacedRef: React.MutableRefObject<Map<string, Extract<HostToWebviewWire, { type: 'messagesReplaced' }>['messages']>>;
   isDeletingRef: React.MutableRefObject<boolean>;
   listLoadedOnceRef: React.MutableRefObject<boolean>;
   _appMountTime: React.MutableRefObject<number | null>;

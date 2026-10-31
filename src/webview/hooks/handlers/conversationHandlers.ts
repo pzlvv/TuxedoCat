@@ -191,8 +191,13 @@ export function handleConversationConversationLoaded(
           const _t_convLoaded = performance.now();
           const _convLoadedSessionId = msg.conversation?.metadata?.sessionId;
           profileLog(`[Profile] conversationLoaded收到 | session=${(_convLoadedSessionId || '').substring(0, 20)} | t=${_t_convLoaded.toFixed(2)}ms`);
-          // 标记会话正在加载（此期间的 updateToolStatus 进入缓冲，避免时序竞态）
+          // 标记会话正在加载（此期间的 updateToolStatus 与 messagesReplaced 进入缓冲，
+          // 避免时序竞态）；同会话旧窗口遗留的整批替换一并作废——新加载快照在 wire 上
+          // 晚于它（specs/defects/messages-replaced-clobbered-by-load-raf 的不变量）
           props.conversationLoadingRef.current = true;
+          if (_convLoadedSessionId) {
+            props.pendingMessagesReplacedRef.current.delete(_convLoadedSessionId);
+          }
           // 设置当前会话 ID
           if (msg.conversation && msg.conversation.metadata && msg.conversation.metadata.sessionId) {
             const loadedSessionId = msg.conversation.metadata.sessionId;
@@ -341,6 +346,8 @@ export function handleConversationConversationLoaded(
             // 若在这里同步清空，"加载期间 updateToolStatus 进入缓冲"的防竞态机制
             // 会失效，加载中的工具状态更新会写进旧 messages 后被覆盖丢失。
             props.conversationLoadingRef.current = false;
+            // 窗口就此作废：窗口内缓冲的整批替换无 rAF 可消费，清空防跨窗口残留
+            props.pendingMessagesReplacedRef.current.clear();
           }
           // 设置对话标题
           if (msg.conversation && msg.conversation.metadata?.title) {
@@ -428,6 +435,15 @@ export function handleConversationConversationLoaded(
                   }
                 }
                 props.setMessages(restoredMessages);
+                // 加载窗口内到达的整批替换在此应用（缓冲见 handleConversationMessagesReplaced）：
+                // 与本 rAF 的 setMessages(restoredMessages) 同一批 React 提交，替换是
+                // wire 上更晚的事实、必须留在最终列表里。按加载会话精确消费，避免串台到
+                // 后加载的会话。
+                const pendingReplaced = props.pendingMessagesReplacedRef.current.get(_convLoadedSessionId || '');
+                props.pendingMessagesReplacedRef.current.delete(_convLoadedSessionId || '');
+                if (pendingReplaced) {
+                  props.setMessages(pendingReplaced.map(toUiMessage));
+                }
                 // 触发强制滚动到底部：加载历史对话时，即使上一会话用户曾向上滚动
                 // （userScrolledAwayRef 为 true），也要让新会话的消息滚动到最底部。
                 props.setForceScrollKey((prev) => prev + 1);
@@ -450,10 +466,14 @@ export function handleConversationConversationLoaded(
               props.conversationLoadingRef.current = false;
               // 恢复失败也必须结束 loading，否则遮罩会永久留在页面上
               props.finishConversationLoad(_convLoadedSessionId);
+              // 窗口就此作废：窗口内缓冲的整批替换无 rAF 可消费，清空防跨窗口残留
+              props.pendingMessagesReplacedRef.current.clear();
             }
           } else {
             // 没有消息体（异常/空载荷）：同样结束 loading，避免遮罩卡死
             props.finishConversationLoad(_convLoadedSessionId);
+            // 窗口就此作废：窗口内缓冲的整批替换无 rAF 可消费，清空防跨窗口残留
+            props.pendingMessagesReplacedRef.current.clear();
           }
           return;
 }
@@ -467,6 +487,14 @@ export function handleConversationMessagesReplaced(
           // 与 addMessage 的差别：这里不追加、不处理排队消息与 token 累加，
           // 只把整批历史消息铺成当前列表。
           if (msg.sessionId && msg.sessionId !== sessionId) {
+            return;
+          }
+          // 加载窗口内（conversationLoaded 的 rAF 尚未执行）与 updateToolStatus 同等
+          // 对待：立即 setMessages 会被 rAF 里的 setMessages(restoredMessages) 覆盖。
+          // 替换在 wire 上晚于加载快照，是更晚的事实——进缓冲，由 rAF 收尾时应用
+          // （specs/defects/messages-replaced-clobbered-by-load-raf）。同会话多次到达 last-wins。
+          if (props.conversationLoadingRef.current) {
+            props.pendingMessagesReplacedRef.current.set(msg.sessionId || sessionId || '', msg.messages);
             return;
           }
           scrollToBottomBeforeRender();
