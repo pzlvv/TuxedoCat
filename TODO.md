@@ -84,6 +84,16 @@
   断言路径剥离（FakeLlm 直接给 46 轮，不经真实 spawn）。验收判据：本机连续 5 次
   `cargo test tool_loop_has_no_default_turn_limit` 全绿，CI 同口径。
 
+- **加载窗口内到达的 `messagesReplaced` 会被 conversationLoaded 的 rAF 整批覆盖**（todoProgress e2e
+  偶发挂红走读定位，specs/defects/fakehost-thinking-accumulated-chunk-only 验证时确认的产品级竞态）：
+  `conversationLoaded` 的 `setMessages` 排在 rAF 回调里（`src/webview/hooks/handlers/conversationHandlers.ts`，
+  为回放跨会话缓冲的 updateToolStatus），`requestSessionTodos` 却同步先发——真实用户在「按钮已亮、
+  消息未铺」的同一帧窗口内完成压缩时，`messagesReplaced` 先落、rAF 后到，替换结果被历史消息覆盖。
+  方向：加载窗口内到达的 `messagesReplaced` 与 updateToolStatus 同等对待（进缓冲按序回放），或
+  rAF 收尾时以窗口内收到的整批替换为最终值。验收判据：e2e 在 `conversationLoaded` 应答后立即注入
+  `messagesReplaced`（不等首条消息渲染）仍能稳定看到替换后内容；`conversation.spec.ts` 压缩用例
+  去掉「等首条消息渲染」的前置等待后连续绿。
+
 - **tui-rs 配置快照缺 multimodal 被 core 拒收**（specs/012 修订漏改 tui-rs，specs/035 plan 宪章检查发现）：
   `tui-rs/src/settings.rs` 的 `snapshot_to_payload` 产出的 `modelLimits` / `modelLimitsFallback`
   条目缺必选 `multimodal` 字段，core-rs serde 拒收 → TUI 挂在就绪握手。修复方向：对齐
