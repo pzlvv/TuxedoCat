@@ -791,17 +791,34 @@ fn available_commands() -> Result<Vec<String>, String> {
         "pip", "pip3", "pnpm", "yarn",
     ];
     let which = if cfg!(windows) { "where" } else { "which" };
+    // 并发探测而不是逐个串行：串行 26 次 spawn 在 Windows 上实测 6s+（PATH 长、
+    // 磁盘慢时更久），首次查询的提示词组装整段卡在等待上（specs/defects/
+    // available-commands-probe-stalls-first-query）。候选表、探测命令与
+    // 「失败按不可用」的口径都不变，墙钟时间从累加变成「最慢一次探测」。
+    let probes: Vec<_> = CANDIDATES
+        .iter()
+        .map(|candidate| {
+            let candidate = candidate.to_string();
+            let which = which.to_string();
+            std::thread::spawn(move || -> Result<bool, String> {
+                let mut command = std::process::Command::new(which);
+                command
+                    .arg(candidate)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                crate::util::hide_console(&mut command);
+                crate::shell_env::apply_native(&mut command)?;
+                Ok(command.status().map(|status| status.success()).unwrap_or(false))
+            })
+        })
+        .collect();
     let mut found: Vec<String> = Vec::new();
-    for candidate in CANDIDATES {
-        let mut command = std::process::Command::new(which);
-        command
-            .arg(candidate)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        crate::util::hide_console(&mut command);
-        crate::shell_env::apply_native(&mut command)?;
-        if command.status().map(|status| status.success()).unwrap_or(false) {
+    for (candidate, handle) in CANDIDATES.iter().zip(probes) {
+        if handle
+            .join()
+            .unwrap_or_else(|_| Err("probe thread panicked".to_string()))?
+        {
             found.push(candidate.to_string());
         }
     }

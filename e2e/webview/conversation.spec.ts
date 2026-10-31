@@ -19,6 +19,31 @@ test.afterEach(async () => {
   await handle.close();
 });
 
+/**
+ * 填输入框并等到「发送按钮可用」。
+ *
+ * 为什么不能直接 `fill` + `press`：页面挂载后紧接着有配置握手（`settingsDefaults` /
+ * `setNewConversationDefaults`）引起的重渲染，早于它落地的输入会被受控 textarea 按
+ * state 回写清空——表现是框里看着有字、发送按钮却一直 disabled，`press` 的 Enter
+ * 闭包里 `input` 是空串，发送被 `hasContent` 挡掉，整条用例只会超时。
+ * 这里以「发送按钮 enabled」作为输入已落到 React 状态的判据（它是 `hasContent` 的
+ * 投影），若仍被回写就再填一次。
+ */
+async function fillInput(text: string): Promise<void> {
+  const { page } = handle;
+  const textarea = page.locator('textarea.input-textarea');
+  const sendButton = page.locator('button:has(.ti-send)').last();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await textarea.fill(text);
+    const enabled = await sendButton
+      .isEnabled({ timeout: 3_000 })
+      .catch(() => false);
+    if (enabled) return;
+  }
+  // 三次都没生效说明不是时序问题而是接线坏了：让断言以原始形态失败
+  await expect(sendButton).toBeEnabled();
+}
+
 test('US-1 发送消息：用户消息上屏，助手回复流式渲染为 Markdown', async () => {
   const { page, host } = handle;
   await host.setTurn({
@@ -26,7 +51,7 @@ test('US-1 发送消息：用户消息上屏，助手回复流式渲染为 Markd
     chunkDelayMs: 30,
   });
 
-  await page.fill('textarea.input-textarea', '你好，帮我写个示例');
+  await fillInput('你好，帮我写个示例');
   await page.press('textarea.input-textarea', 'Enter');
 
   // 上行：sendMessage 携带原文与会话
@@ -50,7 +75,7 @@ test('US-1 发送消息：用户消息上屏，助手回复流式渲染为 Markd
 test('US-1 点击发送按钮同样可以发送', async () => {
   const { page, host } = handle;
   await host.setTurn({ text: '好的。', chunkDelayMs: 10 });
-  await page.fill('textarea.input-textarea', '点按钮发送');
+  await fillInput('点按钮发送');
   await page.locator('button:has(.ti-send)').last().click();
   const sent = await host.waitForSent('sendMessage');
   expect(sent.content).toBe('点按钮发送');
@@ -64,7 +89,7 @@ test('US-4 thinking 内容折叠展示并带流式统计', async () => {
     text: '思考完毕，给出答案。',
     chunkDelayMs: 25,
   });
-  await page.fill('textarea.input-textarea', '想一想再回答');
+  await fillInput('想一想再回答');
   await page.press('textarea.input-textarea', 'Enter');
 
   // thinking 折叠块（summary 固定含 "thinking" 字样），流式统计含 Decode
@@ -76,13 +101,69 @@ test('US-4 thinking 内容折叠展示并带流式统计', async () => {
   await expect(page.getByText('思考完毕，给出答案。').first()).toBeVisible();
 });
 
+test('US-4 展开的 thinking 内容限高并在框内滚动', async () => {
+  const { page, host } = handle;
+  // 长思考：宽度足够大时也会折行到超过限高，确保框内一定出现滚动条
+  const thinking = '思考过程需要成段展开，这里是第若干句推理。'.repeat(400);
+  await host.setTurn({
+    thinking,
+    text: '思考完毕，给出答案。',
+    chunkDelayMs: 5,
+  });
+  await fillInput('写一段很长的思考');
+  await page.press('textarea.input-textarea', 'Enter');
+
+  const summary = page.locator('summary', { hasText: 'thinking' });
+  await expect(summary).toBeVisible({ timeout: 15_000 });
+  // 统计从 chars 切到 tok 即思考流结束（docs/features/user-stories/dialog-core.md 的 US-4），
+  // 此时内容长度才稳定，测到的是完整思考文本
+  await expect(summary.getByText(/tok/)).toBeVisible({ timeout: 15_000 });
+
+  // 默认收起：内容不可见
+  const content = page.locator('.thinking-content');
+  await expect(content).toBeHidden();
+
+  // 展开后限高（约 3 个 Bash 输出框的量级），内容超出即在框内滚动
+  await summary.click();
+  await expect(content).toBeVisible();
+  await expect
+    .poll(async () =>
+      content.evaluate((el) => el.scrollHeight > el.clientHeight),
+    )
+    .toBe(true);
+  const metrics = await content.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return {
+      overflowY: style.overflowY,
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      // 内层滚动条走 legacy 伪元素（`.inner-scrollbar`）：标准属性必须复位成 auto，
+      // 否则 Chromium 会整体忽略 ::-webkit-scrollbar，宽度与颜色都改不动
+      scrollbarWidth: style.scrollbarWidth,
+      thumbBg: getComputedStyle(el, '::-webkit-scrollbar-thumb').backgroundColor,
+      scrollbarWidthPx: getComputedStyle(el, '::-webkit-scrollbar').width,
+    };
+  });
+  expect(metrics.overflowY).toBe('auto');
+  // 限高值落在「两个 Bash 输出框之上、三个的量级」这一带：比单框高一截，
+  // 又不会把整段思考全放出来
+  expect(metrics.clientHeight).toBeGreaterThan(231);
+  expect(metrics.clientHeight).toBeLessThanOrEqual(346);
+  // 长内容确实超出限高，出现框内滚动条
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  // 框内滚动条：3px、中性灰（不是主题 harness 色）
+  expect(metrics.scrollbarWidth).toBe('auto');
+  expect(metrics.scrollbarWidthPx).toBe('3px');
+  expect(metrics.thumbBg).toMatch(/^rgba?\(128, 128, 128/);
+});
+
 test('US-2 中止进行中的流式回复', async () => {
   const { page, host } = handle;
   await host.setTurn({
     text: '这段回复非常长'.repeat(40),
     chunkDelayMs: 200,
   });
-  await page.fill('textarea.input-textarea', '慢速回答');
+  await fillInput('慢速回答');
   await page.press('textarea.input-textarea', 'Enter');
 
   // 流式中：终止按钮出现并可点
@@ -100,7 +181,7 @@ test('US-2 中止进行中的流式回复', async () => {
 test('abort 按钮三态：红（前台在跑）→ 黄（只剩后台）→ 灰（空闲）', async () => {
   const { page, host } = handle;
   await host.setTurn({ text: '这段回复非常长'.repeat(60), chunkDelayMs: 150 });
-  await page.fill('textarea.input-textarea', '长任务');
+  await fillInput('长任务');
   await page.press('textarea.input-textarea', 'Enter');
 
   const sent = await host.waitForSent('sendMessage');
@@ -163,12 +244,12 @@ test('US-3 引擎忙碌时消息排队，轮末自动重发；中止后回填输
   const { page, host } = handle;
   await host.setTurn({ text: '第一轮回答。', chunkDelayMs: 150 });
 
-  await page.fill('textarea.input-textarea', '第一条消息');
+  await fillInput('第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
 
   // 忙碌中再发一条 → 排队横幅出现
-  await page.fill('textarea.input-textarea', '排队消息');
+  await fillInput('排队消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.getByText(/等待中/).first()).toBeVisible();
 
@@ -182,10 +263,10 @@ test('US-3 引擎忙碌时消息排队，轮末自动重发；中止后回填输
 
   // 中止路径：再排一条后中止，排队内容回填输入框
   await host.setTurn({ text: '第二轮回答。'.repeat(20), chunkDelayMs: 250 });
-  await page.fill('textarea.input-textarea', '第二条消息');
+  await fillInput('第二条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
-  await page.fill('textarea.input-textarea', '会被回填的消息');
+  await fillInput('会被回填的消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.getByText(/等待中/).first()).toBeVisible();
   await page.locator('button[title="终止"]').click();
@@ -200,22 +281,26 @@ test('US-3 排队项编辑撤回到输入框 / 删除；排队时禁止发送', 
     (await host.sentAll()).filter((m) => m.type === 'sendMessage').length;
 
   // ── 编辑：排队消息撤回到输入框，引擎不再消费它 ──
-  await host.setTurn({ text: '第一轮回答。'.repeat(30), chunkDelayMs: 250 });
-  await page.fill('textarea.input-textarea', '第一条消息');
+  // 首轮拉到 ~12s：排队阶段的全部断言都要落在「仍在排队」的窗口内——
+  // fillInput 等「发送可用」的语义在排队期是反的（按钮恰好合法地禁用），
+  // 重试循环会把窗口烧穿，轮末自动重发一来计数断言就变成竞态
+  await host.setTurn({ text: '第一轮回答。'.repeat(30), chunkDelayMs: 2_000 });
+  await fillInput('第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
 
-  await page.fill('textarea.input-textarea', '要编辑的消息');
+  await fillInput('要编辑的消息');
   await page.press('textarea.input-textarea', 'Enter');
   const banner = page.getByText(/等待中/).first();
   await expect(banner).toBeVisible();
 
-  // 排队期间发送被禁用：按钮置灰，Enter 也不再触发上行
+  // 排队期间发送被禁用：按钮置灰，Enter 也不再触发上行。
+  // 直接填入（不经 fillInput），Enter 后计数必须维持原值——轮次仍在跑，
+  // 轮末自动重发还没到，这个计数是稳定的
   const sendButton = page.locator('button:has(.ti-send)').last();
   await expect(sendButton).toBeDisabled();
-  await page.fill('textarea.input-textarea', '排队中不能再发');
+  await page.locator('textarea.input-textarea').fill('排队中不能再发');
   await page.press('textarea.input-textarea', 'Enter');
-  await page.waitForTimeout(300);
   expect(await sendMessageCount()).toBe(2);
 
   // 编辑：横幅消失、内容撤回到输入框，宿主收到 discardQueuedMessage
@@ -225,16 +310,16 @@ test('US-3 排队项编辑撤回到输入框 / 删除；排队时禁止发送', 
   expect((await host.sentAll()).filter((m) => m.type === 'discardQueuedMessage')).toHaveLength(1);
 
   // 本轮结束后不自动重发（撤回即取消）
-  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
+  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 30_000 });
   expect(await sendMessageCount()).toBe(2);
 
   // ── 删除：排队消息直接丢弃，不回填输入框 ──
-  await host.setTurn({ text: '第二轮回答。'.repeat(30), chunkDelayMs: 250 });
-  await page.fill('textarea.input-textarea', '第二条消息');
+  await host.setTurn({ text: '第二轮回答。'.repeat(30), chunkDelayMs: 1_000 });
+  await fillInput('第二条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeEnabled({ timeout: 15_000 });
 
-  await page.fill('textarea.input-textarea', '要删除的消息');
+  await fillInput('要删除的消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.getByText(/等待中/).first()).toBeVisible();
   await page.locator('button[title*="删除排队消息"]').click();
@@ -246,7 +331,7 @@ test('US-12 代码块一键复制并反馈「已复制」', async ({ browserName
   test.skip(browserName !== 'chromium', '剪贴板断言仅在 Chromium 下执行');
   const { page, host } = handle;
   await host.setTurn({ text: '```js\nconsole.log("copy-me");\n```\n', chunkDelayMs: 10 });
-  await page.fill('textarea.input-textarea', '给段代码');
+  await fillInput('给段代码');
   await page.press('textarea.input-textarea', 'Enter');
 
   const copyButton = page.locator('button[title="复制代码"]');
@@ -261,7 +346,7 @@ test('US-12 代码块一键复制并反馈「已复制」', async ({ browserName
 
 test('US-1 输入法合成期间的 Enter 不发送（模拟 composition）', async () => {
   const { page, host } = handle;
-  await page.fill('textarea.input-textarea', '中文输入');
+  await fillInput('中文输入');
   // 触发 compositionstart → Enter → compositionend：这期间 Enter 不应发送
   await page.evaluate(() => {
     const el = document.querySelector('textarea.input-textarea')!;
@@ -279,7 +364,7 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
   const { page, host } = handle;
   // 建会话：黄色态判定读当前会话的快照条目（与三态用例同一驱动方式）
   await host.setTurn({ text: 'ok' });
-  await page.fill('textarea.input-textarea', '起个会话');
+  await fillInput('起个会话');
   await page.press('textarea.input-textarea', 'Enter');
   const sent = await host.waitForSent('sendMessage');
   const sid = sent.sessionId as string;

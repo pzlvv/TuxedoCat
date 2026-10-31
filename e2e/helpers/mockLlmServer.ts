@@ -33,7 +33,7 @@ export interface RecordedRequest {
 
 /** 一轮应答的脚本：text 终轮 / tool 工具轮 / tools 多工具轮 / slow 慢速流 / hang 不回响应头 */
 export type ScriptDecision =
-  | { kind: 'text'; text: string; thinking?: string }
+  | { kind: 'text'; text: string; thinking?: string; delayMs?: number }
   | { kind: 'tool'; name: string; args: Record<string, unknown>; preamble?: string; delayMs?: number }
   | { kind: 'tools'; calls: Array<{ name: string; args: Record<string, unknown> }>; preamble?: string; delayMs?: number }
   | { kind: 'slow'; text: string; chunkDelayMs: number }
@@ -204,6 +204,12 @@ export async function startMockLlm(options: {
           i += step;
           setTimeout(tick, decision.kind === 'slow' ? decision.chunkDelayMs : 15);
         };
+        if (decision.kind === 'text' && decision.delayMs) {
+          // 首字前挂起：让出事件循环（与工具轮的 delayMs 同语义），供用例把
+          // 某个动作（如中止点击）确定地插进「本轮还在跑」的窗口
+          setTimeout(tick, decision.delayMs);
+          return;
+        }
         tick();
         return;
       }

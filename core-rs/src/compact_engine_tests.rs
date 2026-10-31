@@ -505,8 +505,10 @@ fn pending_compact_runs_when_the_current_turn_ends() {
     seed_messages(&harness, "s1", &project, 40);
 
     submit(&harness, "s1", "最后一条", "u-100");
+    // 同步点不是性能断言：预算与本文件其余 wait_for 同为 30s——进程冷启动
+    // （spawn / 首次提示词组装）的波动不该转成用例偶发红
     assert!(
-        started_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+        started_rx.recv_timeout(Duration::from_secs(30)).is_ok(),
         "查询应当发出 LLM 请求"
     );
     // 会话正在跑最后一次往返：请求压缩只会登记待压缩
@@ -592,7 +594,7 @@ fn abort_clears_pending_compact() {
 
     submit(&harness, "s1", "最后一条", "u-100");
     assert!(
-        started_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+        started_rx.recv_timeout(Duration::from_secs(30)).is_ok(),
         "查询应当发出 LLM 请求"
     );
     harness.core.request_compact("s1");

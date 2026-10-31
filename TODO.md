@@ -76,6 +76,14 @@
   连带待修：[docs/hosts/pycharm-plugin.md](docs/hosts/pycharm-plugin.md) 的「帧呈现上限」一条把归因
   写成「JBR 层的帧呈现上限」，与上述证据不符；验证完成后按实测结论就地更正为「CEF OSR 可配置默认值」。
 
+- **`tool_loop_has_no_default_turn_limit` 在 Windows 上贴 30s 死线偶发挂**（specs/defects/available-commands-probe-stalls-first-query 修复验证时发现，干净基线可复现）：
+  该用例跑 46 轮 LLM×Bash（`echo hi`）循环，`wait_query_end` 的 30s 上限在本机
+  （Windows arm64，每轮 Bash spawn 约 0.65s）实测 30.6–32.5s 徘徊，同一二进制两次运行
+  一次挂一次过；stash 在干净基线同样失败，与该修复无关。方向：走 `/fix`——工具重的
+  循环用例放宽等待上限（如按轮数放大 `wait_for` 时限），或把 Bash spawn 开销从
+  断言路径剥离（FakeLlm 直接给 46 轮，不经真实 spawn）。验收判据：本机连续 5 次
+  `cargo test tool_loop_has_no_default_turn_limit` 全绿，CI 同口径。
+
 - **tui-rs 配置快照缺 multimodal 被 core 拒收**（specs/012 修订漏改 tui-rs，specs/035 plan 宪章检查发现）：
   `tui-rs/src/settings.rs` 的 `snapshot_to_payload` 产出的 `modelLimits` / `modelLimitsFallback`
   条目缺必选 `multimodal` 字段，core-rs serde 拒收 → TUI 挂在就绪握手。修复方向：对齐

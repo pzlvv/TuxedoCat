@@ -117,9 +117,8 @@ Core 进程承载的 core 侧业务：
   `tools/bash/TaskOutput.ts` 的 file mode）；任务完成后 Core 把一条
   `origin='bash'` 的完成通知作为 user 消息注入该会话并唤醒消费循环，
   会话关闭 / 中止时终止该会话的全部后台任务。
-- 前台 Bash 的超时与中止判定不依赖子进程是否已退出：子进程退出后还要等管道 EOF
-  （孙进程可能继承了管道写端，例如 `start` 拉起的 detached daemon），这段时间里
-  前台超时照常转后台、abort 照常按中断收尾——定时器与 abort 监听都与子进程状态无关。
+- 前台 Bash 与后台任务的结束判据同一口径：**shell 退出即收尾**（`bash_task::watch` 的 `try_wait` 口径），不等管道 EOF；孙进程继承管道写端（`start` 拉起的 detached daemon 等）使 EOF 不会到来时，退出后给读线程一段排水宽限（`PIPE_DRAIN_GRACE_MS`）收割已缓冲的输出，宽限内未结束就停掉读线程、用已累积快照收尾，此后 abort 与前台超时不再生效（命令已完成）。
+- 前台超时默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）；命令含 `sleep` 子命令时死线后移到 `max(默认超时, sleep 时长总和)`（GNU `NUMBER[s|m|h|d]` 口径，`sleep infinity` 饱和为无超时，解析不出时长（变量、算术、非法参数）回退默认超时——sleep 只把死线后移，不注销死线；工具输入显式给 `timeout`（内部覆盖，schema 之外）时优先）。
 
 ### 3.1 平台矩阵
 

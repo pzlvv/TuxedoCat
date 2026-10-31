@@ -271,7 +271,7 @@ export const WriteFile: React.FC<ToolCallProps> = ({ args, colors, status, isDar
       {isExpanded && contentPreview && (
         <>
           <div
-            className="mt-2"
+            className={`mt-2${previewExpanded ? ' inner-scrollbar' : ''}`}
             onClick={handlePreviewBoxClick}
             title={previewTruncated ? t('tool.preview.clickToShowAll') : undefined}
             style={{
