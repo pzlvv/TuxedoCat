@@ -110,10 +110,17 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     send({ type: 'sessionRuntimeStates', states: [runningState(sessionId)] });
 
     if (cfg.thinking) {
+      // streamMessage 的 accumulated 契约是「当前累积的完整文本」（src/host/webviewMessages.ts
+      // 载荷注释；core-rs/src/engine.rs 的 thinking delta 事件同口径）：webview 把它当
+      // 消息全文写入，发成块级值会让 thinking 内容缩成最后一个块——与 rAF / streamEnd
+      // 的到达顺序竞态（specs/defects/fakehost-thinking-accumulated-chunk-only）。
+      // 注意：本函数体整体是模板字符串（第 29 行起），注释里不能再用反引号。
+      let thinkingAcc = '';
       for (const chunk of chunkText(cfg.thinking)) {
         // abort 后 active 已被清掉：立即停流，不再补 idle / queryEnd（由 abort 分支回推）
         if (!active.has(sessionId)) return;
-        send({ type: 'streamMessage', sessionId, role: 'thinking', delta: chunk, accumulated: chunk, streamId });
+        thinkingAcc += chunk;
+        send({ type: 'streamMessage', sessionId, role: 'thinking', delta: chunk, accumulated: thinkingAcc, streamId });
         await sleep(cfg.chunkDelayMs);
       }
       send({ type: 'streamEnd', sessionId, role: 'thinking', accumulated: cfg.thinking, streamId });
