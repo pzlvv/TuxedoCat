@@ -98,6 +98,8 @@ function areEqual(prevProps: any, nextProps: any): boolean {
   // 会话跳转入口必须参与比较：漏掉会让「先无回调、后有回调」的渲染停在旧闭包上，
   // 表现为点 From/子代理链接没反应（onExpandToggle 则相反，刻意不比较，见 1527 行说明）
   if (prevProps.onNavigate !== nextProps.onNavigate) return false;
+  // 重试回调同理：LLM 失败通知的按钮拿旧闭包会发不出 retryQuery（specs/036）
+  if (prevProps.onRetryQuery !== nextProps.onRetryQuery) return false;
   if (prev === next && prevProps.colors === nextProps.colors && prevProps.isDark === nextProps.isDark) return true;
   if (prevProps.colors !== nextProps.colors) return false;
   if (prevProps.isDark !== nextProps.isDark) return false;
@@ -675,10 +677,16 @@ const ThinkingMessage = memo(function ThinkingMessage({
 const SystemMessage = memo(function SystemMessage({
   message,
   colors,
+  onRetryQuery,
 }: {
   message: Message;
   colors: Colors;
+  /** 失败 once 通知的重试回调（specs/036 FR-002 / FR-004）：点击剥除本节点并上报 retryQuery */
+  onRetryQuery?: () => void;
 }) {
+  // 只有 LLM 失败通知渲染重试按钮（FR-002）；中断 / 失联等其他 once 通知与常规
+  // 系统消息保持纯文本
+  const showRetry = message.once === true && message.noticeKind === 'llmError' && !!onRetryQuery;
   return (
     <div
       className="max-w-full text-left flex items-center"
@@ -688,6 +696,19 @@ const SystemMessage = memo(function SystemMessage({
       <p className="ui-fs-13 italic font-semibold ml-2" style={{ color: colors.textSystem, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
         {message.content}
       </p>
+      {showRetry && (
+        <button
+          onClick={onRetryQuery}
+          className="flex items-center gap-1 px-2 py-1 rounded ui-fs-11 ml-2 flex-shrink-0 not-italic"
+          style={{
+            backgroundColor: colors.bgSecondary,
+            border: `1px solid ${colors.border}`,
+            color: colors.textSystem,
+          }}
+        >
+          {t('messagesView.retry')}
+        </button>
+      )}
     </div>
   );
 }, areEqual);
@@ -896,6 +917,7 @@ const MessageItem = memo(function MessageItem({
   isDark,
   pinned,
   onNavigate,
+  onRetryQuery,
   onThinkingToggle,
   onExpandToggle,
   onBeforePreviewRender,
@@ -906,6 +928,8 @@ const MessageItem = memo(function MessageItem({
   /** 用户消息是否正处于滚动置顶（sticky 吸附）状态 */
   pinned?: boolean;
   onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
+  /** 失败 once 通知的重试回调（specs/036 FR-003），透传给 SystemMessage */
+  onRetryQuery?: () => void;
   onThinkingToggle?: (isOpen: boolean) => void;
   onExpandToggle?: (isOpen: boolean) => void;
   onBeforePreviewRender?: () => void;
@@ -920,7 +944,7 @@ const MessageItem = memo(function MessageItem({
     return <ThinkingMessage message={message} colors={colors} onThinkingToggle={onThinkingToggle} />;
   }
   if (message.role === 'system') {
-    return <SystemMessage message={message} colors={colors} />;
+    return <SystemMessage message={message} colors={colors} onRetryQuery={onRetryQuery} />;
   }
   // assistant or other
   return <AssistantMessage message={message} colors={colors} />;
@@ -1491,6 +1515,11 @@ interface MessagesViewProps {
   /** 展开压缩回调 */
   onExpandCompact?: () => void;
   onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
+  /**
+   * 失败 once 通知的「重试」（specs/036 FR-003 / FR-004）：App 侧实现——本地剥除
+   * once 节点 + 上报 `retryQuery` wire。只在 LLM 失败通知上渲染按钮。
+   */
+  onRetryQuery?: () => void;
 }
 
 /**
@@ -1507,6 +1536,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
   colors,
   isDark,
   onNavigate,
+  onRetryQuery,
   onThinkingToggle,
   onExpandToggle,
   onBeforePreviewRender,
@@ -1519,6 +1549,8 @@ const SegmentTimeline = memo(function SegmentTimeline({
   colors: Colors;
   isDark: boolean;
   onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
+  /** 失败 once 通知的重试回调（specs/036），透传给 MessageItem → SystemMessage */
+  onRetryQuery?: () => void;
   onThinkingToggle?: (isOpen: boolean) => void;
   onExpandToggle?: (isOpen: boolean) => void;
   onBeforePreviewRender?: () => void;
@@ -1608,7 +1640,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
           && (message.status === 'running' || message.status === 'normal')
           ? 'running'
           : 'plain',
-        children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
+        children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onRetryQuery={onRetryQuery} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
       };
     });
   }, [nonUserMsgs, colors, isDark, segmentIndex]);
@@ -1687,6 +1719,7 @@ const MessagesView = memo(({
   isCompactExpanded,
   onExpandCompact,
   onNavigate,
+  onRetryQuery,
 }: MessagesViewProps) => {
   const fallbackContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? fallbackContainerRef;
@@ -2524,6 +2557,7 @@ const MessagesView = memo(({
                           colors={colors}
                           isDark={isDark}
                           onNavigate={onNavigate}
+                          onRetryQuery={onRetryQuery}
                           onThinkingToggle={handleContentToggle}
                           onExpandToggle={handleContentToggle}
                           onBeforePreviewRender={handleBeforePreviewRender}

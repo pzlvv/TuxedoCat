@@ -46,6 +46,7 @@
   ],
   "uiEvents": [
     "userMessageSubmitted",
+    "queryRetryRequested",
     "abortRequested",
     "bashBackgroundRequested",
     "queuedMessageDiscarded",

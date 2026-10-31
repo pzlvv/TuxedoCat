@@ -280,8 +280,10 @@ export interface ConversationMetadata {
   /**
    * 最后一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 写入 meta.json，
    * 一个对话至多一条；重开对话时追加到时间线末位，新消息落盘后由 core 清空。
+   * `noticeKind` 随通知 JSON 整份落盘（specs/036 FR-001），恢复后 UI 仍能识别
+   * LLM 失败通知并渲染重试按钮；core 侧原样透传（`emit_once_notice`），无结构化读取。
    */
-  onceMessage?: { role: 'system'; content: string };
+  onceMessage?: { role: 'system'; content: string; noticeKind?: 'llmError' };
   /**
    * 会话工作模式（specs/016 FR-005）：`spin` = spin 模式会话（执行中或应用中断后
    * 恢复）；单向，进入后不再退出。由 core 在进入 spin 时写入，缺失即 normal（存量会话）。

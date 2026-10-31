@@ -32,6 +32,7 @@ import { useConversationTree } from './hooks/useConversationTree';
 import { useConversationLoading } from './hooks/useConversationLoading';
 import { useMessageHandler } from './hooks/useMessageHandler';
 import { useAppHandlers } from './hooks/useAppHandlers';
+import { stripOnce } from './hooks/handlers/shared';
 import { profileLog } from './debug';
 
 // Profiling helper
@@ -863,6 +864,16 @@ const App = () => {
     }
   }, [hasCompactArchive, isCompactExpanded]);
 
+  // 失败 once 通知的「重试」（specs/036 FR-003 / FR-004）：本地立即剥除本视图的
+  // once 节点（UI 决定表现，不等 core 回声；再次失败时新 once 替换），再上报宿主
+  // 翻译成 `UiEvent.queryRetryRequested`——忙碌 / spin 竞态由 core 守卫幂等丢弃。
+  const handleRetryQuery = useCallback(() => {
+    const sid = currentSessionIdRef.current;
+    if (!sid) return;
+    setMessages((prev) => stripOnce(prev));
+    postMessage({ type: 'retryQuery', sessionId: sid });
+  }, []);
+
   // 同步 userChoiceRequest 到 ref
   useEffect(() => {
     userChoiceRequestRef.current = userChoiceRequest;
@@ -1409,6 +1420,7 @@ onClick={handleNewConversation}
           isCompactExpanded={isCompactExpanded}
           onExpandCompact={handleExpandCompact}
           onNavigate={navigateToSession}
+          onRetryQuery={handleRetryQuery}
         />
 
         {/* Input Area — 条件渲染 UserChoiceOverlay / InputArea，保持相同位置 */}
