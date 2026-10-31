@@ -95,6 +95,13 @@ Connection 持有：
 | `path` | 那台机器上的目录 | `d:\git\demo` | `/home/alice/src/demo` |
 
 - `(scheme, endpoint)` 决定 Connection 的目标；`path` 是 Core 的会话工作目录。
+- 远程 `path` 在**构造引用时**归一为无尾分隔符形态（`normalizeRemoteWorkspacePath`：根路径
+  `/` 保持 `/`，连续尾分隔符全部去掉），反序列化走同一份归一。判等与身份键共用这一份，
+  否则「一处归一、一处逐字」会让同一目录变成两个工作区：目录选择器交给宿主的目录恒带尾
+  分隔符（[docs/core/core-remote.md 第 2.6 节](core-remote.md#26-远端目录选择)），而 Core 的对话
+  空间目录按 `encodeURIComponent(path)` 派生，尾斜杠的有无就是两个空间
+  （`specs/defects/remote-workspace-trailing-slash-splits-identity.md`）。归一**不跑本地
+  规范化**：不改大小写、不解析符号链接、不合并中间分隔符。
 - 未打开工作目录时用空引用占位（`emptyWorkspaceRef`：`path` 为空串）；它没有目录，
   去重键（`workspaceRefKey`）只取 `(scheme, endpoint)`，不进本地路径规范化
   （`path.resolve('')` 得到宿主进程的当前目录，会与真实工作区撞键）。

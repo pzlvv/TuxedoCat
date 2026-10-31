@@ -11,6 +11,7 @@
 
 import {
   localWorkspaceRef,
+  normalizeRemoteWorkspacePath,
   type WorkspaceAuth,
   type WorkspaceEndpoint,
   type WorkspaceRef,
@@ -58,7 +59,10 @@ export function parseWorkspaceEntry(
   }
   const parsed = parseSerializedEndpoint(endpoint);
   if (!parsed) return null;
-  return { scheme, path: refPath, endpoint: parsed };
+  // 远程路径与构造处同一份归一（`normalizeRemoteWorkspacePath`）：旧状态文件里带尾分隔符
+  // 的项恢复后必须与新建项同一个身份键，否则 OpenWorkspace 会为同一目录再建一条 Connection
+  // （specs/defects/remote-workspace-trailing-slash-splits-identity.md）
+  return { scheme, path: normalizeRemoteWorkspacePath(refPath), endpoint: parsed };
 }
 
 /** 校验落盘的 endpoint（含凭证） */
