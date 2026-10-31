@@ -10,7 +10,11 @@ import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLl
  *
  * Electron 整应用链路：真实 standalone core（Rust）+ 本地 mock LLM。父会话一轮
  * 发出 6 个 `Agent` 调用，断言同父会话并行子代理 ≤ 4、排队者按 FIFO 启动、
- * 前台中止时排队调用取消（不创建子代理会话）。
+ * 前台中止时已排队尚未启动的派发放弃（不创建子代理会话）。
+ *
+ * 超上限的 `Agent` 调用**立即返回排队文案**（"Agent [Master] queued"），创建
+ * 由 Core 在槽位空出后自动进行——排队不再占用父会话的轮次。跨轮扇出的脚本
+ * 由此同时数 created（"Sub-agent created with ID"）与 queued 两种结果文本。
  *
  * 并发观测原理：mock 服务器的 `delayMs` 在写响应前 setTimeout 让出事件循环，
  * 期间其他连接的请求可以进来被解析——子代理首请求的 [startedAt, finishedAt]
@@ -82,10 +86,12 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
       // 父会话请求（上下文必然携带首条用户消息；子代理上下文没有）。
       // 不用 lastUserText 判轮次：子代理回投并入后父会话的最后一条 user 消息
       // 是回投文本。跨轮扇出：第 1 轮 4 个（直取满槽），任务 5 / 任务 6 各自
-      // 单独一轮发起——并行批每工具一个线程，同轮多个调用的直取分配是线程
-      // 竞争；轮次边界把排队顺序串行化，FIFO 断言才确定（顺带覆盖跨轮排队）
-      const created =
-        JSON.stringify(req.body.messages).split('Sub-agent created with ID').length - 1;
+      // 单独一轮发起——排队结果的脚本推进按「已排队数」判轮：任务 5 / 6 的
+      // 调用立即返回排队文案、不再阻塞轮次，created 计数停在 4，只有 queued
+      // 计数能区分「该发 5」「该发 6」「该收尾」这三种轮次（FIFO 断言依此成立）
+      const context = JSON.stringify(req.body.messages);
+      const created = context.split('Sub-agent created with ID').length - 1;
+      const queued = context.split('Agent [Master] queued').length - 1;
       if (created === 0) {
         return {
           kind: 'tools',
@@ -95,21 +101,21 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
           })),
         };
       }
-      if (created === 4) {
+      if (queued === 0) {
         return {
           kind: 'tool',
           name: 'Agent',
           args: { prompt: '并发任务5：慢慢回答', agentRole: 'Master', description: '任务5' },
         };
       }
-      if (created === 5) {
+      if (queued === 1) {
         return {
           kind: 'tool',
           name: 'Agent',
           args: { prompt: '并发任务6：慢慢回答', agentRole: 'Master', description: '任务6' },
         };
       }
-      return { kind: 'text', text: '6 个子代理都完成了。' };
+      return { kind: 'text', text: '6 个子代理都排上了，等槽位空出自动开跑。' };
     }
     return { kind: 'text', text: `收到：${text.slice(0, 40)}` };
   });
@@ -170,7 +176,11 @@ test('US-49 前台中止：排队中的 2 个调用取消、不创建子代理�
     }
     if (text === '并发派活') {
       if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
-        return { kind: 'text', text: '已中止。' };
+        // 收尾轮挂起 30s：排队结果立即返回后，父会话的工具批很快结束——
+        // 若无这一拍，中止点击时父会话往往已空闲，首击会走「中止范围」
+        // （连已运行的子代理一起中止）而不是前台中止，用例锁定的事件就不是
+        // US-49 的「排队派发随前台取消」了。挂起保证中止落在前台阶段。
+        return { kind: 'text', text: '已中止。', delayMs: 30_000 };
       }
       return {
         kind: 'tools',
@@ -194,11 +204,12 @@ test('US-49 前台中止：排队中的 2 个调用取消、不创建子代理�
     .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 30_000 })
     .toBe(5);
 
-  // 首击只停前台：排队调用随前台取消
+  // 首击只停前台：父会话收尾轮被 mock 挂起（30s），此刻仍是前台在跑；
+  // 前台中止置会话取消标记，已排队未启动的 2 个派发随之放弃
   const abortButton = chatPage.locator('button[title="终止"]');
   await abortButton.click();
 
-  // 按钮仍可点（收尾中：4 个子代理还在跑）
+  // 按钮仍可点（前台停了，但 4 个子代理还在跑，按钮转黄）
   await expect(abortButton).toBeEnabled({ timeout: 15_000 });
 
   // 等待窗口内排队者不得补位启动：子代理首请求数恒为 4；
