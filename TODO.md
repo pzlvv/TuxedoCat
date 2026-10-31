@@ -83,11 +83,3 @@
   循环用例放宽等待上限（如按轮数放大 `wait_for` 时限），或把 Bash spawn 开销从
   断言路径剥离（FakeLlm 直接给 46 轮，不经真实 spawn）。验收判据：本机连续 5 次
   `cargo test tool_loop_has_no_default_turn_limit` 全绿，CI 同口径。
-
-- **tui-rs 配置快照缺 multimodal 被 core 拒收**（specs/012 修订漏改 tui-rs，specs/035 plan 宪章检查发现）：
-  `tui-rs/src/settings.rs` 的 `snapshot_to_payload` 产出的 `modelLimits` / `modelLimitsFallback`
-  条目缺必选 `multimodal` 字段，core-rs serde 拒收 → TUI 挂在就绪握手。修复方向：对齐
-  `src/shared/settingsSnapshot.ts` 的 `DEFAULT_MODEL_MULTIMODAL`，`normalize_model_configs`
-  保留 multimodal 覆盖；Kotlin 侧（specs/035）已用「快照字段名单对照测试」防同款漂移，
-  tui-rs 补同款对照。验收判据：`cargo test` 空配置快照含 `multimodal: true`、provider 覆盖
-  可带 `multimodal: false`、payload 字段名单与 `src/shared/settingsSnapshot.ts` 一致。

@@ -210,5 +210,59 @@ runTests('gitHookGate', async () => {
     check('merge 提交豁免档位', res.status === 0);
   }
 
+  // ---------- 场景：仓库里钩子的文件模式 ----------
+  //
+  // specs/defects/commit-msg-hook-not-executable：commit-msg 曾被跟踪为 100644，
+  // 按 AGENTS.md 装 core.hooksPath 后 git 只打一行 hint 就跳过钩子——闸门静默消失。
+  // 上面的用例都显式 chmod 0o755 装钩子，测的是脚本逻辑，测不到仓库里的模式，
+  // 所以这一组直接查 index。
+
+  {
+    /** `git ls-files -s <dir>` 的每一行：`<mode> <sha> <stage>\t<path>` */
+    const lsFiles = run(REPO_ROOT, home, ['ls-files', '-s', 'scripts/githooks/']);
+    const entries = lsFiles.output
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => {
+        const [meta, file = ''] = line.split('\t');
+        const [mode = '', blob = ''] = (meta ?? '').trim().split(/\s+/);
+        return { mode, blob, file: path.basename(file) };
+      });
+
+    // RT-1：五个钩子都必须带可执行位（新增钩子忘加同样会红）
+    check('scripts/githooks 下的钩子全部登记', entries.length > 0);
+    const nonExecutable = entries.filter((entry) => entry.mode !== '100755').map((entry) => entry.file);
+    check(
+      `scripts/githooks 下钩子全部可执行（不可执行：${nonExecutable.join(', ') || '无'}）`,
+      nonExecutable.length === 0,
+    );
+
+    // RT-2：按 index 里的真实模式装钩子（刻意不 chmod 成 755），闸门必须真的拦住
+    // 缺 trailer 的代码提交——index 是 100644 时它就会静默跳过、提交被放行。
+    const commitMsg = entries.find((entry) => entry.file === 'commit-msg');
+    assert.ok(commitMsg, 'index 里找不到 scripts/githooks/commit-msg');
+    const dir = newRepo();
+    const hookPath = path.join(dir, 'hooks', 'commit-msg');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    const content = execFileSync('git', ['cat-file', 'blob', commitMsg.blob], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    fs.writeFileSync(hookPath, content);
+    fs.chmodSync(hookPath, commitMsg.mode === '100755' ? 0o755 : 0o644);
+    stage(dir, 'src/host/Client.ts', '// change\n');
+    const res = run(dir, home, [
+      '-c',
+      `core.hooksPath=${path.join(dir, 'hooks').replace(/\\/g, '/')}`,
+      'commit',
+      '-q',
+      '-m',
+      'bad: 没有 Flow trailer 的代码改动',
+    ]);
+    check('按 index 模式装钩子后，缺 Flow 的代码提交被拒', res.status !== 0);
+    check('拒绝提示包含 Flow', res.output.includes('Flow'));
+  }
+
   finish();
 });

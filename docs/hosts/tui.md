@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-01
 ---
 
 # 规格：TUI（终端宿主）
@@ -74,7 +74,10 @@ store.rs（纯 reducer，唯一渲染事实） → app.rs（ratatui 投影 + 键
   排空写入）。无异步运行时，与 core-rs 的阻塞模型一致。
 - **就绪序列**：`ready` 帧到达后译层推送宿主环境与配置快照（core 的就绪判据），
   App 随即执行挂载序列（拉列表 / 技能 / 模型 / 默认值 / 上下文上限 + 新建首个
-  会话），与 webview 挂载行为同构。
+  会话），与 webview 挂载行为同构。快照字段集合与
+  [docs/architecture/core-ui-separation.md 第 4.3 节](../architecture/core-ui-separation.md#43-快照字段)
+  逐项一致——Core 侧字段全必选，缺一个就整份拒收、`coreReady` 不回
+  （`specs/defects/tui-snapshot-missing-multimodal.md`）。
 
 ### 2.1 帧协议
 
@@ -217,7 +220,7 @@ tui-rs/
 
 | 事实 | 来源 |
 | --- | --- |
-| 会话默认值（settingsDefaults） | `settings.rs` 快照：`readActiveModelRef` + thinking / agentMode / promptMode / webSearch 默认值（重读磁盘，变化则重推快照） |
+| 会话默认值（settingsDefaults） | `settings.rs` 快照：`readActiveModelRef` + thinking / agentMode / promptMode / webSearch 默认值（重读磁盘，变化则替换现有快照并重推） |
 | 模型菜单（setModels） | 原始 settings.json 的 providers（baseURL 非空），默认模型补回列表头部 |
 | 上下文上限（contextLimitUpdated) | 快照里已解析的 modelLimits（未命中用兜底） |
 | 余额（balanceUpdate） | `balanceRequested` 让 Core 查（余额按 provider 的 apiKey，是 core 的事实）；失败清空显示 |
@@ -306,7 +309,7 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
 | 层 | 方式 | 位置 |
 | --- | --- | --- |
 | 协议 | 帧编解码 / 增量解码 / 坏行跳过 | `tui-rs/src/protocol_tests.rs` |
-| 配置 | 快照默认值 / 注册表匹配 / 模型身份校验 / mcp.json / 写入纪律（拒绝覆盖、键序保留） | `tui-rs/src/settings_tests.rs` |
+| 配置 | 快照默认值 / 模型限值解析（含 `multimodal`）/ 模型身份校验 / mcp.json / 重读磁盘 / 写入纪律（拒绝覆盖、键序保留） | `tui-rs/src/settings_tests.rs` |
 | store | 纯 reducer 表驱动：消息流 / 流式 / 去重 / 排队 / 工具卡片 / 配置回写 / 通知 / 本地动作 | `tui-rs/src/store_tests.rs` |
 | 译层 | 选择队列（投递 / 重投 / 覆盖收帧 / 释放收帧）+ 译层翻译 | `tui-rs/src/choices.rs` 内嵌 `mod tests`、`tui-rs/src/host.rs` 的纯函数 |
 | 渲染子集 | markdown 块与行内 / diff 着色折叠 / 编辑器状态机 | `markdown_tests.rs` / `diffview_tests.rs` / `composer_tests.rs` |
