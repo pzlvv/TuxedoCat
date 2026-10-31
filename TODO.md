@@ -83,3 +83,11 @@
   保留 multimodal 覆盖；Kotlin 侧（specs/035）已用「快照字段名单对照测试」防同款漂移，
   tui-rs 补同款对照。验收判据：`cargo test` 空配置快照含 `multimodal: true`、provider 覆盖
   可带 `multimodal: false`、payload 字段名单与 `src/shared/settingsSnapshot.ts` 一致。
+
+- **存量失败：compact 引擎测试 `abort_clears_pending_compact` 稳定挂**（221390b 验证时发现，与该提交改动无关——已 stash 在干净基线复现）：
+  `engine::compact_engine_tests::abort_clears_pending_compact` 在 `core-rs/src/compact_engine_tests.rs:594`
+  panic「查询应当发出 LLM 请求」，隔离跑同样稳定失败、耗时约 20s（疑似测试内部等待 / 超时逻辑到点后断言）。
+  本机为 Windows arm64；smoke CI（Linux）的 `cargo test` 是否同样失败待查——若 CI 绿则是平台相关
+  （时序 / 路径 / 环境），修复时先圈定平台边界。方向：走 `/fix`（`specs/defects/`），先判是测试自身
+  问题（mock 没接上 / 时序假设）还是 compact 引擎回归。验收判据：干净基线 `cargo test` 全绿（本机与
+  CI 同口径）；定位结论与证据记入 defect 规格。
