@@ -130,6 +130,56 @@ fn snapshot_payload_round_shape() {
     );
 }
 
+/// RT-1（specs/defects/tui-snapshot-missing-multimodal）：快照载荷必须带 `multimodal`。
+///
+/// core-rs 的 `ModelLimits.multimodal` 是必选字段（无 `#[serde(default)]`），缺一个就
+/// 整份快照拒收、Core 永不 ready——TUI 因此挂在就绪握手。字段名对照列表同时锁住
+/// 「条目字段集合与 TS 快照一致」，新增字段漏改会在这里红。
+#[test]
+fn snapshot_payload_carries_multimodal() {
+    let raw = json!({ "llm": { "activeProvider": "p", "providers": { "p": {
+        "baseURL": "https://x", "apiKey": "k", "models": ["on", "off", "bad"],
+        "modelConfigs": {
+            "off": { "multimodal": false },
+            "bad": { "multimodal": "yes" },
+            "ctx-only": { "context": 1234 }
+        }
+    } } } });
+    let snapshot = snapshot_of(raw);
+    let payload = snapshot_to_payload(&snapshot);
+
+    // 字段名单对照（与 `src/shared/settingsSnapshot.ts` 的 `ModelLimits` 逐项一致）
+    let fallback = payload["llm"]["modelLimitsFallback"].as_object().unwrap();
+    let mut fallback_keys: Vec<&str> = fallback.keys().map(String::as_str).collect();
+    fallback_keys.sort_unstable();
+    assert_eq!(
+        fallback_keys,
+        ["apiType", "context", "multimodal", "output", "thinkingTokenBudget"]
+    );
+
+    // 未配置的模型按默认开启解析
+    let limits = |model: &str| payload["llm"]["providers"]["p"]["modelLimits"][model].clone();
+    assert_eq!(limits("on")["multimodal"].as_bool(), Some(true));
+    // 显式 false 生效（Core 据此在请求出口过滤全部图片）
+    assert_eq!(limits("off")["multimodal"].as_bool(), Some(false));
+    // 非布尔的覆盖被丢弃，回落默认开启
+    assert_eq!(limits("bad")["multimodal"].as_bool(), Some(true));
+    // 只覆盖 context 的条目不因缺少 multimodal 而漏字段
+    assert_eq!(limits("ctx-only")["multimodal"].as_bool(), Some(true));
+    // 兜底限值的多模态为默认开启
+    assert_eq!(payload["llm"]["modelLimitsFallback"]["multimodal"].as_bool(), Some(true));
+    // 每个 modelLimits 条目都必须带齐五个字段（缺一项 core 就拒收）
+    for (model, entry) in payload["llm"]["providers"]["p"]["modelLimits"].as_object().unwrap() {
+        let mut keys: Vec<&str> = entry.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["apiType", "context", "multimodal", "output", "thinkingTokenBudget"],
+            "modelLimits.{model} 字段名单不齐"
+        );
+    }
+}
+
 #[test]
 fn store_load_write_and_guards() {
     let dir = std::env::temp_dir().join(format!("tui-rs-settings-test-{}", std::process::id()));

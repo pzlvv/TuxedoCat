@@ -61,9 +61,14 @@ const MODEL_CONFIGS: [(&str, f64, f64, f64); 3] = [
     ("deepseek-v4-pro", 1024.0 * 1024.0, 192.0 * 1024.0, 384.0 * 1024.0),
 ];
 
-/// 按模型名解析限值（context, thinkingBudget, output, apiType）：
-/// 精确匹配 → 子串匹配 → 兜底；用户 context/output 覆盖优先（对齐 `getModelConfig`）。
-fn resolve_model_limits(model: &str, overrides: &Map<String, Value>) -> (f64, f64, f64, ApiType) {
+/// 模型未显式配置多模态时的默认值（对齐 `src/shared/utils/modelConfig.ts` 的
+/// `DEFAULT_MODEL_MULTIMODAL`）。
+const DEFAULT_MODEL_MULTIMODAL: bool = true;
+
+/// 按模型名解析限值（context, thinkingBudget, output, apiType, multimodal）：
+/// 精确匹配 → 子串匹配 → 兜底；用户 context / output / multimodal 覆盖优先
+/// （对齐 `getModelConfig` 与 `resolveModelLimits`）。
+fn resolve_model_limits(model: &str, overrides: &Map<String, Value>) -> (f64, f64, f64, ApiType, bool) {
     let matched = MODEL_CONFIGS
         .iter()
         .find(|(name, ..)| *name == model)
@@ -88,7 +93,19 @@ fn resolve_model_limits(model: &str, overrides: &Map<String, Value>) -> (f64, f6
     let api_type = override_entry
         .and_then(|entry| entry.get("apiType"))
         .and_then(Value::as_str);
-    (override_context().unwrap_or(context), budget, override_output().unwrap_or(output), normalize_api_type(api_type))
+    // 多模态只认布尔覆盖；非法值按默认开启（对齐 `resolveModelLimits` 的
+    // `typeof explicitMultimodal === 'boolean'` 判定）。
+    let multimodal = override_entry
+        .and_then(|entry| entry.get("multimodal"))
+        .and_then(Value::as_bool)
+        .unwrap_or(DEFAULT_MODEL_MULTIMODAL);
+    (
+        override_context().unwrap_or(context),
+        budget,
+        override_output().unwrap_or(output),
+        normalize_api_type(api_type),
+        multimodal,
+    )
 }
 
 // ==================== 配置快照（settingsSnapshot.ts 移植） ====================
@@ -101,6 +118,10 @@ pub struct ModelLimits {
     pub output: f64,
     pub api_type: ApiType,
     pub thinking_token_budget: f64,
+    /// 该模型是否多模态（可携带图片）；`false` 时 Core 发请求前过滤全部图片
+    /// （`docs/architecture/core-ui-separation.md` 第 4.3 节）。快照字段全必选，
+    /// 缺字段 Core 侧 serde 即拒收整份快照（`core-rs/src/settings.rs` 的 `ModelLimits`）。
+    pub multimodal: bool,
 }
 
 /// provider 的规范化配置。
@@ -153,6 +174,7 @@ fn fallback_limits() -> ModelLimits {
         output: FALLBACK_MAX_OUTPUT_TOKENS,
         api_type: DEFAULT_API_TYPE,
         thinking_token_budget: FALLBACK_THINKING_BUDGET,
+        multimodal: DEFAULT_MODEL_MULTIMODAL,
     }
 }
 
@@ -191,6 +213,11 @@ fn normalize_model_configs(raw: Option<&Value>) -> Map<String, Value> {
         if let Some(api_type) = limits.get("apiType").and_then(Value::as_str) {
             entry.insert("apiType".into(), json!(normalize_api_type(Some(api_type)).as_str()));
         }
+        // 多模态覆盖同样是「合法才保留」：非布尔的取值不进覆盖表，由
+        // `resolve_model_limits` 回落到默认开启（对齐 `normalizeModelConfigs`）。
+        if let Some(multimodal) = limits.get("multimodal").and_then(Value::as_bool) {
+            entry.insert("multimodal".into(), json!(multimodal));
+        }
         if !entry.is_empty() {
             out.insert(model.clone(), Value::Object(entry));
         }
@@ -222,8 +249,11 @@ fn resolve_providers(raw: Option<&Value>) -> BTreeMap<String, SnapshotProvider> 
             }
         }
         for model in known {
-            let (context, budget, output, api_type) = resolve_model_limits(&model, &model_configs);
-            model_limits.insert(model, ModelLimits { context, output, api_type, thinking_token_budget: budget });
+            let (context, budget, output, api_type, multimodal) = resolve_model_limits(&model, &model_configs);
+            model_limits.insert(
+                model,
+                ModelLimits { context, output, api_type, thinking_token_budget: budget, multimodal },
+            );
         }
 
         let default_model = value
@@ -348,6 +378,7 @@ pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
                     "output": token_count(limits_entry.output),
                     "apiType": limits_entry.api_type.as_str(),
                     "thinkingTokenBudget": token_count(limits_entry.thinking_token_budget),
+                    "multimodal": limits_entry.multimodal,
                 }),
             );
         }
@@ -376,6 +407,7 @@ pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
                 "output": token_count(snapshot.model_limits_fallback.output),
                 "apiType": snapshot.model_limits_fallback.api_type.as_str(),
                 "thinkingTokenBudget": token_count(snapshot.model_limits_fallback.thinking_token_budget),
+                "multimodal": snapshot.model_limits_fallback.multimodal,
             },
         },
         "mcp": { "enabled": snapshot.mcp_enabled },
