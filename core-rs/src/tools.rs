@@ -230,6 +230,17 @@ pub struct SubAgentRequest {
     pub target: Option<String>,
 }
 
+/// 子代理的派发结果（[`SubAgentHooks::spawn_queued`] 的返回）。
+pub enum SubAgentDispatch {
+    /// 当场创建成功（槽位在手），值为子会话 id；槽位由子代理收尾释放
+    Created(String),
+    /// 并发槽位已满，已入 FIFO 队列：槽位空出后由引擎在后台自动创建，
+    /// 工具调用立即返回（主对话不被排队等待阻塞）
+    Queued,
+    /// 派发时取消标记已置位：不创建、不排队
+    Canceled,
+}
+
 /// 子代理工具（`Agent` / `Reply`）的引擎钩子。
 ///
 /// 单测不注入时这两个工具报错（「找不到引擎」）。
@@ -239,6 +250,15 @@ pub struct SubAgentHooks {
     /// 建跨工作区子会话（specs/023）：请求宿主在目标工作区创建并返回子会话 id
     pub spawn_remote:
         std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
+    /// 槽位感知的派发入口：有空位当场创建（`Created`），已满改为排队派生（`Queued`）
+    pub spawn_queued: std::sync::Arc<
+        dyn Fn(
+                SubAgentRequest,
+                std::sync::Arc<std::sync::atomic::AtomicBool>,
+            ) -> Result<SubAgentDispatch, String>
+            + Send
+            + Sync,
+    >,
     /// 把回复投递给目标会话：`(target, content, from)`
     pub deliver:
         std::sync::Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>,
@@ -2039,14 +2059,15 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         .unwrap_or_else(|| format!("Agent: {role}"));
 
     // specs/005：并发槽位——建子代理前先取槽位；同父会话并行子代理超过
-    // SUBAGENT_CONCURRENCY_LIMIT 时在本调用内排队（FIFO），等待期间随父会话
+    // SUBAGENT_CONCURRENCY_LIMIT 时**不再在本调用内阻塞等待**，改为排队派生
+    // （FIFO）：请求进队列、工具立刻返回，槽位空出后由引擎在后台自动创建——
+    // 排队等待卡住的是主对话的轮次，等待对 LLM 毫无产出。等待期间随父会话
     // 取消标记退出（文案逐字锁定），不建子代理会话。
     // `ctx.cancel` 缺省（单测 / 未知调用方）时视为不取消。
-    let cancel_never = std::sync::atomic::AtomicBool::new(false);
-    let cancel = ctx.cancel.as_deref().unwrap_or(&cancel_never);
-    if !crate::subagent::acquire_slot(&ctx.session_id, cancel) {
-        return ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string());
-    }
+    let cancel = ctx
+        .cancel
+        .clone()
+        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
     let request = SubAgentRequest {
         creator_session_id: ctx.session_id.clone(),
         prompt: prompt.to_string(),
@@ -2054,12 +2075,9 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         role: role.to_string(),
         target: target.clone(),
     };
-    let spawned = match &target {
-        Some(_) => (hooks.spawn_remote)(request),
-        None => (hooks.spawn)(request),
-    };
-    match spawned {
-        Ok(sub_session_id) => {
+    let dispatched = (hooks.spawn_queued)(request, cancel);
+    match dispatched {
+        Ok(SubAgentDispatch::Created(sub_session_id)) => {
             let workspace_line = match &target {
                 Some(target) => format!("**Workspace**: `{target}`\n"),
                 None => String::new(),
@@ -2091,12 +2109,23 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                 None => ToolOutcome::Success(text),
             }
         }
-        // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）。
-        // spawn 失败时后台任务不会启动，槽位必须在此归还
-        Err(error) => {
-            crate::subagent::release_slot(&ctx.session_id);
-            ToolOutcome::Error(error)
+        Ok(SubAgentDispatch::Queued) => {
+            let text = format!(
+                "⏳ Agent [{role}] queued\n\n\
+                 Concurrency limit reached ({limit} running for this session). \
+                 Task: {description}\n\n\
+                 The sub-agent will be created automatically when a slot frees; \
+                 no further action is needed.",
+                limit = crate::subagent::SUBAGENT_CONCURRENCY_LIMIT,
+            );
+            ToolOutcome::Success(text)
         }
+        Ok(SubAgentDispatch::Canceled) => {
+            ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string())
+        }
+        // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）。
+        // spawn 失败时后台任务不会启动，槽位已由引擎侧归还
+        Err(error) => ToolOutcome::Error(error),
     }
 }
 

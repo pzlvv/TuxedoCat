@@ -3721,6 +3721,61 @@ fn set_cross_workspace_capability(enabled: bool) {
     });
 }
 
+/// 测试用钩子组装：`spawn_queued` 的接线与 `engine::subagent_hooks` 同款——
+/// 快路径直取槽位当场创建，超上限进 FIFO 队列由后台创建（失败归还槽位）。
+/// 单测没有 Core，后台创建失败不做带外回报（生产路径由引擎 emit message）。
+fn test_hooks(
+    spawn: std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
+    spawn_remote: std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
+) -> SubAgentHooks {
+    let inline_spawn = std::sync::Arc::clone(&spawn);
+    let inline_remote = std::sync::Arc::clone(&spawn_remote);
+    let queued_spawn = std::sync::Arc::clone(&spawn);
+    let queued_remote = std::sync::Arc::clone(&spawn_remote);
+    SubAgentHooks {
+        spawn,
+        spawn_remote,
+        spawn_queued: std::sync::Arc::new(move |request, cancel| {
+            let deferred_request = request.clone();
+            let deferred_creator = request.creator_session_id.clone();
+            match crate::subagent::request_slot_or_defer(
+                &request.creator_session_id,
+                cancel,
+                {
+                    let queued_spawn = std::sync::Arc::clone(&queued_spawn);
+                    let queued_remote = std::sync::Arc::clone(&queued_remote);
+                    move || {
+                        let spawned = match &deferred_request.target {
+                            Some(_) => queued_remote(deferred_request.clone()),
+                            None => queued_spawn(deferred_request.clone()),
+                        };
+                        if spawned.is_err() {
+                            crate::subagent::release_slot(&deferred_creator);
+                        }
+                    }
+                },
+            ) {
+                crate::subagent::SlotDecision::Acquired => {
+                    let spawned = match &request.target {
+                        Some(_) => inline_remote(request.clone()),
+                        None => inline_spawn(request.clone()),
+                    };
+                    match spawned {
+                        Ok(id) => Ok(SubAgentDispatch::Created(id)),
+                        Err(error) => {
+                            crate::subagent::release_slot(&request.creator_session_id);
+                            Err(error)
+                        }
+                    }
+                }
+                crate::subagent::SlotDecision::Queued => Ok(SubAgentDispatch::Queued),
+                crate::subagent::SlotDecision::Canceled => Ok(SubAgentDispatch::Canceled),
+            }
+        }),
+        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
+    }
+}
+
 /// `Agent` 带 `target` 走 `spawn_remote`，不带走 `spawn`；空串是入参错误。
 #[test]
 fn agent_target_selects_remote_spawn_hook() {
@@ -3737,18 +3792,17 @@ fn agent_target_selects_remote_spawn_hook() {
     let local_flag = Arc::clone(&local_called);
     let remote_flag = Arc::clone(&remote_called);
     let remote_target_slot = Arc::clone(&remote_target);
-    let hooks = SubAgentHooks {
-        spawn: Arc::new(move |_request| {
+    let hooks = test_hooks(
+        Arc::new(move |_request| {
             local_flag.store(true, Ordering::Relaxed);
             Ok("sub_local".to_string())
         }),
-        spawn_remote: Arc::new(move |request| {
+        Arc::new(move |request| {
             remote_flag.store(true, Ordering::Relaxed);
             *remote_target_slot.lock().unwrap() = request.target.clone().unwrap_or_default();
             Ok("sub_remote".to_string())
         }),
-        deliver: Arc::new(|_, _, _| Ok(())),
-    };
+    );
     let ctx = ToolContext {
         session_id: "s1".to_string(),
         cwd: ".".to_string(),
@@ -3786,14 +3840,125 @@ fn agent_target_selects_remote_spawn_hook() {
     crate::subagent::release_slot("s1");
 }
 
+/// 超上限时 `Agent` 工具不再阻塞等待：立即返回排队文案、spawn 不当场发生；
+/// 槽位空出后由后台创建（specs/005 排队派生语义）。
+#[test]
+fn agent_over_limit_queues_and_returns_immediately() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+
+    let spawned = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let spawned_slot = Arc::clone(&spawned);
+    let hooks = test_hooks(
+        Arc::new(move |request| {
+            spawned_slot.lock().unwrap().push(request.prompt);
+            Ok("sub_local".to_string())
+        }),
+        Arc::new(|_| Ok("sub_remote".to_string())),
+    );
+    let creator = "s-queue-dispatch";
+    let ctx = ToolContext {
+        session_id: creator.to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: None,
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: Some(hooks),
+        transfer: None,
+    };
+
+    // 占满槽位（绕过工具直取：测试自身承担 acquire/release 的配对责任）
+    let never = AtomicBool::new(false);
+    for _ in 0..crate::subagent::SUBAGENT_CONCURRENCY_LIMIT {
+        assert!(crate::subagent::acquire_slot(creator, &never));
+    }
+
+    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Master" }), &ctx);
+    assert!(
+        matches!(outcome, ToolOutcome::Success(ref text) if text.contains("queued")),
+        "超上限应立即返回排队文案: {outcome:?}"
+    );
+    assert!(
+        spawned.lock().unwrap().is_empty(),
+        "排队路径不得当场 spawn"
+    );
+
+    // 释放一个槽位：排队者获得预留，后台创建开始
+    crate::subagent::release_slot(creator);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while spawned.lock().unwrap().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(spawned.lock().unwrap().len(), 1, "槽位空出后应完成后台创建");
+
+    // 清场：后台创建成功持有的槽位（生产路径由 run_sub_agent 收尾释放）+ 直取的 3 个
+    crate::subagent::release_slot(creator);
+    for _ in 1..crate::subagent::SUBAGENT_CONCURRENCY_LIMIT {
+        crate::subagent::release_slot(creator);
+    }
+    assert_eq!(crate::subagent::slot_stats_for_test(creator), (0, 0));
+}
+
+/// 派发前取消标记已置位：不创建、不排队（文案逐字锁定）。
+#[test]
+fn agent_cancelled_before_dispatch_does_not_queue() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called_slot = Arc::clone(&called);
+    let hooks = test_hooks(
+        Arc::new(move |_request| {
+            called_slot.store(true, Ordering::Relaxed);
+            Ok("sub_local".to_string())
+        }),
+        Arc::new(|_| Ok("sub_remote".to_string())),
+    );
+    let creator = "s-cancel-dispatch";
+    let cancel = Arc::new(AtomicBool::new(true));
+    let ctx = ToolContext {
+        session_id: creator.to_string(),
+        cwd: ".".to_string(),
+        tool_use_id: None,
+        on_progress: None,
+        cancel: Some(Arc::clone(&cancel)),
+        pause: None,
+        user_choice: None,
+        background: None,
+        subagent: Some(hooks),
+        transfer: None,
+    };
+
+    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Master" }), &ctx);
+    assert!(
+        matches!(outcome, ToolOutcome::Canceled(ref text) if text == "Tool was canceled due to abort"),
+        "取消应逐字返回既有文案: {outcome:?}"
+    );
+    assert!(!called.load(Ordering::Relaxed), "取消路径不得 spawn");
+    assert_eq!(
+        crate::subagent::slot_stats_for_test(creator),
+        (0, 0),
+        "取消路径不得占用槽位"
+    );
+}
+
 /// `target` 空串在入参层通过（string），在 run_agent 里被拒绝——不静默当缺省。
 #[test]
 fn agent_empty_target_is_rejected() {
-    let hooks = SubAgentHooks {
-        spawn: std::sync::Arc::new(|_| Ok("sub_local".to_string())),
-        spawn_remote: std::sync::Arc::new(|_| Ok("sub_remote".to_string())),
-        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
-    };
+    let hooks = test_hooks(
+        std::sync::Arc::new(|_| Ok("sub_local".to_string())),
+        std::sync::Arc::new(|_| Ok("sub_remote".to_string())),
+    );
     let ctx = ToolContext {
         session_id: "s-empty-target".to_string(),
         cwd: ".".to_string(),
@@ -3819,11 +3984,10 @@ fn agent_empty_target_is_rejected() {
 fn agent_target_rejected_when_host_does_not_support_it() {
     let _serial = crate::test_support::serial();
     set_cross_workspace_capability(false);
-    let hooks = SubAgentHooks {
-        spawn: std::sync::Arc::new(|_| Ok("sub_local".to_string())),
-        spawn_remote: std::sync::Arc::new(|_| Ok("sub_remote".to_string())),
-        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
-    };
+    let hooks = test_hooks(
+        std::sync::Arc::new(|_| Ok("sub_local".to_string())),
+        std::sync::Arc::new(|_| Ok("sub_remote".to_string())),
+    );
     let ctx = ToolContext {
         session_id: "s-no-cap".to_string(),
         cwd: ".".to_string(),
@@ -4051,11 +4215,10 @@ fn transfer_test_context(
 fn agent_dispatch_appends_transfer_reminder() {
     let _serial = crate::test_support::serial();
     set_cross_workspace_capability(true);
-    let hooks = SubAgentHooks {
-        spawn: std::sync::Arc::new(|_request| Ok("sub_local".to_string())),
-        spawn_remote: std::sync::Arc::new(|_request| Ok("sub_remote".to_string())),
-        deliver: std::sync::Arc::new(|_, _, _| Ok(())),
-    };
+    let hooks = test_hooks(
+        std::sync::Arc::new(|_request| Ok("sub_local".to_string())),
+        std::sync::Arc::new(|_request| Ok("sub_remote".to_string())),
+    );
     let ctx = ToolContext {
         session_id: "s1".to_string(),
         cwd: ".".to_string(),

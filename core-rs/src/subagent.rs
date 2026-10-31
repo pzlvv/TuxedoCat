@@ -132,30 +132,34 @@ fn hand_off_reservation(state: &mut SlotState) {
     state.active -= 1;
 }
 
-/// 取一个槽位：有空位且无排队者时立即返回 true（无排队者才直取，保证 FIFO 公平）；
-/// 否则入队等待，直到获得预留（true）或取消标记先到（false）。
+/// 进槽位（调用方持锁一步完成快路径与入队，保证排队顺序 = 调用顺序）：
+/// - `Acquired`：已直接占有槽位（active +1），调用方即刻执行创建动作；
+/// - `Queued(waiter)`：已入 FIFO 等待队列，等 `granted` 预留。
+enum SlotEntry {
+    Acquired,
+    Queued(Arc<SlotWaiter>),
+}
+
+fn enter_slot_queue(creator_session_id: &str) -> SlotEntry {
+    let mut slots = slots();
+    let state = slots.entry(creator_session_id.to_string()).or_default();
+    if state.active < SUBAGENT_CONCURRENCY_LIMIT && state.waiters.is_empty() {
+        state.active += 1;
+        return SlotEntry::Acquired;
+    }
+    let waiter = Arc::new(SlotWaiter::default());
+    state.waiters.push_back(Arc::clone(&waiter));
+    SlotEntry::Queued(waiter)
+}
+
+/// 等待队列授予（`enter_slot_queue` 返回 `Queued` 后的等待循环）：
+/// 直到获得预留（true）或取消标记先到（false）。
 /// 取消与预留并发时取消优先——已获预留仍先查标记，取消则把预留顺延给下一个排队者。
 /// 返回 true 的调用方必须以 `release_slot` 配对，否则槽位泄露。
 ///
 /// 取消侧（引擎线程）不感知队列，等待以 100ms 轮询取消标记实现，
 /// 中止延迟在人类操作粒度下可忽略（parity 测试不锁时延）。
-pub fn acquire_slot(creator_session_id: &str, cancel: &AtomicBool) -> bool {
-    if cancel.load(Ordering::Relaxed) {
-        return false;
-    }
-    let waiter = {
-        let mut slots = slots();
-        let state = slots
-            .entry(creator_session_id.to_string())
-            .or_default();
-        if state.active < SUBAGENT_CONCURRENCY_LIMIT && state.waiters.is_empty() {
-            state.active += 1;
-            return true;
-        }
-        let waiter = Arc::new(SlotWaiter::default());
-        state.waiters.push_back(Arc::clone(&waiter));
-        waiter
-    };
+fn wait_for_grant(creator_session_id: &str, waiter: Arc<SlotWaiter>, cancel: &AtomicBool) -> bool {
     let mut granted = waiter.granted.lock().unwrap();
     loop {
         if *granted {
@@ -191,6 +195,59 @@ pub fn acquire_slot(creator_session_id: &str, cancel: &AtomicBool) -> bool {
             .wait_timeout(granted, Duration::from_millis(100))
             .unwrap();
         granted = guard;
+    }
+}
+
+/// 取一个槽位：有空位且无排队者时立即返回 true（无排队者才直取，保证 FIFO 公平）；
+/// 否则入队等待，直到获得预留（true）或取消标记先到（false）。
+/// 返回 true 的调用方必须以 `release_slot` 配对，否则槽位泄露。
+pub fn acquire_slot(creator_session_id: &str, cancel: &AtomicBool) -> bool {
+    if cancel.load(Ordering::Relaxed) {
+        return false;
+    }
+    match enter_slot_queue(creator_session_id) {
+        SlotEntry::Acquired => true,
+        SlotEntry::Queued(waiter) => wait_for_grant(creator_session_id, waiter, cancel),
+    }
+}
+
+/// 排队派生的槽位决策（[`request_slot_or_defer`] 的返回）。
+pub enum SlotDecision {
+    /// 槽位已在手：调用方**在本线程**立刻执行创建动作，并以 `release_slot` 配对收尾
+    /// （创建失败路径也要释放）。
+    Acquired,
+    /// 已入 FIFO 队列：槽位空出时后台线程执行 `on_grant`，调用方立即返回。
+    /// 等待期间 `cancel` 置位则放弃（不执行 `on_grant`）。
+    Queued,
+    /// 调用时 `cancel` 已置位：未入队。
+    Canceled,
+}
+
+/// 取槽位；超上限时**不阻塞调用方**，改为排队派生：
+/// 入队在调用线程同步完成（排队顺序 = 调用顺序，FIFO），随后由后台线程
+/// 等到预留再执行 `on_grant`——创建子代理的动作不再卡住发起方的轮次。
+///
+/// `on_grant` 在后台线程运行（拿到预留后调用，此时槽位已在握），
+/// 内部须以 `release_slot` 配对（创建失败路径也要释放）。
+pub fn request_slot_or_defer(
+    creator_session_id: &str,
+    cancel: Arc<AtomicBool>,
+    on_grant: impl FnOnce() + Send + 'static,
+) -> SlotDecision {
+    if cancel.load(Ordering::Relaxed) {
+        return SlotDecision::Canceled;
+    }
+    let creator = creator_session_id.to_string();
+    match enter_slot_queue(&creator) {
+        SlotEntry::Acquired => SlotDecision::Acquired,
+        SlotEntry::Queued(waiter) => {
+            std::thread::spawn(move || {
+                if wait_for_grant(&creator, waiter, &cancel) {
+                    on_grant();
+                }
+            });
+            SlotDecision::Queued
+        }
     }
 }
 

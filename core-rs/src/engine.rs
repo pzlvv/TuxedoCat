@@ -1253,6 +1253,7 @@ impl Core {
         let spawn_core = Arc::clone(self);
         let spawn_remote_core = Arc::clone(self);
         let deliver_core = Arc::clone(self);
+        let spawn_queued_core = Arc::clone(self);
         tools::SubAgentHooks {
             spawn: Arc::new(move |request: tools::SubAgentRequest| {
                 spawn_core.create_sub_agent(request)
@@ -1260,12 +1261,73 @@ impl Core {
             spawn_remote: Arc::new(move |request: tools::SubAgentRequest| {
                 spawn_remote_core.spawn_remote_agent(request)
             }),
+            spawn_queued: Arc::new(move |request, cancel| {
+                spawn_queued_core.spawn_sub_agent_queued(request, cancel)
+            }),
             deliver: Arc::new(
                 move |target: &str, content: &str, from: &str| -> Result<(), String> {
                     deliver_core.deliver_agent_reply(target, content, from)
                 },
             ),
         }
+    }
+
+    /// 槽位感知的子代理派发（`Agent` 工具入口）：并发槽位已满时改为**排队派生**，
+    /// 工具调用立即返回，主对话不被排队等待阻塞。
+    ///
+    /// - 有空位：当场创建（`Created`）；创建失败在此归还槽位（原 spawn 失败路径）。
+    /// - 已满：请求进 FIFO 队列（`Queued`），槽位空出时后台创建；后台创建失败
+    ///   同样归还槽位，并向创建者会话发一条带外 message——轮次此时可能已结束，
+    ///   这是排队派生下失败唯一的回报通道（静默吞掉违反架构原则 1）。
+    /// - 调用时取消标记已置位：不创建、不排队（`Canceled`）。
+    pub fn spawn_sub_agent_queued(
+        self: &Arc<Self>,
+        request: tools::SubAgentRequest,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<tools::SubAgentDispatch, String> {
+        let core = Arc::clone(self);
+        let deferred_request = request.clone();
+        let decision = crate::subagent::request_slot_or_defer(
+            &request.creator_session_id,
+            cancel,
+            move || {
+                let creator = deferred_request.creator_session_id.clone();
+                let spawned = match &deferred_request.target {
+                    Some(_) => core.spawn_remote_agent(deferred_request.clone()),
+                    None => core.create_sub_agent(deferred_request.clone()),
+                };
+                if let Err(error) = spawned {
+                    crate::subagent::release_slot(&creator);
+                    core.emit(json!({
+                        "type": "message",
+                        "sessionId": creator,
+                        "data": {
+                            "role": "user",
+                            "content": format!("⚠ Agent queued spawn failed: {error}"),
+                            "origin": "bash",
+                        },
+                    }));
+                }
+            },
+        );
+        Ok(match decision {
+            crate::subagent::SlotDecision::Acquired => {
+                let creator = request.creator_session_id.clone();
+                let spawned = match &request.target {
+                    Some(_) => self.spawn_remote_agent(request),
+                    None => self.create_sub_agent(request),
+                };
+                match spawned {
+                    Ok(sub_session_id) => tools::SubAgentDispatch::Created(sub_session_id),
+                    Err(error) => {
+                        crate::subagent::release_slot(&creator);
+                        return Err(error);
+                    }
+                }
+            }
+            crate::subagent::SlotDecision::Queued => tools::SubAgentDispatch::Queued,
+            crate::subagent::SlotDecision::Canceled => tools::SubAgentDispatch::Canceled,
+        })
     }
 
     /// 跨工作区派发子代理（specs/023 FR-002）：经宿主在目标工作区建会话。

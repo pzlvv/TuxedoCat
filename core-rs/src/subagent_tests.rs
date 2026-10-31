@@ -164,6 +164,70 @@ fn cancel_before_acquire_returns_false() {
     reset_for_test();
 }
 
+/// 排队派生（`request_slot_or_defer`）：有空位当场返回 `Acquired`；超上限返回
+/// `Queued` 且**立即返回**，`on_grant` 由后台线程等到槽位空出后才执行；
+/// 调用时取消标记已置位返回 `Canceled` 且不执行 `on_grant`。
+#[test]
+fn request_slot_or_defer_queues_instead_of_blocking() {
+    let _guard = serial();
+    reset_for_test();
+    // Canceled：未入队、不执行 on_grant
+    let granted = Arc::new(AtomicBool::new(false));
+    let granted_probe = Arc::clone(&granted);
+    let decision = request_slot_or_defer(
+        CREATOR,
+        Arc::new(AtomicBool::new(true)),
+        move || granted_probe.store(true, Ordering::Relaxed),
+    );
+    assert!(matches!(decision, SlotDecision::Canceled));
+    assert_eq!(slot_stats_for_test(CREATOR), (0, 0));
+    assert!(!granted.load(Ordering::Relaxed));
+
+    // Acquired：有空位当场到手（调用方即刻创建）
+    let decision = request_slot_or_defer(
+        CREATOR,
+        Arc::new(AtomicBool::new(false)),
+        || panic!("Acquired 路径不应执行 on_grant"),
+    );
+    assert!(matches!(decision, SlotDecision::Acquired));
+    assert_eq!(slot_stats_for_test(CREATOR), (1, 0));
+
+    // Queued：占满后立即返回，on_grant 由后台等到释放后执行
+    // （Acquired 阶段已持有 1 个，这里补满到上限）
+    for _ in 1..SUBAGENT_CONCURRENCY_LIMIT {
+        assert!(acquire_slot(CREATOR, &AtomicBool::new(false)));
+    }
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 0)
+    );
+    let (granted_tx, granted_rx) = mpsc::channel::<()>();
+    let decision = request_slot_or_defer(
+        CREATOR,
+        Arc::new(AtomicBool::new(false)),
+        move || {
+            granted_tx.send(()).expect("接收端存活");
+        },
+    );
+    assert!(matches!(decision, SlotDecision::Queued));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 1),
+        "Queued 必须同步入队（排队顺序 = 调用顺序）"
+    );
+    assert!(granted_rx.recv_timeout(Duration::from_millis(200)).is_err());
+    release_slot(CREATOR);
+    assert_eq!(
+        granted_rx.recv_timeout(Duration::from_secs(2)),
+        Ok(()),
+        "槽位空出后 on_grant 应在后台执行"
+    );
+    // 预留即转移：on_grant 在握槽位，由调用方的创建收尾配对释放
+    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 0));
+    reset_for_test();
+}
+
 #[test]
 fn cancel_while_queued_returns_false() {
     let _guard = serial();
