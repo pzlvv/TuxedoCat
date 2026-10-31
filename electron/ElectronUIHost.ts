@@ -7,7 +7,7 @@
  */
 
 import type { BrowserWindow, WebContents, WebContentsView } from 'electron';
-import { app, nativeTheme, dialog, screen, BrowserWindow as BrowserWindowCtor } from 'electron';
+import { app, ipcMain, nativeTheme, dialog, screen, BrowserWindow as BrowserWindowCtor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { randomUUID } from 'crypto';
@@ -101,6 +101,10 @@ export class ElectronUIHost implements UIHost {
   private viewerWindow: BrowserWindowCtor | undefined;
   /** 当前查看器窗口的文件监听控制器（specs/018）；与查看器名额同生命周期 */
   private viewerWatch: ViewerWatchController | undefined;
+  /** Markdown 预览窗口的 webContents（窗口控制 IPC 的发送方校验基准；closed 时清除） */
+  private markdownPreviewSender: WebContents | undefined;
+  /** `markdown-window-control` 监听是否已注册（每宿主一次） */
+  private markdownControlsRegistered = false;
 
   /** 内部日志实现（console 前缀 + 落盘：宿主诊断不进日志文件就查不到问题） */
   private writeLog(...args: unknown[]): void {
@@ -671,7 +675,8 @@ export class ElectronUIHost implements UIHost {
     if (kind === 'markdown' && content.kind === 'text') {
       const bodyHtml = await getMarkdownPreviewBodyHtml(content.text);
       if (win.isDestroyed()) return;
-      win.webContents.send('markdown-refresh', { bodyHtml });
+      // text 一并下发：预览窗口可切到文本视图（原始源文），刷新两种视图都要跟着走
+      win.webContents.send('markdown-refresh', { bodyHtml, text: content.text });
       return;
     }
     if (kind === 'text' && content.kind === 'text') {
@@ -720,6 +725,12 @@ export class ElectronUIHost implements UIHost {
    * 只读 HTML，经 data URL 装进沙箱窗口；页面没有内联脚本，只带一个负责刷新
    * `.markdown-body` 的 preload。内容在生成侧就净化（原生 HTML 片段转义、危险协议
    * 链接降级为纯文本），渲染器对文件内容零信任。
+   *
+   * 窗口带自绘标题栏（非 macOS 去系统边框）：preload 注入「渲染/文本」切换按钮
+   * 与最小化-最大化-关闭按钮（切换按钮在最小化左侧），窗口控制经
+   * `markdown-window-control` 回主进程执行；macOS 保留系统红绿灯，preload 只注入
+   * 切换按钮。初始源文与文案经 `markdown-source` 下发，preload 据此实现文本视图
+   * 与按钮标签。
    */
   async openMarkdownPreviewWindow(init: {
     title: string;
@@ -728,6 +739,8 @@ export class ElectronUIHost implements UIHost {
   }): Promise<void> {
     const isDark = nativeTheme.shouldUseDarkColors;
     const title = init.title || PRODUCT_NAME;
+    const isMac = process.platform === 'darwin';
+    this.registerMarkdownWindowControls();
     const win = new BrowserWindowCtor({
       ...ElectronUIHost.slotBoundsToOptions(this.takeViewerSlot(), 1080, 720),
       title,
@@ -735,6 +748,11 @@ export class ElectronUIHost implements UIHost {
       autoHideMenuBar: true,
       // 与 markdownHtml 的暗色底色一致：页面加载完成前不闪另一主题的色块
       backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
+      // 非 macOS 去系统边框，由 preload 注入的标题栏承载窗口控制
+      // （与主窗口同款平台分流，macOS 保留系统红绿灯）
+      ...(isMac
+        ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 13 } }
+        : { frame: false }),
       webPreferences: viewerWindowWebPreferences('markdown'),
     });
     // 预览页里的 http(s) / mailto 链接是 target=_blank：不拦的话 Electron 会新开一个
@@ -745,10 +763,50 @@ export class ElectronUIHost implements UIHost {
     // Chromium 对 data URL 的 ~2MB 上限；base64 只放大 4/3（超大文件仍会被
     // 上限拒之门外，与 Mermaid 预览同一约束）
     await win.loadURL('data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf8').toString('base64'));
+    // 预先捕获引用：closed 回调里窗口已销毁，再取 webContents 会抛错
+    const previewSender = win.webContents;
+    this.markdownPreviewSender = previewSender;
+    win.on('closed', () => {
+      if (this.markdownPreviewSender === previewSender) this.markdownPreviewSender = undefined;
+    });
     this.trackViewerWindow(win);
+    // 切换文本视图需要原始源文（页面 data URL 里只有渲染结果）；文案与平台形态
+    // 一并下发，preload 不感知宿主环境（sandbox: true 只有 ipcRenderer 与 DOM）
+    win.webContents.send('markdown-source', {
+      text: init.content,
+      dark: isDark,
+      windowControls: !isMac,
+      labels: {
+        rendered: tt('渲染', 'Rendered'),
+        text: tt('文本', 'Text'),
+        minimize: tt('最小化', 'Minimize'),
+        maximize: tt('最大化', 'Maximize'),
+        close: tt('关闭', 'Close'),
+      },
+    });
     this.startViewerWatch(init.watchTarget, 'markdown', title, {
       kind: 'text',
       text: init.content,
+    });
+  }
+
+  /** 注册 Markdown 预览窗口的窗口控制 IPC（每宿主一次；发送方必须是预览窗口自身） */
+  private registerMarkdownWindowControls(): void {
+    if (this.markdownControlsRegistered) return;
+    this.markdownControlsRegistered = true;
+    ipcMain.on('markdown-window-control', (event, payload: unknown) => {
+      if (event.sender !== this.markdownPreviewSender || event.sender.isDestroyed()) return;
+      const action = (payload as { action?: unknown } | null)?.action;
+      const win = this.viewerWindow;
+      if (!win || win.isDestroyed()) return;
+      if (action === 'minimize') {
+        win.minimize();
+      } else if (action === 'toggle-maximize') {
+        if (win.isMaximized()) win.unmaximize();
+        else win.maximize();
+      } else if (action === 'close') {
+        win.close();
+      }
     });
   }
 

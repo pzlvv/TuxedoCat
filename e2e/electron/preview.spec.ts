@@ -114,6 +114,46 @@ test('US-38 本地 Markdown 刷新保持滚动并显示删除标记', async () =
   await expect(previewPage).toHaveTitle(/文件已删除|file deleted/, { timeout: 10_000 });
 });
 
+test('Markdown 预览自绘标题栏：渲染/文本切换按钮在最小化左侧', async () => {
+  await openFromSidebar('README.md');
+
+  const previewPage = await app.waitForPage('data:text/html', 20_000);
+  await expect(previewPage.locator('article.markdown-body h1')).toHaveText('工作区', { timeout: 20_000 });
+
+  // 初始为渲染视图；切换按钮的标签是切换目标（当前渲染 → 显示「文本」）
+  const toggle = previewPage.locator('#markdown-titlebar .view-toggle');
+  await expect(toggle).toBeVisible({ timeout: 10_000 });
+  await expect(toggle).toHaveText(/文本|Text/);
+
+  // 几何断言：切换按钮整体位于最小化按钮左侧（同一控制行内）
+  const ordering = await previewPage.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#markdown-titlebar .controls button')];
+    const toggleRect = buttons[0].getBoundingClientRect();
+    const minimizeRect = buttons[1].getBoundingClientRect();
+    return {
+      sameRow: Math.abs(toggleRect.top - minimizeRect.top) < 1,
+      toggleRight: toggleRect.right,
+      minimizeLeft: minimizeRect.left,
+    };
+  });
+  expect(ordering.sameRow).toBe(true);
+  // 相邻按钮存在亚像素取整（边界差 <0.001px），留 1px 容差
+  expect(ordering.toggleRight).toBeLessThanOrEqual(ordering.minimizeLeft + 1);
+
+  // 切到文本视图：渲染区隐藏，原始源文只读展示
+  await toggle.click();
+  await expect(previewPage.locator('article.markdown-body')).toBeHidden();
+  const sourceView = previewPage.locator('#markdown-source-view');
+  await expect(sourceView).toBeVisible();
+  await expect(sourceView).toContainText('# 工作区');
+
+  // 切回渲染视图
+  await expect(toggle).toHaveText(/渲染|Rendered/);
+  await toggle.click();
+  await expect(previewPage.locator('article.markdown-body h1')).toBeVisible();
+  await expect(previewPage.locator('#markdown-source-view')).toBeHidden();
+});
+
 test('US-38 本地图片刷新保持缩放', async () => {
   const initialGif = Buffer.from(
     'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
