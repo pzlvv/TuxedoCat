@@ -83,6 +83,11 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 某条 `tool_use` 被留在归档区、其 `tool_result` 落在保留区（或相反）时，会向保留区
 补一条 `is_canceled` 的合成 `tool_result`，避免下一轮请求出现孤立工具调用。
 
+`is_canceled` 的结果在重放里落成**失败态**：`build_replay_message_data` 把取消说明
+作为卡片内容、`status` 取 `fail`，与 `conversationLoaded` 那条恢复路径
+（webview 的 `restoreMessagesFromConversation`）同口径。落成 `running` 会让卡片时间线
+画旋转风扇、自动滚动轮询按 `hasRunningTools` 一直空转——被中止的工具明明是过去时。
+
 **压缩后上下文占用的重算与写回**：压缩清空了保留区消息的 `usage`
 （`clear_message_usage`），真实锚点不复存在。压缩完成时 core 把压缩产物按运行时同款
 口径（`util::estimate_request_tokens` 作用在压缩后消息上）重算占用，随

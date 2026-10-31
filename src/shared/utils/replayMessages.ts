@@ -29,8 +29,22 @@ type ToolResultDiffFields = {
 
 type ToolResultInfo = { content: string; exitCode: number } & ToolResultDiffFields;
 
-export function buildToolResultMap(messages: readonly Message[]): Map<string, ToolResultInfo> {
-  const map = new Map<string, ToolResultInfo>();
+/**
+ * 建 `tool_use_id → 结果` 表（同 id 后写覆盖先写）。
+ *
+ * 被取消（`is_canceled: true`）的结果单独登记成 `canceledToolResults`，而不是混进
+ * 结果表：取消不是「执行成功 / 失败」，它的 `exit_code` 通常是 -1 / 130 这类哨兵值，
+ * 按它算出来的状态与「工具报错」混在一起。调用方据此把对应 `tool_use` 落成
+ * `status: 'fail'`——与 `conversationLoaded` 那条恢复路径（webview 的
+ * `restoreMessagesFromConversation`）同口径，否则同一条历史会因为走的是哪条恢复
+ * 通道而显示成两种卡片状态（specs/defects/replay-drops-canceled-tool-results.md）。
+ */
+export function buildToolResultMaps(messages: readonly Message[]): {
+  results: Map<string, ToolResultInfo>;
+  canceled: Map<string, string>;
+} {
+  const results = new Map<string, ToolResultInfo>();
+  const canceled = new Map<string, string>();
   for (const msg of messages) {
     if (msg.type !== 'user' || !Array.isArray(msg.message.content)) continue;
     for (const block of msg.message.content) {
@@ -40,21 +54,30 @@ export function buildToolResultMap(messages: readonly Message[]): Map<string, To
         contextBefore?: string[]; contextAfter?: string[];
         startLine?: number; endLine?: number;
       };
-      if (result.type === 'tool_result' && result.tool_use_id && result.is_canceled !== true) {
-        map.set(result.tool_use_id, {
-          content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
-          exitCode: result.exit_code ?? 0,
-          beforeContent: result.beforeContent,
-          afterContent: result.afterContent,
-          contextBefore: result.contextBefore,
-          contextAfter: result.contextAfter,
-          startLine: result.startLine,
-          endLine: result.endLine,
-        });
+      if (result.type !== 'tool_result' || !result.tool_use_id) continue;
+      if (result.is_canceled === true) {
+        // 取消说明文本即卡片内容（core 写入的「中止原因」）；没有文本时留空串
+        canceled.set(result.tool_use_id, Array.isArray(result.content) ? '' : (result.content || ''));
+        continue;
       }
+      results.set(result.tool_use_id, {
+        content: Array.isArray(result.content) ? '[Image]' : (result.content || ''),
+        exitCode: result.exit_code ?? 0,
+        beforeContent: result.beforeContent,
+        afterContent: result.afterContent,
+        contextBefore: result.contextBefore,
+        contextAfter: result.contextAfter,
+        startLine: result.startLine,
+        endLine: result.endLine,
+      });
     }
   }
-  return map;
+  return { results, canceled };
+}
+
+/** 未被取消的工具结果（`tool_use_id → 结果`）；取消结果见 `buildToolResultMaps` */
+export function buildToolResultMap(messages: readonly Message[]): Map<string, ToolResultInfo> {
+  return buildToolResultMaps(messages).results;
 }
 
 /**
@@ -65,7 +88,7 @@ export function buildToolResultMap(messages: readonly Message[]): Map<string, To
  */
 export function buildReplayMessageData(messages: readonly Message[]): MessageData[] {
   const out: MessageData[] = [];
-  const toolResultMap = buildToolResultMap(messages);
+  const { results: toolResultMap, canceled: canceledToolResults } = buildToolResultMaps(messages);
 
   for (const msg of messages) {
     const meta = msg as Message & { isMeta?: boolean; silent?: boolean; subtype?: string; filePath?: string; fileSelectedLines?: { start: number; end: number }; fileHidden?: boolean; isCompactSummary?: boolean; _meta?: Record<string, unknown> };
@@ -181,14 +204,22 @@ export function buildReplayMessageData(messages: readonly Message[]): MessageDat
             toolArgs.afterContent = blockMeta?.afterContent ?? result?.afterContent;
           }
 
+          // 被取消的工具：渲染为失败态，内容是那条取消说明（与 conversationLoaded 的
+          // restoreMessagesFromConversation 同口径）。不能落成 running——那会让卡片
+          // 时间线画旋转风扇、自动滚动轮询按 hasRunningTools 一直空转。
+          const canceledContent = canceledToolResults.get(toolUseId);
           out.push({
             role: 'toolcall',
-            content: result?.content || '',
+            content: canceledContent !== undefined ? canceledContent : (result?.content || ''),
             param: `⚙️ ${b.name || 'tool'}`,
             toolName: b.name,
             toolArgs,
             toolCallId: toolUseId,
-            status: result ? (result.exitCode !== 0 ? 'fail' : 'success') : 'running',
+            status: canceledContent !== undefined
+              ? 'fail'
+              : result
+                ? (result.exitCode !== 0 ? 'fail' : 'success')
+                : 'running',
           } as MessageData);
         }
       }

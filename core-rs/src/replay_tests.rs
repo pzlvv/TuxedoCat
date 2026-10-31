@@ -141,11 +141,61 @@ fn tool_result_map_skips_canceled_and_keeps_last() {
             },
         }),
     ];
-    let map = build_tool_result_map(&messages);
-    assert_eq!(map.len(), 1, "后写覆盖先写 + 已取消的不入表");
+    let (map, canceled) = build_tool_result_maps(&messages);
+    assert_eq!(map.len(), 1, "后写覆盖先写 + 已取消的不入结果表");
     assert_eq!(map[0].0, "a");
     assert_eq!(map[0].1.content, "second");
     assert_eq!(map[0].1.exit_code, 3);
+    // 取消单独登记：调用方据此把对应 tool_use 落成 fail + 说明文本
+    assert_eq!(canceled.len(), 1);
+    assert_eq!(canceled[0].0, "b");
+    assert_eq!(canceled[0].1, "canceled");
+}
+
+/// specs/defects/replay-drops-canceled-tool-results.md RT-1 / RT-2 / RT-3
+#[test]
+fn canceled_tool_use_renders_as_failed_not_running() {
+    let messages = vec![
+        json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    { "type": "tool_use", "id": "c1", "name": "Bash", "input": { "command": "ls" } },
+                    { "type": "tool_use", "id": "c2", "name": "Bash", "input": {} },
+                    { "type": "tool_use", "id": "c3", "name": "Bash", "input": {} },
+                ],
+            },
+            "uuid": "a-1",
+            "timestamp": 1,
+        }),
+        json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    // 被取消：落成 fail + 取消说明
+                    { "type": "tool_result", "tool_use_id": "c1", "content": "Tool was canceled before execution.", "is_canceled": true, "exit_code": -1 },
+                    // 正常失败：仍按 exit_code 落成 fail
+                    { "type": "tool_result", "tool_use_id": "c2", "content": "boom", "exit_code": 2 },
+                    // 没有对应 tool_use 的取消结果：不产出额外卡片（c3 仍是 running）
+                    { "type": "tool_result", "tool_use_id": "ghost", "content": "gone", "is_canceled": true },
+                ],
+            },
+            "uuid": "r-1",
+            "timestamp": 2,
+        }),
+    ];
+    let out = build_replay_message_data(&messages);
+    assert_eq!(out.len(), 3, "取消结果不额外产出 toolcall 项");
+    assert_eq!(out[0]["toolCallId"], "c1");
+    assert_eq!(out[0]["status"], "fail");
+    assert_eq!(out[0]["content"], "Tool was canceled before execution.");
+    assert_eq!(out[1]["toolCallId"], "c2");
+    assert_eq!(out[1]["status"], "fail");
+    assert_eq!(out[1]["content"], "boom");
+    assert_eq!(out[2]["toolCallId"], "c3");
+    assert_eq!(out[2]["status"], "running");
 }
 
 #[test]
