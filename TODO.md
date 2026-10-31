@@ -76,6 +76,14 @@
   连带待修：[docs/hosts/pycharm-plugin.md](docs/hosts/pycharm-plugin.md) 的「帧呈现上限」一条把归因
   写成「JBR 层的帧呈现上限」，与上述证据不符；验证完成后按实测结论就地更正为「CEF OSR 可配置默认值」。
 
+- **`tool_loop_has_no_default_turn_limit` 在 Windows 上贴 30s 死线偶发挂**（specs/defects/available-commands-probe-stalls-first-query 修复验证时发现，干净基线可复现）：
+  该用例跑 46 轮 LLM×Bash（`echo hi`）循环，`wait_query_end` 的 30s 上限在本机
+  （Windows arm64，每轮 Bash spawn 约 0.65s）实测 30.6–32.5s 徘徊，同一二进制两次运行
+  一次挂一次过；stash 在干净基线同样失败，与该修复无关。方向：走 `/fix`——工具重的
+  循环用例放宽等待上限（如按轮数放大 `wait_for` 时限），或把 Bash spawn 开销从
+  断言路径剥离（FakeLlm 直接给 46 轮，不经真实 spawn）。验收判据：本机连续 5 次
+  `cargo test tool_loop_has_no_default_turn_limit` 全绿，CI 同口径。
+
 - **tui-rs 配置快照缺 multimodal 被 core 拒收**（specs/012 修订漏改 tui-rs，specs/035 plan 宪章检查发现）：
   `tui-rs/src/settings.rs` 的 `snapshot_to_payload` 产出的 `modelLimits` / `modelLimitsFallback`
   条目缺必选 `multimodal` 字段，core-rs serde 拒收 → TUI 挂在就绪握手。修复方向：对齐
@@ -83,11 +91,3 @@
   保留 multimodal 覆盖；Kotlin 侧（specs/035）已用「快照字段名单对照测试」防同款漂移，
   tui-rs 补同款对照。验收判据：`cargo test` 空配置快照含 `multimodal: true`、provider 覆盖
   可带 `multimodal: false`、payload 字段名单与 `src/shared/settingsSnapshot.ts` 一致。
-
-- **存量失败：compact 引擎测试 `abort_clears_pending_compact` 稳定挂**（221390b 验证时发现，与该提交改动无关——已 stash 在干净基线复现）：
-  `engine::compact_engine_tests::abort_clears_pending_compact` 在 `core-rs/src/compact_engine_tests.rs:594`
-  panic「查询应当发出 LLM 请求」，隔离跑同样稳定失败、耗时约 20s（疑似测试内部等待 / 超时逻辑到点后断言）。
-  本机为 Windows arm64；smoke CI（Linux）的 `cargo test` 是否同样失败待查——若 CI 绿则是平台相关
-  （时序 / 路径 / 环境），修复时先圈定平台边界。方向：走 `/fix`（`specs/defects/`），先判是测试自身
-  问题（mock 没接上 / 时序假设）还是 compact 引擎回归。验收判据：干净基线 `cargo test` 全绿（本机与
-  CI 同口径）；定位结论与证据记入 defect 规格。
