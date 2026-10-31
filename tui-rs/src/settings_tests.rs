@@ -228,3 +228,45 @@ fn store_load_write_and_guards() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// RT-1（specs/defects/tui-refresh-from-disk-keeps-stale-snapshot）：
+/// `refresh_from_disk` 报告变化后，`snapshot()` 必须读到编辑后的内容。
+#[test]
+fn refresh_from_disk_replaces_stored_snapshot() {
+    let dir = std::env::temp_dir().join(format!("tui-rs-refresh-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let mut store = SettingsStore::with_dir(dir.clone());
+
+    let snapshot = store.load();
+    assert_eq!(snapshot.active_provider, "");
+    assert_eq!(store.read_context_limit(None, None), FALLBACK_CONTEXT_WINDOW);
+
+    // 用户手工编辑 settings.json：配上 provider p 并设为活跃
+    fs::write(
+        dir.join("settings.json"),
+        json!({ "llm": { "activeProvider": "p", "providers": { "p": {
+            "baseURL": "https://x", "apiKey": "k", "models": ["m"], "defaultModel": "m"
+        } } } })
+        .to_string(),
+    )
+    .unwrap();
+
+    let refreshed = store.refresh_from_disk().expect("内容变了，应报告新快照");
+    assert_eq!(refreshed.active_provider, "p");
+    // 返回的新快照必须同时成为 store 的当前快照：否则后续读取全拿编辑前的值
+    assert_eq!(store.snapshot().active_provider, "p");
+    assert_eq!(store.snapshot().active_model_ref(), Some(("p".to_string(), "m".to_string())));
+
+    // 配置被清空：快照跟着回落（不能留着上一位 provider）
+    fs::write(dir.join("settings.json"), "{\n}\n").unwrap();
+    assert!(store.refresh_from_disk().is_some());
+    assert_eq!(store.snapshot().active_provider, "");
+
+    // 读不出来：保持现有快照，不当作配置被清空
+    fs::write(dir.join("settings.json"), "{broken").unwrap();
+    assert!(store.refresh_from_disk().is_none());
+    assert_eq!(store.snapshot().active_provider, "");
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -639,27 +639,30 @@ impl SettingsStore {
 
     /// 重新读盘并刷新快照（打开菜单前手工编辑过 settings.json 的收敛入口）。
     /// 与 `load` 的差别：只有内容真的变化才返回新快照（None 表示没变）。
+    ///
+    /// 变化时**同时替换 `self.snapshot`**：返回新快照但留着旧快照，会让 `snapshot()` /
+    /// `read_context_limit` 继续读到编辑前的配置（`host.rs` 据此重推 core 的仍是旧值）。
     pub fn refresh_from_disk(&mut self) -> Option<SettingsSnapshot> {
-        match read_json_file(&self.settings_path()) {
-            ReadResult::Invalid(_) => None, // 读不出来保持现有快照
+        let next = match read_json_file(&self.settings_path()) {
+            ReadResult::Invalid(_) => return None, // 读不出来保持现有快照
             ReadResult::Missing => {
                 let empty = Value::Object(Map::new());
                 if self.raw_settings == empty {
                     return None;
                 }
-                self.raw_settings = empty;
-                let snapshot = resolve_settings_snapshot(&self.raw_settings);
-                Some(snapshot)
+                empty
             }
             ReadResult::Ok(value) => {
                 if self.loaded() && value == self.raw_settings {
                     return None;
                 }
-                self.raw_settings = value;
-                let snapshot = resolve_settings_snapshot(&self.raw_settings);
-                Some(snapshot)
+                value
             }
-        }
+        };
+        self.raw_settings = next;
+        let snapshot = resolve_settings_snapshot(&self.raw_settings);
+        self.snapshot = Some(snapshot.clone());
+        Some(snapshot)
     }
 
     fn loaded(&self) -> bool {

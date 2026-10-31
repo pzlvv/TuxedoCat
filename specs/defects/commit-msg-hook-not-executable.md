@@ -25,13 +25,13 @@ hint: The 'scripts/githooks/commit-msg' hook was ignored because it's not set as
   「触及 `src/` 且不带任何 `Flow` trailer」的提交 → `git commit` 退出码 0，输出里是上面
   那行 hint；提交被直接放行。
 - 钩子脚本本身是对的：直接 `sh scripts/githooks/commit-msg <msgfile>` 跑，判据按
-  `AGENTS.md` 第 5 节执行（合规提交 exit 0，缺 trailer 时 exit 1 并打印提示）。
+  [AGENTS.md 第 5 节](../../AGENTS.md#5-工作流)执行（合规提交 exit 0，缺 trailer 时 exit 1 并打印提示）。
 
 ## 期望
 
 - `scripts/githooks/commit-msg` 与同目录其余钩子一致：index 里是 `100755`。
-- 干净的克隆 / 解包产物按 `AGENTS.md` 第 5 节装上 `core.hooksPath` 后，闸门真的运行：
-  触及代码路径但缺 `Flow` trailer 的提交被拒。
+- 干净的克隆 / 解包产物按 [AGENTS.md 第 5 节](../../AGENTS.md#5-工作流)装上
+  `core.hooksPath` 后，闸门真的运行：触及代码路径但缺 `Flow` trailer 的提交被拒。
 - 回归测试锁住这个可执行位，避免再次退化成静默跳过。
 
 ## 不变量
