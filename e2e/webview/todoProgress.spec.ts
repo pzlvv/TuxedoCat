@@ -244,6 +244,77 @@ test('US-59 压缩（messagesReplaced）后按钮不消失、计数不变', asyn
   await expect(progressButton()).toHaveText('任务进度: 1/4');
 });
 
+/** 长清单：固定态浮层内部出现滚动条（docs/features/todo-list.md 第 4 节「清单很长」） */
+const TODO_LONG = Array.from({ length: 30 }, (_, i) => ({ content: `任务条目 ${i + 1}`, status: 'pending' }));
+
+/** 浮层里真正承担滚动的内层容器（maxHeight + overflowY: auto） */
+function tipScrollTop(): Promise<number> {
+  return progressTip().evaluate((el) => {
+    const inner = [...el.querySelectorAll('div')]
+      .find((d) => getComputedStyle(d).overflowY === 'auto' && d.scrollHeight > d.clientHeight + 1);
+    return inner ? inner.scrollTop : -1;
+  });
+}
+
+test('US-59 固定后的长清单浮层可用滚轮滚动', async () => {
+  const { page, host } = handle;
+  await seedConversations();
+  await host.setSessionTodos('sess-todo-a', TODO_LONG);
+  await openConversation('带清单的对话');
+  await expect(progressButton()).toHaveText('任务进度: 0/30');
+
+  await progressButton().click();
+  await expect(progressTip()).toBeVisible();
+  await page.mouse.move(5, 5);
+  await expect(progressTip()).toBeVisible();
+
+  expect(await tipScrollTop()).toBe(0);
+  const tipBox = await progressTip().boundingBox();
+  await page.mouse.move(tipBox!.x + tipBox!.width / 2, tipBox!.y + tipBox!.height / 2);
+  await page.mouse.wheel(0, 240);
+
+  await expect.poll(tipScrollTop).toBeGreaterThan(0);
+  // 滚动浮层不影响按钮与固定态
+  await expect(progressButton()).toHaveText('任务进度: 0/30');
+  await expect(progressButton()).toHaveAttribute('data-todo-progress-pinned', 'true');
+});
+
+test('US-59 固定后的浮层文字可选中复制，点击不产生上行且不改变固定态', async () => {
+  const { page, host } = handle;
+  await seedConversations();
+  await host.setSessionTodos('sess-todo-a', TODO_FOUR);
+  await openConversation('带清单的对话');
+  await expect(progressButton()).toHaveText('任务进度: 1/4');
+
+  await progressButton().click();
+  await expect(progressTip()).toBeVisible();
+  await page.mouse.move(5, 5);
+
+  // 在第一条条目上横向拖选：选区必须落在浮层文字上
+  const row = progressTip().getByText('改代码');
+  const rowBox = await row.boundingBox();
+  await page.mouse.move(rowBox!.x + 2, rowBox!.y + rowBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rowBox!.x + rowBox!.width - 2, rowBox!.y + rowBox!.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected).toContain('改代码');
+
+  // 选中内容可复制进剪贴板
+  await page.keyboard.press('Control+c');
+  const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboardText).toContain('改代码');
+
+  // 浮层只读：点击不产生上行消息，固定态不变
+  const before = (await host.sentAll()).length;
+  const tipBox = await progressTip().boundingBox();
+  await page.mouse.click(tipBox!.x + 4, tipBox!.y + 4);
+  await page.waitForTimeout(200);
+  expect((await host.sentAll()).length).toBe(before);
+  await expect(progressButton()).toHaveAttribute('data-todo-progress-pinned', 'true');
+  await expect(progressTip()).toBeVisible();
+});
+
 test('US-59 dark / light 两种主题下都可读（取主题色，不写死色值）', async () => {
   const { page, host } = handle;
   await seedConversations();
