@@ -5,7 +5,7 @@ last_reviewed: 2026-10-18
 
 # 规格：宿主实现对照与分叉清单
 
-本规格界定三契约在两个宿主上的实现对照（第 1–5 节）与宿主分叉清单（第 6–7 节：有意保留的固有差异、尚未收敛的分叉点）。第三个宿主 TUI 不实现这些契约，见 `docs/hosts/tui.md`；bootstrap 接线、启动期注入点与退出路径见 `docs/hosts/host-bootstrap.md`。
+本规格界定三契约在两个宿主上的实现对照（第 1–5 节）与宿主分叉清单（第 6–7 节：有意保留的固有差异、尚未收敛的分叉点）。第三、第四个宿主 TUI 与 PyCharm 插件不实现这些契约，分别见 `docs/hosts/tui.md` 与 [docs/hosts/pycharm-plugin.md](pycharm-plugin.md)；bootstrap 接线、启动期注入点与退出路径见 `docs/hosts/host-bootstrap.md`。
 
 交叉引用：`docs/architecture/contracts.md`（契约定义）、`docs/hosts/host-bootstrap.md`（bootstrap 接线与启动生命周期）、`docs/hosts/webview-ui.md`（唯一 UI 实现）、`docs/core/client-connection.md`（连接模型）、`docs/hosts/electron-multi-workspace.md`（多工作目录）、`docs/hosts/vscode-idle-close.md`（VS Code 空闲回收）、[docs/architecture/overview.md 第 1 节](../architecture/overview.md#1-架构概述)（架构总览）。
 
@@ -13,7 +13,7 @@ last_reviewed: 2026-10-18
 
 三个契约各自的实现对照。第 1、2 节只列两个宿主类的骨架，逐成员实现见
 第 3 节（`UIHost`）、第 4 节（`SpinDesign`）、第 5 节（`ConversationManager`）；bootstrap 的接线顺序见 [docs/hosts/host-bootstrap.md 第 1 节](host-bootstrap.md#1-宿主接线)。
-第三个宿主 TUI（`tui-rs/`，纯 Rust）不在此展开：它直连 Standalone Core 帧通道、不
+第三、第四个宿主 TUI（`tui-rs/`，纯 Rust）与 PyCharm 插件（`pycharm-plugin/`，Kotlin）不在此展开：它们直连 Standalone Core 帧通道、不
 实现本节契约，core 帧 ↔ 渲染动作的翻译与构建见 `docs/hosts/tui.md`（其分发与 Core 部署见
 `docs/features/tui-installer.md`）。
 

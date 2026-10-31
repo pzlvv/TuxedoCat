@@ -1,0 +1,21 @@
+<idea-plugin>
+    <id>${pluginId}</id>
+    <name>${productName}</name>
+    <vendor>${publisher}</vendor>
+    <description><![CDATA[
+<p>AI assistant tool window for JetBrains IDEs. Embeds the shared webview rendering
+of the ${productName} assistant and connects directly to its local standalone core
+over the frame channel. Part of the ${productName} product family (VS Code extension,
+Electron desktop app, terminal UI).</p>
+    ]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <!-- JCEF API 落在 bundled plugin（com.intellij.modules.jcef）：运行期类加载器要看到它，
+         同时让无 JCEF 的 IDE 在插件装载期明确失败（铁律：不静默降级） -->
+    <depends>com.intellij.modules.jcef</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="${toolWindowId}" anchor="right" canCloseContents="false"
+                    factoryClass="pycharm.host.AssistantToolWindowFactory"
+                    icon="/icons/toolWindow.svg"/>
+        <postStartupActivity implementation="pycharm.host.StartupActivity"/>
+    </extensions>
+</idea-plugin>

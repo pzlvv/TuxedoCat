@@ -40,6 +40,8 @@ const SKIP_DIRS = new Set([
   '.vscode-test',
   'target',
   'resources',
+  'build',
+  '.gradle',
   projectConfig.configDir,
 ]);
 

@@ -26,7 +26,7 @@ last_reviewed: 2026-10-18
 
 ## 1. 宿主接线
 
-本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`；TUI 的启动接线在 `tui-rs/src/main.rs`，见 [docs/hosts/tui.md 第 2 节](tui.md#2-接入架构)）完成的接线：core 全局
+本节覆盖进程启动阶段（VS Code 的 `activate` / Electron 的 `main()`；TUI 的启动接线在 `tui-rs/src/main.rs`，见 [docs/hosts/tui.md 第 2 节](tui.md#2-接入架构)；PyCharm 插件的启动接线在其面板控制器 PanelController，见 [docs/hosts/pycharm-plugin.md 第 1 节](pycharm-plugin.md#1-形态与进程模型)）完成的接线：core 全局
 单例与宿主能力提供者的注册、事件总线的创建与订阅、`WebViewUI` 的创建与子模块接线、
 历史系统 / 会话队列 / 配置目录 / MCP 残留清理，以及退出路径对 core 资源的
 释放。窗口 / 面板 / 菜单 / 托盘 / 快捷键等宿主界面构造与 webview 内容注入属于宿主实现层，

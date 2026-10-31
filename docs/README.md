@@ -90,6 +90,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/hosts/vscode-idle-close.md` | VS Code 单视图宿主的空闲对话回收 |
 | `docs/hosts/tui.md` | TUI（第三个宿主，纯 Rust，直连帧通道） |
 | `docs/hosts/product-identity.md` | 产品身份的唯一来源与去字面化契约（占位符约定） |
+| `docs/hosts/pycharm-plugin.md` | 第四宿主 PyCharm 插件：进程形态、面板承载（内嵌 HttpServer + JCEF）、IDE diff 与焦点、自包含分发 |
 
 ### 特性规格（docs/features/，spec 形态）
 
@@ -101,6 +102,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/user-stories/sessions-and-llm.md` | 分册：EP-5 会话管理、EP-6 LLM 配置 |
 | `docs/features/user-stories/tools.md` | 分册：EP-7 工具与技能、US-50 联网搜索 |
 | `docs/features/user-stories/desktop.md` | 分册：EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器 |
+| `docs/features/user-stories/pycharm-plugin.md` | 分册：EP-15 PyCharm 插件宿主（US-68～72） |
 | `docs/features/user-message-pipeline.md` | 用户消息从 webview 输入到进入 LLM 上下文的完整管线 |
 | `docs/features/compaction.md` | 对话压缩：触发、摘要、归档、跨压缩的用户输入历史 |
 | `docs/features/abort-button.md` | abort 按钮的状态判定与中止范围（含 spin 模式） |
