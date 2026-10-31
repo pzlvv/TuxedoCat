@@ -47,6 +47,35 @@
   验收判据：snap / 托盘往返 / 最小化还原后图标与 `isMaximized()` 一致且能自愈；双击标题栏空白区
   恰好切换一次最大化；electron 车道 e2e 锁定两条行为。
 
+- **JCEF 面板帧率被锁在 30fps（OSR 默认帧率未抬到 60）**（specs/035 实施后走读定位，修复未验证）：
+  现象：PyCharm 插件面板 rAF 帧间隔稳定 33.3ms（30fps），`perfProbe.spec.ts` 量到的就是这个上限
+  本身，与 GPU（D3D11）、前后台、DOM 体量无关。根因链（反编译 IDE 自带 JCEF jar + CEF 源码确认，
+  不是 JBR 硬上限）：
+  (1) `JBCefBrowserBuilder` 默认 `myIsOffScreenRendering = Registry.is("ide.browser.jcef.osr.enabled")
+  || JBCefApp.isRemoteEnabled()`，PyCharm 2026.2.4 的 `misc/registry.properties` 两项均为 true，
+  故 `WebViewPanel` 里 `JBCefBrowser("$baseUrl/index.html")` 的无参 builder 路径恒走 windowless；
+  (2) 同一构造器取 `myWindowlessFrameRate = Registry.intValue("ide.browser.jcef.osr.framerate", 0)`，
+  registry 默认值就是 `0`，原样写入 `CefBrowserSettings.windowless_frame_rate`；
+  (3) CEF `osr_util::ClampFrameRate` 把 `< 1` 解释成 `kDefaultFrameRate = 30`，`SetFrameRate()` 据此
+  算出 `frame_rate_threshold_us_ = 33333`，同时作为 BeginFrame interval 与 display vsync 参数——
+  页面 rAF 因而被限在 30fps（CEF 文档口径：范围 1–60，默认 30）。
+  附带确认：remote（out-of-process）模式下 `CefBrowserSettings` 到不了 CEF 侧——`RemoteBrowser.mySettings`
+  只赋值不读取，thrift `Browser_Create` 参数只有 `(cid, requestContext)`，`myFrameRate` 构造器硬编码
+  30；能穿透的只有运行期 `CefBrowser.setWindowlessFrameRate(int)` → `Browser_SetFrameRate` RPC。
+  方向：(a) 零代码先证伪——在 `e2e/helpers/pycharmIde.ts` 的 `ide.general.xml` Registry 条目临时加
+  `ide.browser.jcef.osr.framerate=60`，跑 `PYCHARM_PERF=1 npm run test:e2e:pycharm -- --grep PERF`
+  看 rAF 是否落到 ~16.7ms；(b) 插件内正解（不污染用户全局 Registry）：`JBCefBrowser.createBuilder()
+  .setUrl(...).setWindowlessFramerate(60)` 覆盖进程内模式，并在 native 浏览器创建完成（如 loadEnd）后
+  补一次 `browser.cefBrowser.setWindowlessFrameRate(60)` 覆盖 remote 模式——两处都要，进程内模式下
+  native context 未就绪时前一次调用会静默 no-op；(c) 用 IDE 自带的 `ide.browser.jcef.osr.measureFPS.id`
+  （OSR JCEF FPS Meter）看 OnPaint 侧真实帧率，与 rAF 交叉比对，区分瓶颈在 CEF 出帧还是
+  JCEF→Swing 的 `BufferedImage` 拷贝 / EDT repaint（高分屏下 60fps 拷贝成本翻倍，实际可能落在
+  40–60 之间，不保证满帧）。
+  验收判据：前台面板 rAF 均值 ≤ 17ms 且 p95 ≤ 20ms；`perfProbe` 的 A/B 两组输出留档；
+  面板之外的 JCEF 用途不受影响。
+  连带待修：[docs/hosts/pycharm-plugin.md](docs/hosts/pycharm-plugin.md) 的「帧呈现上限」一条把归因
+  写成「JBR 层的帧呈现上限」，与上述证据不符；验证完成后按实测结论就地更正为「CEF OSR 可配置默认值」。
+
 - **tui-rs 配置快照缺 multimodal 被 core 拒收**（specs/012 修订漏改 tui-rs，specs/035 plan 宪章检查发现）：
   `tui-rs/src/settings.rs` 的 `snapshot_to_payload` 产出的 `modelLimits` / `modelLimitsFallback`
   条目缺必选 `multimodal` 字段，core-rs serde 拒收 → TUI 挂在就绪握手。修复方向：对齐
