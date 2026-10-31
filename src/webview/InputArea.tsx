@@ -1804,7 +1804,11 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   // ==================== 任务进度按钮与浮层（docs/features/todo-list.md FR-003） ====================
 
   // 悬停 100ms 出浮层；点击固定（指针移出不隐藏）、再点恢复悬停规则；切换会话复位。
-  // 浮层 pointer-events-none：只读投影，点击不产生任何上行，也不改变固定状态。
+  // 浮层是只读投影（点击不产生任何上行，也不改变固定状态），但接收指针事件的口径分两态：
+  // 悬停态穿透（`pointer-events: none`——否则指针移进浮层即触发按钮 mouseleave，
+  // FR-003 的「未固定移出立即隐藏」失效）；固定态接收指针事件，好让长清单能在浮层内
+  // 滚动、条目文字能选中复制（见 docs/features/todo-list.md FR-003 与「边界与错误路径」
+  // 的「清单很长」条目）。
   const [todoTipVisible, setTodoTipVisible] = useState(false);
   const [todoTipPinned, setTodoTipPinned] = useState(false);
   const todoHoveredRef = useRef(false);
@@ -2629,11 +2633,15 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           </div>
         </div>
         {/* 任务进度浮层（docs/features/todo-list.md FR-003）：锚在底栏右边缘，宽度随内容自适应，
-          上限为输入区宽度；pointer-events-none：只读投影，点击不产生任何上行。 */}
+          上限为输入区宽度。悬停态穿透（pointer-events-none）保住「移出按钮即隐藏」；固定态
+          接收指针事件，长清单在浮层内滚动、条目文字可选中复制。两态都不产生上行消息。 */}
         {todoTipVisible && todoProgress && (
           <div
             data-todo-progress-tip="true"
-            className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
+            data-todo-progress-tip-pinned={todoTipPinned ? 'true' : 'false'}
+            className={`absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 z-50 ${
+              todoTipPinned ? 'select-text' : 'pointer-events-none'
+            }`}
             style={{
               backgroundColor: colors.bgSecondary,
               borderColor: colors.border,
