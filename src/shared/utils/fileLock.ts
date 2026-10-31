@@ -30,6 +30,14 @@ const LOCK_ASYNC_MAX_ATTEMPTS = 200;
 /** 两次尝试之间的间隔 */
 const LOCK_RETRY_DELAY_MS = 10;
 
+/**
+ * 单次 `tryCreateLock` 内「清理陈旧锁 → 重建」的最大轮数。
+ *
+ * 正常路径最多一轮（判陈旧 → 删 → 建成功）；上界只是把「删掉后对手每次都抢先重建」
+ * 这一理论的活锁降级成一次普通获取失败，避免在等待者自己的调用栈里空转。
+ */
+const STALE_TAKEOVER_MAX_ROUNDS = 3;
+
 /** rename 瞬时失败的重试参数：指数退避，封顶 `RENAME_RETRY_MAX_MS` */
 const RENAME_MAX_ATTEMPTS = 10;
 const RENAME_RETRY_BASE_MS = 5;
@@ -99,29 +107,47 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 尝试创建锁文件一次；成功返回 true */
+/**
+ * 尝试创建锁文件一次（含陈旧锁的清理与重建）。
+ *
+ * 整个函数**不递归**：清理成功后的重新创建写成有界循环，清理失败直接返回 false。
+ *
+ * 为什么清理失败不能重试：`unlinkSync` 失败（锁路径上是个目录——`EISDIR` / `EPERM`，
+ * 或被其它进程临时占用）时路径没被移除，下一轮 `openSync('wx')` 必然还是 `EEXIST`、
+ * 陈旧判定还是命中、unlink 还是失败——重试就是无界递归（栈溢出），而栈溢出把「拿不到锁」
+ * 这个可重试的失败变成不可恢复的进程级异常。返回 false 交给调用方的重试预算收尾：
+ * `acquireLockSync` 放弃写入，`withFileLock` 抛 `failed to acquire file lock`。
+ *
+ * 为什么清理成功后也要有界：理论上存在「对手进程每次都恰好在 unlink 与 create 之间重建
+ * 一把同样陈旧的锁」的活锁，循环上界把它降级成一次普通的获取失败，而不是让等待者
+ * 在自己的调用栈里空转。
+ */
 function tryCreateLock(lockPath: string): boolean {
-  try {
-    const fd = fs.openSync(lockPath, 'wx');
+  for (let round = 0; round < STALE_TAKEOVER_MAX_ROUNDS; round++) {
     try {
-      fs.writeSync(fd, `${PID} ${Date.now()}`);
-    } finally {
-      fs.closeSync(fd);
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, `${PID} ${Date.now()}`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
+      // EEXIST 只说明「创建瞬间有锁」，持有者可能恰在这个间隙完成「释放 → 重建」。
+      // 删除授权只来自对现存文件的陈旧判定（isLockStale 对已消失的锁返回 false），
+      // 否则 unlink 会删掉并发重建的新锁，造成双持有
+      if (!isLockStale(lockPath)) return false;
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {
+        // 删不掉（如锁路径是目录 / 被占用）：本轮放弃，由调用方的重试预算决定结论
+        return false;
+      }
+      // 清理成功：回到循环顶部重试创建
     }
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
-    // EEXIST 只说明「创建瞬间有锁」，持有者可能恰在这个间隙完成「释放 → 重建」。
-    // 删除授权只来自对现存文件的陈旧判定（isLockStale 对已消失的锁返回 false），
-    // 否则 unlink 会删掉并发重建的新锁，造成双持有
-    if (!isLockStale(lockPath)) return false;
-    try {
-      fs.unlinkSync(lockPath);
-    } catch {
-      // 其他进程可能已抢先清理，忽略
-    }
-    return tryCreateLock(lockPath);
   }
+  return false;
 }
 
 /** 释放锁（幂等：锁已被判定陈旧并被清理时不报错） */
