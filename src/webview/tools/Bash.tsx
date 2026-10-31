@@ -260,7 +260,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
           {/* 流式输出内容：自动滚动到底部，末尾显示闪烁光标 */}
           <div
             ref={outputRef}
-            className="overflow-auto cursor-pointer"
+            className="overflow-auto cursor-pointer inner-scrollbar"
             style={{ maxHeight: OUTPUT_BOX_HEIGHT }}
             onClick={handleOutputClick}
             title={t('tool.bash.clickFullOutput')}
@@ -296,7 +296,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     const outputBox = (
       <div
         ref={contentRef}
-        className="cursor-pointer"
+        className={expanded ? 'cursor-pointer inner-scrollbar' : 'cursor-pointer'}
         onClick={handleOutputClick}
         title={t('tool.bash.clickFullOutput')}
         style={{

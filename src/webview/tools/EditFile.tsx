@@ -702,7 +702,7 @@ export const EditFile: React.FC<ToolCallProps> = ({ args, colors, status, isDark
       {diffRender && (
         <>
           <div
-            className="mt-2 code-preview"
+            className={`mt-2 code-preview${diffExpanded ? ' inner-scrollbar' : ''}`}
             onClick={handleDiffBoxClick}
             title={diffTruncated ? t('tool.preview.clickToShowAll') : undefined}
             style={{

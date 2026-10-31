@@ -145,7 +145,7 @@ export const PersistedOutputBox: React.FC<{
 
       {/* 预览内容：内容已由工具层按统一上限裁剪（4K），这里只限制可视高度、可滚动，
           不再截断内容（与 Edit/Write 预览内容区同高：288px）。 */}
-      <div className="overflow-auto" style={{ maxHeight: 288 }}>
+      <div className="overflow-auto inner-scrollbar" style={{ maxHeight: 288 }}>
         {previewLines.map((line, idx) => (
           <div
             key={idx}

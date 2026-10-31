@@ -595,6 +595,22 @@ const ThinkingMessage = memo(function ThinkingMessage({
 
   const isOpen = userExpanded;
 
+  // 展开态内容区的滚动跟随：限高后思考内容在框内滚动，流式期间新增的文字落在框底部，
+  // 不跟随就会一直停在开头、看不到最新思路。用户自己在框内向上翻时停止跟随
+  // （与消息列表的自动滚动同一口径：用户滚动优先级最高），滚回底部即恢复。
+  const contentRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    // 折叠态内容不参与布局，只有展开态需要把视点放到末尾：
+    // 流式期间是「跟随最新一行」，首次展开（历史加载 / 刚结束）同样落在末尾，
+    // 与流式期间的阅读位置连续；此后内容不变、effect 不重跑，用户的上滚位置得以保留。
+    if (!el || !isOpen || userScrolledUpRef.current) return;
+    // 写一个远超最大值的 scrollTop，浏览器按规范夹到 scrollHeight - clientHeight，
+    // 不必读 scrollHeight 触发同步布局（与 `Bash.tsx` 的流式跟随同一手法）。
+    el.scrollTop = 1e9;
+  }, [message.content, message.isStreaming, isOpen]);
+
   return (
     <details
       className="ui-fs-13 group"
@@ -604,6 +620,9 @@ const ThinkingMessage = memo(function ThinkingMessage({
         // 用户手动展开时记录
         if ((e.target as HTMLDetailsElement).open) {
           setUserExpanded(true);
+          // 每次重新展开都从末尾看起：收起期间内容可能已经变长，上次的上滚位置
+          // 不再有意义（跟随逻辑见上方 useLayoutEffect）。
+          userScrolledUpRef.current = false;
         } else {
           setUserExpanded(false);
         }
@@ -625,8 +644,24 @@ const ThinkingMessage = memo(function ThinkingMessage({
         <StreamStatsLabel streamId={message.streamId} colors={colors} />
       </summary>
       <div
-        className="pl-5 whitespace-pre-wrap mt-1"
-        style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}
+        ref={contentRef}
+        className="pl-5 whitespace-pre-wrap mt-1 thinking-content inner-scrollbar"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          // 距底 ≤ 2px 视为贴底（与消息列表 isAtBottom 同一抖动带）
+          userScrolledUpRef.current = el.scrollHeight - el.scrollTop - el.clientHeight > 2;
+        }}
+        style={{
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word',
+          // 展开后的思考内容限高（约 3 个 Bash 输出框的量级，两边各自独立取值），
+          // 超出部分在框内滚动：思考过程长度不可控，不设上限时单条 thinking 就能把
+          // 整段对话推出视口（docs/features/user-stories/dialog-core.md 的 US-4）。
+          maxHeight: THINKING_CONTENT_MAX_HEIGHT,
+          overflowY: 'auto',
+          // 框内滚到底后不再带动外层消息列表（两者滚动互不干扰）
+          overscrollBehavior: 'contain',
+        }}
       >
         {message.content}
       </div>
@@ -945,6 +980,16 @@ const USER_MESSAGE_FADE_HEIGHT = 20;
 /** 子代理 From/To 消息保持原有折叠高度与渐隐高度，不受用户消息改动影响 */
 const AGENT_MESSAGE_COLLAPSED_HEIGHT = 180;
 const AGENT_MESSAGE_FADE_HEIGHT = 50;
+
+/**
+ * thinking 展开后内容区的最大高度（px）：约等于 3 个 Bash 输出框的高度量级。
+ *
+ * 只是量级参考，与 `Bash.tsx` 的 `OUTPUT_BOX_HEIGHT` 不联动——两者是各自独立的高度
+ * 事实，改一边不需要动另一边。取值理由：思考过程长度不可控，不限高时单条 thinking
+ * 就能把整段对话推出视口；限在这个量级既能看到成段的思路，又不至于喧宾夺主
+ * （`docs/features/user-stories/dialog-core.md` 的 US-4）。
+ */
+const THINKING_CONTENT_MAX_HEIGHT = 345;
 
 /** 消息分组的最小单元：一条用户消息 + 其后的所有非用户消息 */
 interface MessageSegment {

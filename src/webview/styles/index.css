@@ -152,9 +152,11 @@ html.resize-freeze {
 .messages-container > div {
   overflow-anchor: none;
 }
-/* 嵌套滚动容器（Bash 输出、Edit/Write diff 预览等）与 thinking 动态图标
-   不参与外层消息列表的 scroll anchoring，避免向上滚动时内层滚动条/图标被锚定错位 */
+/* 嵌套滚动容器（Bash 输出、Edit/Write diff 预览、thinking 限高内容区等）与 thinking
+   动态图标不参与外层消息列表的 scroll anchoring，避免向上滚动时内层滚动条/图标
+   被锚定错位 */
 .messages-container .overflow-auto,
+.messages-container .thinking-content,
 .messages-container .ripple-dot-container,
 .messages-container .thinking-animation-wrapper {
   overflow-anchor: none;
@@ -177,6 +179,39 @@ html.resize-freeze {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover-color, #7a7a85);
+}
+
+/* ─── 消息内层滚动条（thinking 内容区 / Bash 输出框 / Edit·Write 预览）───
+   这些是「一条消息内部」的滚动容器，滚动条挤在内容旁边，比页面级滚动条更该细、
+   更该退到背景里（灰色，不与 harness 色抢注意力）。
+
+   为什么必须显式复位标准属性：全局 `*` 上写了 `scrollbar-width: thin` 与
+   `scrollbar-color`。按 Chromium 的实现，只要这两个标准属性不是 `auto`，
+   `::-webkit-scrollbar` 一整套就被忽略——宽度被锁在 thin 档（约 8px）、颜色只能是
+   harness 色，改下面的 width / background 全部无效（实测：容器上 scrollbar-width
+   仍是 thin，宽度改不动）。复位成 auto 后 legacy 伪元素重新生效，才能真的变细变灰。 */
+.inner-scrollbar {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.inner-scrollbar::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+
+.inner-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 中性灰、半透明：亮色与暗色主题下都只比背景深一点点，不抢内容 */
+.inner-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.45);
+  border-radius: 1.5px;
+}
+
+.inner-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.7);
 }
 
 /* Textarea specific scrollbar */
