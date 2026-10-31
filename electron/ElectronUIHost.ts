@@ -20,7 +20,7 @@ import { resolveRemoteFileWorkspace } from '../src/host/remoteFileResolve.js';
 import { parseCreatedFilePath, resolveToolWorkspace } from './toolResultSideEffects.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
-import { getMarkdownPreviewBodyHtml, getMarkdownPreviewHtml } from '../src/host/markdownHtml.js';
+import { getMarkdownPreviewBodyHtml } from '../src/host/markdownHtml.js';
 import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/shared/Logger.js';
@@ -28,7 +28,7 @@ import { writeSettingsJson } from '../src/host/settingsFile.js';
 import { watchWorkspaceFile, unwatchWorkspaceFile } from '../src/host/coreFacts.js';
 import { viewerWindowWebPreferences } from './viewerWindowPrefs.js';
 import { tt } from '../src/host/i18n.js';
-import { imageMimeFor } from './fileTypes.js';
+import { imageMimeFor, classifyFileForOpen } from './fileTypes.js';
 import { remoteFileReaderFor, sharedClientFor } from './sidebarFilesRemote.js';
 import { localGitRunner } from './sidebarDocView.js';
 import { DocSentinelManager } from './sidebarDocWatch.js';
@@ -273,7 +273,7 @@ export class ElectronUIHost implements UIHost {
     const viewRef = view ? this.getWorkspaceRefForView(view) : undefined;
     const remote = resolveRemoteFileWorkspace(filePath, this.openRemoteRefsByActivity(), viewRef);
     if (remote) {
-      await this.openRemoteFile(remote.ref.endpoint, remote.ref.path, remote.abs);
+      await this.openRemoteFile(remote.ref.endpoint, remote.ref.path, remote.abs, target);
       return;
     }
     // 图片用内置图片查看器打开，避免 Monaco 按 utf-8 读取显示乱码
@@ -282,6 +282,24 @@ export class ElectronUIHost implements UIHost {
         title: path.basename(filePath),
         dataUrl: await readImageAsDataUrl(filePath, this.log.bind(this)),
         watchTarget: { kind: 'local', filePath },
+      });
+      return;
+    }
+    // Markdown 链接与侧栏双击同一预览窗口（US-38 验收 1）：渲染 / 文本切换；
+    // 带选中行号（部分读取的 Read 卡片）时预览窗口初始落文本视图并定位行号
+    if (classifyFileForOpen(path.basename(filePath)) === 'markdown') {
+      let content = '';
+      try {
+        content = await fs.promises.readFile(filePath, 'utf-8');
+      } catch (err: any) {
+        // 读不到也保持「点击有响应」：与 Monaco 的 ENOENT 开空窗口对齐
+        this.log(`Failed to open markdown file ${filePath}: ${err}`);
+      }
+      await this.openMarkdownPreviewWindow({
+        title: path.basename(filePath),
+        content,
+        watchTarget: { kind: 'local', filePath },
+        selectedLines: target ?? undefined,
       });
       return;
     }
@@ -307,11 +325,12 @@ export class ElectronUIHost implements UIHost {
     ];
   }
 
-  /** 经 SFTP 读远端文件并进内置窗口（文本 → Monaco，图片 → 查看器） */
+  /** 经 SFTP 读远端文件并进内置窗口（Markdown / 文本 → 预览窗口 / Monaco，图片 → 查看器） */
   private async openRemoteFile(
     endpoint: NonNullable<WorkspaceRef['endpoint']>,
     workspacePath: string,
     abs: string,
+    target: import('../src/host/UIHost.js').LineSelection | null,
   ): Promise<void> {
     const name = path.posix.basename(abs);
     const reader = remoteFileReaderFor(endpoint, (...args) => this.log(...args));
@@ -328,6 +347,17 @@ export class ElectronUIHost implements UIHost {
           title: name,
           dataUrl: `data:${imageMimeFor(name)};base64,${bytes.toString('base64')}`,
           watchTarget,
+        });
+        return;
+      }
+      // 远程 Markdown 链接与本地同一预览窗口（US-38 验收 1）：渲染 / 文本切换，
+      // 行号定位语义一致
+      if (classifyFileForOpen(name) === 'markdown') {
+        await this.openMarkdownPreviewWindow({
+          title: name,
+          content: await reader.readText(abs),
+          watchTarget,
+          selectedLines: target ?? undefined,
         });
         return;
       }
@@ -719,25 +749,34 @@ export class ElectronUIHost implements UIHost {
   }
 
   /**
-   * 打开内置 Markdown 预览窗口：侧栏双击 `.md` 文件进渲染视图而非源码文本。
+   * 打开内置 Markdown 预览窗口：侧栏双击与聊天文件链接（US-42 / US-38）都进这里。
    *
-   * 与 Mermaid 预览同一模式——主进程纯函数（`src/host/markdownHtml.ts`）生成
-   * 只读 HTML，经 data URL 装进沙箱窗口；页面没有内联脚本，只带一个负责刷新
-   * `.markdown-body` 的 preload。内容在生成侧就净化（原生 HTML 片段转义、危险协议
-   * 链接降级为纯文本），渲染器对文件内容零信任。
+   * 页面是 `dist/monaco/markdown.html`（与 Monaco 查看器同一 vite 工程的多入口，
+   * 共享一份 Monaco bundle）：渲染视图的 HTML 由主进程纯函数
+   * （`src/host/markdownHtml.ts`）渲染并净化后经 `markdown-init` 下发、随
+   * `markdown-refresh` 跟随刷新；文本视图是页内只读 Monaco（markdown 语法着色），
+   * 旧的 `<pre>` 源文视图废弃。带 `selectedLines`（聊天链接定位行号）打开时渲染
+   * 视图对应不了源行号，初始即文本视图并定位选中行。
    *
-   * 窗口带自绘标题栏（非 macOS 去系统边框）：preload 注入「渲染/文本」切换按钮
-   * 与最小化-最大化-关闭按钮（切换按钮在最小化左侧），窗口控制经
-   * `markdown-window-control` 回主进程执行；macOS 保留系统红绿灯，preload 只注入
-   * 切换按钮。初始源文与文案经 `markdown-source` 下发，preload 据此实现文本视图
-   * 与按钮标签。
+   * 窗口带自绘标题栏（非 macOS 去系统边框）：页面绘制「渲染 / 文本」切换按钮与
+   * 最小化-最大化-关闭按钮（切换按钮在最小化左侧），窗口控制经
+   * `markdown-window-control` 回主进程执行（发送方校验在主进程）；macOS 保留系统
+   * 红绿灯，页面只注入切换按钮。按钮文案经 markdown-init 下发，页面不感知宿主环境。
+   * 内容在生成侧就净化（原生 HTML 片段转义、危险协议链接降级为纯文本），渲染器对
+   * 文件内容零信任；页面 CSP 拦内联脚本兜底（markdown.html meta）。
    */
   async openMarkdownPreviewWindow(init: {
     title: string;
     content: string;
     watchTarget: ViewerWatchTarget | null;
+    selectedLines?: { start: number; end: number };
   }): Promise<void> {
-    const isDark = nativeTheme.shouldUseDarkColors;
+    // 页面产物缺失时不占名额（不顶替已有查看器窗口），与 Monaco 窗口同一约定
+    const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'markdown.html');
+    if (!fs.existsSync(indexPath)) {
+      this.log(`Markdown preview page not found: ${indexPath}. Run npm run build:monaco`);
+      return;
+    }
     const title = init.title || PRODUCT_NAME;
     const isMac = process.platform === 'darwin';
     this.registerMarkdownWindowControls();
@@ -746,35 +785,34 @@ export class ElectronUIHost implements UIHost {
       title,
       icon: path.join(APP_ROOT, 'assets', 'logo.png'),
       autoHideMenuBar: true,
-      // 与 markdownHtml 的暗色底色一致：页面加载完成前不闪另一主题的色块
-      backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
-      // 非 macOS 去系统边框，由 preload 注入的标题栏承载窗口控制
+      // 与 markdown.css 的暗色底色一致：页面加载完成前不闪另一主题的色块
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff',
+      // 非 macOS 去系统边框，由页面绘制的标题栏承载窗口控制
       // （与主窗口同款平台分流，macOS 保留系统红绿灯）
       ...(isMac
         ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 13 } }
         : { frame: false }),
-      webPreferences: viewerWindowWebPreferences('markdown'),
+      // 与 Monaco 查看窗口同一页面工程、同一 preload 桥（monacoPreload）
+      webPreferences: viewerWindowWebPreferences('text'),
     });
     // 预览页里的 http(s) / mailto 链接是 target=_blank：不拦的话 Electron 会新开一个
     // 应用内窗口装外部页面（默认 setWindowOpenHandler 行为），这里统一交给系统浏览器
     guardViewNavigation(win.webContents, 'markdown-preview');
-    const html = await getMarkdownPreviewHtml(init.content, { title, isDark });
-    // base64 而非 encodeURIComponent：CJK 的百分号编码会 9 倍膨胀，轻易顶破
-    // Chromium 对 data URL 的 ~2MB 上限；base64 只放大 4/3（超大文件仍会被
-    // 上限拒之门外，与 Mermaid 预览同一约束）
-    await win.loadURL('data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf8').toString('base64'));
+    await win.loadFile(indexPath);
+    this.trackViewerWindow(win);
     // 预先捕获引用：closed 回调里窗口已销毁，再取 webContents 会抛错
     const previewSender = win.webContents;
     this.markdownPreviewSender = previewSender;
     win.on('closed', () => {
       if (this.markdownPreviewSender === previewSender) this.markdownPreviewSender = undefined;
     });
-    this.trackViewerWindow(win);
-    // 切换文本视图需要原始源文（页面 data URL 里只有渲染结果）；文案与平台形态
-    // 一并下发，preload 不感知宿主环境（sandbox: true 只有 ipcRenderer 与 DOM）
-    win.webContents.send('markdown-source', {
+    // 渲染 HTML 在主进程生成并净化；源文一并下发供文本视图（页内 Monaco）展示，
+    // 两种视图都由页面维护。loadFile 完成后页面已挂上消息监听，发送不丢
+    win.webContents.send('markdown-init', {
+      title,
+      bodyHtml: await getMarkdownPreviewBodyHtml(init.content),
       text: init.content,
-      dark: isDark,
+      selectedLines: init.selectedLines ?? null,
       windowControls: !isMac,
       labels: {
         rendered: tt('渲染', 'Rendered'),

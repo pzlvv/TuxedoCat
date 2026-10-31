@@ -7,10 +7,11 @@ import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 
 /**
- * US-38 文件预览：Read 工具卡片路径可点击，打开 Monaco 预览窗口并定位内容
+ * US-38 文件预览：Read 工具卡片路径可点击，打开预览窗口
+ * （代码文件 → Monaco 窗口定位内容；md 文件 → Markdown 预览窗口，渲染 / 文本切换）
  *
  * mock LLM 脚本化一轮 Read 工具调用（真实 standalone core 执行读盘），
- * 点击卡片上的文件路径 → openFile → 主进程开 Monaco 窗口（dist/monaco）。
+ * 点击卡片上的文件路径 → openFile → 主进程按扩展名分流开窗。
  */
 
 let mockLlm: MockLlm;
@@ -21,6 +22,7 @@ test.beforeEach(async () => {
   const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
   workspaceDir = await makeWorkspace({
     'README.md': '# 工作区\n\n这是第二行内容。\n这是第三行内容。\n',
+    'notes.py': 'def main():\n    print("hello")\n',
   });
   mockLlm = await startMockLlm({ workspaceDir });
   app = await launchApp({ repoRoot, mockLlm, workspaceDir });
@@ -41,15 +43,15 @@ async function openFromSidebar(name: string): Promise<void> {
   await row.dblclick();
 }
 
-test('US-38 Read 卡片路径点击打开 Monaco 预览窗口', async () => {
-  // 「读取文件 <名>」→ Read 工具轮；结果回传后终轮收尾
+/** mock LLM 脚本化一轮 Read 工具调用（args 可带 offset / limit 触发行号定位链接） */
+async function readViaLlm(fileName: string, args: Record<string, unknown> = {}): Promise<void> {
   mockLlm.setHandler((req) => {
     const last = req.body.messages[req.body.messages.length - 1];
     if (last?.role === 'tool') return { kind: 'text', text: '文件内容如上。' };
     if (lastUserText(req.body.messages).startsWith('读取文件')) {
       return {
         kind: 'tool', name: 'Read',
-        args: { file_path: path.join(workspaceDir, 'README.md') },
+        args: { file_path: path.join(workspaceDir, fileName), ...args },
         preamble: '我来读这个文件。',
       };
     }
@@ -57,7 +59,7 @@ test('US-38 Read 卡片路径点击打开 Monaco 预览窗口', async () => {
   });
 
   const chatPage = await app.chatPage();
-  await chatPage.fill('textarea.input-textarea', '读取文件 README.md');
+  await chatPage.fill('textarea.input-textarea', `读取文件 ${fileName}`);
   await chatPage.press('textarea.input-textarea', 'Enter');
 
   // manual 询问模式下 Read 可能弹权限确认：出现就放行，不弹（读操作免确认）则直接继续
@@ -72,23 +74,48 @@ test('US-38 Read 卡片路径点击打开 Monaco 预览窗口', async () => {
   // Read 卡片上架，路径为可点击链接（US-14 验收 3 / US-38 入口）。
   // 用 title 精确锁定 Read 卡片的路径按钮：聊天页里 .hover\:underline 有多处
   // （上下文进度条、思考块展开行……），按类名取 first 会点错元素
-  const pathLink = chatPage.locator('button[title*="README.md"]');
+  const pathLink = chatPage.locator(`button[title*="${fileName}"]`);
   await expect(pathLink).toBeVisible({ timeout: 30_000 });
-
-  // 点击路径 → Monaco 预览窗口打开（US-38 验收 1）
   await pathLink.click();
-  const monacoPage = await app.waitForPage('monaco', 20_000);
+}
+
+test('US-38 Read 卡片路径点击打开 Monaco 预览窗口', async () => {
+  await readViaLlm('notes.py');
+
+  // 代码文件 → Monaco 预览窗口打开（US-38 验收 1）
+  const monacoPage = await app.waitForPage('monaco/index.html', 20_000);
   await expect(monacoPage.locator('.monaco-editor')).toBeVisible({ timeout: 20_000 });
 
   // specs/018 FR-001：本地文件被外部修改后自动刷新（不重开窗口）。
   // 滚动 / 光标保持由 monaco/main.ts 的 saveViewState / restoreViewState 负责；
   // Monaco 的滚动 DOM 在 Electron viewer 里不稳定，e2e 只断言内容刷新。
   await fs.promises.writeFile(
-    path.join(workspaceDir, 'README.md'),
-    '# 更新后\n\n这是刷新后的内容。\n',
+    path.join(workspaceDir, 'notes.py'),
+    'def main():\n    print("更新后")\n',
     'utf-8',
   );
   await expect(monacoPage.locator('.view-lines')).toContainText('更新后', { timeout: 10_000 });
+});
+
+test('US-38 md 文件链接打开 Markdown 预览窗口（默认渲染视图，可切文本）', async () => {
+  await readViaLlm('README.md');
+
+  // md 链接与侧栏双击同一预览窗口（US-38 验收 1）：无行号定位默认渲染视图，
+  // 标题栏带「渲染 / 文本」切换按钮
+  const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
+  await expect(previewPage.locator('article.markdown-body h1')).toHaveText('工作区', { timeout: 20_000 });
+  await expect(previewPage.locator('#markdown-titlebar .view-toggle')).toHaveText(/文本|Text/, { timeout: 10_000 });
+});
+
+test('US-38 md 链接带行号定位默认文本视图', async () => {
+  // 部分读取的 Read 卡片带 selectedLines：渲染视图对应不了源行号，初始落文本视图
+  await readViaLlm('README.md', { offset: 2, limit: 1 });
+
+  const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
+  await expect(previewPage.locator('article.markdown-body')).toBeHidden({ timeout: 10_000 });
+  const sourceView = previewPage.locator('#markdown-source-view');
+  await expect(sourceView).toBeVisible();
+  await expect(sourceView.locator('.view-lines')).toContainText('# 工作区', { timeout: 20_000 });
 });
 
 test('US-38 本地 Markdown 刷新保持滚动并显示删除标记', async () => {
@@ -96,7 +123,7 @@ test('US-38 本地 Markdown 刷新保持滚动并显示删除标记', async () =
   await fs.promises.writeFile(path.join(workspaceDir, 'README.md'), `${lines.join('\n\n')}\n`, 'utf-8');
   await openFromSidebar('README.md');
 
-  const previewPage = await app.waitForPage('data:text/html', 20_000);
+  const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
   await expect(previewPage.locator('article.markdown-body h1')).toHaveText('工作区', { timeout: 20_000 });
   await previewPage.evaluate(() => {
     document.scrollingElement!.scrollTop = 200;
@@ -117,7 +144,7 @@ test('US-38 本地 Markdown 刷新保持滚动并显示删除标记', async () =
 test('Markdown 预览自绘标题栏：渲染/文本切换按钮在最小化左侧', async () => {
   await openFromSidebar('README.md');
 
-  const previewPage = await app.waitForPage('data:text/html', 20_000);
+  const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
   await expect(previewPage.locator('article.markdown-body h1')).toHaveText('工作区', { timeout: 20_000 });
 
   // 初始为渲染视图；切换按钮的标签是切换目标（当前渲染 → 显示「文本」）
@@ -140,12 +167,12 @@ test('Markdown 预览自绘标题栏：渲染/文本切换按钮在最小化左�
   // 相邻按钮存在亚像素取整（边界差 <0.001px），留 1px 容差
   expect(ordering.toggleRight).toBeLessThanOrEqual(ordering.minimizeLeft + 1);
 
-  // 切到文本视图：渲染区隐藏，原始源文只读展示
+  // 切到文本视图：渲染区隐藏，原始源文在只读编辑器（页内 Monaco）展示
   await toggle.click();
   await expect(previewPage.locator('article.markdown-body')).toBeHidden();
   const sourceView = previewPage.locator('#markdown-source-view');
   await expect(sourceView).toBeVisible();
-  await expect(sourceView).toContainText('# 工作区');
+  await expect(sourceView.locator('.view-lines')).toContainText('# 工作区', { timeout: 10_000 });
 
   // 切回渲染视图
   await expect(toggle).toHaveText(/渲染|Rendered/);

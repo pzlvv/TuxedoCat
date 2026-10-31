@@ -1,7 +1,7 @@
 /**
  * Electron 主进程 / preload 构建脚本
  * 将 electron/main.ts 与各 preload（preload / spinPreload / monacoPreload /
- * imageViewerPreload / markdownPreload / sidebarPreload / preferencePreload / titlebarPreload /
+ * imageViewerPreload / sidebarPreload / preferencePreload / titlebarPreload /
  * titlebarMenuPreload / remoteWorkspacePreload）打包为 CJS 到 dist-electron/
  */
 const esbuild = require('esbuild');
@@ -33,7 +33,6 @@ const entries = [
   { entryPoints: [project.resolve('electron', 'spinPreload.ts')], outfile: project.electronSpinPreloadOut },
   { entryPoints: [project.resolve('electron', 'monacoPreload.ts')], outfile: project.electronMonacoPreloadOut },
   { entryPoints: [project.resolve('electron', 'imageViewerPreload.ts')], outfile: project.electronImageViewerPreloadOut },
-  { entryPoints: [project.resolve('electron', 'markdownPreload.ts')], outfile: project.electronMarkdownPreloadOut },
   { entryPoints: [project.resolve('electron', 'sidebarPreload.ts')], outfile: project.electronSidebarPreloadOut },
   { entryPoints: [project.resolve('electron', 'preferencePreload.ts')], outfile: project.electronPreferencePreloadOut },
   { entryPoints: [project.resolve('electron', 'titlebarPreload.ts')], outfile: project.electronTitlebarPreloadOut },
