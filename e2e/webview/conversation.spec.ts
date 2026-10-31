@@ -181,6 +181,37 @@ test('US-4 thinking 流结束后内容是种子全文（specs/defects/fakehost-t
   expect(await content.innerText()).toBe(thinking);
 });
 
+test('加载窗口内到达的 messagesReplaced 不被加载快照覆盖（specs/defects/messages-replaced-clobbered-by-load-raf RT-1）', async () => {
+  const { page, host } = handle;
+  await host.setConversations([
+    {
+      sessionId: 'sess-compact-window',
+      title: '加载窗口压缩',
+      createdAt: Date.now() - 60_000,
+      updatedAt: Date.now() - 30_000,
+      messageCount: 1,
+      messages: [
+        { type: 'user', uuid: 'cw-1', parentUuid: null, timestamp: Date.now() - 60_000, message: { role: 'user', content: '加载快照的原文' } },
+      ],
+    },
+  ]);
+  // 假宿主在 conversationLoaded 应答之后**同批**补发 messagesReplaced：两条 wire
+  // 消息挤进同一批任务，webview 的 rAF 必然晚于两者处理——确定性命中「替换先落、
+  // rAF 后到」的竞态侧。整批替换在 wire 上晚于加载快照，是更晚的事实，必须生效
+  // （core 压缩后重建 / 宿主展开归档共用这条消息）。
+  await host.setLoadReplacement([
+    { role: 'user', content: '压缩后的保留区' },
+  ]);
+
+  await page.locator('button[title="对话历史"]').click();
+  await expect(page.locator('.conversation-dropdown')).toBeVisible();
+  await page.locator('.conversation-dropdown').getByText('加载窗口压缩').click();
+
+  await expect(page.getByText('压缩后的保留区')).toBeVisible({ timeout: 10_000 });
+  // 加载快照的原文不得残留
+  await expect(page.getByText('加载快照的原文')).toHaveCount(0);
+});
+
 test('US-2 中止进行中的流式回复', async () => {
   const { page, host } = handle;
   await host.setTurn({

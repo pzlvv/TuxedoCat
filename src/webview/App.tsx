@@ -6,6 +6,7 @@ import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry } from './types';
+import type { HostToWebviewWire } from '../host/webviewMessages';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
@@ -317,6 +318,11 @@ const App = () => {
    *  此期间到达的 updateToolStatus 统一进入 bufferedToolStatusRef，
    *  避免正常 rAF 路径与 conversationLoaded 的 rAF 回调之间的时序竞态。 */
   const conversationLoadingRef = useRef(false);
+  /** 加载窗口内到达的整批替换（messagesReplaced，键为会话 ID）：与 updateToolStatus
+   *  同等对待——window 侧 setMessages 排在 rAF 里，窗口内的替换若立即落盘会被 rAF 里
+   *  的 setMessages(restoredMessages) 覆盖（specs/defects/messages-replaced-clobbered-by-load-raf）。
+   *  由 conversationLoaded 的 rAF 收尾时按会话精确消费（last-wins），异常路径清空。 */
+  const pendingMessagesReplacedRef = useRef<Map<string, Extract<HostToWebviewWire, { type: 'messagesReplaced' }>['messages']>>(new Map());
 
   // 流式消息批量更新：使用 rAF throttle 合并高频 delta 更新
   const streamRafRef = useRef<number | null>(null);
@@ -555,6 +561,7 @@ const App = () => {
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
+    pendingMessagesReplacedRef,
     toolProgressRafRef, pendingToolProgressRef,
     _appMountTime, modelRef, contextLength,
     inputAreaRef,

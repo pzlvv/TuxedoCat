@@ -50,6 +50,11 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     language: 'zh',
     // expandCompact 的应答数据：整批替换后的消息（压缩历史展开场景）
     expandedMessages: [],
+    // 非空时，loadConversation 应答（conversationLoaded）之后**同批**补发一条
+    // messagesReplaced：模拟「替换与加载落在同一帧窗口」——webview 的 rAF 必然晚于
+    // 同一批 wire 消息处理，用来确定性复现加载窗口内的整批替换竞态
+    // （specs/defects/messages-replaced-clobbered-by-load-raf）。
+    loadReplacementMessages: null,
     // 引擎忙碌时再来一条 sendMessage 是否回 queuedMessage（排队语义）
     queueWhileBusy: true,
     // 收到 abort 时回推的运行时快照（null = 回空闲快照）。
@@ -388,6 +393,11 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
           hasCompactArchive: !!(conv && conv.hasCompactArchive),
           provider: 'mock-provider', model: 'mock-model', agentMode: 'risk',
         });
+        if (state.loadReplacementMessages) {
+          // 与 conversationLoaded 同一批任务发出：webview 的 rAF 必然晚于两者处理，
+          // 复现「替换先落、rAF 后到」的加载窗口竞态
+          send({ type: 'messagesReplaced', sessionId: msg.sessionId, messages: state.loadReplacementMessages });
+        }
         break;
       }
       case 'expandCompact': {
@@ -500,6 +510,14 @@ export class FakeHostDriver {
   async setExpandedMessages(messages: Array<Record<string, unknown>>): Promise<void> {
     await this.page.evaluate(
       (list) => { (window as any).__fakeHost.state.expandedMessages = list; },
+      messages,
+    );
+  }
+
+  /** 设置 loadConversation 应答后同批补发的 messagesReplaced 载荷（null = 关闭注入） */
+  async setLoadReplacement(messages: Array<Record<string, unknown>> | null): Promise<void> {
+    await this.page.evaluate(
+      (list) => { (window as any).__fakeHost.state.loadReplacementMessages = list; },
       messages,
     );
   }

@@ -233,12 +233,10 @@ test('US-59 压缩（messagesReplaced）后按钮不消失、计数不变', asyn
   await openConversation('带清单的对话');
   await expect(progressButton()).toHaveText('任务进度: 1/4');
 
-  // conversationLoaded 的 setMessages 排在 rAF 里（conversationHandlers.ts），而
-  // requestSessionTodos 同步先发：按钮先亮、消息后铺。等首条消息真正渲染出来再发
-  // 替换，否则整批替换会被 rAF 里的旧消息覆盖，「压缩后的保留区」永不出现。
-  await expect(page.getByText('帮我做四件事')).toBeVisible();
-
-  // 压缩完成：消息被整批替换，但 Todo 事实在 core 的表里，不受影响
+  // 压缩完成：消息被整批替换，但 Todo 事实在 core 的表里，不受影响。
+  // 发送点刻意贴着「按钮已亮、消息未铺」的加载窗口：窗口内到达的替换由
+  // conversationLoaded 的 rAF 收尾时应用（specs/defects/messages-replaced-clobbered-by-load-raf），
+  // 不需要先等首条消息渲染——那会把本用例对压缩链路的覆盖降级成对渲染时序的等待。
   await host.send({
     type: 'messagesReplaced',
     sessionId: 'sess-todo-a',
