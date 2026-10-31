@@ -281,7 +281,10 @@ test('US-3 排队项编辑撤回到输入框 / 删除；排队时禁止发送', 
     (await host.sentAll()).filter((m) => m.type === 'sendMessage').length;
 
   // ── 编辑：排队消息撤回到输入框，引擎不再消费它 ──
-  await host.setTurn({ text: '第一轮回答。'.repeat(30), chunkDelayMs: 250 });
+  // 首轮拉到 ~12s：排队阶段的全部断言都要落在「仍在排队」的窗口内——
+  // fillInput 等「发送可用」的语义在排队期是反的（按钮恰好合法地禁用），
+  // 重试循环会把窗口烧穿，轮末自动重发一来计数断言就变成竞态
+  await host.setTurn({ text: '第一轮回答。'.repeat(30), chunkDelayMs: 2_000 });
   await fillInput('第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
@@ -291,12 +294,13 @@ test('US-3 排队项编辑撤回到输入框 / 删除；排队时禁止发送', 
   const banner = page.getByText(/等待中/).first();
   await expect(banner).toBeVisible();
 
-  // 排队期间发送被禁用：按钮置灰，Enter 也不再触发上行
+  // 排队期间发送被禁用：按钮置灰，Enter 也不再触发上行。
+  // 直接填入（不经 fillInput），Enter 后计数必须维持原值——轮次仍在跑，
+  // 轮末自动重发还没到，这个计数是稳定的
   const sendButton = page.locator('button:has(.ti-send)').last();
   await expect(sendButton).toBeDisabled();
-  await fillInput('排队中不能再发');
+  await page.locator('textarea.input-textarea').fill('排队中不能再发');
   await page.press('textarea.input-textarea', 'Enter');
-  await page.waitForTimeout(300);
   expect(await sendMessageCount()).toBe(2);
 
   // 编辑：横幅消失、内容撤回到输入框，宿主收到 discardQueuedMessage
@@ -306,11 +310,11 @@ test('US-3 排队项编辑撤回到输入框 / 删除；排队时禁止发送', 
   expect((await host.sentAll()).filter((m) => m.type === 'discardQueuedMessage')).toHaveLength(1);
 
   // 本轮结束后不自动重发（撤回即取消）
-  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
+  await expect(page.locator('button[title="终止"]')).toBeDisabled({ timeout: 30_000 });
   expect(await sendMessageCount()).toBe(2);
 
   // ── 删除：排队消息直接丢弃，不回填输入框 ──
-  await host.setTurn({ text: '第二轮回答。'.repeat(30), chunkDelayMs: 250 });
+  await host.setTurn({ text: '第二轮回答。'.repeat(30), chunkDelayMs: 1_000 });
   await fillInput('第二条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeEnabled({ timeout: 15_000 });
