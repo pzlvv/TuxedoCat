@@ -347,7 +347,9 @@ test('US-42 双击文件行打开：文本进 Monaco（与 Edit 预览同效果�
 
   // 文本（.txt / 代码等）进 Monaco；Markdown 走内置预览窗口（下一条用例）
   await sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`).dblclick();
-  const monacoPage = await app.waitForPage('monaco', 20_000);
+  // 用 index.html 精确匹配：markdown.html 与查看器同一 dist/monaco 目录，
+  // 「monaco」会把两种页面都命中
+  const monacoPage = await app.waitForPage('monaco/index.html', 20_000);
   await expect(monacoPage.locator('.monaco-editor')).toBeVisible({ timeout: 20_000 });
 });
 
@@ -356,9 +358,9 @@ test('US-42 双击 Markdown 文件行：进内置 Markdown 预览窗口（fileOp
   await expandFiles(sb);
 
   // .md / .markdown 不进 Monaco：openLocalWorkspaceFile 把它分给渲染后的只读
-  // 预览窗口（data: URL 页面，`src/host/markdownHtml.ts` 生成）
+  // 预览窗口（dist/monaco/markdown.html，与 Monaco 查看器同一 vite 工程）
   await sb.locator(`${FILE_ROWS}[data-path="readme.md"]`).dblclick();
-  const previewPage = await app.waitForPage('data:text/html', 20_000);
+  const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
   await expect(previewPage.locator('article.markdown-body h1')).toHaveText('demo', { timeout: 20_000 });
 });
 

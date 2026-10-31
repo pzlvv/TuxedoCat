@@ -9,18 +9,19 @@ import {
   type FileOpenBridge,
   type RemoteFileReader,
 } from '../../electron/fileOpen';
-import { getMarkdownPreviewHtml } from '../host/markdownHtml';
+import { getMarkdownPreviewBodyHtml } from '../host/markdownHtml';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
- * 侧栏「双击打开」的分流与 Markdown 预览 HTML 生成（US-42 验收 6）。
+ * 侧栏「双击打开」的分流与 Markdown 预览正文生成（US-42 验收 6）。
  *
  * 覆盖点：
  * - `classifyFileForOpen`：markdown / 文本 / 图片 / 二进制 / 嗅探五类分流；
  * - `openLocalWorkspaceFile` / `openRemoteWorkspaceFile`：Markdown 走
  *   `openMarkdownViewer`，文本 / 图片 / 系统应用分流不回归，远程二进制仍拒绝；
- * - `getMarkdownPreviewHtml`：GFM 渲染 + 内容净化（原生 HTML 转义、危险协议
- *   链接降级、安全链接带 noopener）+ 深浅色两套配色。
+ * - `getMarkdownPreviewBodyHtml`：GFM 渲染 + 内容净化（原生 HTML 转义、危险协议
+ *   链接降级、安全链接带 noopener）。页面样式（标题栏 / 文本视图 / 配色）归
+ *   `electron/monaco/markdown.css`，不在本模块。
  *
  * 运行方式：npm run test:all -- fileOpen
  */
@@ -161,10 +162,9 @@ runTests('fileOpen + markdown 预览', async () => {
   }
   check('远程已知二进制仍拒绝', remoteBinaryRejected);
 
-  // ── Markdown 预览 HTML ──
-  const html = await getMarkdownPreviewHtml(
+  // ── Markdown 预览正文 ──
+  const html = await getMarkdownPreviewBodyHtml(
     '# Title\n\n<script>alert(1)</script>\n\n<b>raw</b> and [bad](javascript:alert(1)) and [good](https://example.com/a)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n',
-    { title: 'doc.md', isDark: false },
   );
   check('GFM 表格渲染', html.includes('<table>'));
   check('标题渲染', html.includes('<h1>Title</h1>'));
@@ -172,13 +172,6 @@ runTests('fileOpen + markdown 预览', async () => {
   check('内联原生 HTML 被转义', html.includes('&lt;b&gt;raw&lt;/b&gt;'));
   check('javascript: 链接降级为纯文本', !html.includes('href="javascript:'));
   check('https 链接带 noopener 新窗口', html.includes('href="https://example.com/a"') && html.includes('rel="noopener noreferrer"'));
-  check('标题进入 <title>', html.includes('<title>doc.md</title>'));
-
-  const dark = await getMarkdownPreviewHtml('# T', { title: 't', isDark: true });
-  const light = await getMarkdownPreviewHtml('# T', { title: 't', isDark: false });
-  check('深浅色两套配色', dark !== light && dark.includes('#1e1e1e') && light.includes('#ffffff'));
-
-  check('标题做 HTML 转义', (await getMarkdownPreviewHtml('x', { title: '<i>', isDark: false })).includes('<title>&lt;i&gt;</title>'));
 
   finish();
 });

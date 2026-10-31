@@ -22,7 +22,7 @@ rAF 调度不执行、所有面的重绘被合成器压到窗口重新可见—�
   （`electron/traySoundWindow.ts`）——注释记录的「整页空白 / 恢复后不重绘」在本应用
   真实发生过，三个查看器是仅有的缺失位点。
 - 机制差异决定症状可见性：Markdown / 图片的刷新投递在 IPC 到达即同步改 DOM
-  （`electron/markdownPreload.ts` 的 innerHTML 替换、`electron/imageViewerPreload.ts`
+  （`electron/monaco/markdownMain.ts` 的 innerHTML 替换、`electron/imageViewerPreload.ts`
   的 `img.src`），DOM 不停但**绘制**停；Monaco 的 `onRefresh` 同步 `model.setValue`
   （`electron/monaco/main.ts`），但 Monaco 视图重渲染由内部 rAF 调度，后台态下
   rAF 停摆，视图 DOM 停在旧内容。两者在用户眼里都是「回窗才见新内容」。
@@ -58,10 +58,10 @@ rAF 调度不执行、所有面的重绘被合成器压到窗口重新可见—�
 
 ## 回归测试
 
-- **RT-1**：工厂对三个查看器窗口（markdown / image / text）返回
-  `backgroundThrottling === false`，且 `preload` / `sandbox` / `contextIsolation` /
-  `nodeIntegration` 与原内联取值一致（落点：`src/test/viewerWindowPrefs.test.ts`
-  「三个查看器窗口的 webPreferences 关闭后台节流」）。
+- **RT-1**：工厂对查看器窗口种类（image / text；Markdown 预览窗口与文本查看器
+  同一页面工程，复用 text 形态）返回 `backgroundThrottling === false`，且
+  `preload` / `sandbox` / `contextIsolation` / `nodeIntegration` 与原内联取值一致
+  （落点：`src/test/viewerWindowPrefs.test.ts`）。
 - 行为面回归：specs/018 既有 e2e 刷新用例（`e2e/electron/preview.spec.ts` 的
   Markdown / 图片 / Monaco 刷新三例）验证修复不破坏可见态刷新链路；「失焦期间刷新」
   的行为断言因 e2e 环境豁免后台化不可行（见现状末条），flag 契约由 Electron 文档保证。

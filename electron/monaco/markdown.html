@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 内容零信任的第二道防线：渲染视图的 HTML 由主进程生成侧净化（原生 HTML 转义、
+         危险协议链接降级），这里再拦内联脚本兜底。页面脚本只有本目录构建产物。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src http: https: data:; font-src 'self' data:; worker-src 'self' blob:" />
+    <title>Markdown</title>
+    <link rel="stylesheet" href="./markdown.css" />
+  </head>
+  <body>
+    <!-- 自绘标题栏骨架：切换按钮与窗口控制按钮由 markdownMain 按 init 载荷填充 -->
+    <header id="markdown-titlebar">
+      <span class="doc-title"></span>
+      <div class="drag-filler"></div>
+      <div class="controls"></div>
+    </header>
+    <article class="markdown-body"></article>
+    <!-- 文本视图：页内只读 Monaco（markdown 语法着色），懒创建 -->
+    <div id="markdown-source-view" hidden></div>
+    <script type="module" src="./markdownMain.ts"></script>
+  </body>
+</html>

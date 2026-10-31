@@ -21,7 +21,12 @@ export default defineConfig({
     emptyOutDir: true,
     chunkSizeWarningLimit: 8000,
     rollupOptions: {
-      input: project.resolve('electron/monaco', 'index.html'),
+      // 双入口：文本查看窗口（index.html）与 Markdown 预览窗口（markdown.html），
+      // Monaco 依赖由 rollup 拆成共享 chunk，只打一份
+      input: {
+        main: project.resolve('electron/monaco', 'index.html'),
+        markdown: project.resolve('electron/monaco', 'markdown.html'),
+      },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name]-[hash].js',

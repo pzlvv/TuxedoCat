@@ -49,7 +49,6 @@ module.exports = {
   electronSpinPreloadOut: resolve(project.build.electronSpinPreloadOut),
   electronMonacoPreloadOut: resolve(project.build.electronMonacoPreloadOut),
   electronImageViewerPreloadOut: resolve(project.build.electronImageViewerPreloadOut),
-  electronMarkdownPreloadOut: resolve(project.build.electronMarkdownPreloadOut),
   electronSidebarPreloadOut: resolve(project.build.electronSidebarPreloadOut),
   electronPreferencePreloadOut: resolve(project.build.electronPreferencePreloadOut),
   electronTitlebarPreloadOut: resolve(project.build.electronTitlebarPreloadOut),
