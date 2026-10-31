@@ -129,7 +129,7 @@ status: 已修
 | 回归用例（修复前） | `npm run test:unit -- remoteWorkspacePath` | 红 | 首条断言即失败：`构造时去掉尾分隔符` 实测 `'/srv/app/'`，期望 `'/srv/app'`；RT-1 的键与判等两条、RT-3 的落盘归一同批也会红 |
 | 回归用例（修复后） | `npm run test:unit -- remoteWorkspacePath` | 绿 | 9 通过 / 0 失败（含 RT-8 / RT-9 的升级兼容两条） |
 | 既有回归 | `npm run test:unit` | 绿 | 94 通过 / 0 失败（含 workspaceRef / workspaceState / clientConnection / crossWorkspace* 全系列） |
-| Rust 回归 | `cargo test --manifest-path core-rs/Cargo.toml` | 绿 | Core 无改动；路径编码口径未变 |
+| Rust 回归 | `cargo test --manifest-path core-rs/Cargo.toml` | 绿 | 1050 passed / 0 failed + 1 passed / 0 failed；Core 无改动，路径编码口径未变 |
 | 静态检查 | `npm run check-types`（含 webview / electron 三份配置） | 绿 | — |
 | 静态检查 | `npm run lint` | 绿 | — |
 | 文档守卫 | `npm run test:unit -- docs-lint` | 绿 | 缺陷规格五节与验证记录取值合法、章节引用有效 |
