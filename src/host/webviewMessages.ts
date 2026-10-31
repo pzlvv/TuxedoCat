@@ -118,6 +118,11 @@ export type HostToWebviewMessage = {
    * 任何新节点追加前先移除。缺省即常规消息。随 `CoreEvent.message` 的载荷透传。
    */
   once?: boolean;
+  /**
+   * 一次性通知的类别（specs/036 FR-001）：`'llmError'` = LLM 失败通知，webview
+   * 据此在通知末尾渲染重试按钮；其余 once 通知与常规消息不带。
+   */
+  noticeKind?: 'llmError';
   /** 标记为压缩折叠区域的消息（加载时从 boundary 开始） */
   isCompactCollapsed?: boolean;
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
@@ -310,9 +315,10 @@ export type HostToWebviewMessage = {
       creator?: { kind: 'user' } | { kind: 'agent'; workspaceId: string | null; sessionId: string };
       /**
        * 最后一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：core 记在 meta.json，
-       * 一个对话至多一条；webview 加载时追加到时间线末位。
+       * 一个对话至多一条；webview 加载时追加到时间线末位。`noticeKind` 随通知
+       * JSON 整份落盘（specs/036 FR-001），恢复后仍能识别 LLM 失败通知。
        */
-      onceMessage?: { role: 'system'; content: string };
+      onceMessage?: { role: 'system'; content: string; noticeKind?: 'llmError' };
     };
     messages?: unknown[];
   };
@@ -659,6 +665,13 @@ export type WebviewToHostMessage = {
   /** 本次发送携带的模型身份（model + provider 一起表征；缺省沿用会话已选模型） */
   model?: string;
   provider?: string;
+} | {
+  /**
+   * 失败 once 通知上的「重试」（specs/036 FR-003）：宿主翻译成
+   * `UiEvent.queryRetryRequested`，core 以既有上下文重跑一轮（不追加用户消息）。
+   */
+  type: 'retryQuery';
+  sessionId: string;
 } | {
   /** 索取某会话当前的 Todo 清单（应答是下行 `sessionTodos`） */
   type: 'requestSessionTodos';

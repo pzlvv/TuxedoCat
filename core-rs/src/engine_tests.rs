@@ -1564,11 +1564,14 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
     assert!(content.contains("```"), "got {message}");
     assert!(content.contains("settings.json"), "got {message}");
     // 一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：记进 meta.json 的
-    // `onceMessage`，`<sid>.jsonl` 无记录
+    // `onceMessage`，`<sid>.jsonl` 无记录；类别标记 `llmError` 供 UI 渲染重试
+    // 按钮（specs/036 FR-001），meta 与事件载荷同源
     assert_eq!(message["data"]["once"], true);
+    assert_eq!(message["data"]["noticeKind"], "llmError");
     let metadata = history::load_metadata("s1", "D:/repo").expect("meta");
     assert_eq!(metadata["onceMessage"]["role"], "system");
     assert_eq!(metadata["onceMessage"]["content"], content);
+    assert_eq!(metadata["onceMessage"]["noticeKind"], "llmError");
     assert!(
         !history::load_messages("s1", "D:/repo")
             .iter()
@@ -1576,6 +1579,130 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
         "LLM 错误提示不得写进 jsonl"
     );
     assert!(!state.lock().unwrap().running);
+}
+
+#[test]
+fn query_retry_requested_reruns_query_without_persisting_new_messages() {
+    // specs/036 FR-003：空闲重试以既有上下文重跑一轮——不追加、不落盘任何新消息
+    let sandbox = Sandbox::new("engine-query-retry-success");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+
+    // 失败轮次的遗留现场：用户消息已落盘、之后没有 assistant 回复
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1" })).unwrap();
+    history::append_message(
+        "s1",
+        &workspace,
+        &json!({
+            "type": "user",
+            "uuid": "u1",
+            "message": { "role": "user", "content": "会失败的提问" }
+        }),
+        None,
+    )
+    .unwrap();
+
+    let requests: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let requests_writer = Arc::clone(&requests);
+    let llm = FakeLlm::start(move |_, payload| {
+        requests_writer.lock().unwrap().push(payload.clone());
+        openai_text_sse(&["重试成功"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    harness.core.on_conversation_opened("s1");
+
+    harness.core.on_query_retry_requested("s1");
+    assert!(harness.wait_query_end());
+
+    // LLM 恰好收到重试请求（一次查询，无用户消息重复进入）
+    assert_eq!(requests.lock().unwrap().len(), 1, "重试应恰好发起一次查询");
+    // 不新增用户消息节点（AC-4）：落盘里仍是失败轮次那一条；本轮的 assistant
+    // 回复照常落盘（AC-7 与常规轮次一致）
+    let messages = history::load_messages("s1", &workspace);
+    let user_messages: Vec<_> = messages
+        .iter()
+        .filter(|message| message["type"] == "user")
+        .collect();
+    assert_eq!(user_messages.len(), 1, "重试不得重复落盘用户消息");
+    assert_eq!(user_messages[0]["uuid"], "u1");
+    assert!(messages.iter().any(|message| message["type"] == "assistant"));
+    assert!(!harness.core.session("s1").lock().unwrap().running);
+}
+
+#[test]
+fn query_retry_requested_is_dropped_while_busy() {
+    // specs/036 FR-003：忙碌（查询运行中）时丢弃——幂等忽略，不登记槽位、不拉起循环
+    let sandbox = Sandbox::new("engine-query-retry-busy");
+    let llm = FakeLlm::fixed(openai_text_sse(&["不应到达"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s1");
+    {
+        let mut state = state.lock().unwrap();
+        state.project = Some(sandbox.workspace.to_string_lossy().to_string());
+        state.running = true;
+    }
+
+    harness.core.on_query_retry_requested("s1");
+
+    assert!(!state.lock().unwrap().pending_retry, "忙碌时不得登记重试槽位");
+    assert!(state.lock().unwrap().running);
+    // 没有消费循环被拉起：留一个观察窗口，确认 queryBegin 不出现
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        harness.sink.event_of("queryBegin").is_none(),
+        "忙碌丢弃不得拉起消费循环"
+    );
+}
+
+#[test]
+fn query_retry_failure_replaces_the_previous_once_notice() {
+    // specs/036 FR-003 + specs/014 AC-7：重试再败 → 新 once 替换旧通知（meta 覆盖）
+    let sandbox = Sandbox::new("engine-query-retry-failure");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    // 不可达端口：LLM 请求按既有 3 次重试语义失败
+    prepare(&sandbox, "http://127.0.0.1:9", "auto");
+
+    // 上一轮失败遗留的旧通知
+    history::save_once_message(
+        "s1",
+        &workspace,
+        &json!({ "role": "system", "content": "旧通知" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    {
+        let state = harness.core.session("s1");
+        state.lock().unwrap().project = Some(workspace.clone());
+    }
+
+    harness.core.on_query_retry_requested("s1");
+    assert!(
+        harness.wait_for(
+            |sink| sink.event_types().iter().any(|kind| kind == "queryEnd"),
+            Duration::from_secs(30),
+        ),
+        "重试轮次应发 queryEnd"
+    );
+
+    let message = harness.sink.event_of("message").expect("重试失败回显");
+    assert_eq!(message["data"]["once"], true);
+    assert_eq!(message["data"]["noticeKind"], "llmError");
+    let metadata = history::load_metadata("s1", &workspace).expect("meta");
+    assert_eq!(metadata["onceMessage"]["role"], "system");
+    assert!(
+        metadata["onceMessage"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("❌ **LLM API Error**"),
+        "新通知应替换旧通知: {}",
+        metadata["onceMessage"]
+    );
+    assert_eq!(metadata["onceMessage"]["noticeKind"], "llmError");
 }
 
 #[test]

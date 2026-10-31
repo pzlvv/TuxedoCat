@@ -165,6 +165,11 @@ export interface Message {
    * 先移除（`stripOnce`）；缺省即常规消息。
    */
   once?: boolean;
+  /**
+   * 一次性通知的类别（specs/036 FR-001）：`'llmError'` = LLM 失败通知，在通知末尾
+   * 渲染「重试」按钮；其余 once 通知与常规消息不带。
+   */
+  noticeKind?: 'llmError';
   /** 用户消息携带的图片（dataUrl，用于渲染缩略图） */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 缓存读取 token 数 */
