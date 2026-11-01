@@ -2135,7 +2135,9 @@ fn run_reply(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         Some(value) if !value.is_empty() => value.to_string(),
         _ => return reply_failure("Reply 工具需要提供一个有效的 message 字符串参数"),
     };
-    let sub_agent_id = ctx.session_id.clone();
+    // 调用者会话 id：`Reply` 的发送方，可能是子代理，也可能是普通（用户创建的）会话
+    // ——后者只有在显式 `targetSessionId` 时才可能投递，因此不能假定它是子代理。
+    let caller_session_id = ctx.session_id.clone();
     let explicit = input
         .get("targetSessionId")
         .and_then(Value::as_str)
@@ -2146,16 +2148,16 @@ fn run_reply(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let target_id = match explicit {
         Some(target) => target.to_string(),
         None => {
-            if sub_agent_id.is_empty() {
+            if caller_session_id.is_empty() {
                 return reply_failure(
                     "当前 session 未设置 sessionId，且未指定 targetSessionId。请提供 targetSessionId 或确认当前会话有正确的 sessionId",
                 );
             }
-            match crate::subagent::creator_of(&sub_agent_id) {
+            match crate::subagent::creator_of(&caller_session_id) {
                 Some(creator) => creator,
                 None => {
                     return reply_failure(&format!(
-                        "当前会话 {sub_agent_id} 不是子代理且没有上游会话（upstreamSessionId），请通过 targetSessionId 显式指定回复目标"
+                        "当前会话 {caller_session_id} 不是子代理且没有上游会话（upstreamSessionId），请通过 targetSessionId 显式指定回复目标"
                     ))
                 }
             }
@@ -2165,10 +2167,12 @@ fn run_reply(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(hooks) = ctx.subagent.as_ref() else {
         return reply_failure("no sub-agent runtime available");
     };
-    match (hooks.deliver)(&target_id, &message, &sub_agent_id) {
+    match (hooks.deliver)(&target_id, &message, &caller_session_id) {
         Ok(()) => ToolOutcome::Success(message),
+        // 引擎已按目标的真实归属给出可直接照做的文案（不存在 / 跨工作区子代理不可投递），
+        // 这里只补「回复创建者不必传 targetSessionId」这一通用提示与调用者会话 id。
         Err(error) => reply_failure(&format!(
-            "目标会话 {target_id} 不存在。如果回复给创建者，请不要设置 targetSessionId 参数，默认会回复到创建者会话。当前 subAgentId={sub_agent_id}（{error}）"
+            "{error}。如果回复给创建者，请不要设置 targetSessionId 参数，默认会回复到创建者会话。当前会话 {caller_session_id}"
         )),
     }
 }

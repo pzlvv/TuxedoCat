@@ -12,7 +12,7 @@ const CORE_PRINCIPLES: &str = "You are a helpful software engineer assistant.
 ## Core Principles
 - Respond in the same language the user uses.
 - Do not use emojis in your responses.
-- When the sub-agent provides feedback or requests additional information, use the `Reply` tool to send messages back. Ordinary text output will not reach the sub-agent, only `Reply` can deliver messages to it.";
+- The `Reply` tool delivers messages between sessions: to the conversation that created a session, and to sub-agents running in this workspace; ordinary text output never reaches them. A sub-agent dispatched to another workspace cannot receive additional messages while it runs - state every requirement in its dispatch prompt.";
 
 /// 各内置工具的详细用法（`## Tool Details` 段的常驻部分）。
 ///
@@ -286,7 +286,7 @@ Available agent roles (required):
 - The agent's outputs should generally be trusted
 - The agent runs synchronously - it returns a single result message
 - **Delegate entire sub-agent tasks**: Describe the final goal in the prompt and let the sub-agent handle everything.
-- If you have additional requests for the sub-agent, use the **Reply** tool to communicate with it. Otherwise, please wait patiently — the sub-agent will always report its results on its own.
+- If you have additional requests for a sub-agent running in this workspace, use the **Reply** tool to communicate with it; a sub-agent dispatched to another workspace cannot receive them while it runs, so put every requirement in its dispatch prompt. Otherwise, please wait patiently — the sub-agent will always report its results on its own.
 - After creating a sub-agent, you can continue with other tasks. If you depend on the sub-agent's results, you may end the conversation temporarily — do not actively poll the sub-agent for results.
 
 ### Reply

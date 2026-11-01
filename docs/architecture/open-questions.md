@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-01
 ---
 
 # 规格：待定事项
@@ -30,3 +30,17 @@ last_reviewed: 2026-10-18
 现状：远程接入已落地且只有 SSH 一条路径（[docs/core/core-remote.md 第 2 节](../core/core-remote.md#2-远程服务start--kill)）——daemon 只绑回环、端口交内核分配，Host 经 SSH 转发接入；帧协议与磁盘格式不依赖「Core 与宿主同机」，宿主侧不直接读 core 的磁盘数据（[layering.md 第 2.1 节](layering.md#21-规则-9-的审计结论)、[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的例外表）。
 
 待定：传输形态本身——帧通道目前假定本机 stdin/stdout，没有认证、重连与多宿主复用；换成网络直连通道属于产品决策（[docs/core/standalone-core-boundaries.md 第 4 节](../core/standalone-core-boundaries.md#4-不覆盖范围)）。
+
+## 3. 跨工作区子代理的追加消息投递
+
+现状：跨工作区子代理只有三个方向的事件——子代理 → 发起方的 `crossWorkspaceAgentReplyRequested`、
+发起方 → 子代理的中止 `crossWorkspaceAgentAbortRequested`、以及结束通知
+`crossWorkspaceAgentEnded`（[docs/architecture/events.md 第 2 节](events.md#2-事件词汇表)）。发起方
+Core 只登记远程记录、不持有目标会话状态，因此 `Reply` 指向跨工作区子代理时本机无投递通道，
+按工具错误返回并提示「派发时把要求写全 / 等它 Reply / 追加任务请新起一个 `Agent`」——模型可见
+契约与真实能力一致，而不是假装能投递（[docs/features/cross-workspace-agent.md 第 4 节](../features/cross-workspace-agent.md#4-边界与错误路径)）。
+
+待定：是否新增反向投递事件（发起方 → 子代理）。候选形态是复用宿主侧 `crossWorkspaceLinks`
+表（子代理会话 id → 目标工作区引用）把消息路由到目标 Connection，再由目标 Core 的
+`enqueue_agent_message` 投递给子代理会话；需要同时定义发起方 Core 的写入鉴权（谁可以往远程会话
+塞消息）、子代理侧「运行中收到追加要求」的轮次边界语义，以及跨工作区消息的 From 头归属。
