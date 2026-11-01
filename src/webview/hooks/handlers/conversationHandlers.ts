@@ -577,3 +577,36 @@ export function handleConversationExpandCompactDone(
           props.setHasCompactArchive(false);
           props.setIsCompactExpanded(true);
 }
+
+/**
+ * 分支对话状态（core `branchStateChanged` 的投影，specs/037 FR-008）。
+ *
+ * 只认当前会话的消息：多视图宿主逐会话投递，别的会话的分支名不该画到本视图标题上。
+ * webview 不持有分支事实的默认值——消息未到达时是等待态（`undefined`），不猜「就绪」。
+ */
+export function handleConversationBranchState(
+  msg: Extract<HostToWebviewWire, { type: 'branchState' }>,
+  ctx: HandlerContext,
+): void {
+  const { props } = ctx;
+  if (msg.sessionId !== props.currentSessionIdRef.current) return;
+  props.setBranchView(msg.view);
+  // 不可用只作为异常提示：按既有会话错误通道提示一次（恢复后回到常态，
+  // 它不是一个常驻状态区，specs/037 FR-006 第 4 点）
+  if (msg.view.state === 'unavailable') {
+    props.pushNotice('notice.branch.unavailable', { reason: msg.view.reason }, 'warn');
+  }
+}
+
+/**
+ * 创建入口的前置数据（`requestBranchPrecheck` 的应答，specs/037 FR-003）。
+ *
+ * 纯渲染数据、与具体会话无关：直接落到 App 的状态上（分支对话项的置灰判定与
+ * 草稿页的脏工作区提示读它）。
+ */
+export function handleConversationBranchPrecheck(
+  msg: Extract<HostToWebviewWire, { type: 'branchPrecheck' }>,
+  ctx: HandlerContext,
+): void {
+  ctx.props.setBranchPrecheck(msg.result);
+}

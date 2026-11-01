@@ -20,6 +20,24 @@ export const zhDict: Record<string, string> = {
   'app.closeChat': '关闭当前对话（释放资源）',
   'app.openWorkspaceHint': '请先打开一个工作区以继续使用',
 
+  /* ── 分支对话（specs/037）─────────────────────────────────── */
+  'branch.newChatMenu': '选择创建方式',
+  'branch.menuTitle': '新建对话',
+  'branch.plainChat': '普通对话',
+  'branch.plainChatHint': '直接读写工作区',
+  'branch.branchChat': '分支对话',
+  'branch.branchChatHint': '在独立 worktree 里工作',
+  'branch.notGit': '当前目录不是 git 仓库，无法创建分支对话',
+  'branch.dirtyHint': '分支从最新提交 {base} 起，未提交改动不在本分支',
+  'branch.dirtyHintNoBase': '分支从最新提交起，未提交改动不在本分支',
+  'branch.precheckPending': '正在检查工作区…',
+  'branch.titleTip': '分支 {ref}',
+  'branch.listTipSource': 'tuxedo/{name}（分支自 {baseBranch} · {base} · {time}）',
+  'branch.unavailableTip': '分支不可用：{detail}',
+  'notice.branch.unavailable': '分支不可用：{reason}',
+  'files.branchTitle': '文件资源管理器（{branch}）',
+  'files.mainBranch': '主分支',
+
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': '确定要删除 "{title}" 吗？',
   'deleteConfirm.cancel': '取消',

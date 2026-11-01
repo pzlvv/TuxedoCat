@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry, BranchStateView, BranchPrecheckView } from './types';
 import type { HostToWebviewWire } from '../host/webviewMessages';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
@@ -120,6 +120,26 @@ const App = () => {
   // 非 Master 子代理会话锁定选项菜单的提示词模式 / 联网搜索 / MCP 三项
   const [subAgentRole, setSubAgentRole] = useState<string | null>(null);
   const [hasActiveQuery, setHasActiveQuery] = useState(false);
+  /**
+   * 分支对话状态（core `branchStateChanged` 的投影，specs/037 FR-008）。
+   *
+   * `undefined` = 等待态（事件还没到），webview 不猜「就绪」；`plain` = 普通会话；
+   * `ready` = 分支对话（标题前显示分支名）；`unavailable` = 分支不可用（警告色 + 悬停原因）。
+   */
+  const [branchView, setBranchView] = useState<BranchStateView>(undefined);
+  /**
+   * 当前草稿页的会话形态（specs/037 FR-006 创建时序）：`branch` = 点过下拉里的
+   * 「分支对话」。只影响草稿页表现**与首条消息的 `startNewConversation` 载荷**——
+   * 不建会话、不建 worktree、不发总线事件；形态到达 Core 之后由 `branchView` 承载。
+   */
+  const [draftBranchMode, setDraftBranchMode] = useState<'plain' | 'branch'>('plain');
+  /**
+   * 创建入口的前置数据（`branchPrecheckRequested` 应答，specs/037 FR-003）。
+   *
+   * `undefined` = 还没拉取 / 拉取中（等待态，不猜）；`null` = Core 不可达。
+   * 会话建立前没有 `branchStateChanged`，入口数据只有这一条来源。
+   */
+  const [branchPrecheck, setBranchPrecheck] = useState<BranchPrecheckView>(undefined);
   const [contextLength, setContextLength] = useState<number>(0);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
   /**
@@ -540,7 +560,7 @@ const App = () => {
     setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
     setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
-    setConversationTitle, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
+    setConversationTitle, setBranchView, setBranchPrecheck, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
     setCurrentSessionId, setParentSessionId, setCreator, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
@@ -697,7 +717,7 @@ const App = () => {
    *   没发出去的草稿带过来，避免切换会话后再新建时内容丢失。
    * 自按钮 onClick 内联约 90 行抽出，行为不变。
    */
-  const handleNewConversation = useCallback(() => {
+  const handleNewConversation = useCallback((mode: 'plain' | 'branch' = 'plain') => {
     // 多视图宿主：新对话是另一个视图，本视图不参与新建——只把请求交给宿主
     // （宿主复用「未发送的新对话」视图，保住那边的草稿）。与 navigateToSession 同一分工：
     // 本视图不改自己的会话状态，否则切回本视图会看到空消息或永远转圈的 loading。
@@ -705,6 +725,9 @@ const App = () => {
       postMessage({ type: 'openNewConversation' });
       return;
     }
+    // 草稿页形态（specs/037 FR-006 创建时序）：只影响草稿页表现与首条消息的载荷，
+    // 不建会话、不建 worktree、不发总线事件
+    setDraftBranchMode(mode);
     // Save current session state before switching
     saveCurrentSessionSnapshot();
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，稍后带到新对话
@@ -768,7 +791,9 @@ const App = () => {
       webSearch: nextWebSearch,
       modelRef: nextModelRef,
     }));
-    postMessage({ type: 'startNewConversation', sessionId: newSessionId });
+    // 形态标记随首条消息的会话建立一起上报（specs/037 FR-006 创建时序第 2 步）：
+    // 宿主翻译成 `UiEvent.branchModeChanged`，Core 在建会话时同步建 worktree
+    postMessage({ type: 'startNewConversation', sessionId: newSessionId, mode });
     // 聚焦输入框，并把光标放回草稿里的原位置
     setTimeout(() => {
       mainInputRef.current?.focus();
@@ -776,6 +801,35 @@ const App = () => {
     }, 0);
     // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
   }, [hostInfo, saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, modelRef, promptMode]);
+
+  /**
+   * 拉一次创建入口的前置数据（`branchPrecheckRequested`，specs/037 FR-003）。
+   *
+   * 下拉展开与草稿页打开时各拉一次，不缓存承诺——Core 侧一次 `rev-parse` 代价可忽略，
+   * 而缓存会让「刚 `git init` 的目录」一直置灰。宿主回 `branchPrecheck` 消息。
+   */
+  const refreshBranchPrecheck = useCallback(() => {
+    postMessage({ type: 'requestBranchPrecheck' });
+  }, []);
+
+  /**
+   * 分支对话项是否可选（specs/037 AC-9）：只有 `ok: true` 才可选。
+   *
+   * 等待态（`undefined`）与 Core 不可达（`null`）都按不可用处理——不按猜测值渲染
+   * （`docs/architecture/principles.md` 第 7 节）。
+   */
+  const branchAvailable = branchPrecheck !== undefined && branchPrecheck !== null && branchPrecheck.ok === true;
+
+  /** 主工作区是否有未提交改动（草稿页提示的判据；等待态不显示提示） */
+  const branchPrecheckDirty = branchPrecheck !== undefined && branchPrecheck !== null && branchPrecheck.ok === true && branchPrecheck.dirty;
+
+  /**
+   * 当前是不是「未发送的新对话」草稿页（`new-` 等价形态）。
+   *
+   * 判据是「当前会话就是新建时生成、还没发过消息的那个」（`newChatSessionRef`）——
+   * 分支草稿页的提示只在这一态出现，发送第一条消息建立会话后归位。
+   */
+  const isDraftPage = currentSessionId !== null && newChatSessionRef.current === currentSessionId;
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -1221,6 +1275,46 @@ const App = () => {
                 </svg>
               </button>
             )}
+            {/*
+              分支名放在会话标题**前**（specs/037 FR-006 / AC-17）：只有名字本身
+              （不带 `tuxedo/` 前缀）——**没有图标、没有「分支对话」字样**。悬停显示完整
+              分支名。`unavailable` 时转警告色并在悬停里给出原因；它不是一个常驻状态区。
+              消息区与状态条里不出现任何分支横幅、依赖策略、并行计数或发布按钮。
+            */}
+            {branchView?.state === 'ready' && (
+              <span
+                className="ui-fs-11 shrink-0"
+                data-testid="title-branch-name"
+                title={t('branch.titleTip', { ref: `tuxedo/${branchView.branch}` })}
+                style={{
+                  color: colors.harness,
+                  fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                  maxWidth: 140,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {branchView.branch}
+              </span>
+            )}
+            {branchView?.state === 'unavailable' && (
+              <span
+                className="ui-fs-11 shrink-0"
+                data-testid="title-branch-name"
+                title={t('branch.unavailableTip', { detail: branchView.detail })}
+                style={{
+                  // 警告色（与时间线「运行中」同档），不新增色板成员
+                  color: colors.timelineStatusRunning,
+                  maxWidth: 140,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t('branch.branchChat')}
+              </span>
+            )}
             <h1 className="ui-fs-13 font-semibold truncate" style={{ color: colors.textPrimary }}>{conversationTitle}</h1>
           </div>
           <div className="flex items-center gap-2">
@@ -1381,14 +1475,62 @@ const App = () => {
             )}
             {/* 新对话按钮（Electron 完整模式下由侧栏"新建"接管） */}
             {newConversationEntryOf(hostInfo) === 'webview' && (
-            <button
-onClick={handleNewConversation}
-              className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+            /**
+             * 新对话 = split button（specs/037 FR-006）：主「+」恒为普通方式新建（现状不变），
+             * 小三角展开两个**一次性创建动作**——点哪项就以哪种形态打开草稿页，不记住选择、
+             * 无选中态。右下功能菜单（US-8）不加项。
+             */
+            <div
+              className="flex items-center rounded-lg overflow-hidden"
               style={{ backgroundColor: colors.bgTertiary }}
-              title={t('app.newChat')}
             >
-              <Icon name="plus" size={16} style={{ color: colors.textSystem }} />
-            </button>
+              <button
+                type="button"
+                onClick={() => handleNewConversation('plain')}
+                className="w-8 h-8 flex items-center justify-center transition-colors hover:bg-white/10"
+                title={t('app.newChat')}
+                data-testid="new-chat-main"
+              >
+                <Icon name="plus" size={16} style={{ color: colors.textSystem }} />
+              </button>
+              <Dropdown
+                trigger={['click']}
+                placement="bottomRight"
+                destroyOnHidden
+                menu={{
+                  items: [
+                    {
+                      key: 'plain',
+                      label: t('branch.plainChat'),
+                      onClick: () => handleNewConversation('plain'),
+                    },
+                    {
+                      key: 'branch',
+                      // 非 git 仓库时置灰并说明原因（判定来自 `branchPrecheckRequested`，
+                      // 宿主不跑 git；AC-9）。`branchPrecheck === undefined` 是等待态，
+                      // 不按猜测值渲染——按不可用处理（进入菜单时已发起拉取）
+                      label: t('branch.branchChat'),
+                      disabled: !branchAvailable,
+                      onClick: () => handleNewConversation('branch'),
+                    },
+                  ],
+                }}
+                onOpenChange={(open) => {
+                  // 展开时拉一次前置数据（不缓存承诺：Core 侧一次 `rev-parse` 代价可忽略）
+                  if (open) void refreshBranchPrecheck();
+                }}
+              >
+                <button
+                  type="button"
+                  className="h-8 w-[18px] flex items-end justify-center transition-colors hover:bg-white/10"
+                  style={{ borderLeft: `1px solid ${colors.border}` }}
+                  title={t('branch.newChatMenu')}
+                  data-testid="new-chat-caret"
+                >
+                  <Icon name="chevron-down" size={10} style={{ color: colors.textSystem, marginBottom: 7 }} />
+                </button>
+              </Dropdown>
+            </div>
             )}
             {/* 关闭按钮（多视图模式）：销毁当前 webview，释放渲染进程资源 */}
             {canCloseConversation(hostInfo) && (
@@ -1433,6 +1575,23 @@ onClick={handleNewConversation}
             paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
           }}
         >
+          {/*
+            分支草稿页的脏工作区提示（specs/037 FR-006 / AC-8）：一行纯文字，只在
+            「分支形态的未发送新对话」且主工作区脏时出现。**不显示分支名**（名字在会话
+            建立时才生成，草稿页不猜值），也没有图标或「分支对话」字样。数据来自
+            `branchPrecheckRequested`：只说明不阻塞，不做 stash、不弹确认框。
+          */}
+          {draftBranchMode === 'branch' && isDraftPage && branchPrecheckDirty && (
+            <div
+              className="ui-fs-11 px-1 pb-1"
+              style={{ color: colors.textSystem }}
+              data-testid="branch-dirty-hint"
+            >
+              {branchPrecheck && branchPrecheck.ok && branchPrecheck.head
+                ? t('branch.dirtyHint', { base: branchPrecheck.head })
+                : t('branch.dirtyHintNoBase')}
+            </div>
+          )}
           {userChoiceRequest ? (
             <UserChoiceOverlay
               userChoiceRequest={userChoiceRequest}

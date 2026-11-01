@@ -18,6 +18,35 @@ export type SendMessageWire = Extract<WebviewToHostMessage, { type: 'sendMessage
 export type { TodoEntry };
 
 export type Theme = 'dark' | 'light';
+
+/**
+ * 分支对话状态（core `branchStateChanged` 的 `view` 投影，specs/037 FR-008）。
+ *
+ * `undefined` 表示**等待态**：`branchStateChanged` 还没到，webview 不猜「就绪」
+ * （`docs/architecture/principles.md` 第 7 节）。`plain` / `ready` / `unavailable` 三态
+ * 决定标题前分支名的渲染（无图标、无「分支对话」字样）。
+ */
+export type BranchPrecheckView =
+  | undefined
+  | null
+  | { ok: true; head: string; dirty: boolean; baseBranch: string }
+  | { ok: false; reason: 'not-git'; detail: string };
+
+export type BranchStateView =
+  | { state: 'plain' }
+  | {
+      state: 'ready';
+      /** 分支名（不含 `tuxedo/` 前缀） */
+      branch: string;
+      worktree: string;
+      baseCommit: string;
+      baseBranch: string;
+    }
+  | {
+      state: 'unavailable';
+      reason: 'not-git' | 'worktree-missing' | 'git-failed';
+      detail: string;
+    } | undefined;
 export type AgentMode = 'manual' | 'risk' | 'auto';
 export type PromptMode = 'normal' | 'minimal' | 'mixed';
 export type ThinkingMode = 'off' | 'low' | 'high' | 'max';

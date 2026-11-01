@@ -147,6 +147,9 @@ const ConversationTreeItemBody = function ConversationTreeItemBody({
   const isNaming = namingSessions?.has(item.sessionId) ?? false;
   // 空标题显示为本地化的"未命名"
   const displayTitle = resolveTitle(item.title);
+  // 分支对话事实（specs/037 AC-18）：随对话列表元数据下发；`null` 即普通会话
+  const branch: { name: string; baseCommit: string; baseBranch: string } | null =
+    item.branch ?? null;
 
   return (
     <div className="mb-1 last:mb-0 group">
@@ -279,19 +282,50 @@ const ConversationTreeItemBody = function ConversationTreeItemBody({
                           <span className="ui-fs-11 italic" style={{ color: colors.harness }}>{t('conversationTree.namingInProgress')}</span>
                         </div>
                       ) : !isRenaming ? (
-                        <div
-                          className="ui-fs-13 font-medium min-w-0"
-                          style={{
-                            color: colors.textPrimary,
-                            fontWeight: isActive ? 600 : 500,
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden',
-                          }}
-                          title={displayTitle}
-                        >
-                          {displayTitle}
+                        <div className="flex items-start gap-1.5 min-w-0">
+                          {/*
+                            分支对话的条目标题**前**显示截断的分支名（specs/037 AC-18）：
+                            `<name>` 而非 `tuxedo/` 前缀，宽度上限 140px，**无图标**；
+                            悬停显示全名与来源（「分支自 <baseBranch> · <base 短 id> · <时间>」，
+                            全部取自 `meta.json` 的 `branch` 字段与 `createdAt`）。
+                          */}
+                          {branch && (
+                            <span
+                              className="shrink-0"
+                              data-testid="list-branch-name"
+                              title={t('branch.listTipSource', {
+                                name: branch.name,
+                                baseBranch: branch.baseBranch,
+                                base: branch.baseCommit.substring(0, 7),
+                                time: formatRelativeTime(item.createdAt),
+                              })}
+                              style={{
+                                color: colors.harness,
+                                fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                                fontSize: uiFontSizePx(11),
+                                maxWidth: 140,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {branch.name}
+                            </span>
+                          )}
+                          <div
+                            className="ui-fs-13 font-medium min-w-0"
+                            style={{
+                              color: colors.textPrimary,
+                              fontWeight: isActive ? 600 : 500,
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden',
+                            }}
+                            title={displayTitle}
+                          >
+                            {displayTitle}
+                          </div>
                         </div>
                       ) : (
                         <input

@@ -20,6 +20,24 @@ export const enDict: Record<string, string> = {
   'app.closeChat': 'Close this conversation (release resources)',
   'app.openWorkspaceHint': 'Open a workspace to continue',
 
+  /* ── Branch conversations (specs/037) ────────────────────── */
+  'branch.newChatMenu': 'Choose how to create',
+  'branch.menuTitle': 'New conversation',
+  'branch.plainChat': 'Plain conversation',
+  'branch.plainChatHint': 'Reads and writes the workspace directly',
+  'branch.branchChat': 'Branch conversation',
+  'branch.branchChatHint': 'Works in an isolated worktree',
+  'branch.notGit': 'This directory is not a git repository — branch conversations need one',
+  'branch.dirtyHint': 'The branch starts from the latest commit {base}; uncommitted changes stay out of it',
+  'branch.dirtyHintNoBase': 'The branch starts from the latest commit; uncommitted changes stay out of it',
+  'branch.precheckPending': 'Checking the workspace…',
+  'branch.titleTip': 'Branch {ref}',
+  'branch.listTipSource': 'tuxedo/{name} (branched from {baseBranch} · {base} · {time})',
+  'branch.unavailableTip': 'Branch unavailable: {detail}',
+  'notice.branch.unavailable': 'Branch unavailable: {reason}',
+  'files.branchTitle': 'File explorer ({branch})',
+  'files.mainBranch': 'main branch',
+
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': 'Are you sure you want to delete "{title}"?',
   'deleteConfirm.cancel': 'Cancel',

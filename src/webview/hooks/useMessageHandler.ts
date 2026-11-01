@@ -3,12 +3,12 @@ import type { McpServerInfo, ProviderModels } from '../../shared/webviewTypes';
 import type { SessionCreator } from '../../shared/sessionCreator';
 import type { ModelRef } from '../../shared/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt, TodoEntry } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt, TodoEntry, BranchStateView, BranchPrecheckView } from '../types';
 import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
-import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
+import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationBranchState, handleConversationBranchPrecheck, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -54,6 +54,10 @@ export interface UseMessageHandlerProps {
   setCurrentFile: (v: string) => void;
   setSelectedLines: (v: { start: number; end: number } | null) => void;
   setConversationTitle: (v: string) => void;
+  /** 分支对话状态（core `branchStateChanged` 的投影，specs/037 FR-008） */
+  setBranchView: (v: BranchStateView) => void;
+  /** 分支创建入口的前置数据（`branchPrecheck` 的投影，specs/037 FR-003） */
+  setBranchPrecheck: (v: BranchPrecheckView) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
   /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
@@ -353,6 +357,12 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'setWorkMode':
           handleConversationSetWorkMode(msg, ctx);
+          break;
+        case 'branchState':
+          handleConversationBranchState(msg, ctx);
+          break;
+        case 'branchPrecheck':
+          handleConversationBranchPrecheck(msg, ctx);
           break;
         case 'conversationsData':
           handleConversationConversationsData(msg, ctx);
