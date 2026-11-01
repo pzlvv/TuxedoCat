@@ -252,6 +252,13 @@ export interface MessageData {
    * 至多一条）；UI 在时间线末位显示，任何新节点追加前先移除。缺省即常规消息。
    */
   once?: boolean;
+  /**
+   * 一次性通知的类别（与 `once` 同为按角色取值子集的可选成员袋成员，specs/014 FR-001
+   * 同款形态）：`'llmError'` = LLM 失败通知（specs/036 FR-001），UI 据此渲染重试按钮；
+   * 其余 once 通知（中断 / 失联）与常规消息不带。标记随通知整份写进 `meta.json` 的
+   * `onceMessage`，重开对话恢复到末位时仍在。
+   */
+  noticeKind?: 'llmError';
   /** 用户消息携带的图片（仅用于 UI 展示，LLM 请求使用 content blocks） */
   images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
   /** 消息元信息，如文件引用、agent来源等 */

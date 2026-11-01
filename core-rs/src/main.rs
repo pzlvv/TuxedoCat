@@ -975,6 +975,10 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         "userMessageSubmitted" => {
             core.on_user_message(&event);
         }
+        // 失败 once 通知上的「重试」按钮（specs/036 FR-003）：以既有上下文重跑一轮
+        "queryRetryRequested" => {
+            core.on_query_retry_requested(&session_id);
+        }
         "abortRequested" => {
             core.on_abort(&session_id);
         }

@@ -332,6 +332,7 @@ export const zhDict: Record<string, string> = {
   'messagesView.showFullContent': '显示完整内容',
   'messagesView.collapse': '收起',
   'messagesView.previewChart': '预览图表',
+  'messagesView.retry': '重试',
   'messagesView.preview': '预览',
   'messagesView.copyCode': '复制代码',
   'messagesView.copied': '已复制',

@@ -88,13 +88,13 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 76 个事件：
+四组词汇表，共 77 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 32 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 26 | Core 进程的 `dispatch_ui_event` 分派 |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 27 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 14 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 `UiRequest` 的成员与宿主侧统一入口（`coreFacts`）见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)。
@@ -133,7 +133,7 @@ export type CoreRequestHandlers = {
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 转成的 wire message |
 | --- | --- | --- | --- | --- | --- |
 | 0 | `coreReady` | 无 | `main.rs` 的 `hostEnvironmentProvided` 处理器（`apply_from_host_environment` 应用完配置快照后；每次重推快照都再发一次） | `markCoreReady`（映射表内联闩锁，`host/coreReadiness.ts`） | 无（不投递到 webview） |
-| 1 | `message` | `sessionId`, `data: MessageData`（`once: true` 即一次性通知——core 记进 `meta.json` 的 `onceMessage`（一个对话至多一条，重开对话时恢复到时间线末位）、不写 `<sid>.jsonl` 与 LLM 上下文、新节点追加前移除，渲染规则见 [docs/hosts/webview-ui.md 第 11 节](../hosts/webview-ui.md#11-消息区视图行为)；LLM 失败回显 / `*User Interrupted*` / 压缩排队提示带此标记，宿主失联提示只当次显示不记 meta） | `engine.rs`（用户消息进上下文 / 轮次回执 / LLM 失败回显 / 中断与压缩排队通知）、`commands.rs`（命令输出）、`main.rs`（回滚结果的 system 消息）、`spin.rs` / `spin_host.rs`（spin 消息落盘）；宿主失联提示在 `bootstrapCore.ts`（`markConnectionSessionsFailed`） | `onMessage` | `addMessage` |
+| 1 | `message` | `sessionId`, `data: MessageData`（`once: true` 即一次性通知——core 记进 `meta.json` 的 `onceMessage`（一个对话至多一条，重开对话时恢复到时间线末位）、不写 `<sid>.jsonl` 与 LLM 上下文、新节点追加前移除，渲染规则见 [docs/hosts/webview-ui.md 第 11 节](../hosts/webview-ui.md#11-消息区视图行为)；LLM 失败回显 / `*User Interrupted*` 带此标记（压缩排队走运行时快照的 `pendingCompact`，不发 once），宿主失联提示只当次显示不记 meta；`noticeKind: 'llmError'` 是 LLM 失败通知的类别标记（specs/036），随通知写入 `onceMessage`，UI 据此渲染重试按钮，其余通知不带） | `engine.rs`（用户消息进上下文 / 轮次回执 / LLM 失败回显 / 中断通知）、`commands.rs`（命令输出）、`main.rs`（回滚结果的 system 消息）、`spin.rs` / `spin_host.rs`（spin 消息落盘）；宿主失联提示在 `bootstrapCore.ts`（`markConnectionSessionsFailed`） | `onMessage` | `addMessage` |
 | 2 | `streamMessage` | `sessionId`, `data: StreamMessageData` | `engine.rs` | `onStreamMessage` | `streamMessage` |
 | 3 | `streamEnd` | `sessionId`, `data: StreamEndData` | `engine.rs` | `onStreamEnd` | `streamEnd` |
 | 4 | `toolCall` | `sessionId`, `toolUseId`, `toolName` | `engine.rs` | `onToolCall` | `updateToolStatus`（`running`） |
@@ -228,6 +228,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 24 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `originWorkspaceId`, `originSessionId`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，目标 Core 全量应用不按角色裁剪，specs/024 FR-004 / specs/025 FR-005；提示词模式不携带——目标会话恒 normal，specs/025 FR-005） | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建顶层普通会话 + 写 `creator` meta + 组装 SystemPrompt + 起后台消费循环，specs/025 FR-001/FR-002/FR-006） |
 | 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径） |
 | 26 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
+| 27 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
 
 **`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」

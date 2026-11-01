@@ -414,6 +414,15 @@ export type UiEvent =
    * 运行的查询（`docs/features/user-message-pipeline.md` FR-003）。
    */
   | { type: 'queuedMessageDiscarded'; sessionId: string; uuid: string }
+  /**
+   * 失败 once 通知上的「重试」（specs/036 FR-003）。
+   *
+   * core 以既有上下文重跑一轮查询：失败轮次的用户消息已落盘、已在上下文里，重试
+   * 不追加、不落盘任何新输入。会话忙碌 / spin / 已收尾子代理时幂等丢弃（core 侧
+   * 守卫，与 `bashBackgroundRequested` 无匹配时同口径）——按钮可见时会话必为空闲，
+   * 丢弃只兜多视图与提交时序的竞态。
+   */
+  | { type: 'queryRetryRequested'; sessionId: string }
 
   // ===== 压缩 =====
   /** 用户触发压缩（会改写会话数据，属 core 业务） */

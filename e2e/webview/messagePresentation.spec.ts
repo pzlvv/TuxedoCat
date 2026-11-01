@@ -280,3 +280,56 @@ test('once 通知：末位显示、就地更新保留、新节点先删、重开
   await expect(onceNode).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('历史消息')).toBeVisible();
 });
+
+test('US-73 LLM 失败通知带重试按钮：点击剥除并上报 retryQuery，其他 once 无按钮（specs/036）', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+
+  // 用户消息先行 + LLM 失败 once 通知：通知末尾出现「重试」按钮
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '触发一次失败' });
+  await host.send({
+    type: 'addMessage', sessionId, role: 'system',
+    content: '❌ **LLM API Error**\n\n```\nconnect timeout\n```',
+    once: true, noticeKind: 'llmError',
+  });
+  const failNode = page.getByText('LLM API Error', { exact: false }).first();
+  await expect(failNode).toBeVisible({ timeout: 10_000 });
+  const retryButton = page.getByRole('button', { name: '重试' });
+  await expect(retryButton).toBeVisible();
+
+  // 其他 once 通知（不带 noticeKind）不渲染按钮：新 once 先替换旧失败通知
+  await host.send({ type: 'addMessage', sessionId, role: 'system', content: '*User Interrupted*', once: true });
+  await expect(page.getByText('*User Interrupted*', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(retryButton).toHaveCount(0);
+
+  // 失败通知再次到达（重试再败的替换口径）：按钮恢复
+  await host.send({
+    type: 'addMessage', sessionId, role: 'system',
+    content: '❌ **LLM API Error**\n\n```\nconnect timeout\n```',
+    once: true, noticeKind: 'llmError',
+  });
+  await expect(retryButton).toBeVisible({ timeout: 10_000 });
+
+  // 点击：本视图 once 节点立即剥除（FR-004），宿主收到 retryQuery（FR-003）
+  await retryButton.click();
+  await expect(failNode).toHaveCount(0);
+  const sent = await host.waitForSent('retryQuery');
+  expect(sent.sessionId).toBe(sessionId);
+
+  // 重开对话：meta 恢复的失败通知（onceMessage 带 noticeKind）按钮照常渲染
+  await host.setConversations([{
+    sessionId: 'sess-retry', title: '带失败通知的会话',
+    createdAt: Date.now(), updatedAt: Date.now(), messageCount: 1,
+    onceMessage: { role: 'system', content: '❌ **LLM API Error**', noticeKind: 'llmError' as const },
+    messages: [
+      { type: 'user', uuid: 'u-retry', parentUuid: null, timestamp: Date.now(), message: { role: 'user', content: '历史消息' } },
+    ],
+  }]);
+  await page.locator('button[title="对话历史"]').click();
+  const historyDropdown = page.locator('.conversation-dropdown');
+  await expect(historyDropdown.getByText('带失败通知的会话')).toBeVisible();
+  await historyDropdown.getByText('带失败通知的会话').click();
+  await expect(page.getByText('LLM API Error', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('button', { name: '重试' })).toBeVisible();
+});

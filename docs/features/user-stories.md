@@ -19,7 +19,7 @@ last_reviewed: 2026-10-20
 
 | 分册 | Epic | 收录 |
 | --- | --- | --- |
-| [对话与输入](user-stories/dialog-core.md) | EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 | US-1～11、US-46～49、US-51～52 |
+| [对话与输入](user-stories/dialog-core.md) | EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 | US-1～11、US-46～49、US-51～52、US-73 |
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
 | [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
@@ -39,7 +39,7 @@ last_reviewed: 2026-10-20
 | `e2e/webview/settings.spec.ts` | US-7、US-23、US-24、US-25、US-26、US-50（复选框不置灰） | webview UI |
 | `e2e/webview/inputMenu.spec.ts` | US-5、US-8、US-9、US-29 | webview UI |
 | `e2e/webview/inputExtras.spec.ts` | US-1、US-6、US-10、US-11 | webview UI |
-| `e2e/webview/messagePresentation.spec.ts` | US-13、US-16、US-17、US-50（工具卡片） | webview UI |
+| `e2e/webview/messagePresentation.spec.ts` | US-13、US-16、US-17、US-50（工具卡片）、US-73（LLM 失败一键重试） | webview UI |
 | `e2e/webview/notifications.spec.ts` | US-40 | webview UI |
 | `e2e/webview/language.spec.ts` | US-24、US-41 | webview UI |
 | `e2e/webview/titlebar.spec.ts` | US-36（标题栏渲染层快照时序） | webview UI |
