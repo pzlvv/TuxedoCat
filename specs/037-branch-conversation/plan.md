@@ -23,7 +23,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `core-rs/src/branch/repo.rs` | 仓库探测（`git rev-parse --show-toplevel` / `--git-dir`）、脏工作区判定（`git status --porcelain`）、`branchPrecheckRequested` 应答组装 |
-| `core-rs/src/branch/worktree.rs` | worktree 生命周期：`create`（`git worktree add <path> -b tuxedo/<name> HEAD`，一步建目录 + 真实分支）、`reuse`（已存在则复用，校验 HEAD 与 `meta.json` 一致）、`remove`（先卸载依赖挂载 → `git worktree remove --force` → `git branch -D tuxedo/<name>`）、`reconcile_on_start`（启动对账） |
+| `core-rs/src/branch/worktree.rs` | worktree 生命周期：`create`（`git worktree add <path> -b tuxedo/<name> HEAD`，一步建目录 + 真实分支；随后链接单文件本地配置——符号链接、失败退复制，spec FR-010）、`reuse`（已存在则复用，校验 HEAD 与 `meta.json` 一致）、`remove`（先卸载依赖挂载 → `git worktree remove --force` → `git branch -D tuxedo/<name>`）、`reconcile_on_start`（启动对账） |
 | `core-rs/src/branch/state.rs` | 视图组装：`branchStateChanged` 载荷构造（view 只带 `branch` / `worktree` / `baseCommit` / `baseBranch` 四个事实——不带 commits / dirty / peers / deps，spec FR-008 的窄口径） |
 | `core-rs/src/branch/deps.rs` | `DepStrategy` trait（`install` / `uninstall` / `describe`）+ 两档实现：`OverlayDeps`（Linux overlayfs 叠加已知依赖目录）、`SkipDeps`（不搬）；平台与能力探测、upper 目录放 worktree 外（`worktrees/deps/<branch>/`，Core 数据目录内） |
 
@@ -87,7 +87,10 @@ refs/heads/tuxedo/<branch>                            ← 真实分支（成果�
 3. `git -C <repo> worktree add <path> -b tuxedo/<branch> HEAD`（一步建目录 + 分支；
    失败 → `git-failed` + stderr 原文）
 4. 装配依赖策略（见第 4 节）
-5. `branch` 字段随首条消息的 `appendMessage` 落盘（`meta.json` 本身此时才创建，现状机制）；
+5. 链接单文件本地配置（`.env` / `.env.local` / `.npmrc` / `local.properties`：
+   `git check-ignore` 校验名字被忽略且 worktree 内不存在 → 建符号链接指向主工作区原文件，
+   创建失败退化为复制；spec FR-010）
+6. `branch` 字段随首条消息的 `appendMessage` 落盘（`meta.json` 本身此时才创建，现状机制）；
    此前任一步失败则 `umount` + `git worktree remove --force` + `git branch -D
    tuxedo/<branch>` 回滚
 
@@ -133,6 +136,14 @@ link（link 会破坏写隔离）；非特权 Linux 的依赖复用方向（fuse
 **目录选择**：只挂主工作区里**已存在**的目录，名单固定
 （`node_modules` / `target` / `.venv` / `venv` / `vendor` / `.gradle` / `build`）。名单是
 常量表，不做可配置（spec 非目标：依赖策略不开放用户配置）。
+
+**单文件本地配置不走挂载**（`.env` / `.env.local` / `.npmrc` / `local.properties`，常量表）：
+worktree 创建时对「主工作区存在 + 名字被 `.gitignore` 忽略 + worktree 内不存在」的名字建
+**符号链接**指向主工作区原文件；创建失败（Windows 未开开发者模式）退化为复制。语义取舍见
+spec FR-010 与被否决第 13 条：符号链接按路径共享，主工作区侧的原子替换保存（编辑器 /
+`npm config set` 的 tmp+rename 主流写法）也能跟上；硬链接共享 inode，会在这类写法下**静默
+断链分叉**，且不能跨卷——否决。链接随 worktree 删除自然清理，无独立生命周期、不进崩溃
+对账。
 
 **upper 放 worktree 外**（`<Core 数据目录>/<工作区目录>/worktrees/deps/<branch>/`——
 仓库外、与 worktree 平级、同生命周期）的三个理由：
@@ -181,6 +192,8 @@ clone（reflink / 块克隆）保住了隔离但保不住路径——venv sheban
 - 成果由用户在主工作区执行 git merge tuxedo/<name> 取用，你不需要也不应该自己往主工作区写。
 - 依赖目录 <deps 事实>：overlay 档写「已就绪（与主工作区共享，你的安装只影响本分支）」；
   skip 档写「未安装，需要时请自行安装（全局缓存在，通常很快）」。
+- 本地配置文件（.env / .npmrc 等）与主工作区经符号链接共享（或已复制一份），按只读使用；
+  要改先 cp 一份自己的，不要就地写。
 ```
 
 这段是分支对话「模型自己管检查点」的全部实现——模型知道自己在哪、怎么记。
@@ -262,7 +275,7 @@ impl GitSandbox {
 | 测试文件 | 覆盖 | 平台 |
 | --- | --- | --- |
 | `repo_tests.rs` | 仓库探测（在仓库内 / 子目录 / 非仓库 / 裸仓库）、脏工作区判定（未跟踪/已修改/已暂存三种）、`.git` 缺失 | 全平台 |
-| `worktree_tests.rs` | 创建（目录 + 分支一步到位）、撞名重试、复用已存在、创建失败回滚（磁盘只读 / 分支已存在）、删除顺序（卸载 → remove → 删分支）、孤儿对账、用户手删 worktree 后的 `unavailable` | 全平台（Linux 为主证据） |
+| `worktree_tests.rs` | 创建（目录 + 分支一步到位）、撞名重试、复用已存在、创建失败回滚（磁盘只读 / 分支已存在）、删除顺序（卸载 → remove → 删分支）、孤儿对账、用户手删 worktree 后的 `unavailable`；单文件链接（被忽略才链接 / 未忽略跳过 / 主工作区原子替换后分支读到新值 / 链接失败退复制） | 全平台（Linux 为主证据） |
 | `state_tests.rs` | `branchStateChanged` 载荷组装：`ready`（`branch` / `worktree` / `baseCommit` / `baseBranch`）/ `plain` / `unavailable` 三态；断言视图**不含** `commits` / `dirty` / `peers` / `deps` 字段；`branchPrecheckRequested` 的 ok / not-git 两态与 `head` / `dirty` 应答 | 全平台 |
 | `deps_tests.rs` | `SkipDeps` 装配与 `describe()`；`OverlayDeps` 的**挂载与卸载**（`#[cfg(target_os = "linux")]`）、只叠加已存在目录、upper 隔离（分支写不影响 lower）、卸载先于 remove | 有挂载权限的 Linux（Core 进程持 `CAP_SYS_ADMIN`）真挂载；非特权 Linux 与 Windows 只跑 `SkipDeps` |
 | `naming_tests.rs` | 格式正则、常量表非空与唯一、撞名重试收敛 | 全平台 |
@@ -437,6 +450,11 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
 12. **`branchModeChanged` 走新建「模式」概念**：评审已定形态是**一次性创建动作**而非持久
    模式选择；事件名保留 `branchModeChanged` 是因为它承载 `meta.json` 的持久事实（会话是
    plain 还是 branch），但 UI 上不暴露「切换模式」入口。
+13. **单文件配置用硬链接**：免权限（Windows 不需要开发者模式）是它唯一的优势，但语义是
+    错的——硬链接共享 inode，主工作区一侧的原子替换保存（编辑器 / `npm config set` 的
+    tmp+rename 主流写法）会**静默断链**：分支停在旧内容，零信号；且硬链接不能跨卷
+    （worktree 在 Core 数据目录）。符号链接按路径共享、共享关系可见、失败显式（悬空链接
+    读取报不存在）；Windows 权限缺口由「复制兜底」承担。否决（spec FR-010）。
 
 > 第 1 条、第 2 条与第 5 / 6 条够分量，建议收敛时落两篇 ADR：
 > `docs/adr/0016-branch-conversation-worktree.md`（worktree vs 整体 overlay vs 自建 CoW）

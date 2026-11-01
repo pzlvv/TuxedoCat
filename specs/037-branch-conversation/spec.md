@@ -20,7 +20,8 @@ status: 待评审
 依赖目录（`node_modules` / `target` / venv 等）被 `.gitignore` 排除，worktree 天然没有；
 Linux 上**且 Core 进程有挂载权限时**用 **overlayfs 只叠加依赖目录**（lower = 主工作区那份，
 upper = 分支自己的增量；非特权进程探测失败同样退化为 `SkipDeps`），其余平台退化为
-「不搬、模型按需重装」（FR-010）。
+「不搬、模型按需重装」（FR-010）。单文件本地配置（`.env` 等）不走挂载——worktree 内以
+符号链接共享，创建失败退化为复制（FR-010）。
 
 底层机制选 git worktree 而不是 overlayfs 做整个工作区、也不自建 Copy-on-Write 存储，取舍见
 plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用（非 git 目录下分支对话入口置灰并
@@ -82,6 +83,8 @@ plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用�
   - **AC-26**（FR-010）：GIVEN 依赖探测失败（Core 进程无挂载权限，如非特权用户）或平台是 Windows WHEN 创建分支对话 THEN 装配 `SkipDeps`，不挂载任何东西，系统提示告知需自行安装依赖；分支对话其余能力不受影响。
   - **AC-27**（FR-010）：GIVEN 分支对话已挂 overlay WHEN 删除该对话 THEN 先卸载再删 worktree，upper 目录一并清理，主工作区依赖目录完好。
   - **AC-28**（FR-010）：GIVEN 主工作区没有某个已知依赖目录 WHEN 创建分支对话 THEN 不为该目录挂载（不创建空 lower）。
+  - **AC-37**（FR-010）：GIVEN 主工作区有被 `.gitignore` 忽略的 `.env` WHEN 创建分支对话 THEN worktree 内 `.env` 是指向主工作区原文件的符号链接，内容与主工作区一致；主工作区原子替换保存该文件后分支读到新值；该分支 worktree 内 `git status` 不出现此名字。
+  - **AC-38**（FR-010）：GIVEN 符号链接创建失败（Windows 未开开发者模式）WHEN 创建分支对话 THEN 退化为创建时复制一份副本（内容一致、主工作区后续更新不传播），档位写诊断日志并进系统提示。
 - 场景 9：契约与持久化
   - **AC-29**（FR-008）：GIVEN 分支成功创建 WHEN 观察事件流 THEN 新会话只经既有 `sessionCreated` 与 `conversationListChanged` 到达。
   - **AC-30**（FR-008）：GIVEN 分支会话已建立 WHEN 读 `meta.json` THEN `branch` 字段含 `name` / `worktree` / `baseCommit` / `baseBranch`，宿主侧 `ConversationMetadata` 类型与之同名同形（两侧同步测试锁定）。
@@ -260,7 +263,7 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 `zhu-yuan` / `qing-yi`），核心代码内置常量表，命名时随机取一个。git 分支名为
 `tuxedo/<name>`；同仓库重名换名重试；名字创建时定死，会话改名不跟随。
 
-### FR-010：依赖目录策略
+### FR-010：依赖目录与单文件配置策略
 
 依赖目录（被 `.gitignore` 排除、体积大、路径敏感）不进 worktree。策略抽象成
 `DepStrategy` trait（`install` / `uninstall` / `describe`），按平台与能力装配：
@@ -284,11 +287,28 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 - **跨文件系统**：overlayfs 的 upper 与 workdir 须同一文件系统（都在 Core 数据目录内即
   满足），lower 可在另一文件系统（主工作区在别处）；试挂失败即 `SkipDeps`。
 - **写隔离**：分支在挂载点内的写入只落 upper；主工作区的依赖目录一字不改。
+- **单文件本地配置：符号链接共享**（不走挂载）：名单固定（`.env` / `.env.local` /
+  `.npmrc` / `local.properties`）；主工作区存在、名字被 `.gitignore` 忽略
+  （`git check-ignore` 校验——未被忽略的名字链接进来会以未跟踪文件污染该分支的
+  `git status`）、且 worktree 内不存在（被忽略而缺席）的，在 worktree 内建**符号链接**
+  指向主工作区原文件。按**路径**共享：主工作区一侧的原子替换保存（编辑器与
+  `npm config set` 的 tmp+rename 是主流写法）也能实时跟上；链接在 worktree 内，随
+  `git worktree remove` 自然清理，无独立生命周期。符号链接创建失败（Windows 未开
+  开发者模式 / 无符号链接权限）退化为**创建时复制**（弱化语义：主工作区后续更新不再
+  传播），一次判定不重试，档位写诊断日志并进系统提示。
+- **为什么不是硬链接**：硬链接共享 inode，主工作区一侧的原子替换保存会**静默断链**——
+  分支停在旧内容、零信号（「改了 .env 分支没生效」没有任何征兆）；且硬链接不能跨卷
+  （worktree 在 Core 数据目录，可能与主工作区不同卷）。符号链接的共享关系可见
+  （`ls -l`），失败模式是显式的（悬空链接读取报不存在）。硬链接免 Windows 权限的优势
+  由「复制兜底」承担，不为此引入静默分叉风险。
+- **链接文件的写边界**：按只读语义使用——分支要改配置先 `cp` 断链改自己的副本
+  （系统提示写明）；就地写入会直写主工作区（符号链接按路径解析）。
 - **卸载顺序**：先卸载所有挂载点，再 `git worktree remove`；upper 目录
   （`worktrees/deps/<branch>/`）随 worktree 一并删除。
 - **崩溃残留**：Core 启动对账时枚举 `/proc/self/mountinfo` 里 `upperdir` 指向本工作区
   `worktrees/deps/` 的挂载点，仍挂着就卸载；对应会话已不存在则报告孤儿并把目录纳入一键清理。
-- **系统提示**：无论哪档实现，都说明「依赖目录在哪、是否需要自行安装」。
+- **系统提示**：无论哪档实现，都说明「依赖目录在哪、是否需要自行安装」与「哪些本地
+  配置经链接共享（或已复制）、要改先复制断链」。
 
 ### FR-011：可见性边界与成果出口
 
@@ -338,6 +358,9 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 | `detach: true` | 脱离工具管理，后台继续跑（与既有语义一致） |
 | 依赖目录挂载失败（权限 / 空间） | 该目录退化为 `SkipDeps` 并提示模型需自行安装，其余能力不受影响 |
 | 用户在挂载点内删依赖 | 只删 upper 中的条目（whiteout），主工作区依赖不变 |
+| 分支就地改写链接的配置文件（`.env` 等） | 经符号链接直写主工作区——系统提示要求「要改先 `cp` 断链」；原子替换写法会自然断链成分支私有副本 |
+| 主工作区删除了被链接的配置文件 | 链接悬空，分支读取报文件不存在（与主工作区同症状，不静默重建） |
+| 名单内文件未被 `.gitignore` 忽略 / 已被 git 跟踪 | 跳过不链接（worktree 里本就有，或链接会污染分支 `git status`） |
 | 用户在 worktree 内 `npm install` | 只写 upper，主工作区依赖不变 |
 | 用户在主工作区 `git merge tuxedo/<name>` 产生冲突 | git 自己的行为，我们不介入也不改写（FR-011） |
 | 旧会话的 `meta.json` 没有 `branch` 键 | 按普通会话处理（兼容） |
@@ -407,7 +430,7 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 | FR-007 | `UiRequest.branchTreeRequested` + 侧栏 `branch` 失效原因 | 单测：应答形态与 not-branch 回落、条目**不含** `change` 字段（差异标记未做）；侧栏失效链同族用例 | 自动 |
 | FR-008 | `src/shared/AssistantEventBus.ts` 联合类型 + `meta.json` 持久化 | `standalone*`：帧往返与快照字段；docsLint：事件表与载荷列 | 自动 |
 | FR-009 | 角色名常量表 + 随机后缀 | 单测：命名格式、撞名重试 | 自动 |
-| FR-010 | `core-rs/src/branch/deps.rs`（`DepStrategy` + `OverlayDeps` / `SkipDeps`） | 单测：两档装配、隔离性、卸载顺序；overlay 真实挂载用例在 Linux 车道跑（CI tests job 是 ubuntu-latest，Windows 车道只跑 `SkipDeps` 装配） | 自动 |
+| FR-010 | `core-rs/src/branch/deps.rs`（`DepStrategy` + `OverlayDeps` / `SkipDeps`）+ worktree 创建时的单文件链接（符号链接、失败退复制） | 单测：两档装配、隔离性、卸载顺序；单文件链接（忽略才链接 / 未忽略跳过 / 原子替换后仍读到新值 / 失败退复制）；overlay 真实挂载用例在 Linux 车道跑（CI tests job 是 ubuntu-latest，Windows 车道只跑 `SkipDeps` 装配与链接用例） | 自动 |
 | FR-011 | worktree 位置（Core 数据目录）与分支命名空间 | 单测：仓库内无新增文件、`git status` 干净、`git branch` 含 `tuxedo/` 命名、主对话 `Grep` / `Glob` 搜不到分支内容；不做 e2e（无 git 夹具，理由见「对需求基线的影响」） | 自动 |
 
 ## 待澄清
