@@ -98,7 +98,7 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
         let Ok(text) = util::read_to_string_lossy(&entry.path()) else {
             continue;
         };
-        let Ok(metadata) = serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
+        let Ok(mut metadata) = serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
         else {
             continue;
         };
@@ -110,6 +110,20 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
         if message_count == 0 && !cleared {
             continue;
         }
+        // 存量档案可能缺时间戳（写入侧统一补齐之前的档案）：列表契约要求两个字段恒为
+        // 数字，缺一项宿主就把相对时间渲染成 `NaN/NaN/NaN`
+        // （specs/defects/conversation-list-nan-from-missing-meta-timestamps）。
+        // 只补读出的值、不回写磁盘——读取仍是只读投影。两者都缺时才 stat 取 mtime：
+        // 远程工作目录的每次列表读取都要为每个条目多付一次系统调用，能省则省。
+        let needs_mtime = ["createdAt", "updatedAt"]
+            .iter()
+            .all(|key| metadata.get(key).and_then(Value::as_u64).is_none());
+        let mtime = if needs_mtime {
+            entry.metadata().ok().as_ref().and_then(file_mtime_millis)
+        } else {
+            None
+        };
+        fill_missing_timestamps(&mut metadata, mtime, util::now_millis());
         conversations.push(metadata);
     }
 
@@ -244,6 +258,10 @@ pub fn clear_unread_completions(session_id: &str, project: &str) -> Result<(), S
 }
 
 /// 读-改-写 `meta.json`；不存在时用 `fallback` 初始化
+///
+/// 落盘前统一补齐 `createdAt` / `updatedAt`（见 [`fill_missing_timestamps`]）：时间戳
+/// 是列表契约的必填字段，补齐职责收在这唯一写入点，各调用方不必记着写
+/// （specs/defects/conversation-list-nan-from-missing-meta-timestamps）。
 pub fn update_metadata(
     session_id: &str,
     project: &str,
@@ -263,9 +281,60 @@ pub fn update_metadata(
         metadata = Value::Object(Map::new());
     }
     mutator(&mut metadata);
+    // 补齐放在 mutator 之后：调用方可以显式写时间戳（如 `touch_metadata` 刷
+    // `updatedAt`），这里只补仍然缺的那一半，不覆盖已有值。
+    fill_missing_timestamps(&mut metadata, file_mtime_millis_of(&path), util::now_millis());
     let text = serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?;
     write_file_atomic(&path, &text)?;
     Ok(metadata)
+}
+
+/// 补齐 `meta.json` 的 `createdAt` / `updatedAt`（`docs/architecture/contracts.md` 第 4 节
+/// 把两者列为列表内容，TS 侧 `ConversationMetadata` 里它们是必选数字）。
+///
+/// 补法：
+/// - 缺 `updatedAt` → 取 `createdAt`；
+/// - 缺 `createdAt` → 取 `updatedAt`；
+/// - 两者都缺 → 取 `fallback`（写入路径传目标文件既有 mtime，读取路径传档案 mtime，
+///   都没有时由调用方传当前时刻）；
+/// - 已有的合法数字一律不动。
+///
+/// 为什么需要它：`meta.json` 有多个「只写被点名键」的入口（配置兜底建档只写
+/// `context`、标题改写只写 `title`、后台消息的 touch 不写 `updatedAt` 也不曾写
+/// `createdAt`），谁都不负责补齐时间戳，Spin 会话就成了「有 `messageCount`、无两个
+/// 时间戳」的形态，宿主相对时间渲染成 `NaN/NaN/NaN`
+/// （specs/defects/conversation-list-nan-from-missing-meta-timestamps）。
+fn fill_missing_timestamps(metadata: &mut Value, mtime: Option<u64>, now: u64) {
+    let Some(object) = metadata.as_object_mut() else {
+        return;
+    };
+    let read = |object: &Map<String, Value>, key: &str| -> Option<u64> {
+        object.get(key).and_then(Value::as_u64)
+    };
+    let created = read(object, "createdAt");
+    let updated = read(object, "updatedAt");
+    // 两边都缺时用磁盘上的时间证据；都没有才退回当前时刻
+    let base = created.or(updated).or(mtime).unwrap_or(now);
+    object
+        .entry("createdAt".to_string())
+        .or_insert_with(|| json!(base));
+    object
+        .entry("updatedAt".to_string())
+        .or_insert_with(|| json!(base));
+}
+
+/// 文件修改时间（毫秒）。读不出（不存在 / 平台不支持）时返回 `None`
+fn file_mtime_millis(meta: &std::fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+}
+
+/// `path` 的修改时间（毫秒）；文件不存在或读不出时返回 `None`
+fn file_mtime_millis_of(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path).ok().as_ref().and_then(file_mtime_millis)
 }
 
 /// 原子落盘：先写同目录临时文件，再 rename 覆盖目标。

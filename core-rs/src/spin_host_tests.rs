@@ -206,6 +206,60 @@ fn ready_design_creates_missing_metadata_and_broadcasts_the_list_refresh() {
 }
 
 #[test]
+fn spin_ready_bootstraps_list_timestamps() {
+    // 「新建对话 → 先改配置 → /spin」：配置兜底建档只带 context（无时间戳），随后
+    // 标题改写只写 title。落盘后两个时间戳必须补齐，否则宿主把列表时间渲染成
+    // `NaN/NaN/NaN`（specs/defects/conversation-list-nan-from-missing-meta-timestamps）。
+    let sandbox = Sandbox::new("spin-host-ready-timestamps");
+    write_ready_design(&sandbox, "补一段说明");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    harness.core.session("s1");
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "webSearch", "value": false }));
+
+    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    run_spin_command(&harness.core, "s1", &workspace, "auto");
+
+    let metadata = history::load_metadata("s1", &project).expect("meta.json 已建档");
+    assert_eq!(metadata["title"], "Spin Design");
+    assert!(
+        metadata["createdAt"].as_u64().is_some() && metadata["updatedAt"].as_u64().is_some(),
+        "spin 会话落盘必须带两个时间戳：{metadata}"
+    );
+
+    // 让会话进列表（零消息条目被空对话过滤排除）：spin 的子代理回复经
+    // `persist_spin_reply` → `announce_message_appended` → `touch_metadata` 落盘计数。
+    // 宿主的 `NaN/NaN/NaN` 就出现在这类「有 messageCount、时间戳缺失」的条目上。
+    history::append_message(
+        "s1",
+        &project,
+        &json!({
+            "type": "user",
+            "uuid": "spin_reply",
+            "message": { "role": "user", "content": "节点结果" },
+        }),
+        None,
+    )
+    .unwrap();
+    history::touch_metadata("s1", &project, false, None, &crate::engine::SessionCreator::User)
+        .unwrap();
+
+    let list = history::load_conversation_list(Some(&project));
+    let entry = list
+        .iter()
+        .find(|item| item["sessionId"] == "s1")
+        .unwrap_or_else(|| panic!("列表应包含该会话：{list:?}"));
+    assert!(
+        entry["createdAt"].as_u64().is_some() && entry["updatedAt"].as_u64().is_some(),
+        "列表条目必须带两个数字时间戳：{entry}"
+    );
+}
+
+#[test]
 fn ready_design_emits_the_refresh_even_when_the_loop_fails() {
     let sandbox = Sandbox::new("spin-host-ready-fail");
     write_ready_design(&sandbox, "任务");
