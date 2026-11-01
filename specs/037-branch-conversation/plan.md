@@ -2,9 +2,10 @@
 
 本方案落实 [spec.md](spec.md)（FR-001 ~ FR-011）的技术路线：分支能力整体沉在 Core
 （`core-rs/src/branch/`），工作根改向只在 `SessionState.project` 一处发生；宿主与 webview
-只消费一个新增 CoreEvent、两条新增 UiEvent、两条新增 UiRequest；UI 增量收敛到四点——
-新对话 split button 下拉、会话内状态条、对话列表分支标记、顶栏分支历史入口。提交 / 历史 /
-回退全部交给 git，不自建快照体系；成果出口是用户自己执行 `git merge`，我们不做发布。
+只消费一个新增 CoreEvent、一条新增 UiEvent、两条新增 UiRequest；UI 增量收敛到四点——
+新对话 split button 下拉、草稿页分支形态、会话标题后的分支标识、对话列表分支标记。
+提交 / 历史 / 回退全部交给 git（提交历史不在 UI 展示），不自建快照体系；成果出口是用户
+自己执行 `git merge`，我们不做发布。
 
 **两个一句话取舍**：
 
@@ -21,9 +22,9 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `core-rs/src/branch/repo.rs` | 仓库探测（`git rev-parse --show-toplevel` / `--git-dir`）、脏工作区判定（`git status --porcelain`） |
+| `core-rs/src/branch/repo.rs` | 仓库探测（`git rev-parse --show-toplevel` / `--git-dir`）、脏工作区判定（`git status --porcelain`）、`branchPrecheckRequested` 应答组装 |
 | `core-rs/src/branch/worktree.rs` | worktree 生命周期：`create`（`git worktree add <path> -b tuxedo/<name> HEAD`，一步建目录 + 真实分支）、`reuse`（已存在则复用，校验 HEAD 与 `meta.json` 一致）、`remove`（先卸载依赖挂载 → `git worktree remove --force` → `git branch -D tuxedo/<name>`）、`reconcile_on_start`（启动对账） |
-| `core-rs/src/branch/state.rs` | 视图组装：`git log <base>..HEAD --oneline` 摘要、差异文件计数、`peers` 聚合、`branchStateChanged` 载荷构造 |
+| `core-rs/src/branch/state.rs` | 视图组装：`branchStateChanged` 载荷构造（view 只带 `branch` / `worktree` / `baseCommit` / `baseBranch` 四个事实——不带 commits / dirty / peers / deps，spec FR-008 的窄口径） |
 | `core-rs/src/branch/deps.rs` | `DepStrategy` trait（`install` / `uninstall` / `describe`）+ 两档实现：`OverlayDeps`（Linux overlayfs 叠加已知依赖目录）、`SkipDeps`（不搬）；平台与能力探测、upper 目录放 worktree 外（`worktrees/deps/<branch>/`，Core 数据目录内） |
 
 **git 调用方式**：`std::process::Command::new("git")`，固定 `-C <worktree>` 或
@@ -54,8 +55,14 @@ fn project_of(&self, session_id: &str) -> Result<String, String> {
 **不需要**逐工具钩子、不需要 `Materializer` 抽象、不需要精度标注——工具根本不知道自己在
 worktree 里，这正是选择这条路线省下的复杂度。
 
-会话创建时把 `SessionState.project` 设为 worktree 绝对路径（`meta.json` 的 `branch` 字段
-存同一事实，见 FR-001），**改向发生在建会话那一刻**，此后全生命周期不变。
+会话在**第一条消息发送时**才建立（既有机制：`startNewConversation` → `conversationStarted`，
+`meta.json` 由首条消息的 `appendMessage` 创建）——点「分支对话」只打开「未发送的新对话」
+草稿页（`openNewConversation` 的 `new-` 临时 key 视图），不建会话、不建 worktree、不发总线
+事件（spec FR-006 创建时序）。首条消息的建立链上：webview 的 `startNewConversation` 载荷带
+形态标记（wire 协议）→ 宿主翻译成 `branchModeChanged` → Core 预创建引擎时同步建 worktree
+并把 `SessionState.project` 设为 worktree 绝对路径（`meta.json` 的 `branch` 字段存同一事实、
+随首条消息落盘，见 FR-001），**改向发生在会话建立那一刻**，此后全生命周期不变。建立失败
+（worktree 建不出）→ 会话建立失败，草稿页保留输入、报错可重试。
 
 **「分支不可见」靠的就是这一步**：worktree 不在仓库目录树内，所以主工作区的 `git status`、
 IDE 资源管理器、主对话的 `Grep` / `Glob` / `Bash ls`、宿主文件监视器全部看不到它——它们
@@ -72,15 +79,17 @@ IDE 资源管理器、主对话的 `Grep` / `Glob` / `Bash ls`、宿主文件监
 refs/heads/tuxedo/<branch>                            ← 真实分支（成果出口）
 ```
 
-创建序列（任一步失败即回滚已做的步）：
+创建序列（触发时机是首条消息的会话建立，不是点「分支对话」——那只打开草稿页；任一步失败
+即回滚已做的步，会话建立失败、草稿页保留输入可重试）：
 
 1. `git -C <repo> rev-parse --show-toplevel` 校验仓库（失败 → `not-git`）
 2. `git -C <repo> status --porcelain` 探测未提交改动（非空即标注，不阻塞）
 3. `git -C <repo> worktree add <path> -b tuxedo/<branch> HEAD`（一步建目录 + 分支；
    失败 → `git-failed` + stderr 原文）
 4. 装配依赖策略（见第 4 节）
-5. 写 `meta.json`（`branch` 字段）；失败则 `umount` + `git worktree remove --force` +
-   `git branch -D tuxedo/<branch>` 回滚
+5. `branch` 字段随首条消息的 `appendMessage` 落盘（`meta.json` 本身此时才创建，现状机制）；
+   此前任一步失败则 `umount` + `git worktree remove --force` + `git branch -D
+   tuxedo/<branch>` 回滚
 
 **为什么用真实分支而不是分离 HEAD + 隐藏 ref**：去掉发布后，`tuxedo/<name>` 分支指针就是
 成果的唯一出口，它必须**随时准确**。真实分支让 `git commit` 自动推进指针（零钩子）；分离
@@ -104,7 +113,7 @@ HEAD 则要每轮结束执行 `git update-ref` 补一次，ref 最多落后一�
 trait DepStrategy {
     fn install(&self, repo: &Path, worktree: &Path, branch: &str) -> Result<Vec<MountedDep>, String>;
     fn uninstall(&self, mounted: &[MountedDep]) -> Result<(), String>;
-    fn describe(&self) -> DepPolicy;   // 进 branchStateChanged.deps，UI 与系统提示用
+    fn describe(&self) -> DepPolicy;   // 供系统提示组装（不进事件载荷，view 不带 deps）
 }
 ```
 
@@ -129,14 +138,15 @@ link（link 会破坏写隔离）；非特权 Linux 的依赖复用方向（fuse
 仓库外、与 worktree 平级、同生命周期）的三个理由：
 
 1. upper 的增量文件与 whiteout 字符设备若落进 worktree，会以未跟踪文件污染该分支自己的
-   `git status`，`branchStateChanged` 的 `dirty` 判定失真；
+   `git status`；
 2. `git worktree remove` 删除 worktree 目录时不撞上层目录（挂载点仍在 worktree 内，
    先卸载即可）；
 3. upper 与 workdir 须同一文件系统——都在 Core 数据目录内天然满足。
 
 **卸载顺序**：先 `umount <worktree>/<dir>`（每个挂载点），再 `git worktree remove`。
-`branchStateChanged.deps` 携带 `{ policy: 'overlay' | 'skip', dirs: string[] }` 供 UI 显示
-与系统提示组装。
+依赖策略**不进 `branchStateChanged`**（UI 上不常驻展示）：`DepStrategy` 的产物只喂给系统
+提示组装（决定提示里那句依赖事实怎么写），并且只在 Core 内部可见。判断是否需要展示时按
+「它会不会改变用户行为」——依赖策略不改变，装了依赖就自然可用。
 
 **崩溃残留**：Core 启动时对账（与 worktree 对账同一条链）：枚举 `/proc/self/mountinfo` 里
 `upperdir` 指向本工作区 `worktrees/deps/` 的挂载点，仍挂着就卸载；对应分支会话已不存在则
@@ -151,9 +161,10 @@ clone（reflink / 块克隆）保住了隔离但保不住路径——venv sheban
 本能力不提供发布 / 合并动作（spec 非目标）。Core 只做三件事：
 
 1. 保证 `tuxedo/<name>` 指针随每一次 `git commit` 准确前移（真实分支的天然行为，零代码）；
-2. 在状态条与分支历史里如实展示「已提交 N 个、领先主工作区 M 个提交」（
-   `git rev-list --count <base>..HEAD`，供用户判断是否可以合并）；
-3. 系统提示里写明出口方式：`git merge tuxedo/<name>`。
+2. 系统提示里写明出口方式：`git merge tuxedo/<name>`；
+3. 删除会话时把提交数与差异计数（`git rev-list --count <base>..HEAD` 与
+   `git diff --name-only <base>..HEAD | wc -l`）写进诊断日志——UI 删除确认是定性的
+   （view 已收窄，不为确认框恢复计数字段）。
 
 合并、冲突解决、`cherry-pick` 全部由用户（或用户让模型执行）走原生 git。我们**不解析**
 合并冲突，也不提供冲突 UI。
@@ -176,10 +187,10 @@ clone（reflink / 块克隆）保住了隔离但保不住路径——venv sheban
 
 ### 7. 契约与持久化
 
-- `src/shared/AssistantEventBus.ts`：`CoreEvent` 联合补 `branchStateChanged`，
-  `UiEvent` 联合补 `branchModeChanged` / `branchPruneRequested { worktree }`（孤儿无会话，
-  载荷不带 sessionId），`UiRequest` 联合补 `branchTreeRequested` / `branchOrphansRequested`；
-  `WebViewUI` 的映射表同步（漏写会编译报错）。
+- `src/shared/AssistantEventBus.ts`：`CoreEvent` 联合补 `branchStateChanged`，`UiEvent`
+  联合补 `branchModeChanged`（形态到达 Core 的唯一一跳，见 spec FR-006 创建时序），
+  `UiRequest` 联合补 `branchTreeRequested` / `branchPrecheckRequested`（会话建立前的入口
+  数据）；`WebViewUI` 的映射表同步（漏写会编译报错）。
 - `src/shared/history/`：`meta.json` 的 `branch` 字段类型（Rust 侧 `history.rs` 写入，
   TS 侧同名字段读取；旧会话缺失该键时读取侧归一为 `null`，成员必选、不新增可选成员）。
 - 快照：**无新增字段**（分支能力不需要配置项——worktree 路径固定、命名固定、无预算）。
@@ -192,9 +203,10 @@ clone（reflink / 块克隆）保住了隔离但保不住路径——venv sheban
 
 | 落点 | 改动 |
 | --- | --- |
-| `src/webview/App.tsx` | 新对话 split button（主「+」+ 小三角下拉两项）；分支状态条；对话列表分支标记；顶栏分支历史入口 |
-| `src/webview/i18n/{zh,en}.ts` | 新增文案（下拉两项、状态条、历史面板、置灰原因） |
-| `src/host/ui/` | `branchTreeRequested` / `branchOrphansRequested` 的 `UiRequest` 翻译与 `branch` 失效原因 |
+| `src/webview/App.tsx` | 新对话 split button（主「+」+ 小三角下拉两项）；草稿页分支形态（图标 + 「分支对话」，无分支名）；会话标题后的分支标识（图标 + 「分支对话」+ 分支名，不含状态 / 并行计数）；对话列表分支标记 |
+| `src/webview/i18n/{zh,en}.ts` | 新增文案（下拉两项、草稿页与标题标识、置灰原因、脏工作区说明） |
+| `src/host/webviewMessages.ts` | `startNewConversation` wire 载荷补形态标记（spec FR-006 创建时序），宿主翻译成 `branchModeChanged` |
+| `src/host/ui/` | `branchTreeRequested` / `branchPrecheckRequested` 的 `UiRequest` 翻译与 `branch` 失效原因 |
 | `src/host/` 侧栏文件树 | 读 `branchTreeRequested` 应答，回落主工作区读盘 |
 | 各宿主 `*ConversationManager` | 对话列表元数据带分支信息（现有 `conversationListChanged` 通道） |
 | VS Code 宿主 | `branchStateChanged` 落到既有文件刷新路径；无侧栏文件树，其余 no-op |
@@ -251,7 +263,7 @@ impl GitSandbox {
 | --- | --- | --- |
 | `repo_tests.rs` | 仓库探测（在仓库内 / 子目录 / 非仓库 / 裸仓库）、脏工作区判定（未跟踪/已修改/已暂存三种）、`.git` 缺失 | 全平台 |
 | `worktree_tests.rs` | 创建（目录 + 分支一步到位）、撞名重试、复用已存在、创建失败回滚（磁盘只读 / 分支已存在）、删除顺序（卸载 → remove → 删分支）、孤儿对账、用户手删 worktree 后的 `unavailable` | 全平台（Linux 为主证据） |
-| `state_tests.rs` | `branchStateChanged` 载荷组装：`commits` 摘要 / `dirty` / `peers` 聚合 / `plain` / `unavailable` 三态、`rev-list --count` 领先数 | 全平台 |
+| `state_tests.rs` | `branchStateChanged` 载荷组装：`ready`（`branch` / `worktree` / `baseCommit` / `baseBranch`）/ `plain` / `unavailable` 三态；断言视图**不含** `commits` / `dirty` / `peers` / `deps` 字段；`branchPrecheckRequested` 的 ok / not-git 两态与 `head` / `dirty` 应答 | 全平台 |
 | `deps_tests.rs` | `SkipDeps` 装配与 `describe()`；`OverlayDeps` 的**挂载与卸载**（`#[cfg(target_os = "linux")]`）、只叠加已存在目录、upper 隔离（分支写不影响 lower）、卸载先于 remove | 有挂载权限的 Linux（Core 进程持 `CAP_SYS_ADMIN`）真挂载；非特权 Linux 与 Windows 只跑 `SkipDeps` |
 | `naming_tests.rs` | 格式正则、常量表非空与唯一、撞名重试收敛 | 全平台 |
 
@@ -273,8 +285,8 @@ Windows 破了没人发现，等于发布即坏。
 | 测试文件 | 覆盖 |
 | --- | --- |
 | `branchContract.test.ts`（新） | `CoreEvent` / `UiEvent` / `UiRequest` 联合类型的判别字段与必选性；`meta.json` 的 `branch` 字段两侧同步（Rust 写 → TS 读的字段名与形态对照表） |
-| `branchModeEntry.test.ts`（新） | split button 的两项、置灰条件（非 git / `unavailable`）、等待态（`branchStateChanged` 未到达时不按猜测值渲染）；`branchModeChanged` 的翻译用例（webview 消息 → 宿主 → UiEvent） |
-| `branchTreeRequested.test.ts`（新） | `UiRequest` 应答形态、`not-branch` 回落主工作区读盘、侧栏 `branch` 失效原因触发重读、`branchOrphansRequested` 的孤儿清单与空数组 |
+| `branchModeEntry.test.ts`（新） | split button 的两项、置灰条件（非 git / `unavailable`）、等待态（`branchStateChanged` 未到达时不按猜测值渲染）；草稿页形态（不建会话、无分支名、首条消息才建立）；`branchModeChanged` 的翻译用例（`startNewConversation` 形态标记 → 宿主 → UiEvent） |
+| `branchTreeRequested.test.ts`（新） | `UiRequest` 应答形态、`not-branch` 回落主工作区读盘、侧栏 `branch` 失效原因触发重读、`branchPrecheckRequested` 的 ok / not-git 两态应答 |
 | `standaloneBranch.test.ts`（新） | 真实 Core 二进制驱动：建分支会话 → 收 `branchStateChanged` → 工具写入落 worktree → `git commit` 推进分支 → 删除会话清理。前置 `npm run build:core:host`，产物缺失走 `markSkipped`（与既有 `standalone*` 同口径） |
 
 **`standaloneBranch` 是 Linux 真跑、Windows 跳过的重点**：它驱动真实二进制，CI 上
@@ -284,14 +296,14 @@ Windows 破了没人发现，等于发布即坏。
 ### 4. e2e（Playwright）：只覆盖 UI 渲染与无 Core 路径
 
 `e2e/webview` 与 `e2e/electron` 没有 git 仓库夹具，也不该为此引入（会拖慢整车道）。
-按既有豁免口径，e2e 只覆盖三件不依赖 Core 的事：
+按既有豁免口径，e2e 只覆盖不依赖 Core 的 UI 渲染：
 
 | 用例 | 车道 | 断言 |
 | --- | --- | --- |
 | 新对话 split button 下拉两项 + 主「+」行为不变 | `webview` | 点击小三角出现两项、无选中态、主「+」走普通创建 |
 | 非 git 工作区下分支对话项置灰与提示文案 | `webview` | 置灰 + 原因文案（i18n 双语都验） |
-| 分支会话状态条渲染（用桩事件注入 `branchStateChanged`） | `webview` | 分支名 / 依赖策略 / 邻居计数渲染正确 |
-| 分支历史面板空态 | `webview` | 空态文案出现，不渲染假的提交行 |
+| 草稿页与标题标识渲染（用桩事件注入 `branchStateChanged`） | `webview` | 草稿页只有图标 + 「分支对话」（无分支名）；标题标识只含图标 + 「分支对话」+ 分支名；消息区无横幅、无依赖策略、无并行计数 |
+| 标识在 `unavailable` 时的警告色 | `webview` | 警告色 + 悬停原因，不出现常驻状态区 |
 
 **明确不做**：e2e 里不建真实 git 仓库、不跑 `git worktree`、不验证 overlay。三条新 US
 的 e2e 豁免理由因此写成「分层验证依赖真实 Core 二进制与真实 git 仓库，e2e 车道无 git
@@ -344,10 +356,10 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
 | `core-rs/src/engine.rs` | `project_of` 会话级改向 + 系统提示段落 | 既有 `engine_tests` 全绿 |
 | `core-rs/src/history.rs` | `meta.json` 的 `branch` 字段读写 | 落盘格式双侧一致测试 |
 | `core-rs/src/prompt.rs` | 分支会话提示段 | 单测：普通会话提示不变 |
-| `src/shared/AssistantEventBus.ts` | 1 CoreEvent + 2 UiEvent + 2 UiRequest | `standalone*` 帧往返 |
+| `src/shared/AssistantEventBus.ts` | 1 CoreEvent + 1 UiEvent + 2 UiRequest | `standalone*` 帧往返 |
 | `src/shared/history/` | `meta.json` 的 `branch` 字段类型（读取侧缺失归一 `null`，成员必选） | 两侧同步测试 |
-| `src/webview/App.tsx` + i18n | 入口 / 状态条 / 历史面板 / 列表标记 | e2e + 单测 |
-| `src/host/` | `branchTreeRequested` 翻译、`branch` 失效原因 | 单测 |
+| `src/webview/App.tsx` + i18n | 入口 / 草稿页 / 标题标识 / 列表标记 | e2e + 单测 |
+| `src/host/` | `branchTreeRequested` / `branchPrecheckRequested` 翻译、`branch` 失效原因 | 单测 |
 | `docs/architecture/events.md` / `docs/core/standalone-core.md` / `docs/core/standalone-core-boundaries.md` / `docs/architecture/principles.md` / 特性规格（新增 `docs/features/branch-conversation.md`） | 修改 / 新增 | docsLint 全量对照 |
 
 ## 宪章检查
@@ -359,8 +371,8 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
       消失转 `unavailable`（不静默重建）；git 失败原样透出 stderr（不猜原因）；overlay 探测失败
       退 `SkipDeps` 是 FR-010 设计的两档装配之一（不是静默降级），一次判定不重试。
 - [x] **不让接口 / 参数可选**：`branchStateChanged.view` 是判别联合（`plain` / `ready` /
-      `unavailable`），无 `?`；`branchStateChanged.view.commits` / `peers` 恒为数组
-      （无提交时为空数组而非缺字段）。
+      `unavailable`），无 `?`；载荷字段全必选，`ConversationMetadata.branch` 用 `| null`
+      不用 `?`。
 - [x] **一份事实只有一个写入点**：worktree 路径与分支名只有 `meta.json` 的 `branch` 一处；
       主工作区不被本能力写入（成果出口是用户自己的 `git merge`）；`SessionState.project`
       的派生只有 `project_of` 一处。
@@ -373,7 +385,7 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
       字段是 core-rs 写、`src/shared/history/` 读的共用格式，两侧同步并有对照测试。
 - [x] **依赖策略不引入配置项**：`DepStrategy` 由平台与能力探测自动装配，无 settings 项、
       无仓库级配置文件；默认值「有哪些目录可挂」是常量表（一行代码），不涉单源约束。
-- [x] **文档同步义务（[AGENTS.md 第 0 节](../../AGENTS.md#0-文档要求)）**：新增 1 CoreEvent / 2 UiEvent / 2 UiRequest / 1 个 `meta.json` 字段（`branch`）→ 同步
+- [x] **文档同步义务（[AGENTS.md 第 0 节](../../AGENTS.md#0-文档要求)）**：新增 1 CoreEvent / 1 UiEvent / 2 UiRequest / 1 个 `meta.json` 字段（`branch`）→ 同步
       `events.md` 事件表与载荷列、`standalone-core.md` 事实归属、`standalone-core-boundaries.md`
       的 `UiRequest` 表、`principles.md` 事实表、新增 `docs/features/branch-conversation.md`、
       `docs/README.md` 地图；`npm run test:unit -- docs-lint` 必须绿。
@@ -416,10 +428,13 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
    ——成果出口交给用户的原生 git。少了发布就少了三方对账、冲突 UI、`branchPublished` 事件
    一整组复杂度。若将来要做，形态是「按钮 → 在用户仓库跑 `git merge` →
    把 git 输出原样展示」，不做自建对账（记入 open-questions）。
-10. **分支历史面板提供「回退到此」按钮**：可用 `git reset --hard` 实现，但会让「回退」有
-   两个入口（模型 `/reset` 与 UI 按钮），且 `--hard` 会丢弃未提交改动需额外确认链。首版
-   只读展示，回退交给模型（spec 非目标已登记）。
-11. **`branchModeChanged` 走新建「模式」概念**：评审已定形态是**一次性创建动作**而非持久
+10. **分支历史面板（含「回退到此」按钮）**：spec 定稿整块砍掉——提交历史不在 UI 展示
+   （模型用 `git log`、用户在终端看），UI 只保留「这是哪个分支」的标识；「回退到此」按钮
+   随面板一并消失，回退交给模型的 `git reset`（spec 非目标已登记）。
+11. **孤儿 worktree 的 UI 清理入口**：上一版方案的 `branchOrphansRequested` /
+   `branchPruneRequested` 一组。spec 定稿砍掉——孤儿只写诊断日志（可能是用户手工创建的
+   工作树，不自动删也不推送 UI），少一条 UiEvent、一条 UiRequest 与一个面板区块。
+12. **`branchModeChanged` 走新建「模式」概念**：评审已定形态是**一次性创建动作**而非持久
    模式选择；事件名保留 `branchModeChanged` 是因为它承载 `meta.json` 的持久事实（会话是
    plain 还是 branch），但 UI 上不暴露「切换模式」入口。
 
@@ -434,10 +449,10 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
    真实挂载用例）+ 卸载顺序 + 启动对账的挂载残留清理
 3. `engine.rs` 的工作根改向 + 系统提示段 + 现有 `engine_tests` 全绿
 4. `meta.json` 的 `branch` 字段（Rust 写 → TS 读，两侧同步测试）
-5. 契约面（2 CoreEvent + 3 UiEvent + 1 UiRequest）+ `standalone*` 帧往返
-6. 成果出口事实：`git rev-list --count` 领先数 + 系统提示写明 merge 出口
+5. 契约面（1 CoreEvent + 1 UiEvent + 2 UiRequest）+ `standalone*` 帧往返
+6. 成果出口：系统提示写明 merge 出口；删除会话的计数诊断日志
 7. 启动对账 + 删除清理
-8. webview（split button / 状态条 / 历史面板 / 列表标记）+ e2e
+8. webview（split button / 草稿页 / 标题标识 / 列表标记）+ e2e
 9. 侧栏文件树读 `branchTreeRequested`
 10. 文档同步 + docsLint 绿
 

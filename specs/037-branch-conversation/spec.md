@@ -33,8 +33,8 @@ plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用�
 | [docs/core/standalone-core.md](../../docs/core/standalone-core.md) | [1.1 Core 侧业务范围](../../docs/core/standalone-core.md#11-core-侧业务范围) | 修改 | 业务范围补「分支对话：git worktree 生命周期、分支命名、依赖目录策略、清理」 |
 | [docs/core/standalone-core.md](../../docs/core/standalone-core.md) | [7. 事实归属](../../docs/core/standalone-core.md#7-事实归属) | 修改 | 事实表新增「分支对话的 worktree 路径与分支名」一行，owner 为 Core |
 | [docs/architecture/events.md](../../docs/architecture/events.md) | [2.1 CoreEvent](../../docs/architecture/events.md#21-coreeventcore--ui单向) | 修改 | 新增 `branchStateChanged`（全量快照）；`sessionConfigChanged` 的 change 联合补 `branchMode` 键 |
-| [docs/architecture/events.md](../../docs/architecture/events.md) | [2.3 UiEvent](../../docs/architecture/events.md#23-uieventui--core单向) | 修改 | 新增 `branchModeChanged` / `branchPruneRequested` 两条 |
-| [docs/core/standalone-core-boundaries.md](../../docs/core/standalone-core-boundaries.md) | [2. 宿主侧的 core 事实读取](../../docs/core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取) | 修改 | `UiRequest` 补 `branchTreeRequested`（分支 worktree 列目录）与 `branchOrphansRequested`（孤儿清单）；明确 worktree 路径等分支事实由 Core 下发、宿主只作显示、不自行跑 git |
+| [docs/architecture/events.md](../../docs/architecture/events.md) | [2.3 UiEvent](../../docs/architecture/events.md#23-uieventui--core单向) | 修改 | 新增 `branchModeChanged` 一条 |
+| [docs/core/standalone-core-boundaries.md](../../docs/core/standalone-core-boundaries.md) | [2. 宿主侧的 core 事实读取](../../docs/core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取) | 修改 | `UiRequest` 补 `branchTreeRequested`（分支 worktree 列目录）与 `branchPrecheckRequested`（创建入口前置数据）；明确 worktree 路径等分支事实由 Core 下发、宿主只作显示、不自行跑 git |
 | [docs/architecture/principles.md](../../docs/architecture/principles.md) | [7. 一份事实只有一个写入点](../../docs/architecture/principles.md#7-一份事实只有一个写入点) | 修改 | 事实表补「分支 worktree 的目录路径」：`meta.json` 的 `branch` 字段是唯一来源 |
 | [docs/features/user-stories/dialog-core.md](../../docs/features/user-stories/dialog-core.md) | [EP-2 输入区与会话配置](../../docs/features/user-stories/dialog-core.md#ep-2-输入区与会话配置) | 修改 | 收录 US-76（新对话按钮 split 下拉选创建方式；US-8 菜单不加项） |
 | [docs/features/user-stories/tools.md](../../docs/features/user-stories/tools.md) | [EP-7 工具与技能](../../docs/features/user-stories/tools.md#ep-7-工具与技能) | 修改 | 收录 US-74 / US-75 |
@@ -47,28 +47,28 @@ plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用�
 ## 用户场景与验收标准
 
 - 场景 1：分支对话在自己的 worktree 里工作
-  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 创建分支对话 THEN Core 在 Core 数据目录下的 `<工作区目录>/worktrees/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch, commits, dirty, peers, deps }`。
+  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `<工作区目录>/worktrees/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
   - **AC-2**（FR-002）：GIVEN 分支对话 WHEN `Write` 写 `a.txt` 或 `Bash` 执行 `npm run build` THEN 文件落在 worktree 内；主工作区该路径不变、`git status` 无新增条目。
   - **AC-3**（FR-002）：GIVEN 分支对话 WHEN 调用工具 THEN 全部工具（`Read` / `Write` / `Edit` / `Bash` / `Grep` / `Glob`）以 worktree 为根——实现是会话级 `cwd` 一次改向，无逐工具分支。
   - **AC-4**（FR-002）：GIVEN 分支对话的 worktree 已存在 WHEN 重新打开该对话 THEN 复用同一 worktree（不重建、不丢失未提交改动）。
 - 场景 2：提交、历史与回退都是 git
   - **AC-5**（FR-004）：GIVEN 分支对话 WHEN 模型执行 `git commit` THEN 提交推进 `tuxedo/<name>` 分支指针，`git branch` 列表可见该名（`tuxedo/` 命名空间）。
   - **AC-6**（FR-004）：GIVEN 分支对话 WHEN 模型执行 `git log` / `git reset --hard` THEN 命令在 worktree 内正常执行，后果只影响该 worktree 与 `tuxedo/<name>`。
-  - **AC-7**（FR-004）：GIVEN 分支历史面板 WHEN 打开 THEN 显示该分支的提交列表（短 id / 摘要 / 时间 / 与 base 的差异文件计数），数据来自 Core 侧读取而非宿主执行 git。
   - **AC-8**（FR-004）：GIVEN 分支对话 WHEN 看工具卡片 THEN 不显示自建 checkpoint 标记（提交由模型用 Bash 完成，无自建 Commit 概念）。
 - 场景 3：创建前置与失败路径
-  - **AC-9**（FR-003）：GIVEN 主工作区有未提交改动 WHEN 创建分支对话 THEN 状态条与创建入口说明「分支从最新提交 <base> 起，未提交改动不在本分支」，不弹阻塞确认框、不做 stash。
-  - **AC-10**（FR-003）：GIVEN 目录不是 git 仓库（或不在仓库内） WHEN 看创建入口 THEN 分支对话项置灰并说明原因，不创建半成品。
-  - **AC-11**（FR-003）：GIVEN worktree 创建失败（磁盘 / 权限 / 仓库锁） WHEN 创建分支对话 THEN 对话创建失败并说明原因，`meta.json` 不留半成品会话。
+  - **AC-9**（FR-003）：GIVEN 主工作区有未提交改动 WHEN 打开分支对话入口与草稿页 THEN 说明「分支从最新提交 <base> 起，未提交改动不在本分支」（`<base>` 与脏判定来自 `branchPrecheckRequested`，实际 base 以会话建立时为准），不弹阻塞确认框、不做 stash、不阻塞发送。
+  - **AC-10**（FR-003）：GIVEN 目录不是 git 仓库（或不在仓库内） WHEN 看创建入口 THEN 分支对话项置灰并说明原因（判定来自 `branchPrecheckRequested`），不创建半成品。
+  - **AC-11**（FR-003）：GIVEN worktree 创建失败（磁盘 / 权限 / 仓库锁） WHEN 发送第一条消息建立会话 THEN 会话建立失败并说明原因，草稿页保留已输入内容、可重试，`meta.json` 不留半成品会话。
 - 场景 4：并行、清理与启动对账
   - **AC-12**（FR-005）：GIVEN 同一仓库 WHEN 同时开三个分支对话 THEN 三份 worktree 互不可见对方的未提交改动，各自 `git status` 独立。
-  - **AC-13**（FR-005）：GIVEN 分支对话 WHEN 删除该对话 THEN worktree 目录与 `tuxedo/<name>` 分支一并清理（未合并的提交一并丢弃，删除前提示提交数与差异计数）。
-  - **AC-14**（FR-005）：GIVEN 应用异常退出留下的 worktree WHEN Core 启动 THEN 按 `meta.json` 对账：有效会话的 worktree 保留，孤儿 worktree 经 `branchOrphansRequested` 报告并可一键清理（`branchPruneRequested`，不自动删）。
+  - **AC-13**（FR-005）：GIVEN 分支对话 WHEN 删除该对话 THEN worktree 目录与 `tuxedo/<name>` 分支一并清理，删除前有定性确认（未合并提交与未提交改动将一并丢弃；计数写诊断日志）。
+  - **AC-14**（FR-005）：GIVEN 应用异常退出留下的 worktree WHEN Core 启动 THEN 按 `meta.json` 对账：有效会话的 worktree 保留，孤儿 worktree 只写诊断日志（不自动删、也不推送 UI）。
+
   - **AC-15**（FR-005）：GIVEN 用户手动删除了 worktree 目录 WHEN 该对话下一轮开始 THEN 会话转 `unavailable` 并说明（不静默重建——未提交改动已丢失）。
 - 场景 5：入口与展示
   - **AC-16**（FR-006）：GIVEN 任意宿主 WHEN 点新对话按钮的小三角 THEN 展开两个创建动作（普通对话 / 分支对话），无选中态；主「+」恒为普通方式新建。
-  - **AC-17**（FR-006）：GIVEN 点「分支对话」 WHEN 创建 THEN 立即以分支形态建立，重开对话仍是分支形态；GIVEN 主「+」或「普通对话」 THEN 与今天完全一致。
-  - **AC-18**（FR-006）：GIVEN 分支对话 WHEN 看消息区顶部 THEN 状态条显示分支名（`tuxedo/<name>`）+ worktree 状态 + 依赖策略 + 并行邻居计数（点击列出各分支名称 / 状态 / 提交数，可跳转）。
+  - **AC-17**（FR-006）：GIVEN 点「分支对话」 WHEN 看新对话 THEN 只打开分支形态的草稿页——标识只有 git-branch 图标 + 「分支对话」（分支名未生成，不显示），不建会话、不建 worktree、不发总线事件；WHEN 发送第一条消息 THEN 会话以分支形态建立，重开仍是分支形态；GIVEN 主「+」或「普通对话」 THEN 与今天完全一致。
+  - **AC-18**（FR-006）：GIVEN 分支对话 WHEN 看顶栏 THEN 会话标题后跟一个标识，只含 git-branch 图标 + 「分支对话」 + 分支名；消息区与状态条区域**没有**任何分支横幅、依赖策略、并行计数或发布按钮。
   - **AC-19**（FR-006）：GIVEN 分支对话 WHEN 看对话列表 THEN 条目标题前带 git-branch 图标 + 截断分支名（显示 `<name>` 而非 `tuxedo/` 前缀，宽度上限 140px），悬停显示全名与来源（「分支自 <baseBranch> · <base 短 id> · <创建时间>」，全部取自 `meta.json` 的 `branch` 字段与 `createdAt`）。
   - **AC-20**（FR-006）：GIVEN 宿主收到分支事件 WHEN 转发 THEN 宿主只翻译和路由，不本地改写分支事实；GIVEN 会话已打开但未收到 `branchStateChanged` WHEN 看分支入口 THEN 等待态，不按猜测值渲染。
 - 场景 6：侧栏文件树
@@ -112,19 +112,23 @@ plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用�
 这一条决定可见性（FR-011）：放在仓库内会让主工作区的 `Grep` / `Glob` / `Bash ls` / IDE
 资源管理器 / 文件监视器全部看到分支内容，那是暴露而非隔离。
 
-worktree 在创建分支对话时同步创建（`git worktree add <path> -b tuxedo/<name> HEAD`；失败则
-会话创建失败并回滚，见 FR-003）；对话重开时已存在则复用。`cwd` 改向只在分支对话上发生，
-普通对话的行为逐项不变。
+worktree 在**会话建立时**同步创建（`git worktree add <path> -b tuxedo/<name> HEAD`；时机与
+失败路径见 FR-006 创建时序与 FR-003）；会话重开时已存在则复用。`cwd` 改向只在分支对话上
+发生，普通对话的行为逐项不变。
 
 ### FR-003：创建前置与失败路径
 
 - **仓库前置**：目标目录须在某个 git 仓库内（`git rev-parse --show-toplevel` 成功）。
-  否则分支对话项置灰并说明原因。
-- **未提交改动**：主工作区有未提交改动时**只说明不阻塞**——状态条与创建入口标注「分支从
-  最新提交 `<base>` 起，未提交改动不在本分支」。不做 stash、不弹确认框（没有发布动作，
-  未提交改动不会被覆盖或丢失）。
-- **创建失败**（磁盘 / 权限 / 仓库锁）：会话创建失败并说明，`meta.json` 不留半成品，
-  已建的分支与 worktree 回滚。
+  否则分支对话项置灰并说明原因。置灰判定与 `<base>` / 脏工作区数据经
+  `branchPrecheckRequested` 拉取（FR-008）——会话建立前没有 `branchStateChanged`，入口
+  数据只有这一条来源；宿主不跑 git。下拉展开与草稿页打开时各拉一次，不缓存承诺
+  （Core 侧一次 `rev-parse` 代价可忽略）。
+- **未提交改动**：主工作区有未提交改动时**只说明不阻塞**——创建入口与草稿页标注「分支从
+  最新提交 `<base>` 起，未提交改动不在本分支」（快照展示，实际 base 以会话建立时为准）。
+  不做 stash、不弹确认框（没有发布动作，未提交改动不会被覆盖或丢失）。
+- **创建失败**（磁盘 / 权限 / 仓库锁 / 发送时才暴露的非 git）：发生在第一条消息发送的
+  会话建立链上（FR-006 创建时序）——会话建立失败并说明，草稿页保留已输入内容、可重试；
+  `meta.json` 不留半成品，已建的分支与 worktree 回滚。
 - **worktree 消失**：会话下一轮开始时发现 worktree 缺失 → 转 `unavailable` 并说明，
   不静默重建（未提交改动已丢失）。
 
@@ -143,18 +147,20 @@ worktree 在创建分支对话时同步创建（`git worktree add <path> -b tuxe
 - **系统提示**：分支对话的 system prompt 增补一段，说明「你在独立 worktree 里，分支名
   `tuxedo/<name>`，提交请用 git；用户在主工作区用 `git merge tuxedo/<name>` 取你的成果」。
 
-分支历史面板展示 `git log --oneline <base>..HEAD` 的结果（Core 侧读取，宿主不跑 git）；
-无提交时显示空态。回退不新造 UI：模型执行 `git reset`（面板里的「回退到此」按钮见非目标）。
+提交历史**不在 UI 里展示**：模型自己用 `git log`，用户需要时在自己的终端看，或用
+Electron 的既有「对话历史」（那是会话列表，不是分支历史，本能力不改动它）。回退同样不新造
+UI：模型执行 `git reset`。
 
 ### FR-005：并行、清理与启动对账
 
 - **并行**：同一仓库可同时开多个分支对话，各自 worktree 独立，互不可见对方的未提交改动。
 - **删除对话**：清理 worktree（`git worktree remove --force`）、`tuxedo/<name>` 分支、
-  overlay 挂载与 upper 目录；删除前提示提交数与差异计数（未合并的提交会一并丢弃）。
+  overlay 挂载与 upper 目录；删除确认为定性提示（「该分支的未合并提交与未提交改动将一并
+  丢弃」），提交数与差异计数由 Core 在删除处理时算好写进诊断日志——view 已收窄到最小事实
+  集，不为确认框恢复计数字段。
 - **启动对账**：Core 启动时按 `meta.json` 枚举分支会话，与 `git worktree list --porcelain`
-  比对：有效会话的 worktree 保留，孤儿 worktree 报告并支持一键清理（不自动删——可能是用户
-  手工创建的工作树；孤儿清单宿主经 `branchOrphansRequested` 拉取，清理动作是
-  `branchPruneRequested`，见 FR-008）。
+  比对：有效会话的 worktree 保留，孤儿 worktree **只写诊断日志**——不自动删（可能是用户
+  手工创建的工作树），也不推送 UI、不提供清理入口。
 - **不写用户仓库的任何非 git 文件**：不在仓库内建目录、不改 `.gitignore`（worktree 在 Core
   数据目录，仓库里没有任何新增文件）。
 
@@ -162,22 +168,42 @@ worktree 在创建分支对话时同步创建（`git worktree add <path> -b tuxe
 
 **新对话是两个一次性创建动作，不是「模式选择」**：顶栏「新对话」按钮为 split button——
 主「+」恒为普通方式新建（现状不变）；小三角展开「普通对话」与「分支对话」，点哪项就以
-哪种形态创建，不记住选择、无选中态。三个入口（Electron 侧栏 / 顶栏 / VS Code）一致，
+哪种形态打开草稿页，不记住选择、无选中态。三个入口（Electron 侧栏 / 顶栏 / VS Code）一致，
 汇到既有 `openNewConversation` / `startNewConversation` 链。右下功能菜单（US-8）不加项。
+
+**创建时序（会话不提前建，与普通对话同机制）**：
+
+1. 点「分支对话」→ 宿主经 `openNewConversation` 打开「未发送的新对话」草稿页（`new-`
+   临时 key 视图，既有机制）；分支形态只影响草稿页表现（见下），**不建会话、不建 worktree、
+   不发总线事件**。
+2. 发送第一条消息 → webview 发 `startNewConversation { sessionId }`（wire 载荷补形态
+   标记），宿主翻译成 `branchModeChanged { sessionId, mode: 'branch' }`——形态到达 Core
+   的唯一一跳；Core 预创建引擎时同步建 worktree 与 `tuxedo/<name>` 并改向（FR-002），
+   失败则会话建立失败：草稿页保留输入、报错误、可重试（FR-003）；`meta.json` 的 `branch`
+   字段随首条消息落盘（文件由 `appendMessage` 创建，现状机制）。
+3. 重开该对话 → 按 `meta.json` 的 `branch` 字段复用 worktree（AC-4）。
 
 **分支展示**：
 
-1. **对话列表**：条目标题前带 git-branch 图标 + 截断分支名（显示 `<name>`，`tuxedo/`
-   前缀只出现在悬停 tip 与状态条；宽度上限 140px）；tip 含来源（「分支自 <来源> ·
-   <base 短 id> · <时间>」）与状态。数据随对话列表元数据下发；Electron 原生侧栏与
-   webview 顶栏下拉一致呈现。
-2. **会话内状态条**：消息区顶部状态条（形态对齐排队消息横幅）：分支名（`tuxedo/<name>`）+
-   worktree 状态（就绪 / 不可用及原因）+ 依赖策略（共享 / 需自行安装）+ 并行邻居计数
-   （点击弹出面板：各分支名称 / 状态 / 提交数，可跳转；同一面板列出可清理的孤儿 worktree
-   ——数据经 `branchOrphansRequested` 拉取，一键清理发 `branchPruneRequested`）。
-3. **分支历史**：顶栏时钟图标入口（与「对话历史」并排；Electron 原生侧栏头部同入口），
-   显示 `git log --oneline <base>..HEAD`（短 id / 摘要 / 时间 / 差异文件计数）；无提交时
-   显示空态并提示「模型提交后这里会出现历史」。
+1. **草稿页（分支形态的「未发送的新对话」视图）**：与普通草稿页同机制，只多两处表现——
+   标识位显示 git-branch 图标 + 「分支对话」（**不显示分支名**：名字在会话建立时才生成，
+   草稿页不猜值）；主工作区脏时输入区上方展示「分支从最新提交 `<base>` 起，未提交改动
+   不在本分支」（数据来自 `branchPrecheckRequested`）。建立失败时保留输入并报错
+   （创建时序第 2 步）。
+2. **对话列表**：条目标题前带 git-branch 图标 + 截断分支名（显示 `<name>`，`tuxedo/`
+   前缀只出现在悬停 tip；宽度上限 140px）；tip 含来源（「分支自 <来源> · <base 短 id> ·
+   <时间>」）与状态。数据随对话列表元数据下发；Electron 原生侧栏与 webview 顶栏下拉一致呈现。
+3. **会话标题后的分支标识**：会话标题（顶栏 `topbar-title`）后面跟一个标识，内容只有三样——
+   git-branch 图标 + 「分支对话」 + 分支名（`tuxedo/<name>`），悬停显示完整分支名与 base。
+   **不加别的**：不显示 worktree 状态、不显示依赖策略、不显示并行分支计数、不显示发布按钮，
+   消息区里也不出现任何常驻的分支横幅。
+4. **不可用只作为异常提示**：`view.state` 为 `unavailable` 时，标识文字与图标转为警告色并
+   在悬停里给出原因；同时按既有会话错误通道提示一次。恢复后标识回到常态——它不是一个
+   常驻状态区。
+
+**不新增任何面板或入口**：顶栏的时钟图标是既有的「对话历史」（会话列表），本能力不改动
+它、不往它里面加东西；也不新增分支历史面板。提交与回退都用 git 命令，UI 只负责标出「这是
+哪个分支」（对话列表徽标 + 会话标题标识）。
 
 工具卡片不加分支相关按钮，也不加自建 checkpoint 标记。**无发布按钮**：成果出口是 git
 命令（FR-011）。
@@ -203,19 +229,22 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 
 - `CoreEvent.branchStateChanged { sessionId, view }`：全量快照（漏推即错，与
   `sessionRuntimeChanged` 同口径）。`view` 判别联合：`{ state: 'ready', branch, worktree,
-  baseCommit, baseBranch, commits, dirty, peers, deps }` 或 `{ state: 'unavailable', reason,
-  detail }`（`reason` 取 `not-git` / `worktree-missing` / `git-failed`）；工作区无分支对话时
-  推 `{ state: 'plain' }`。`commits` 为 git log 摘要（id / 摘要 / 时间 / 差异文件计数）；
-  `dirty` 为 worktree 是否有未提交改动；`peers` 是同仓库其它分支对话的概览（名称 / 状态 /
-  提交数）；`deps` 见 FR-010。
-- `UiEvent` 两条：`branchModeChanged { sessionId, mode }`（创建动作的唯一携带者：webview
-  点「分支对话」→ 宿主建会话后经本事件告知 Core，此后不再变）、`branchPruneRequested
-  { worktree }`（一键清理孤儿 worktree；载荷不带 sessionId——孤儿没有会话，worktree 路径
-  来自 Core 自己的孤儿清单，Core 校验在册才执行）。宿主只翻译 webview 消息，执行与守卫全在 Core。
+  baseCommit, baseBranch }` 或 `{ state: 'unavailable', reason, detail }`（`reason` 取
+  `not-git` / `worktree-missing` / `git-failed`）；该会话不是分支对话时推 `{ state: 'plain' }`。
+
+  **视图只带渲染标题标识所需的最小事实**（分支名、worktree 路径、base）。不带 `commits` /
+  `dirty`（提交历史不上 UI）、不带 `peers`（并行分支在对话列表徽标里看）、不带 `deps`
+  （依赖策略不改变用户行为，装了就能用）。这是刻意的窄口径：多一个字段就多一个要维护、
+  要同步、要对着 docsLint 校验的东西，而它不改善任何用户可见行为。
+- `UiEvent` 一条：`branchModeChanged { sessionId, mode }`（形态到达 Core 的唯一一跳：首条
+  消息发送时 webview 经 `startNewConversation` 的形态标记 → 宿主翻译成本事件，见 FR-006
+  创建时序；此后不再变）。宿主只翻译 webview 消息，执行与守卫全在 Core。
 - `UiRequest` 两条：`branchTreeRequested { sessionId, dir }`——宿主按活动会话索取该分支
   worktree 的目录树，Core 应答 `{ entries: DirectoryEntry[] }`（与既有文件树条目同形）或
-  `{ ok: false, reason: 'not-branch' }`（宿主回落主工作区读盘）；`branchOrphansRequested`——
-  启动对账后的孤儿 worktree 清单，应答 `{ orphans: { worktree, branch }[] }`（无孤儿为空数组）。
+  `{ ok: false, reason: 'not-branch' }`（宿主回落主工作区读盘）；`branchPrecheckRequested`
+  （无 sessionId，按活动工作区路由）——会话建立前的入口数据：是否 git 仓库、`<base>` 短 id、
+  脏工作区判定，应答 `{ ok: true, head, dirty }` 或 `{ ok: false, reason: 'not-git' }`
+  （见 FR-003）。
 - `CoreEvent.sessionConfigChanged` 的 change 联合补
   `{ key: 'branchMode'; value: 'plain' | 'branch' }`。
 - 会话形态与 worktree 事实持久化在 `meta.json`（`branch` 字段，见 FR-001）；旧会话没有
@@ -250,9 +279,8 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
   非特权 Core 进程探测失败即 `SkipDeps`——这是设计允许的档位，不是静默降级。
 - **只叠加已存在的目录**：主工作区没有 `node_modules` 就不挂（避免创建空 lower 层）。
 - **upper 在 worktree 外**（`worktrees/deps/<branch>/`，与 worktree 平级）：upper 里的增量与
-  whiteout 字符设备若落在 worktree 内，会以未跟踪文件污染该分支自己的 `git status`，`dirty`
-  判定失真；放外面同时让 `git worktree remove` 不撞上层目录（挂载点仍在 worktree 内，先卸载
-  即可，见卸载顺序）。
+  whiteout 字符设备若落在 worktree 内，会以未跟踪文件污染该分支自己的 `git status`；放外面
+  同时让 `git worktree remove` 不撞上层目录（挂载点仍在 worktree 内，先卸载即可，见卸载顺序）。
 - **跨文件系统**：overlayfs 的 upper 与 workdir 须同一文件系统（都在 Core 数据目录内即
   满足），lower 可在另一文件系统（主工作区在别处）；试挂失败即 `SkipDeps`。
 - **写隔离**：分支在挂载点内的写入只落 upper；主工作区的依赖目录一字不改。
@@ -295,16 +323,16 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 
 | 情形 | 预期行为 |
 | --- | --- |
-| 目录不是 git 仓库 | 入口置灰并说明；已存在的分支会话若仓库消失 → `unavailable` |
-| 主工作区有未提交改动 | 状态条与入口说明「未提交改动不在本分支」，不阻塞、不 stash |
+| 目录不是 git 仓库 | 入口置灰并说明（`branchPrecheckRequested`）；已存在的分支会话若仓库消失 → `unavailable` |
+| 主工作区有未提交改动 | 创建入口与草稿页说明「未提交改动不在本分支」，不阻塞、不 stash |
 | 主工作区在分支工作期间切了分支 / 改了文件 | 不影响已建 worktree（两者互不相干） |
-| worktree 创建失败 | 会话创建失败并说明，回滚已建分支与目录，不留半成品 |
+| worktree 创建失败 | 首条消息的会话建立失败并说明，草稿页保留输入可重试，回滚已建分支与目录，不留半成品 |
 | 用户手动删除 worktree | 下一轮转 `unavailable`，不重建 |
 | 用户手动 `git worktree prune` | 与上一条同路径 |
 | 用户手动 `git branch -D tuxedo/<name>` | worktree 仍在但分支指针没了 → 下一轮检测到转 `unavailable` 并说明 |
 | 分支名撞名 | 换名重试直到不撞 |
 | 模型执行 `git worktree remove` / `git branch -D` 自身分支 | 拒绝并说明（防自毁） |
-| 分支对话有未提交改动时删除会话 | 提示提交数与差异计数后清理 worktree、分支与 upper |
+| 分支对话有未提交改动时删除会话 | 定性确认后清理 worktree、分支与 upper；计数写诊断日志 |
 | 后台任务（`run_in_background`）的 `cwd` | 指向 worktree，产物留在 worktree |
 | `Bash` 的 `cwd` 在 worktree 外 | 原样交子进程执行（现状语义），后果不进分支视图 |
 | `detach: true` | 脱离工具管理，后台继续跑（与既有语义一致） |
@@ -325,8 +353,9 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 - **自建 CoW 存储（内容寻址对象库 + 自建 Commit）**：不引入（否决理由见 plan 第 2 条）。
 - **主工作区未提交改动的自动带入**：不 stash、不临时快照。
 - **自建 Commit / 检查点 / 逐调用快照**：提交交给 git 与模型。
-- **分支历史面板里的「回退到此」按钮**：首版只读展示；回退由模型执行 `git reset`。
-  去向：[TODO.md](../../TODO.md)。
+- **分支历史面板（整块）**：不做。既有的顶栏时钟图标是「对话历史」（会话列表），本能力
+  不改动它、不往它里面加项；也不新增分支历史面板。提交与回退都用 git 命令，用户需要时在
+  自己的终端看。去向：[TODO.md](../../TODO.md)。
 - **合并 UI**：不提供「合并到主工作区」按钮（见第一条）。
 - **侧栏文件树的差异标记**：不做「新 / 改 / 删」徽标与差异着色。预留设计（数据来源、
   契约字段形态）见 FR-007，去向 [open-questions](../../docs/architecture/open-questions.md)。
@@ -343,13 +372,13 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 新增三条 US：
 
 - **US-76 新对话选创建方式**（[dialog-core.md EP-2](../../docs/features/user-stories/dialog-core.md#ep-2-输入区与会话配置)）：
-  新对话按钮 split 下拉选「普通对话（默认）/ 分支对话」，点击即以该形态创建；非 git
-  仓库时分支对话项置灰并给原因。
+  新对话按钮 split 下拉选「普通对话（默认）/ 分支对话」，点击以该形态打开草稿页、会话随
+  第一条消息建立（与普通对话同机制）；非 git 仓库时分支对话项置灰并给原因。
 - **US-74 分支对话的独立工作区**（[tools.md EP-7](../../docs/features/user-stories/tools.md#ep-7-工具与技能)）：
-  分支对话在独立 worktree 里工作，主工作区不受影响；状态条与历史面板展示分支状态与提交；
-  成果经 `git merge tuxedo/<name>` 取用。
+  分支对话在独立 worktree 里工作，主工作区不受影响；标题标识表明分支，提交历史用 git
+  命令看（不在 UI 展示）；成果经 `git merge tuxedo/<name>` 取用。
 - **US-75 多个 agent 并行工作**（[tools.md EP-7](../../docs/features/user-stories/tools.md#ep-7-工具与技能)）：
-  同时开多个分支对话各自独立工作，对话列表分支标记 + 并行邻居面板展示全部并行 agent。
+  同时开多个分支对话各自独立工作，对话列表的分支标记展示全部并行 agent。
 
 三条当前都无完整 e2e 用例：分层验证依赖真实 Core 二进制与真实 git 仓库，`e2e/webview` 与
 `e2e/electron` 车道没有 git 仓库夹具（也不为此引入——会拖慢整车道）。按既有豁免口径登记为
@@ -359,8 +388,8 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
   由 `core-rs` 单测用真实 git 夹具锁定；
 - **契约往返**由 `standaloneBranch` 驱动真实 Core 二进制锁定（CI 的 tests job 在
   ubuntu-latest 上真跑；本地缺产物时 `markSkipped` 并打印原因，不算通过）；
-- **e2e 只覆盖三件不依赖 Core 的 UI 事**：US-76 的下拉渲染与置灰、US-74 的状态条渲染、
-  分支历史面板空态。
+- **e2e 只覆盖三件不依赖 Core 的 UI 事**：US-76 的下拉渲染与置灰、US-74 的草稿页与标题
+  标识渲染、标题标识在 `unavailable` 时的警告色。
 
 正式开发调测在 Linux 上做；Windows 上分支能力的行为（worktree 与路径处理）同样有单测真跑，
 不因「只在 Linux 调测」而失去对称性验证。
@@ -371,10 +400,10 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 | --- | --- | --- | --- |
 | FR-001 | `meta.json` 的 `branch` 字段（Rust 写 / TS 读）+ `src/shared/history/` 类型 | 单测：字段往返、旧会话兼容、不解析 git 私有格式 | 自动 |
 | FR-002 | `core-rs/src/branch/`（worktree 生命周期）+ `SessionState.project` 改向（`engine.rs` 的 `project_of`） | 单测：全部工具跟随 cwd、worktree 复用、主工作区零改动 | 自动 |
-| FR-003 | `git rev-parse` 前置校验、脏工作区判定、失败回滚 | 单测：非 git 拒绝、脏工作区只说明、创建失败不留会话 | 自动 |
-| FR-004 | `tuxedo/<name>` 分支 + 系统提示增补 + `git log` 读取 + 自毁命令拦截 | 单测：提交推进分支指针、历史读取、拦截 worktree remove；standalone：真实 git 驱动 | 自动 |
-| FR-005 | 删除清理（卸载 → remove worktree → 删分支）+ 启动对账 | 单测：清理顺序、孤儿报告、启动对账 | 自动 |
-| FR-006 | `App.tsx` split button + 状态条 + 对话列表分支标记 + 历史面板 | e2e：下拉渲染与置灰（US-76）、状态条（US-74）；单测：UiEvent 翻译、等待态 | 自动 |
+| FR-003 | `git rev-parse` 前置校验、脏工作区判定、`branchPrecheckRequested` 应答、失败回滚 | 单测：非 git 拒绝、脏工作区只说明、precheck 两态应答、创建失败不留会话 | 自动 |
+| FR-004 | `tuxedo/<name>` 分支 + 系统提示增补 + 自毁命令拦截 | 单测：提交推进分支指针、拦截 worktree remove；standalone：真实 git 驱动 | 自动 |
+| FR-005 | 删除清理（卸载 → remove worktree → 删分支）+ 启动对账 | 单测：清理顺序、删除计数日志、孤儿只记日志、启动对账 | 自动 |
+| FR-006 | `App.tsx` split button + 草稿页分支形态 + 标题后分支标识 + 对话列表分支标记 | e2e：下拉渲染与置灰（US-76）、草稿页与标题标识（US-74）、消息区无分支横幅；单测：UiEvent 翻译、等待态 | 自动 |
 | FR-007 | `UiRequest.branchTreeRequested` + 侧栏 `branch` 失效原因 | 单测：应答形态与 not-branch 回落、条目**不含** `change` 字段（差异标记未做）；侧栏失效链同族用例 | 自动 |
 | FR-008 | `src/shared/AssistantEventBus.ts` 联合类型 + `meta.json` 持久化 | `standalone*`：帧往返与快照字段；docsLint：事件表与载荷列 | 自动 |
 | FR-009 | 角色名常量表 + 随机后缀 | 单测：命名格式、撞名重试 | 自动 |
