@@ -36,7 +36,8 @@
     "workspaceFileChanged",
     "crossWorkspaceAgentReplyRequested",
     "crossWorkspaceAgentAbortRequested",
-    "crossWorkspaceAgentEnded"
+    "crossWorkspaceAgentEnded",
+    "branchStateChanged"
   ],
   "coreRequests": [
     "toolPermissionRequested",
@@ -71,7 +72,8 @@
     "sessionWorkspaceAssigned",
     "remoteSubAgentStarted",
     "agentReplyReceived",
-    "crossWorkspaceAgentCompleted"
+    "crossWorkspaceAgentCompleted",
+    "branchModeChanged"
   ],
   "uiRequests": [
     "conversationListRequested",
@@ -87,6 +89,8 @@
     "spinDesignRequested",
     "spinDesignSaveRequested",
     "watchWorkspaceFileRequested",
-    "unwatchWorkspaceFileRequested"
+    "unwatchWorkspaceFileRequested",
+    "branchTreeRequested",
+    "branchPrecheckRequested"
   ]
 }

@@ -358,6 +358,14 @@ pub struct SessionState {
     pub sub_agent_description: Option<String>,
     /// 跨工作区子代理的来源已并入 creator（specs/025 FR-002），字段随其删除。
     pub creator: SessionCreator,
+    /// 分支对话事实（specs/037 FR-001 / FR-002）：`Some` 即分支会话。
+    ///
+    /// 这里的 `project` 同时指向 worktree（[`Core::tool_root_of`] 的唯一派生依据），
+    /// 因此全部工具自动跟随、不需要逐工具分支。`meta.json` 的 `branch` 字段是这份
+    /// 事实的唯一落盘点；字段本身由 [`Core::attach_branch`] 写入一次、生命周期内不变。
+    pub branch: Option<crate::branch::state::BranchFacts>,
+    /// 分支依赖策略事实（只喂系统提示，不进事件载荷，specs/037 FR-010）
+    pub branch_prompt: Option<String>,
 }
 
 /// 会话创建者（specs/025 FR-002）：归属的唯一根事实。用户 prompt 发起为 `User`；
@@ -481,6 +489,8 @@ impl SessionState {
             sub_agent_role: None,
             sub_agent_description: None,
             creator: SessionCreator::User,
+            branch: None,
+            branch_prompt: None,
         }
     }
 
@@ -612,6 +622,10 @@ impl Core {
     }
 
     /// 会话工作目录：会话级登记优先，其次 `meta.json` 的 `project`，最后活动工作目录
+    ///
+    /// 这是**落盘位置**的解析口径（`meta.json` / `.jsonl` 落在工作区自己的对话空间
+    /// 目录下），与工具执行根不是一回事——分支会话的工具根是它的 worktree，见
+    /// [`Core::tool_root_of`]。
     pub fn project_of(&self, session_id: &str) -> Result<String, String> {
         if let Some(state) = self.session_if_exists(session_id) {
             if let Some(project) = state.lock().unwrap().project.clone() {
@@ -622,6 +636,259 @@ impl Core {
             return Ok(project);
         }
         config::project_root(session_id)
+    }
+
+    /// 工具执行根（specs/037 FR-002）：分支会话是它的 worktree，其余会话与
+    /// [`Core::project_of`] 完全一致。
+    ///
+    /// **这是「会话级一次改向」的唯一派生点**：`Read` / `Write` / `Edit` / `Bash` /
+    /// `Grep` / `Glob` 全部经 `ToolContext.cwd` 跟随，没有任何逐工具分支。普通对话
+    /// 走 `project_of` 的原文，行为逐项不变。
+    pub fn tool_root_of(&self, session_id: &str) -> Result<String, String> {
+        if let Some(state) = self.session_if_exists(session_id) {
+            let state = state.lock().unwrap();
+            if let Some(branch) = state.branch.as_ref() {
+                return Ok(branch.worktree.clone());
+            }
+        }
+        self.project_of(session_id)
+    }
+
+    /// 分支会话事实（非分支会话为 `None`）
+    pub fn branch_of(&self, session_id: &str) -> Option<crate::branch::state::BranchFacts> {
+        self.session_if_exists(session_id)?
+            .lock()
+            .unwrap()
+            .branch
+            .clone()
+    }
+
+    // ==================== 分支对话（specs/037）====================
+
+    /// `UiEvent.branchModeChanged`：会话形态到达 Core 的唯一一跳（specs/037 FR-006）。
+    ///
+    /// webview 在首条消息发送时经 `startNewConversation` 的形态标记告诉宿主「这个会话
+    /// 是分支形态」，宿主翻译成本事件。Core 在这里**同步**建 worktree 与
+    /// `tuxedo/<name>` 分支并把会话工作根改向（[`Core::tool_root_of`] 是唯一派生点）。
+    ///
+    /// 失败即会话建立失败：不发 `sessionCreated`、不留半成品（已建的分支与目录回滚），
+    /// 草稿页保留输入可重试（specs/037 FR-003）。`plain` 形态是空操作——普通会话本来
+    /// 就不建 worktree。
+    pub fn on_branch_mode_changed(&self, session_id: &str, mode: &str) {
+        if mode != "branch" {
+            return;
+        }
+        if session_id.is_empty() {
+            return;
+        }
+        // 已经建过（重复消息 / Core 重启后首条消息）不重复建：worktree 的唯一创建点是这里
+        if self.branch_of(session_id).is_some() {
+            return;
+        }
+        let Ok(workspace) = self.project_of(session_id) else {
+            self.emit_branch_unavailable(
+                session_id,
+                crate::branch::state::UnavailableReason::NotGit,
+                "the session has no workspace assigned",
+            );
+            return;
+        };
+        match crate::branch::worktree::create_or_reuse(&workspace, None) {
+            Ok(setup) => self.attach_branch(session_id, &workspace, setup),
+            Err(error) => {
+                // 建立失败：会话建立失败并说明（宿主把它作为该会话的错误提示）。
+                // 不建会话文件、不广播 sessionCreated——半成品不会留在磁盘上
+                self.log(&format!(
+                    "branch conversation for {session_id} failed: {error}"
+                ));
+                self.emit_branch_unavailable(
+                    session_id,
+                    crate::branch::state::UnavailableReason::GitFailed,
+                    &error,
+                );
+            }
+        }
+    }
+
+    /// 把建好的 worktree 事实挂到会话上（分支会话的唯一写入点）。
+    fn attach_branch(
+        &self,
+        session_id: &str,
+        workspace: &str,
+        setup: crate::branch::worktree::BranchSetup,
+    ) {
+        // 子代理继承父会话的分支形态：子会话的 project 已经是父的 worktree（
+        // `create_sub_agent` 按 `project_of` 取），因此这里只登记父会话；子会话的
+        // `project_of` 天然落在同一 worktree 里，`tool_root_of` 无需再改向。
+        let _ = workspace;
+        let prompt = setup.prompt_section();
+        {
+            let state = self.session(session_id);
+            let mut state = state.lock().unwrap();
+            state.branch = Some(setup.facts.clone());
+            state.branch_prompt = Some(prompt);
+            // `state.project` **不改**：它是会话文件的落盘位置（`meta.json` /
+            // `.jsonl` 落在工作区自己的对话空间目录下），改成 worktree 会把会话数据
+            // 写进另一份目录。工具执行根的改向在 `tool_root_of` 一处完成。
+        }
+        // 落盘：`meta.json` 此时还没有（首条消息的 `appendMessage` 才创建），
+        // 这里先把事实写进内存，`append_message` 之后的 `touch_metadata` 会带出它
+        self.emit_branch_view(
+            session_id,
+            &crate::branch::state::BranchView::Ready(setup.facts.clone()),
+        );
+        // 依赖策略 / 配置链接只喂系统提示（view 不带 deps）
+        self.log(&format!(
+            "branch conversation {session_id} ready on {} ({}; deps: {})",
+            setup.facts.branch_ref(),
+            if setup.reused { "reused" } else { "created" },
+            setup.deps.strategy
+        ));
+    }
+
+    /// 推分支视图（`branchStateChanged` 的**唯一 emit 位点**）。
+    ///
+    /// 全量快照：漏推即错，与 `sessionRuntimeChanged` 同口径（specs/037 FR-008）。
+    /// 载荷组装在 `branch/state.rs`（`BranchView::to_payload`），事件字面量留在这里
+    /// 是因为 emit 位点归会话引擎所有。
+    pub fn emit_branch_view(&self, session_id: &str, view: &crate::branch::state::BranchView) {
+        self.emit(json!({
+            "type": "branchStateChanged",
+            "sessionId": session_id,
+            "view": view.to_payload(),
+        }));
+    }
+
+    /// 推 `unavailable` 视图（分支会话不可用时的异常提示，specs/037 FR-006 第 4 点）
+    pub fn emit_branch_unavailable(
+        &self,
+        session_id: &str,
+        reason: crate::branch::state::UnavailableReason,
+        detail: &str,
+    ) {
+        self.emit_branch_view(
+            session_id,
+            &crate::branch::state::BranchView::Unavailable {
+                reason,
+                detail: detail.to_string(),
+            },
+        );
+    }
+
+    /// 推该会话当前的分支视图（`plain` / `ready` / `unavailable`）。
+    ///
+    /// 消费者：会话打开（`conversationOpened`）后宿主据 `ready` 渲染标题前的分支名与
+    /// 侧栏文件树；`plain` 让普通会话明确「不是分支对话」而不是停在等待态
+    /// （specs/037 FR-008 全量快照口径）。
+    pub fn emit_branch_state(&self, session_id: &str) {
+        let Some(state) = self.session_if_exists(session_id) else {
+            // 没有会话状态（未装载）：按 meta.json 的事实推一次；读不到就是 plain
+            match history::project_of_session(session_id) {
+                Some(project) => {
+                    let metadata = history::load_metadata(session_id, &project);
+                    let facts = crate::branch::state::BranchFacts::from_meta(
+                        metadata.as_ref().and_then(|value| value.get("branch")),
+                    );
+                    let view = facts
+                        .map(crate::branch::state::BranchView::Ready)
+                        .unwrap_or(crate::branch::state::BranchView::Plain);
+                    self.emit_branch_view(session_id, &view);
+                }
+                None => self.emit_branch_view(session_id, &crate::branch::state::BranchView::Plain),
+            }
+            return;
+        };
+        let facts = state.lock().unwrap().branch.clone();
+        let view = match facts {
+            Some(facts) => {
+                let repo_root = history::project_of_session(session_id)
+                    .and_then(|workspace| crate::branch::repo::detect_repo(std::path::Path::new(&workspace)).ok())
+                    .map(|facts| facts.root);
+                crate::branch::worktree::check_available(&facts, repo_root.as_deref())
+            }
+            None => crate::branch::state::BranchView::Plain,
+        };
+        self.emit_branch_view(session_id, &view);
+    }
+
+    /// 会话下一轮开始前的分支可用性核对（specs/037 AC-14）。
+    ///
+    /// worktree 被用户手工删掉 / `git worktree prune` / 分支被删 → 转 `unavailable`
+    /// 并说明，**不静默重建**（未提交改动已丢失）。
+    pub fn check_branch_before_turn(&self, session_id: &str) {
+        let Some(facts) = self.branch_of(session_id) else {
+            return;
+        };
+        let repo_root = history::project_of_session(session_id)
+            .and_then(|workspace| {
+                crate::branch::repo::detect_repo(std::path::Path::new(&workspace)).ok()
+            })
+            .map(|facts| facts.root);
+        let view = crate::branch::worktree::check_available(&facts, repo_root.as_deref());
+        if matches!(view, crate::branch::state::BranchView::Unavailable { .. }) {
+            self.emit_branch_view(session_id, &view);
+        }
+    }
+
+    /// 系统提示里的分支段（非分支会话为 `None`，普通会话提示逐字不变）
+    ///
+    /// 生产路径直接读 `SessionState.branch_prompt`（`run_query_loop` 的组装处）；本方法
+    /// 是给测试与诊断用的只读投影。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn branch_prompt_of(&self, session_id: &str) -> Option<String> {
+        self.session_if_exists(session_id)?
+            .lock()
+            .unwrap()
+            .branch_prompt
+            .clone()
+    }
+
+    /// 分支会话里拒绝作用于自身的 git 自毁命令（specs/037 FR-004）。
+    ///
+    /// 返回 `Some(拒绝文案)` 表示该 `Bash` 调用要被拦下；非分支会话恒 `None`。
+    pub fn branch_guard_bash(&self, session_id: &str, command: &str) -> Option<String> {
+        let facts = self.branch_of(session_id)?;
+        if !crate::branch::worktree::is_self_destructive(command, &facts.name) {
+            return None;
+        }
+        Some(format!(
+            "Bash: refused — `{}` would destroy this conversation's own worktree/branch \
+             (uncommitted changes cannot be recovered). \
+             Leave the worktree alone; the user picks up your work with `git merge {}`.",
+            command.trim(),
+            facts.branch_ref()
+        ))
+    }
+
+    /// 删除会话时的分支清理（specs/037 FR-005 / AC-12）。
+    ///
+    /// 顺序：卸载依赖挂载 → `git worktree remove --force` → `git branch -D tuxedo/<name>`；
+    /// 提交数与差异文件数写进诊断日志（UI 删除确认是定性的，view 已收窄）。
+    pub fn cleanup_branch(&self, session_id: &str) {
+        let Some(facts) = self.branch_of(session_id) else {
+            return;
+        };
+        let Some(workspace) = history::project_of_session(session_id) else {
+            self.log(&format!(
+                "branch cleanup for {session_id}: workspace unknown; leaving {} in place",
+                facts.worktree
+            ));
+            return;
+        };
+        let (commits, files) = crate::branch::worktree::work_summary(&facts, &workspace);
+        self.log(&format!(
+            "branch cleanup {session_id}: {} ({} commits, {} changed files; unmerged commits \
+             and uncommitted changes are discarded)",
+            facts.branch_ref(),
+            commits.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
+            files.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
+        ));
+        // 挂载点由依赖策略管理；这里按 worktree 现存的挂载点卸载（会话重启后
+        // 内存里的 `mounted` 已丢，按目录现状推断）
+        let mounted = crate::branch::deps::mounted_under(std::path::Path::new(&facts.worktree));
+        if let Err(error) = crate::branch::worktree::remove(&workspace, &facts, &mounted) {
+            self.log(&format!("branch cleanup {session_id} failed: {error}"));
+        }
     }
 
     // ==================== 事件上报 ====================
@@ -835,9 +1102,88 @@ impl Core {
     pub fn on_host_environment(&self, env: config::HostEnvironment) {
         config::set_host_environment(env);
         let _ = config::ensure_config_dirs();
+        // 分支 worktree 的启动对账（specs/037 FR-005 / AC-13）：按 `meta.json` 枚举
+        // 分支会话，与 `git worktree list --porcelain` 比对——有效会话的 worktree
+        // 保留，孤儿只写诊断日志（不自动删、不推 UI）。放到后台线程：对账要跑 git，
+        // 不能拖住帧循环的就绪握手。
+        self.spawn_branch_reconcile();
         // Core 不感知语言（`docs/architecture/core-ui-separation.md` 第 4.8 节）：宿主环境里没有
         // locale 字段，面向界面的文本以「键 + 参数」经 `CoreEvent.notice` 交给 UI 翻译。
         self.log("Standalone Core ready.");
+    }
+
+    /// 后台启动对账（specs/037 AC-13）：枚举全部分支会话与工作区，比对 git 的
+    /// worktree 登记表。只写诊断日志——孤儿可能是用户手工创建的工作树，不自动删。
+    fn spawn_branch_reconcile(&self) {
+        std::thread::spawn(|| {
+            // 遍历全部对话空间目录，读每个 `*.meta.json` 的 `branch` 字段
+            let Ok(root) = config::conversations_root() else {
+                return;
+            };
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                return;
+            };
+            let mut sessions: Vec<(String, crate::branch::state::BranchFacts)> = Vec::new();
+            let mut workspaces: Vec<String> = Vec::new();
+            for entry in entries.flatten() {
+                let dir = entry.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                // 工作区路径：清单优先，其次是目录名解码
+                let workspace = config::workspace_meta_workspace_path(&dir).or_else(|| {
+                    dir.file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(config::decode_project_dir_name)
+                });
+                if let Some(workspace) = workspace.as_ref() {
+                    if !workspaces.iter().any(|known| known == workspace) {
+                        workspaces.push(workspace.clone());
+                    }
+                }
+                let Ok(files) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for file in files.flatten() {
+                    let name = file.file_name().to_string_lossy().to_string();
+                    if !name.ends_with(".meta.json") || name == "workspace.meta.json" {
+                        continue;
+                    }
+                    let Ok(text) = util::read_to_string_lossy(&file.path()) else {
+                        continue;
+                    };
+                    let Ok(metadata) =
+                        serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
+                    else {
+                        continue;
+                    };
+                    let Some(facts) =
+                        crate::branch::state::BranchFacts::from_meta(metadata.get("branch"))
+                    else {
+                        continue;
+                    };
+                    let session_id = metadata
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            name.trim_end_matches(".meta.json").to_string()
+                        });
+                    sessions.push((session_id, facts));
+                }
+            }
+            if sessions.is_empty() && workspaces.is_empty() {
+                return;
+            }
+            let report = crate::branch::worktree::reconcile_on_start(&sessions, &workspaces);
+            if !report.missing.is_empty() {
+                eprintln!(
+                    "[core] branch reconcile: {} session(s) lost their worktree: {}",
+                    report.missing.len(),
+                    report.missing.join(", ")
+                );
+            }
+        });
     }
 
     pub fn on_conversation_opened(&self, session_id: &str) {
@@ -854,6 +1200,10 @@ impl Core {
         // 不绑在 UI 的视图生命周期上。
         crate::mcp::on_session_opened(session_id);
         self.emit_runtime();
+        // 分支视图全量推一次（specs/037 FR-008）：`plain` 让普通会话明确「不是分支
+        // 对话」而不是停在等待态；分支会话在这里转 `unavailable`（worktree 被删过）
+        // 或 `ready`（复用路径，specs/037 AC-4）
+        self.emit_branch_state(session_id);
     }
 
     /// `UiEvent.userChoicePendingChanged`：宿主上报「该会话的用户选择框是否在
@@ -1968,6 +2318,10 @@ impl Core {
         }
         for id in &closure {
             self.abort_session_scope(id, &mut HashSet::new());
+            // 分支资源在 drop_session **之前**清理：`branch_of` 读会话状态，先 drop
+            // 就取不到 worktree 与分支名了（specs/037 FR-005 / AC-12）。顺序是
+            // 卸载挂载 → `git worktree remove --force` → `git branch -D`
+            self.cleanup_branch(id);
             self.drop_session(id);
             tools::clear_session_todos(id);
             // MCP：释放引用 + 清掉会话级启用覆盖（对齐 `clearSessionMcpOverride`）
@@ -3298,9 +3652,14 @@ fn execute_tool(
         let state = state.lock().unwrap();
         (state.cancel.clone(), state.pause_loop.clone())
     };
+    // 工具执行根（specs/037 FR-002）：分支会话是它自己的 worktree，其余会话是
+    // `project`（会话工作目录）。**这是全部工具跟随 worktree 的唯一改向点**——
+    // `Read` / `Write` / `Edit` / `Grep` / `Glob` 走 `expand_path(&ctx.cwd, …)`，
+    // `Bash` 的默认 cwd 取 `ctx.cwd`，后台任务与 MCP 工具继承同一个 `ctx.cwd`。
+    let cwd = core.tool_root_of(session_id).unwrap_or_else(|_| project.to_string());
     let context = ToolContext {
         session_id: session_id.to_string(),
-        cwd: project.to_string(),
+        cwd,
         // 手工转后台按 tool_use_id 登记（Bash 卡片「转后台」按钮）
         tool_use_id: Some(tool_use_id.to_string()),
         // 工具流式进度 → `toolProgress` 帧
@@ -3325,6 +3684,17 @@ fn execute_tool(
     // 否则会落到 `tools::execute` 的兜底分支被报成「工具不存在」。
     if crate::mcp::is_mcp_tool(tool_name) {
         return crate::mcp::execute_tool(tool_name, effective_input);
+    }
+    // 分支会话的防自毁闸门（specs/037 FR-004）：拒绝作用于自身 worktree / 分支的
+    // `git worktree remove` 与 `git branch -D`。拦截点就在工具执行前，与危险命令检测
+    // 同一条路径（`specs/037-branch-conversation/plan.md` 的「worktree 布局与 git 交互」一节）；
+    // 非分支会话恒放行。
+    if tool_name == "Bash" {
+        if let Some(command) = effective_input.get("command").and_then(Value::as_str) {
+            if let Some(reason) = core.branch_guard_bash(session_id, command) {
+                return ToolOutcome::Error(reason);
+            }
+        }
     }
     tools::execute(tool_name, effective_input, &context)
 }
@@ -3683,6 +4053,9 @@ fn run_turn(
     user_message: Option<QueuedUserMessage>,
 ) -> Result<(), String> {
     let project = core.project_of(session_id)?;
+    // 分支会话每轮开始前核对 worktree / 分支是否还在（specs/037 AC-14）：被用户手工
+    // 删掉或 `git worktree prune` 后转 `unavailable` 并说明，**不静默重建**。
+    core.check_branch_before_turn(session_id);
     let (agent_mode, model, provider) = {
         let state = state.lock().unwrap();
         (
@@ -4131,20 +4504,33 @@ fn announce_message_appended(
     project: &str,
     user_initiated: bool,
 ) {
-    let (prompt_mode, creator) = {
+    let (prompt_mode, creator, branch) = {
         match core.session_if_exists(session_id) {
             Some(state) => {
                 let state = state.lock().unwrap();
-                (state.prompt_mode.clone(), state.creator.clone())
+                (
+                    state.prompt_mode.clone(),
+                    state.creator.clone(),
+                    state.branch.clone(),
+                )
             }
             // 会话状态不存在（尚无引擎）按用户会话兜底：touch 兜底建档只可能命中
             // 用户路径（子代理 meta 由创建方预建，不会走到 ENOENT）
-            None => (None, SessionCreator::User),
+            None => (None, SessionCreator::User, None),
         }
     };
-    if let Err(error) =
-        history::touch_metadata(session_id, project, user_initiated, prompt_mode.as_deref(), &creator)
-    {
+    // 分支事实随首条消息落盘（specs/037 FR-006 创建时序第 2 步）：`meta.json` 由
+    // `appendMessage` 创建，因此 `branch` 字段跟着这次 touch 一起写进去——
+    // `branch.name / worktree / baseCommit / baseBranch` 是这条事实的唯一落盘点。
+    let branch_meta = branch.as_ref().map(|facts| facts.to_meta());
+    if let Err(error) = history::touch_metadata_with_branch(
+        session_id,
+        project,
+        user_initiated,
+        prompt_mode.as_deref(),
+        &creator,
+        branch_meta.as_ref(),
+    ) {
         eprintln!("[core] touch metadata failed: {error}");
     }
     core.emit(json!({ "type": "conversationListChanged" }));
@@ -4572,12 +4958,13 @@ fn run_query_loop(
         // `static_system_prompt` 整体替换组装结果；`system_prompt_prefix` 只在组装结果前
         // 加一段：Master 子代理 = 主对话同款提示词 +
         // 开头 `## Communication` 段。
-        let (static_prompt, prompt_prefix, transfer_counterpart) = {
+        let (static_prompt, prompt_prefix, transfer_counterpart, branch_prompt) = {
             let state = state.lock().unwrap();
             (
                 state.static_system_prompt.clone(),
                 state.system_prompt_prefix.clone(),
                 state.transfer_counterpart.clone(),
+                state.branch_prompt.clone(),
             )
         };
         let base_prompt = match static_prompt {
@@ -4589,6 +4976,14 @@ fn run_query_loop(
                 &tools,
                 transfer_counterpart.as_deref(),
             )?,
+        };
+        // 分支会话的提示段追加在**末尾**（specs/037 FR-004；`specs/037-branch-conversation/plan.md`
+        // 的「系统提示增补（分支会话专属）」一节）：模型据此
+        // 知道自己在哪、怎么记检查点、成果怎么交出去。普通会话该段为 `None`，
+        // 提示词与今天逐字一致。
+        let base_prompt = match branch_prompt {
+            Some(section) => format!("{base_prompt}\n\n## Branch Worktree\n{section}"),
+            None => base_prompt,
         };
         let system_prompt = match prompt_prefix {
             Some(prefix) => format!("{prefix}\n\n{base_prompt}"),

@@ -1180,12 +1180,38 @@ pub fn ensure_tool_results(messages: &mut Vec<Value>) {
 /// 同时按 `updateMetadataForNewMessage` 的 `if (!metadata.context?.promptMode)` 分支
 /// 补写会话级提示词预设（`prompt_mode` 缺省时用 `normal`），使「首条消息前已切换预设」
 /// 的会话在落盘时保留该选择。
+/// 生产路径只经 [`touch_metadata_with_branch`] 调用（分支事实要一起写）；本入口是
+/// 「不带分支」的等价物，保留给测试与诊断。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn touch_metadata(
     session_id: &str,
     project: &str,
     user_initiated: bool,
     prompt_mode: Option<&str>,
     creator: &crate::engine::SessionCreator,
+) -> Result<(), String> {
+    touch_metadata_with_branch(
+        session_id,
+        project,
+        user_initiated,
+        prompt_mode,
+        creator,
+        None,
+    )
+}
+
+/// 同上，并写 `meta.json` 的 `branch` 字段（specs/037 FR-001）。
+///
+/// `branch` 为 `Some` 即分支会话：字段形态 `{ name, worktree, baseCommit, baseBranch }`，
+/// 由 `src/shared/history/` 的同名字段读取（两侧同步测试锁定）。普通会话传 `None`——
+/// 此时**不动**该键（已存在的分支事实不因一次普通 touch 被抹掉）。
+pub fn touch_metadata_with_branch(
+    session_id: &str,
+    project: &str,
+    user_initiated: bool,
+    prompt_mode: Option<&str>,
+    creator: &crate::engine::SessionCreator,
+    branch: Option<&Value>,
 ) -> Result<(), String> {
     let count = count_messages(&load_messages(session_id, project));
     let prompt_mode = prompt_mode.unwrap_or("normal").to_string();
@@ -1205,6 +1231,10 @@ pub fn touch_metadata(
                 metadata["updatedAt"] = json!(crate::util::now_millis());
             }
             metadata["messageCount"] = json!(count);
+            // 分支事实（specs/037 FR-001）：只在分支会话上写，普通会话不碰该键
+            if let Some(branch) = branch {
+                metadata["branch"] = branch.clone();
+            }
             // 只在缺失 / 非法时补写：保留 meta.json 里已有的显式选择
             // （对齐 `if (!metadata.context?.promptMode)` 的 JS 真值判定）
             let existing_valid = metadata

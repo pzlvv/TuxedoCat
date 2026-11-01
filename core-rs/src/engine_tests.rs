@@ -8322,3 +8322,86 @@ fn transfer_hook_roundtrip_and_cancel() {
     );
     assert!(outcome.is_err(), "取消后应当立即失败，不悬挂");
 }
+
+/// 分支对话的会话级工作根改向（specs/037 FR-002）：`tool_root_of` 是唯一派生点——
+/// 分支会话返回它自己的 worktree，普通会话与 `project_of` 逐字一致。
+///
+/// 这里只锁派生口径（不需要真实 git）：worktree 的创建 / 复用 / 清理在
+/// `branch/worktree_tests.rs` 用真实仓库覆盖。
+#[test]
+fn tool_root_follows_the_branch_worktree() {
+    // `Sandbox::new` 自己取进程级串行锁（不可重入，这里不能再取一次）
+    let sandbox = crate::test_support::Sandbox::new("engine-branch-root");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::start(|_request| None);
+    let core = harness.core.clone();
+    crate::config::set_session_workspace("s-plain", Some(workspace.clone()));
+    crate::config::set_session_workspace("s-branch", Some(workspace.clone()));
+
+    let worktree = sandbox.root.join("worktrees").join("ellen-k3f");
+    std::fs::create_dir_all(&worktree).expect("create fake worktree");
+    let worktree_text = worktree.to_string_lossy().to_string();
+    {
+        let state = core.session("s-branch");
+        let mut state = state.lock().unwrap();
+        state.branch = Some(crate::branch::state::BranchFacts {
+            name: "ellen-k3f".to_string(),
+            worktree: worktree_text.clone(),
+            base_commit: "a".repeat(40),
+            base_branch: "main".to_string(),
+        });
+        state.branch_prompt = Some("worktree prompt".to_string());
+    }
+
+    // 分支会话：工具根是 worktree
+    assert_eq!(core.tool_root_of("s-branch").ok().as_deref(), Some(worktree_text.as_str()));
+    // 普通会话：工具根 = 会话工作目录（行为逐项不变）
+    assert_eq!(core.tool_root_of("s-plain").ok(), Some(workspace.clone()));
+    assert_eq!(core.project_of("s-branch").ok(), Some(workspace));
+    // 分支事实的只读投影
+    assert_eq!(
+        core.branch_of("s-branch").map(|facts| facts.branch_ref()),
+        Some("tuxedo/ellen-k3f".to_string())
+    );
+    assert!(core.branch_of("s-plain").is_none());
+    assert_eq!(core.branch_prompt_of("s-branch").as_deref(), Some("worktree prompt"));
+    assert!(core.branch_prompt_of("s-plain").is_none());
+}
+
+/// 分支会话的 Bash 防自毁闸门（specs/037 FR-004）：拒绝作用于自身的 `git worktree
+/// remove` 与 `git branch -D`，其余命令与非分支会话一律放行。
+#[test]
+fn bash_guard_blocks_self_destruction_only_in_branch_sessions() {
+    let sandbox = crate::test_support::Sandbox::new("engine-branch-guard");
+    let harness = EngineHarness::start(|_request| None);
+    let core = harness.core.clone();
+    {
+        let state = core.session("s-branch");
+        state.lock().unwrap().branch = Some(crate::branch::state::BranchFacts {
+            name: "ellen-k3f".to_string(),
+            worktree: sandbox
+                .root
+                .join("worktrees")
+                .join("ellen-k3f")
+                .to_string_lossy()
+                .to_string(),
+            base_commit: "b".repeat(40),
+            base_branch: "main".to_string(),
+        });
+    }
+    // 自毁命令被拦下并说明出路
+    let blocked = core
+        .branch_guard_bash("s-branch", "git worktree remove --force .")
+        .expect("self-destructive command must be blocked");
+    assert!(blocked.contains("tuxedo/ellen-k3f"), "{blocked}");
+    assert!(blocked.contains("git merge"), "{blocked}");
+    assert!(core
+        .branch_guard_bash("s-branch", "git branch -D tuxedo/ellen-k3f")
+        .is_some());
+    // 正常 git 操作放行
+    assert!(core.branch_guard_bash("s-branch", "git commit -m work").is_none());
+    assert!(core.branch_guard_bash("s-branch", "git status").is_none());
+    assert!(core.branch_guard_bash("s-branch", "git branch -D feature/x").is_none());
+    // 非分支会话没有闸门
+    assert!(core.branch_guard_bash("s-plain", "git worktree remove --force .").is_none());
+}

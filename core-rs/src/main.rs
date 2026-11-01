@@ -20,6 +20,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // `util::hide_console`），因此不会出现窗口闪烁。
 mod balance;
 mod bash_task;
+mod branch;
 mod bus;
 mod cli;
 mod commands;
@@ -449,6 +450,31 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             drop(lease);
             Ok(result)
         }
+        // 分支对话的目录树（specs/037 FR-007）：宿主按活动会话索取该分支 worktree 的
+        // 目录树。`dir` 是 worktree 根内的相对路径（`''` 即根）。不是分支会话时回
+        // `{ ok: false, reason: 'not-branch' }`，宿主据此回落主工作区读盘——
+        // 这是唯一的回落点，不需要宿主自己判断会话形态。
+        "branchTreeRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "branchTreeRequested without sessionId".to_string())?;
+            let dir = request.get("dir").and_then(Value::as_str).unwrap_or("");
+            Ok(branch_tree_payload(core, session_id, dir))
+        }
+        // 分支对话的创建入口前置数据（specs/037 FR-003 / FR-008）：会话建立前没有
+        // `branchStateChanged`，是否 git 仓库 / `<base>` 短 id / 脏工作区判定只有
+        // 这一条来源；宿主不跑 git。不带 sessionId（会话还不存在），按活动工作区路由。
+        "branchPrecheckRequested" => {
+            let workspace = request
+                .get("workspacePath")
+                .and_then(Value::as_str)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .or_else(config::active_workspace)
+                .ok_or_else(|| "branchPrecheckRequested without a workspace".to_string())?;
+            Ok(crate::branch::repo::precheck(std::path::Path::new(&workspace)))
+        }
         // 远程工作区文件监听（specs/018 FR-002 / FR-003）：注册 / 注销由宿主驱动，
         // Core 只维护监听表并通过 `workspaceFileChanged` 上报事实。
         "watchWorkspaceFileRequested" => {
@@ -821,6 +847,13 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         "conversationOpened" => {
             core.on_conversation_opened(&session_id);
         }
+        // 分支形态到达 Core 的唯一一跳（specs/037 FR-006 创建时序）：宿主把
+        // `startNewConversation` 的形态标记翻译成本事件；Core 在这里同步建 worktree
+        // 与 `tuxedo/<name>` 分支并改向工具根。
+        "branchModeChanged" => {
+            let mode = event.get("mode").and_then(Value::as_str).unwrap_or("plain");
+            core.on_branch_mode_changed(&session_id, mode);
+        }
         "conversationClosed" => {
             core.on_conversation_closed(&session_id);
         }
@@ -1042,6 +1075,82 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
 fn emit(core: &Arc<Core>, event: Value) {
     let mut bus = core.bus.lock().unwrap();
     bus.emit(event);
+}
+
+/// `UiRequest.branchTreeRequested` 的应答（specs/037 FR-007）。
+///
+/// 分支会话：列 `<worktree>/<dir>` 的目录项（与既有文件树条目同形
+/// `{ name, kind, mtimeMs }`），`dir` 按 worktree 根内的相对路径解析，越界一律拒绝。
+/// 普通会话 / worktree 已不在：`{ ok: false, reason: 'not-branch' }`，宿主回落主工作区读盘。
+///
+/// **不做差异标记**：条目上没有 `change` 字段（新 / 改 / 删是本次开发范围之外的预留
+/// 设计，见 specs/037 FR-007）。
+fn branch_tree_payload(core: &Core, session_id: &str, dir: &str) -> Value {
+    let Some(facts) = core.branch_of(session_id) else {
+        return json!({ "ok": false, "reason": "not-branch" });
+    };
+    let root = std::path::Path::new(&facts.worktree);
+    // 相对路径解析：`..` 上跳与绝对路径一律拒绝（越界即不受理，不猜目标）
+    let target = if dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        let relative = std::path::Path::new(dir);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return json!({ "ok": false, "reason": "not-branch" });
+        }
+        root.join(relative)
+    };
+    let Ok(entries) = std::fs::read_dir(&target) else {
+        return json!({ "ok": false, "reason": "not-branch" });
+    };
+    let mut items: Vec<Value> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+        let kind = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                // 符号链接按目标类型归类（单文件本地配置在 worktree 里是链接，指向主工作区）
+                if path.is_dir() {
+                    "directory"
+                } else {
+                    "file"
+                }
+            }
+            Ok(meta) if meta.is_dir() => "directory",
+            Ok(_) => "file",
+            // 断链：无法分类的条目不进树（渲染层没有「未知类型」的图标位）
+            Err(_) => continue,
+        };
+        let mtime_ms = std::fs::metadata(&path)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64);
+        items.push(json!({
+            "name": name,
+            "kind": kind,
+            "mtimeMs": mtime_ms,
+        }));
+    }
+    // 目录在前，名称按本地语言、数字感知、不区分大小写（与宿主侧 `sortSidebarEntries` 同口径）
+    items.sort_by(|a, b| {
+        let a_dir = a["kind"] == json!("directory");
+        let b_dir = b["kind"] == json!("directory");
+        b_dir
+            .cmp(&a_dir)
+            .then_with(|| {
+                a["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
+            })
+    });
+    json!({ "ok": true, "entries": items })
 }
 
 /// 清掉 project 归属指定对话空间（目录名）的内存会话
