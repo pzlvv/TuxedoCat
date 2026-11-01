@@ -71,6 +71,55 @@ body.sidebar-resizing { cursor: col-resize; }
   white-space: nowrap;
 }
 .new-chat-btn:hover { background: #7c7ff5; }
+/* 新对话 split button（specs/037 FR-006）：主「+」与右侧小三角拼成一个控件，
+   两半共享圆角与底色；小三角只负责展开创建方式菜单（不记住选择、无选中态）。 */
+.new-chat-split { display: flex; align-items: stretch; flex-shrink: 0; }
+.new-chat-split .new-chat-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.new-chat-caret {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 3px 4px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.28);
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+  cursor: pointer;
+}
+.new-chat-caret:hover { background: #7c7ff5; }
+/* 创建方式菜单（自绘浮层，与文件右键菜单同一套配色 / 主题切换） */
+.actions-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 208px;
+  padding: 4px;
+  background: #1f1f25;
+  border: 1px solid #2e2e36;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: none;
+}
+.actions-menu.open { display: block; }
+.actions-menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #d4d4d8;
+  font-family: inherit;
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.actions-menu-item:hover { background: #2e2e36; color: #fff; }
+.actions-menu-item[disabled] { cursor: default; opacity: 0.45; }
+.actions-menu-item[disabled]:hover { background: transparent; color: #d4d4d8; }
+.actions-menu-title { font-size: 12px; }
+.actions-menu-hint { display: block; font-size: 11px; opacity: 0.7; margin-top: 1px; }
 .list { flex: 1; overflow-y: auto; padding: 6px; min-height: 0; }
 .item {
   display: flex;
@@ -125,6 +174,18 @@ body.sidebar-resizing { cursor: col-resize; }
   gap: 6px;
 }
 .item.active .title { color: #fff; }
+/* 分支名（specs/037 AC-18）：条目标题**前**的名字本身，不带 `tuxedo/` 前缀、无图标；
+   宽度上限 140px 截断，悬停 tip 给全名与来源。与 webview 对话列表同一呈现口径。 */
+.item .branch-name {
+  flex: 0 0 auto;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #818cf8;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 11px;
+}
 .item .loaded-dot {
   width: 7px;
   height: 7px;
@@ -755,4 +816,17 @@ body.sidebar-resizing { cursor: col-resize; }
   }
   .files-menu-item { color: #27272a; }
   .files-menu-item:hover { background: #f4f4f5; color: #18181b; }
+
+  /* 创建方式菜单：与文件右键菜单同一灰阶（浮层底色贴近侧栏浅灰，边框同色阶） */
+  .actions-menu {
+    background: #ffffff;
+    border-color: #e4e4e7;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  }
+  .actions-menu-item { color: #27272a; }
+  .actions-menu-item:hover { background: #f4f4f5; color: #18181b; }
+  .actions-menu-item[disabled]:hover { background: transparent; color: #27272a; }
+
+  /* 分支名标签（specs/037 AC-18）：浅色下用更深的 indigo，保证对比度 */
+  .item .branch-name { color: #4f46e5; }
 }

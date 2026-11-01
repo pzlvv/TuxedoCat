@@ -24,6 +24,8 @@ const systemLocale = getStartArg('systemLocale') || 'en';
 const uiLanguage = getStartArg('uiLanguage') || 'auto';
 const uiFontSize = getStartArg('uiFontSize') || 'medium';
 const sessionId = getStartArg('session') || '';
+/** 新对话视图的草稿形态（specs/037 FR-006）：分支形态的草稿页据此显示分支图标并让首条消息带 mode */
+const draftMode = getStartArg('draftMode') === 'branch' ? 'branch' : 'plain';
 // 后台预热的「新对话」视图：页面照常加载，但跳过启动初始化（不生成 session、
 // 不申请主题/模型等），等被切到前台时由宿主发 activatePrewarmedView 触发。
 // 详见 electron/ChatViewManager.ts 的 spareKey。
@@ -67,6 +69,9 @@ contextBridge.exposeInMainWorld('__initialTheme', initialTheme);
 // 空状态背景图的第一张；webview 只取它所在目录，再拼候选文件名（见 placeholderLogo.ts）
 contextBridge.exposeInMainWorld('logoUri', './logo1.png');
 contextBridge.exposeInMainWorld('__sessionId', sessionId);
+// 新对话视图的草稿形态（specs/037 FR-006）：普通对话也注入 'plain'（同步注入的事实，
+// webview 不持有默认值，缺失按 plain 处理只在单视图宿主成立）
+contextBridge.exposeInMainWorld('__draftMode', draftMode);
 // 是否为后台预热视图（见 ChatViewManager.spareKey）：webview 据此跳过启动初始化
 contextBridge.exposeInMainWorld('__prewarm', prewarm);
 // 宿主能力声明：多视图（每会话一个 webview），支持关闭 webview，打开会话走 openConversation。

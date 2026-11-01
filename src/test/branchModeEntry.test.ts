@@ -97,8 +97,8 @@ async function run(): Promise<void> {
     /const \[branchView, setBranchView\] = useState<BranchStateView>\(undefined\)/.test(appSource),
   );
   check(
-    "只在 view.state === 'ready' 时渲染标题前分支名",
-    /branchView\?\.state === 'ready' && \(/.test(appSource),
+    "只在 view.state === 'ready' 且不在草稿页时渲染标题前分支名",
+    /branchView\?\.state === 'ready' && !isDraftPage && \(/.test(appSource),
   );
   check(
     '标题前的分支名只渲染名字本身（不拼 tuxedo/ 前缀）',
@@ -180,6 +180,76 @@ async function run(): Promise<void> {
   check(
     '列表分支名没有图标（只有文本节点）',
     !/data-testid="list-branch-name"[\s\S]{0,200}<Icon/.test(treeItemSource),
+  );
+
+  // ---- 草稿页的形态标记：一个分支图标（唯一标记，无分支名、无字样）----
+  check(
+    '分支草稿页标题前渲染分支图标（specs/037 AC-16）',
+    /isDraftPage && draftBranchMode === 'branch'[\s\S]{0,400}data-testid="draft-branch-icon"/.test(appSource),
+  );
+  check(
+    '草稿页图标是 git-branch 图标（图标资源已生成）',
+    /<Icon name="git-branch"/.test(appSource)
+      && fs.readFileSync(path.join(REPO_ROOT, 'src', 'webview', 'icons.generated.ts'), 'utf8').includes("'git-branch'"),
+  );
+  check(
+    '草稿页形态来自宿主注入（多视图宿主以分支形态打开新视图）',
+    /useState<'plain' \| 'branch'>\(\(\) => getInjectedDraftMode\(\)\)/.test(appSource),
+  );
+
+  // ---- 下拉主题适配：ConfigProvider token 与输入区两处菜单同源 ----
+  check(
+    '新对话下拉套了 dropdownMenuTheme 的 ConfigProvider（弹层配色跟随主题）',
+    /<ConfigProvider theme=\{dropdownMenuTheme\(colors, isDark, 12 \+ fontOffset\)\}>[\s\S]{0,400}<Dropdown/.test(appSource),
+  );
+  check(
+    '新对话下拉的弹层外壳与输入区菜单同源（menuPanelShellStyle）',
+    /dropdownMenuTheme, menuPanelShellStyle/.test(appSource)
+      && /dropdownRender=\{\(menu\) => \(\s*[\s\S]{0,200}menuPanelShellStyle\(colors\)/.test(appSource),
+  );
+  check(
+    '分支项不可用时把原因写进下拉（不是静默置灰）',
+    /branchAvailable \? t\('branch\.branchChatHint'\) : t\('branch\.notGit'\)/.test(appSource),
+  );
+
+  // ---- Electron 原生侧栏：新对话 split 菜单 + 列表分支名 ----
+  const sidebarMain = fs.readFileSync(path.join(REPO_ROOT, 'electron', 'sidebar', 'main.ts'), 'utf8');
+  const sidebarHtml = fs.readFileSync(path.join(REPO_ROOT, 'electron', 'sidebar', 'index.html'), 'utf8');
+  check(
+    '侧栏新对话是 split button（主「+」+ 小三角）',
+    sidebarHtml.includes('id="newChatCaret"') && sidebarHtml.includes('id="newChatSplit"'),
+  );
+  check(
+    '侧栏主「+」恒以普通方式新建（newConversation(\'plain\')）',
+    /window\.sidebarAPI\?\.newConversation\('plain'\)/.test(sidebarMain),
+  );
+  check(
+    '侧栏小三角菜单两项按形态建视图（plain / branch）',
+    /data-mode="plain"/.test(sidebarMain) && /data-mode="branch"/.test(sidebarMain),
+  );
+  check(
+    '侧栏分支项的前置数据来自主进程（宿主不跑 git）',
+    /window\.sidebarAPI\?\.branchPrecheck\(\)/.test(sidebarMain),
+  );
+  check(
+    '侧栏列表条目标题前渲染分支名（与 webview 列表同口径）',
+    sidebarMain.includes('data-testid="sidebar-branch-name"') && /branch\.baseCommit\.substring\(0, 7\)/.test(sidebarMain),
+  );
+
+  // ---- 多视图链路的形态透传：openNewConversation.mode → 视图注入 ----
+  const chatViews = fs.readFileSync(path.join(REPO_ROOT, 'electron', 'ChatViewManager.ts'), 'utf8');
+  check(
+    '多视图宿主按 mode 打开新对话视图',
+    /openNewConversation\(id\?: string, mode: 'plain' \| 'branch' = 'plain'\)/.test(chatViews),
+  );
+  check(
+    '草稿形态经 --draftMode= 注入 webview',
+    /\? \['--draftMode=branch'\]/.test(chatViews),
+  );
+  check(
+    '复用「未发送新对话」视图时形态必须相同（形态是视图的属性）',
+    /this\.isUnsentNewConversation\(key\) && this\.draftModeOf\(key\) === mode/.test(chatViews)
+      || /reusable\(key\)[\s\S]{0,200}draftModeOf\(key\) === mode/.test(chatViews),
   );
 
   finish();

@@ -46,6 +46,13 @@ test.describe('分支对话的入口与展示（FR-006 / US-74 / US-76）', () =
       await expect(menu.getByText('分支对话')).toBeVisible();
       // 一次性创建动作、无选中态：菜单里没有 checked / selected 标记
       await expect(menu.locator('[aria-checked="true"]')).toHaveCount(0);
+      // 弹层配色跟随主题（ConfigProvider 的 Dropdown token），不是 antd 默认浅底：
+      // 宿主 fake 的首帧主题是 dark，弹层背景必须是深色系
+      const bg = await menu.evaluate((el) => getComputedStyle(el.closest('.ant-dropdown') ?? el).backgroundColor);
+      const rgb = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)?.slice(1).map(Number) ?? [];
+      expect(rgb.length).toBe(3);
+      const [r, g, b] = rgb as [number, number, number];
+      expect(r + g + b).toBeLessThan(220);
     } finally {
       await close();
     }
@@ -97,7 +104,11 @@ test.describe('分支对话的入口与展示（FR-006 / US-74 / US-76）', () =
       const hint = page.getByTestId('branch-dirty-hint');
       await expect(hint).toBeVisible();
       await expect(hint).toContainText('abc1234');
-      // 草稿页不显示分支名（名字在会话建立时才生成，草稿页不猜值）
+      // 分支草稿页在标题前挂一个分支图标（区分「当前是分支对话」），切换回普通草稿页即消失
+      const draftIcon = page.getByTestId('draft-branch-icon');
+      await expect(draftIcon).toBeVisible();
+      await expect(draftIcon).toHaveAttribute('title', /分支/);
+      // 草稿页不显示分支名（它是「还没发第一条消息」的状态，只留形态图标）
       await expect(page.getByTestId('title-branch-name')).toHaveCount(0);
       // 也不出现「分支对话」字样的常驻标记
       await expect(page.locator('h1')).not.toContainText('分支对话');
@@ -114,6 +125,8 @@ test.describe('分支对话的入口与展示（FR-006 / US-74 / US-76）', () =
       await page.getByTestId('new-chat-caret').click();
       await page.getByRole('menu').getByRole('menuitem', { name: /普通对话|Plain conversation/ }).click();
       await expect(page.getByTestId('branch-dirty-hint')).toHaveCount(0);
+      // 切回普通草稿页：分支图标随之消失（形态属于当前草稿页，不是常驻标记）
+      await expect(page.getByTestId('draft-branch-icon')).toHaveCount(0);
     } finally {
       await close();
     }
@@ -132,6 +145,10 @@ test.describe('分支对话的入口与展示（FR-006 / US-74 / US-76）', () =
         return last?.sessionId ?? null;
       });
       expect(current).toBeTruthy();
+      // 草稿页不显示分支名（只留形态图标），所以先发一条消息让草稿页结束 ——
+      // 现实链路里此时 Core 已推过 branchStateChanged，标题前的分支名才有意义
+      await page.fill('textarea.input-textarea', '开始工作');
+      await page.press('textarea.input-textarea', 'Enter');
 
       await injectBranchState(page, {
         state: 'ready',

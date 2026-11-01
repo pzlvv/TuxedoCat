@@ -74,6 +74,13 @@ interface ConversationMeta {
   role?: string;
   /** 该对话所属的工作目录（绝对路径）：打开对话时回传主进程，按对话解析工作目录 */
   project?: string;
+  /**
+   * 分支对话事实（specs/037 FR-001 / AC-18）：`null` = 普通对话。
+   *
+   * 与 webview 对话列表同源——都是 `ConversationMetadata.branch`（core 写、宿主只读）。
+   * 侧栏在条目标题前显示分支名，与 webview 顶栏下拉一致呈现。
+   */
+  branch: { name: string; baseCommit: string; baseBranch: string } | null;
 }
 
 /** 工作区项（主进程取好目录名下发；id 是稳定身份，path 是展示路径） */
@@ -110,6 +117,19 @@ interface SessionRuntimeState {
  * 只有分支名——worktree 路径是实现细节，侧栏不展示（也不自己跑 git）。
  */
 type ActiveBranch = { name: string };
+
+/**
+ * 新建对话入口的前置数据（`UiRequest.branchPrecheckRequested` 的回包，specs/037 FR-003）。
+ *
+ * `ok: true` 时 `head` 是 `<base>` 短 id、`dirty` 是主工作区脏判定；`ok: false` 的第一形态
+ * 是 Core 的真实判定（`not-git`）；**`core-unavailable` 是本进程补的第三形态**——总线不通 /
+ * Core 未就绪时不能冒充「不是 git 仓库」（`docs/architecture/principles.md` 第 3 条：
+ * 接线缺失直接暴露，不静默降级）。渲染层据此显示等待文案而不是置灰原因。
+ */
+type BranchPrecheckResult =
+  | { ok: true; head: string; dirty: boolean; baseBranch: string }
+  | { ok: false; reason: 'not-git'; detail: string }
+  | { ok: false; reason: 'core-unavailable'; detail: string };
 
 /** 文件树条目（主进程 listDirectory 的产物；与 SSH 层同一份契约一个名字） */
 type DirectoryEntry = import('../../src/host/standalone/sshClient').DirectoryEntry;
@@ -150,7 +170,13 @@ interface SidebarAPI {
   activateWorkspace: (path: string) => void;
   closeWorkspace: (path: string) => void;
   openConversation: (sessionId: string, project?: string) => void;
-  newConversation: () => void;
+  newConversation: (mode?: 'plain' | 'branch') => void;
+  /**
+   * 新建对话入口的前置数据（specs/037 FR-003）：`ok: false` = 非 git 仓库，分支项置灰。
+   *
+   * 主进程转成 `UiRequest.branchPrecheckRequested`，宿主不跑 git。
+   */
+  branchPrecheck: () => Promise<BranchPrecheckResult>;
   deleteConversation: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
   closeConversation: (sessionId: string) => void;
   renameConversation: (sessionId: string, title: string) => Promise<{ ok: boolean; error?: string }>;
@@ -199,6 +225,8 @@ declare global {
 const listEl = document.getElementById('list')!;
 const footerEl = document.getElementById('footer')!;
 const newChatBtn = document.getElementById('newChat') as HTMLButtonElement;
+const newChatCaretBtn = document.getElementById('newChatCaret') as HTMLButtonElement;
+const newChatSplitEl = document.getElementById('newChatSplit') as HTMLElement;
 const searchInputEl = document.getElementById('searchInput') as HTMLInputElement;
 // 文件浏览器（US-42 / US-43）
 const filesSectionEl = document.getElementById('filesSection')!;
@@ -333,6 +361,20 @@ function escapeHtml(s: string): string {
 }
 
 /**
+ * 分支名标签的悬停 tip（specs/037 AC-18）：完整分支名 + 来源（基线分支 · base 短 id · 时间）。
+ *
+ * 与 webview 对话列表的 `branch.listTipSource` 同一事实、同一顺序——两处呈现必须一致，
+ * 否则同一分支在侧栏与顶栏下拉里显示不同的来源信息。
+ */
+function branchTip(
+  branch: NonNullable<ConversationMeta['branch']>,
+  createdAt: number,
+): string {
+  const base = branch.baseCommit.substring(0, 7);
+  return `tuxedo/${branch.name}（分支自 ${branch.baseBranch} · ${base} · ${relativeTime(createdAt)}）`;
+}
+
+/**
  * 无工作区空态：显示「打开本地工作区」按钮，下方列出最近工作区（点击即打开 / 重连）。
  * 聊天区保持纯提示，不提供添加入口。
  */
@@ -363,7 +405,7 @@ function renderEmptyState(): void {
       ${recentHtml}
     </div>`;
   footerEl.textContent = '';
-  newChatBtn.style.display = 'none';
+  newChatSplitEl.style.display = 'none';
   searchInputEl.style.display = 'none';
   document.getElementById('addWorkspaceBtn')?.addEventListener('click', () => {
     window.sidebarAPI?.addWorkspaces();
@@ -439,7 +481,7 @@ function render(): void {
     renderEmptyState();
     return;
   }
-  newChatBtn.style.display = '';
+  newChatSplitEl.style.display = '';
   searchInputEl.style.display = '';
 
   // 列表尚未取到：等待态。延时未到只留白，超过 LOADING_SHOW_DELAY_MS 才画转圈；
@@ -628,11 +670,17 @@ function itemHtml(
     : '';
 
   // 标题区域：重命名时显示行内输入框。
-  // 子代理（subagent）行首带「sub」标记，与 webview 对话列表（ConversationTreeItem）一致
+  // 子代理（subagent）行首带「sub」标记，与 webview 对话列表（ConversationTreeItem）一致；
+  // 分支对话在标题**前**显示分支名（specs/037 AC-18，与 webview 对话列表同源同口径：
+  // 只有名字本身、无图标、140px 截断，悬停给全名与来源）。
   const subTagHtml = depth > 0 ? '<span class="sub-tag">sub</span>' : '';
+  const branch = c.branch;
+  const branchHtml = branch
+    ? `<span class="branch-name" data-testid="sidebar-branch-name" title="${escapeHtml(branchTip(branch, c.createdAt))}">${escapeHtml(branch.name)}</span>`
+    : '';
   const titleHtml = isRenaming
     ? `<input class="rename-input" type="text" value="${escapeHtml(renameValue)}" spellcheck="false" />`
-    : `<div class="title">${subTagHtml}${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
+    : `<div class="title">${subTagHtml}${branchHtml}<span class="title-text">${escapeHtml(title)}</span>${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
 
   // 操作按钮（hover 显示，与 webview 版本一致），固定 2 行 2 列：
   // 重命名 / 智能命名 / 删除 / 关闭。
@@ -1852,6 +1900,126 @@ document.addEventListener('click', (e) => {
   }
 });
 
+/**
+ * 新对话的创建方式菜单（specs/037 FR-006）：主「+」恒为普通方式新建，小三角展开
+ * 「普通对话 / 分支对话」两个**一次性创建动作**——不记住选择、无选中态。
+ *
+ * 分支项的前置数据来自主进程（`sidebar:branch-precheck` → `UiRequest.branchPrecheckRequested`，
+ * 宿主不跑 git）：`ok: false` 即非 git 仓库，项置灰并说明原因；等待态（还没回包）
+ * 按不可用处理，不按猜测值渲染（`docs/architecture/principles.md` 第 7 节）。
+ */
+let actionsMenuEl: HTMLDivElement | null = null;
+
+function ensureActionsMenuEl(): HTMLDivElement {
+  if (actionsMenuEl) return actionsMenuEl;
+  actionsMenuEl = document.createElement('div');
+  actionsMenuEl.className = 'actions-menu';
+  actionsMenuEl.setAttribute('role', 'menu');
+  actionsMenuEl.addEventListener('click', (e) => {
+    const item = (e.target as HTMLElement).closest<HTMLElement>('[data-mode]');
+    if (!item) return;
+    if (item.hasAttribute('disabled')) return;
+    const mode = item.dataset.mode === 'branch' ? 'branch' : 'plain';
+    closeActionsMenu();
+    window.sidebarAPI?.newConversation(mode);
+  });
+  document.body.appendChild(actionsMenuEl);
+  return actionsMenuEl;
+}
+
+function closeActionsMenu(): void {
+  actionsMenuEl?.classList.remove('open');
+  newChatCaretBtn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * 打开创建方式菜单（分支项的位置贴小三角底边、右缘对齐）。
+ *
+ * 前置数据先拉、再渲染：菜单可能在回包前就画出来，此时分支项按不可用处理，
+ * 回包到达后重绘制一次（不缓存承诺——Core 侧一次 `rev-parse` 代价可忽略）。
+ */
+async function openActionsMenu(): Promise<void> {
+  const el = ensureActionsMenuEl();
+  const precheck = await loadBranchPrecheck();
+  const branchOk = precheck !== null && precheck.ok === true;
+  // Core 不可达（还没连上 / 没有活动工作区）不是「不是 git 仓库」：显式等待文案，
+  // 不把读取失败冒充成判定结果（docs/architecture/principles.md 第 3 条）
+  const coreUnavailable = precheck === null || (precheck.ok === false && precheck.reason === 'core-unavailable');
+  const hint = branchOk
+    ? '在独立 worktree 里工作'
+    : coreUnavailable
+      ? '正在检查工作区…'
+      : '当前目录不是 git 仓库，无法创建分支对话';
+  el.innerHTML = `
+    <button class="actions-menu-item" role="menuitem" data-mode="plain">
+      <span class="actions-menu-title">普通对话</span>
+      <span class="actions-menu-hint">直接读写工作区</span>
+    </button>
+    <button class="actions-menu-item" role="menuitem" data-mode="branch"${branchOk ? '' : ' disabled aria-disabled="true"'}>
+      <span class="actions-menu-title">分支对话</span>
+      <span class="actions-menu-hint">${escapeHtml(hint)}</span>
+    </button>`;
+  const rect = newChatCaretBtn.getBoundingClientRect();
+  el.classList.add('open');
+  newChatCaretBtn.setAttribute('aria-expanded', 'true');
+  // 贴小三角底边、右缘对齐；越界时夹回视口（与文件右键菜单同口径）
+  const menuRect = el.getBoundingClientRect();
+  el.style.left = `${Math.max(4, Math.min(rect.right - menuRect.width, window.innerWidth - menuRect.width - 4))}px`;
+  el.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 4)}px`;
+  // Core 还没就绪：项目建立会话的连接在几秒内到齐，回包到了重画一次（一次重试，
+  // 不做轮询——真正连不上时置灰与等待文案都是如实状态，不需要无限重试）
+  if (coreUnavailable && !branchOk) {
+    setTimeout(() => {
+      if (!el.classList.contains('open')) return;
+      void refreshOpenActionsMenu();
+    }, 1500);
+  }
+}
+
+/** 菜单已开着时重画（只在 Core 不可达的首轮之后用一次） */
+async function refreshOpenActionsMenu(): Promise<void> {
+  const precheck = await loadBranchPrecheck();
+  if (precheck === null || precheck.ok !== true) return;
+  await openActionsMenu();
+}
+
+/**
+ * 拉一次分支前置数据（`UiRequest.branchPrecheckRequested` 的宿主侧回包）。
+ *
+ * `null` = 宿主不可达 / 没有活动工作区：按不可用处理（分支项置灰），不猜「是 git 仓库」。
+ */
+async function loadBranchPrecheck(): Promise<BranchPrecheckResult | null> {
+  try {
+    return (await window.sidebarAPI?.branchPrecheck()) ?? null;
+  } catch (err) {
+    console.error('[sidebar] branch precheck failed:', err);
+    return null;
+  }
+}
+
+function bindNewChatSplit(): void {
+  newChatBtn.addEventListener('click', () => {
+    closeActionsMenu();
+    window.sidebarAPI?.newConversation('plain');
+  });
+  newChatCaretBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (actionsMenuEl?.classList.contains('open')) {
+      closeActionsMenu();
+      return;
+    }
+    void openActionsMenu();
+  });
+  // 点空白处 / Esc 收起菜单（菜单内的点击由菜单自己的监听处理）
+  document.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('#actionsMenu, .actions-menu')) return;
+    if (!(e.target as HTMLElement).closest('#newChatCaret')) closeActionsMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeActionsMenu();
+  });
+}
+
 async function init(): Promise<void> {
   if (!window.sidebarAPI) {
     listEl.innerHTML = '<div class="empty">Sidebar API 不可用</div>';
@@ -1860,11 +2028,8 @@ async function init(): Promise<void> {
   bindListEvents();
   bindFilesEvents();
   bindResizeHandle();
+  bindNewChatSplit();
   subscribe();
-
-  newChatBtn.addEventListener('click', () => {
-    window.sidebarAPI?.newConversation();
-  });
 
   // 搜索框：按标题过滤当前活动工作目录的对话列表（即时过滤）
   searchInputEl.addEventListener('input', () => {

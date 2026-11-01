@@ -174,6 +174,15 @@ export class ChatViewManager {
    * 因此用一个集合记住全部预热态视图：加入预热、注册正式会话、销毁时维护。
    */
   private readonly prewarmKeys = new Set<string>();
+  /**
+   * 「未发送的新对话」视图的草稿形态（specs/037 FR-006）：key → `plain` / `branch`。
+   *
+   * 形态只影响这次打开的新对话（草稿页的分支图标、脏工作区提示与首条消息的
+   * `startNewConversation.mode`），不是可切换的模式。**普通对话不登记**——缺省即
+   * plain，省掉一张常驻表的清理负担（`new-` key 与正式 sessionId 都要覆盖到）。
+   * webview 侧的形态另有宿主注入（`--draftMode=branch`），复用预热视图时那条路径不参与。
+   */
+  private readonly newConversationModes = new Map<string, 'plain' | 'branch'>();
   private prewarmTimer: ReturnType<typeof setTimeout> | null = null;
   /** 预热延迟：避开刚发出的第一条消息（正在流式输出）的 CPU/网络高峰 */
   private readonly prewarmDelayMs = 1200;
@@ -497,19 +506,25 @@ export class ChatViewManager {
   /**
    * 新建对话：打开一个无 session 的聊天视图，webview onStartup 生成会话后关联。
    *
-   * 若已存在「新建但还没发过消息」的对话，则直接切回那个视图而不是再开一个：
+   * `mode` 是**一次性创建动作**的形态（specs/037 FR-006）：`branch` = 这次打开的是分支
+   * 形态的草稿页（视图带 `--draftMode=branch` 注入，首条消息的 `startNewConversation`
+   * 因此带 `mode: 'branch'`）。不记住选择、无选中态：形态属于**这个视图**，不是全局设置。
+   *
+   * 若已存在**同形态**的「新建但还没发过消息」的对话，则直接切回那个视图而不是再开一个：
    * 用户可能在那个新对话里已经输入了草稿，切到其它对话后再点「新建」时，
    * 复用旧视图才能保住草稿（与 webview 顶部「+」的行为一致），
    * 否则新视图是空白的，旧草稿随着被隐藏的视图一起"丢失"。
+   * 形态不同则不复用——注入值只在视图创建时生效，改写已建视图的形态会让 webview 的
+   * 草稿页表现与首条消息的 `mode` 分叉（一份事实两个写入点）。
    *
-   * 后台预热的视图也走这条复用路径：直接 show() 即可，由 show() 对仍是预热态的
-   * 视图补发 activatePrewarmedView 让它完成启动初始化（见 show / prewarmKeys）。
+   * 后台预热的视图（恒为 plain）也走这条复用路径：直接 show() 即可，由 show() 对仍是
+   * 预热态的视图补发 activatePrewarmedView 让它完成启动初始化（见 show / prewarmKeys）。
    */
-  openNewConversation(id?: string): void {
+  openNewConversation(id?: string, mode: 'plain' | 'branch' = 'plain'): void {
     const wsId = id ?? this.opts.workspaceId;
     // 注入用路径：按 id 查登记表（未登记回退活动路径）
     const ws = this.workspacePathById.get(wsId) ?? this.opts.workspacePath;
-    const reusable = this.findReusableNewConversation(wsId);
+    const reusable = this.findReusableNewConversation(wsId, mode);
     if (reusable) {
       this.touch(reusable);
       // 已经在展示这个未发送的新对话：只聚焦，保留输入框里的草稿，避免重复 addChildView。
@@ -529,33 +544,43 @@ export class ChatViewManager {
     }
 
     const key = this.nextNewKey();
-    const view = this.createView(undefined, { workspace: ws });
+    const view = this.createView(undefined, { workspace: ws, draftMode: mode });
     this.views.set(key, view);
     this.viewWorkspaces.set(key, wsId);
     this.unsentNewKeys.add(key);
+    if (mode === 'branch') this.newConversationModes.set(key, 'branch');
     this.touch(key);
     this.show(key);
     this.emitLoadedChanged();
   }
 
+  /** 视图当前的草稿形态（`plain` = 普通新对话 / 预热视图 / 非新对话视图） */
+  private draftModeOf(key: string): 'plain' | 'branch' {
+    return this.newConversationModes.get(key) ?? 'plain';
+  }
+
   /**
    * 查找可复用的「未发送新对话」视图（优先当前正在展示的那个）。
-   * 只在同一工作区内复用：草稿属于该工作区下的新对话。
+   *
+   * 只在同一工作区内、且**草稿形态相同**时复用：草稿属于该工作区下的新对话，
+   * 形态则是这次创建动作的属性（注入值只在视图创建时生效，见 openNewConversation）。
    * 返回 null 表示没有可复用的，需要新建。
    */
-  private findReusableNewConversation(workspaceId: string): string | null {
+  private findReusableNewConversation(workspaceId: string, mode: 'plain' | 'branch'): string | null {
     const inWorkspace = (key: string): boolean =>
       this.isSameWorkspace(this.viewWorkspaces.get(key), workspaceId);
+    const reusable = (key: string): boolean =>
+      this.isUnsentNewConversation(key) && this.draftModeOf(key) === mode;
     // 优先复用当前活动视图，避免无谓的视图切换
-    if (this.currentSessionId && inWorkspace(this.currentSessionId) && this.isUnsentNewConversation(this.currentSessionId)) {
+    if (this.currentSessionId && inWorkspace(this.currentSessionId) && reusable(this.currentSessionId)) {
       return this.currentSessionId;
     }
     // 其次复用后台预热的视图（已经加载好，直接切过去最快）
-    if (this.prewarmKey && inWorkspace(this.prewarmKey) && this.isUnsentNewConversation(this.prewarmKey)) {
+    if (this.prewarmKey && inWorkspace(this.prewarmKey) && reusable(this.prewarmKey)) {
       return this.prewarmKey;
     }
     for (const key of this.unsentNewKeys) {
-      if (inWorkspace(key) && this.isUnsentNewConversation(key)) {
+      if (inWorkspace(key) && reusable(key)) {
         return key;
       }
     }
@@ -714,6 +739,10 @@ export class ChatViewManager {
     if (this.prewarmKey === tempKey) {
       this.prewarmKey = null;
     }
+    // 草稿形态随 key 迁移（正式 sessionId 之后仍要能读到，例如复用该视图再建一次）
+    if (this.newConversationModes.delete(tempKey)) {
+      this.newConversationModes.set(sessionId, 'branch');
+    }
 
     // 如果目标 sessionId 已有视图（如历史会话被重新打开），销毁旧视图避免重复。
     // 同时把该 sessionId 从 LRU 中移除，避免下面 push 后出现重复条目
@@ -807,6 +836,7 @@ export class ChatViewManager {
       this.views.delete(key);
       this.viewWorkspaces.delete(key);
       this.unsentNewKeys.delete(key);
+      this.newConversationModes.delete(key);
       if (view && !view.webContents.isDestroyed()) {
         try {
           view.webContents.close();
@@ -827,6 +857,7 @@ export class ChatViewManager {
     this.viewWorkspaces.clear();
     this.lru = [];
     this.unsentNewKeys.clear();
+    this.newConversationModes.clear();
     this.prewarmKeys.clear();
     this.currentSessionId = null;
     this.emitLoadedChanged();
@@ -893,6 +924,7 @@ export class ChatViewManager {
     }
     this.unsentNewKeys.delete(key);
     this.prewarmKeys.delete(key);
+    this.newConversationModes.delete(key);
     if (this.prewarmKey === key) this.prewarmKey = null;
   }
 
@@ -946,7 +978,10 @@ export class ChatViewManager {
     }
   }
 
-  private createView(sessionId?: string, opts?: { prewarm?: boolean; workspace?: string }): WebContentsView {
+  private createView(
+    sessionId?: string,
+    opts?: { prewarm?: boolean; workspace?: string; draftMode?: 'plain' | 'branch' },
+  ): WebContentsView {
     const workspace = opts?.workspace ?? this.opts.workspacePath;
     // 首帧主题：preload 读它注入 window.__initialTheme，webview 据此在 React
     // 渲染前就选对背景色（否则浅色主题会先闪一帧深色 loading 背景）。
@@ -973,6 +1008,9 @@ export class ChatViewManager {
           `--conversationListOwner=${this.opts.conversationListOwner ?? 'host'}`,
           `--theme=${initialTheme}`,
           ...(sessionId ? [`--session=${sessionId}`] : []),
+          // 新对话的草稿形态（specs/037 FR-006）：分支形态的草稿页据此显示分支图标、
+          // 脏工作区提示，并让首条消息的 startNewConversation 带 mode: 'branch'
+          ...(opts?.draftMode === 'branch' ? ['--draftMode=branch'] : []),
           // 预热视图：页面照常加载，但跳过启动初始化，等被切到前台再补做
           ...(opts?.prewarm ? ['--prewarm=1'] : []),
         ],

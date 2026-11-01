@@ -29,9 +29,22 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   openConversation: (sessionId: string, project?: string): void => {
     ipcRenderer.send('sidebar:open-conversation', sessionId, project);
   },
-  newConversation: (): void => {
-    ipcRenderer.send('sidebar:new-conversation');
+  /**
+   * 新建对话：`mode` 是**一次性创建动作**的形态（specs/037 FR-006）——
+   * `plain` = 普通对话（主「+」与缺省值），`branch` = 分支对话。
+   *
+   * 形态只影响这次打开的草稿页与首条消息的 `startNewConversation` 载荷；
+   * 不记住选择、没有选中态（不是模式开关）。
+   */
+  newConversation: (mode?: 'plain' | 'branch'): void => {
+    ipcRenderer.send('sidebar:new-conversation', { mode: mode ?? 'plain' });
   },
+  /**
+   * 新建对话入口的前置数据（specs/037 FR-003）：分支项置灰判据与草稿页脏工作区提示。
+   *
+   * 主进程转成 `UiRequest.branchPrecheckRequested`（宿主不跑 git），按活动工作区回包。
+   */
+  branchPrecheck: (): Promise<unknown> => ipcRenderer.invoke('sidebar:branch-precheck'),
   deleteConversation: (sessionId: string): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:delete-conversation', sessionId);
   },

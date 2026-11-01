@@ -42,7 +42,7 @@ worktree 目录里工作，该目录位于 Core 数据目录（**不在仓库内
   - **AC-14**（FR-005）：GIVEN 用户手动删除了 worktree 目录 WHEN 该对话下一轮开始 THEN 会话转 `unavailable` 并说明（不静默重建）。
 - 场景 5：入口与展示
   - **AC-15**（FR-006）：GIVEN 任意宿主 WHEN 点新对话按钮的小三角 THEN 展开两个创建动作（普通对话 / 分支对话），无选中态；主「+」恒为普通方式新建。
-  - **AC-16**（FR-006）：GIVEN 点「分支对话」 WHEN 看新对话 THEN 只打开分支形态的草稿页——不显示分支名、不显示图标或「分支对话」字样，不建会话、不建 worktree、不发总线事件；WHEN 发送第一条消息 THEN 会话以分支形态建立。
+  - **AC-16**（FR-006）：GIVEN 点「分支对话」 WHEN 看新对话 THEN 只打开分支形态的草稿页——标题前有一个分支图标（唯一的形态标记），不显示分支名、不显示「分支对话」字样，不建会话、不建 worktree、不发总线事件；切回普通草稿页时图标消失。WHEN 发送第一条消息 THEN 会话以分支形态建立。
   - **AC-17**（FR-006）：GIVEN 分支对话 WHEN 看顶栏 THEN 会话标题**前**显示分支名（不带 `tuxedo/` 前缀），标题区没有图标、没有「分支对话」字样；消息区与状态条区域没有任何分支横幅、依赖策略、并行计数或发布按钮。
   - **AC-18**（FR-006）：GIVEN 分支对话 WHEN 看对话列表 THEN 条目标题前显示截断分支名（宽度上限 140px，无图标），悬停显示全名与来源。
   - **AC-19**（FR-006）：GIVEN 宿主收到分支事件 WHEN 转发 THEN 宿主只翻译和路由，不本地改写分支事实；GIVEN `branchStateChanged` 未到达 WHEN 看分支入口 THEN 等待态，不按猜测值渲染。
@@ -129,19 +129,27 @@ worktree 保留，孤儿 worktree 只写诊断日志（不自动删、也不推�
 
 ### FR-006：入口与展示
 
-新对话是两个**一次性创建动作**，不是「模式选择」：顶栏「新对话」按钮为 split button——
-主「+」恒为普通方式新建；小三角展开「普通对话」与「分支对话」，点哪项就以哪种形态打开
-草稿页，不记住选择、无选中态。右下功能菜单（US-8）不加项。
+新对话是两个**一次性创建动作**，不是「模式选择」：三个入口（webview 顶栏 split button /
+Electron 原生侧栏 split button / VS Code 顶栏）都是「主「+」恒为普通方式新建 + 小三角展开
+两项」的同一形态。「普通对话」与「分支对话」点哪项就以哪种形态打开草稿页，不记住选择、
+无选中态；下拉里两项各带一行说明（「直接读写工作区」/「在独立 worktree 里工作」，非 git
+仓库时后者换成置灰原因）。下拉是 antd `Dropdown`，主题 token 与输入区两处菜单同源
+（`src/webview/components/dropdownMenuTheme.ts`），亮 / 暗两套主题下弹层背景与文字跟随
+主题色板；Electron 原生侧栏的自绘菜单与文件右键菜单同一灰阶、同样有浅色主题覆盖。
+右下功能菜单（US-8）不加项。
 
 **创建时序**：点「分支对话」只打开分支形态的草稿页（`new-` 临时 key 视图），不建会话、
 不建 worktree、不发总线事件；发送第一条消息时 webview 在 `startNewConversation` 载荷里带
 形态标记 `mode: 'branch'`，宿主翻译成 `UiEvent.branchModeChanged`——形态到达 Core 的唯一
 一跳；Core 预创建引擎时同步建 worktree 并改向，失败即会话建立失败（FR-003）。重开该对话
-按 `meta.json` 的 `branch` 字段复用 worktree。
+按 `meta.json` 的 `branch` 字段复用 worktree。多视图宿主（Electron）的形态随**视图**走：
+`openNewConversation` 带 `mode`，新视图以 `--draftMode=branch` 注入，草稿视图只在形态相同时
+被复用（注入值只在创建时生效，改写已建视图会让草稿表现与首条消息的形态分叉）。
 
-**展示**：草稿页不显示分支名（名字在会话建立时才生成），脏工作区时输入区上方展示一行
-纯文字提示；对话列表条目标题前显示截断分支名（`<name>`，宽度上限 140px，无图标），悬停
-显示「分支自 `<baseBranch>` · `<base 短 id>` · `<时间>`」；会话标题**前**显示分支名
+**展示**：草稿页**不显示分支名**（它是「还没发第一条消息」的状态，用户在这里只该看到形态），
+标题前显示一个分支图标作为形态标记，脏工作区时输入区上方展示一行纯文字提示；对话列表（webview 顶栏下拉与 Electron
+原生侧栏一致）条目标题前显示截断分支名（`<name>`，宽度上限 140px，无图标），悬停显示
+「分支自 `<baseBranch>` · `<base 短 id>` · `<时间>`」；会话标题**前**显示分支名
 （只有名字本身，不带图标、不带「分支对话」字样，悬停显示完整 `tuxedo/<name>`）。
 `view.state === 'unavailable'` 时分支名转警告色并在悬停里给出原因，同时按既有会话错误通道
 提示一次；它不是一个常驻状态区。**不新增任何面板或入口**：顶栏的时钟图标是既有的
@@ -234,8 +242,9 @@ git 完成，冲突由 git 报出，我们的代码不介入。因此没有发�
 
 **webview 表现**（[principles.md 第 10 节](../architecture/principles.md#10-webview-不持有事实的默认值)：webview 不持有事实的默认值）：
 `branchStateChanged` 未到达时是等待态（不渲染分支名），不猜「就绪」；分支名只从事件来，
-不从对话标题猜。标题区只有分支名本身——无图标、无「分支对话」字样、无 worktree 状态、
-无依赖策略、无并行计数、无发布按钮；消息区里也不出现任何常驻的分支横幅。
+不从对话标题猜。会话标题区只有分支名本身——无图标、无「分支对话」字样、无 worktree 状态、
+无依赖策略、无并行计数、无发布按钮；唯一的图标出现在**未发送的分支草稿页**标题前
+（形态标记，见 FR-006），消息区里也不出现任何常驻的分支横幅。
 
 **系统提示**：分支会话的 system prompt 末尾追加一段（依赖策略只在这里出现，不进事件载荷）：
 worktree 位置与分支名、修改只落当前目录、留检查点用 `git commit`、看不到主工作区的未提交
@@ -297,8 +306,9 @@ worktree 位置与分支名、修改只落当前目录、留检查点用 `git co
 三条需求基线（[docs/features/user-stories/dialog-core.md](user-stories/dialog-core.md)、
 [tools.md](user-stories/tools.md)、[desktop.md](user-stories/desktop.md)）：
 
-- **US-76 新对话选创建方式**：新对话按钮 split 下拉选「普通对话（默认）/ 分支对话」，
-  点击以该形态打开草稿页、会话随第一条消息建立；非 git 仓库时分支对话项置灰并给原因。
+- **US-76 新对话选创建方式**：新对话按钮（webview 顶栏 / Electron 原生侧栏）为 split 下拉，
+  选「普通对话（默认）/ 分支对话」，点击以该形态打开草稿页、会话随第一条消息建立；
+  分支草稿页标题前有一个分支图标作形态标记；非 git 仓库时分支对话项置灰并给原因。
 - **US-74 分支对话的独立工作区**：分支对话在独立 worktree 里工作，主工作区不受影响；
   标题前的分支名表明分支，提交历史用 git 命令看；成果经 `git merge tuxedo/<name>` 取用。
 - **US-75 多个 agent 并行工作**：同时开多个分支对话各自独立工作，对话列表的分支标记
@@ -319,7 +329,7 @@ e2e 车道没有 git 仓库夹具（也不为此引入，会拖慢整车道）�
 | FR-003 | `branch/repo.rs` 的 `detect_repo` / `is_dirty` / `precheck` + `on_branch_mode_changed` 的失败路径 | `repo_tests.rs`（仓库探测 / 脏工作区三态 / precheck 两态）、`worktree_tests.rs`（创建失败不留半成品） | 自动 |
 | FR-004 | `branch/worktree.rs` 的 `is_self_destructive` + `SessionState.branch_prompt` + `engine.rs` 的防自毁闸门 | `worktree_tests.rs`（提交推进分支指针 / 拦截自毁命令） | 自动 |
 | FR-005 | `branch/worktree.rs` 的 `remove` / `reconcile_on_start` / `work_summary` | `worktree_tests.rs`（清理顺序 / 孤儿只记日志 / 手删 worktree 转 unavailable） | 自动 |
-| FR-006 | `src/webview/App.tsx`（split button / 草稿页提示 / 标题前分支名）+ `ConversationTreeItem.tsx`（列表分支名）+ i18n | `e2e/webview/branchConversation.spec.ts`、`branchModeEntry.test.ts` | 自动 |
+| FR-006 | `src/webview/App.tsx`（split button / 草稿页图标与提示 / 标题前分支名）+ `ConversationTreeItem.tsx`（列表分支名）+ `electron/sidebar/main.ts` 与 `index.html`（侧栏 split 菜单 / 列表分支名）+ `electron/ChatViewManager.ts`（草稿形态随视图注入与复用）+ i18n | `e2e/webview/branchConversation.spec.ts`（下拉两项 / 主题配色 / 置灰原因 / 草稿页图标与提示 / 标题前分支名 / 列表分支名）、`e2e/electron/branchSidebar.spec.ts`（侧栏 split 项 / 置灰 / 分支草稿图标与落盘分支名）、`branchModeEntry.test.ts` | 自动 |
 | FR-007 | `UiRequest.branchTreeRequested` + `electron/main.ts` 的 `readBranchTreeDir` + `ElectronUIHost.onBranchStateChanged` | `branchTreeRequested.test.ts`（应答形态 / `not-branch` 回落） | 自动 |
 | FR-008 | `src/shared/AssistantEventBus.ts` 的四组联合 + `meta.json` 持久化 | `standaloneBranch.test.ts`（帧往返）、docsLint（事件表与载荷列） | 自动 |
 | FR-009 | `branch/naming.rs` 的角色名常量表 + 随机后缀 | `naming_tests.rs`（格式正则 / 撞名重试） | 自动 |

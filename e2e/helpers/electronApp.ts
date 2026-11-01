@@ -43,6 +43,13 @@ export interface ChatPageOptions {
   sessionIncludes?: string;
   /** 只匹配空会话视图（消息区空态且会话已生成） */
   emptyState?: boolean;
+  /**
+   * 只匹配指定草稿形态的视图（`window.__draftMode`，specs/037 FR-006）。
+   *
+   * 分支草稿与普通草稿都是「空态新对话」，同屏并存时仅凭 emptyState 会选到预热备用视图；
+   * 需要区分形态的用例（分支草稿页、分支会话建立）用它收窄。
+   */
+  draftMode?: 'plain' | 'branch';
 }
 
 export interface AppHandle {
@@ -368,6 +375,7 @@ export async function launchApp(options: {
               }),
               sid: await p.evaluate(() => ((window as any).__currentSessionId as string | null) ?? null),
               empty: await p.evaluate(() => document.querySelector('.messages-container-empty') !== null),
+              draft: await p.evaluate(() => ((window as any).__draftMode as string | undefined) ?? 'plain'),
             };
           } catch {
             return null; // 页面正在销毁
@@ -387,6 +395,9 @@ export async function launchApp(options: {
           // 要求 sid 已生成：预热备用视图也是空态，但尚未激活（无会话），
           // 过早往里输入会绕过宿主的会话登记（诊断脚本实证的竞态）
           candidates = candidates.filter((c) => c.empty && !!c.sid);
+        }
+        if (opts.draftMode) {
+          candidates = candidates.filter((c) => c.draft === opts.draftMode);
         }
         if (candidates.length > 0) {
           // 侧栏列表（当前工作区）与活动会话

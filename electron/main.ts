@@ -163,7 +163,7 @@ import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { getPreferenceDialogHtml, type PreferenceDialogState } from './preferenceDialogHtml.js';
 import { clampSoundVolume, readSoundSettings, type SoundSettings } from './soundSettings.js';
-import { requestSmartNaming } from '../src/host/coreFacts.js';
+import { requestBranchPrecheck, requestSmartNaming } from '../src/host/coreFacts.js';
 
 /**
  * e2e 专用的侧栏列表延迟注入开关（`<envPrefix>_E2E_SLOW_LIST_MS`）。
@@ -4758,7 +4758,10 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // 单视图宿主不会发这条消息——webview 按 openConversationModeOf 分支，原地新建走
   // startNewConversation。工作目录取来源视图自己的工作目录，新对话与它同目录。
   if (message.type === 'openNewConversation') {
-    chatViews?.openNewConversation(chatViews?.getWorkspaceForWebContents(sender));
+    chatViews?.openNewConversation(
+      chatViews?.getWorkspaceForWebContents(sender),
+      message.mode === 'branch' ? 'branch' : 'plain',
+    );
     return;
   }
 
@@ -5098,13 +5101,41 @@ function setupIpc(): void {
     }
   });
 
-  ipcMain.on('sidebar:new-conversation', () => {
+  ipcMain.on('sidebar:new-conversation', (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) return;
     // 活动工作区建链中 / 不可用：没有可用的对话视图，占位页期间忽略新建
     if (workspacePath && workspaceAvailability(workspacePath) !== 'available') {
       console.warn('[main] ignore new-conversation for non-available workspace:', refDisplay(workspacePath));
       return;
     }
-    chatViews?.openNewConversation(workspacePath ? refKey(workspacePath) : '');
+    // 一次性创建动作的形态（specs/037 FR-006）：缺省 = 普通对话，不记住选择
+    const mode = (payload as { mode?: unknown } | undefined)?.mode === 'branch' ? 'branch' : 'plain';
+    chatViews?.openNewConversation(workspacePath ? refKey(workspacePath) : '', mode);
+  });
+
+  /**
+   * 新对话入口的前置数据（specs/037 FR-003）：侧栏据此置灰分支项、提示脏工作区。
+   *
+   * 经 `UiRequest.branchPrecheckRequested` 问活动工作目录自己的 Core——宿主不跑 git
+   * （worktree 与分支名是 core 的事实）。Core 不可达时回 `core-unavailable` 的第三形态
+   * （渲染层显示等待文案）：**不能回 `not-git`** ——那会把「还没连上 Core / 没有活动工作区」
+   * 冒充成「这个目录不是 git 仓库」（`docs/architecture/principles.md` 第 3 条）。
+   */
+  ipcMain.handle('sidebar:branch-precheck', async (event) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:branch-precheck');
+    const workspace = workspacePath?.path ?? null;
+    if (!workspace) {
+      return { ok: false, reason: 'core-unavailable', detail: 'no active workspace' };
+    }
+    try {
+      return await requestBranchPrecheck(workspace);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'core-unavailable',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
   });
 
   // 关闭指定会话（UI → core 走 WebViewUI.closeConversation：

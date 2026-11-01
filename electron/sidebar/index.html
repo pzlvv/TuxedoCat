@@ -9,7 +9,15 @@
   <body>
     <div class="header">
       <input class="search-input" id="searchInput" type="text" placeholder="搜索对话标题" autocomplete="off" spellcheck="false" />
-      <button class="new-chat-btn" id="newChat">+ 新对话</button>
+      <!-- 新对话 = split button（specs/037 FR-006）：主「+」恒为普通方式新建，
+           小三角展开「普通对话 / 分支对话」两个一次性创建动作（不记住选择、无选中态）。
+           菜单浮层由 main.ts 自绘（actions-menu），配色跟随系统主题。 -->
+      <div class="new-chat-split" id="newChatSplit">
+        <button class="new-chat-btn" id="newChat">+ 新对话</button>
+        <button class="new-chat-caret" id="newChatCaret" title="选择创建方式" aria-haspopup="menu" aria-expanded="false">
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
     </div>
     <div class="list" id="list"></div>
     <div class="footer" id="footer"></div>

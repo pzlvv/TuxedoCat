@@ -194,6 +194,16 @@ export function getIsPrewarmView(): boolean {
 }
 
 /**
+ * 新对话视图的草稿形态（specs/037 FR-006）：宿主在建视图时注入 `window.__draftMode`。
+ *
+ * `branch` = 这个视图以「分支对话」形态打开（首条消息带 `mode: 'branch'`）；
+ * 其余（含未注入）= 普通对话——单视图宿主的新对话没有注入点，由界面动作就地决定。
+ */
+export function getInjectedDraftMode(): 'plain' | 'branch' {
+  return (window as any).__draftMode === 'branch' ? 'branch' : 'plain';
+}
+
+/**
  * 宿主注入的"上次已使用过的 Shiki 语言"列表（来自 settings.json）。
  * 语法高亮全部按需加载，这里记录的集合会在启动后后台预热，
  * 避免每次都重新经历首次加载延迟。宿主未注入时返回空数组。

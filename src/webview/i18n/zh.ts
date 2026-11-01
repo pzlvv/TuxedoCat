@@ -34,6 +34,7 @@ export const zhDict: Record<string, string> = {
   'branch.titleTip': '分支 {ref}',
   'branch.listTipSource': 'tuxedo/{name}（分支自 {baseBranch} · {base} · {time}）',
   'branch.unavailableTip': '分支不可用：{detail}',
+  'branch.draftTip': '这条对话将以分支对话建立',
   'notice.branch.unavailable': '分支不可用：{reason}',
   'files.branchTitle': '文件资源管理器（{branch}）',
   'files.mainBranch': '主分支',

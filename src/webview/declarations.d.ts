@@ -15,6 +15,8 @@ declare global {
     __hostInfo?: HostInfo;
     __hasWorkspace?: boolean;
     __sessionId?: string;
+    /** 新对话视图的草稿形态（specs/037 FR-006）：仅 Electron 以分支形态建视图时注入 `branch` */
+    __draftMode?: 'plain' | 'branch';
     __currentSessionId?: string | null;
     /** 开启后输出 [Profile]/[TokenDebug] 等诊断日志（性能优化用，默认关闭） */
     __debugEnabled?: boolean;

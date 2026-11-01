@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Icon } from './Icon';
 import 'github-markdown-css/github-markdown.css';
-import { Dropdown } from 'antd';
+import { ConfigProvider, Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
@@ -11,7 +11,7 @@ import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
-import { postMessage, getHasWorkspace, getInjectedSessionId, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
+import { postMessage, getHasWorkspace, getInjectedSessionId, getInjectedDraftMode, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { DecorativeLogo } from './DecorativeLogo';
 import { canCloseConversation, newConversationEntryOf, openConversationModeOf, rendersConversationListInWebview, type HostInfo } from '../host/types';
@@ -28,6 +28,8 @@ import { DeleteConfirmDialog } from './components/DeleteConfirmDialog';
 import { ApplyDefaultsDialog } from './components/ApplyDefaultsDialog';
 import { NoticeToast, type NoticeItem } from './components/NoticeToast';
 import { getColors } from './colors';
+import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
+import { useUiFontOffset } from './fontSize';
 import { useConversationTree } from './hooks/useConversationTree';
 import { useConversationLoading } from './hooks/useConversationLoading';
 import { useMessageHandler } from './hooks/useMessageHandler';
@@ -37,6 +39,21 @@ import { profileLog } from './debug';
 
 // Profiling helper
 const profileTag = '[Profile]';
+
+/**
+ * 「新对话」下拉的条目内容：主行 + 一行次要说明。
+ *
+ * 两项都是**一次性创建动作**（不是模式开关），所以说明写「怎么建」而不是「当前模式」；
+ * 说明行的颜色交给 antd 的 token（禁用项另有 colorTextDisabled），不在这里猜灰阶。
+ */
+function menuItemLabel(title: string, hint: string): React.ReactNode {
+  return (
+    <div className="flex flex-col leading-tight py-0.5">
+      <span className="ui-fs-13">{title}</span>
+      <span className="ui-fs-11" style={{ color: 'var(--text-secondary)', opacity: 0.85 }}>{hint}</span>
+    </div>
+  );
+}
 
 const App = () => {
   const _appMountTime = useRef<number | null>(null);
@@ -129,10 +146,14 @@ const App = () => {
   const [branchView, setBranchView] = useState<BranchStateView>(undefined);
   /**
    * 当前草稿页的会话形态（specs/037 FR-006 创建时序）：`branch` = 点过下拉里的
-   * 「分支对话」。只影响草稿页表现**与首条消息的 `startNewConversation` 载荷**——
-   * 不建会话、不建 worktree、不发总线事件；形态到达 Core 之后由 `branchView` 承载。
+   * 「分支对话」（或宿主以分支形态打开的新视图）。只影响草稿页表现**与首条消息的
+   * `startNewConversation` 载荷**——不建会话、不建 worktree、不发总线事件；形态到达
+   * Core 之后由 `branchView` 承载。
+   *
+   * 初值来自宿主注入（Electron 侧栏 / 顶栏选「分支对话」时新视图带 `--draftMode=branch`）；
+   * 单视图宿主每次新建由 `handleNewConversation` 就地设值。
    */
-  const [draftBranchMode, setDraftBranchMode] = useState<'plain' | 'branch'>('plain');
+  const [draftBranchMode, setDraftBranchMode] = useState<'plain' | 'branch'>(() => getInjectedDraftMode());
   /**
    * 创建入口的前置数据（`branchPrecheckRequested` 应答，specs/037 FR-003）。
    *
@@ -722,7 +743,7 @@ const App = () => {
     // （宿主复用「未发送的新对话」视图，保住那边的草稿）。与 navigateToSession 同一分工：
     // 本视图不改自己的会话状态，否则切回本视图会看到空消息或永远转圈的 loading。
     if (openConversationModeOf(hostInfo) === 'openConversation') {
-      postMessage({ type: 'openNewConversation' });
+      postMessage({ type: 'openNewConversation', mode });
       return;
     }
     // 草稿页形态（specs/037 FR-006 创建时序）：只影响草稿页表现与首条消息的载荷，
@@ -830,6 +851,19 @@ const App = () => {
    * 分支草稿页的提示只在这一态出现，发送第一条消息建立会话后归位。
    */
   const isDraftPage = currentSessionId !== null && newChatSessionRef.current === currentSessionId;
+
+  /**
+   * 分支草稿页自己拉一次前置数据（specs/037 FR-003「下拉展开与草稿页打开时各拉一次」）。
+   *
+   * 草稿页可能不经下拉进入（Electron 侧栏 / 顶栏注入分支形态直接开视图，单视图宿主
+   * 也可能由上次的草稿形态带入），此时没有展开动作替它拉数据——脏工作区提示会停在
+   * 等待态。判据只看「草稿形态 + 草稿页」，不重复拉：`branchPrecheck` 已有值时不再发。
+   */
+  useEffect(() => {
+    if (!isDraftPage || draftBranchMode !== 'branch') return;
+    if (branchPrecheck !== undefined) return;
+    postMessage({ type: 'requestBranchPrecheck' });
+  }, [isDraftPage, draftBranchMode, branchPrecheck]);
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -1095,6 +1129,9 @@ const App = () => {
 
   const isDark = theme === 'dark';
 
+  // 界面字号档位偏移：antd 弹层的 fontSize token 是 JS 取值，需订阅后重渲染
+  const fontOffset = useUiFontOffset();
+
   // 使用 useMemo 缓存 colors 对象，避免每次 App 重渲染都新建
   const colors = useMemo(() => getColors(isDark), [isDark]);
 
@@ -1276,12 +1313,31 @@ const App = () => {
               </button>
             )}
             {/*
+              草稿页的形态标记（specs/037 FR-006）：分支形态的「未发送的新对话」在标题
+              **前**显示一个分支图标，用来和普通草稿页区分。**只有图标**——草稿页不显示
+              分支名，也不显示「分支对话」字样——草稿页是「还没发第一条消息」的状态，
+              用户在这里只该看到形态。发送后草稿页结束，分支名由 `branchView` 接管。
+            */}
+            {isDraftPage && draftBranchMode === 'branch' && (
+              <span
+                className="shrink-0 flex items-center"
+                data-testid="draft-branch-icon"
+                title={t('branch.draftTip')}
+                style={{ color: colors.harness }}
+              >
+                <Icon name="git-branch" size={12} />
+              </span>
+            )}
+            {/*
               分支名放在会话标题**前**（specs/037 FR-006 / AC-17）：只有名字本身
               （不带 `tuxedo/` 前缀）——**没有图标、没有「分支对话」字样**。悬停显示完整
               分支名。`unavailable` 时转警告色并在悬停里给出原因；它不是一个常驻状态区。
               消息区与状态条里不出现任何分支横幅、依赖策略、并行计数或发布按钮。
+
+              **草稿页不显示分支名**（AC-16）：宿主在「打开新对话」时就已让 Core 建出
+              worktree 并推了 `ready`，但用户还没发第一条消息，草稿页只保留形态图标。
             */}
-            {branchView?.state === 'ready' && (
+            {branchView?.state === 'ready' && !isDraftPage && (
               <span
                 className="ui-fs-11 shrink-0"
                 data-testid="title-branch-name"
@@ -1493,15 +1549,22 @@ const App = () => {
               >
                 <Icon name="plus" size={16} style={{ color: colors.textSystem }} />
               </button>
+              <ConfigProvider theme={dropdownMenuTheme(colors, isDark, 12 + fontOffset)}>
               <Dropdown
                 trigger={['click']}
                 placement="bottomRight"
                 destroyOnHidden
+                dropdownRender={(menu) => (
+                  // 弹层外壳与输入区两处菜单同源（主题边框 + 圆角裁切），背景 / 文字由
+                  // ConfigProvider 的 Dropdown token 给（src/webview/components/dropdownMenuTheme.ts）
+                  <div style={menuPanelShellStyle(colors)}>{menu}</div>
+                )}
                 menu={{
                   items: [
                     {
                       key: 'plain',
-                      label: t('branch.plainChat'),
+                      // 两项都带一行说明：它们是「怎么建」，不是模式开关
+                      label: menuItemLabel(t('branch.plainChat'), t('branch.plainChatHint')),
                       onClick: () => handleNewConversation('plain'),
                     },
                     {
@@ -1509,7 +1572,10 @@ const App = () => {
                       // 非 git 仓库时置灰并说明原因（判定来自 `branchPrecheckRequested`，
                       // 宿主不跑 git；AC-9）。`branchPrecheck === undefined` 是等待态，
                       // 不按猜测值渲染——按不可用处理（进入菜单时已发起拉取）
-                      label: t('branch.branchChat'),
+                      label: menuItemLabel(
+                        t('branch.branchChat'),
+                        branchAvailable ? t('branch.branchChatHint') : t('branch.notGit'),
+                      ),
                       disabled: !branchAvailable,
                       onClick: () => handleNewConversation('branch'),
                     },
@@ -1530,6 +1596,7 @@ const App = () => {
                   <Icon name="chevron-down" size={10} style={{ color: colors.textSystem, marginBottom: 7 }} />
                 </button>
               </Dropdown>
+              </ConfigProvider>
             </div>
             )}
             {/* 关闭按钮（多视图模式）：销毁当前 webview，释放渲染进程资源 */}

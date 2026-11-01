@@ -27,3 +27,24 @@
 - [x] **T012**（FR-008、FR-009、FR-010）：文档同步——`docs/architecture/events.md`（事件表 + 载荷列）、`docs/core/standalone-core.md`（业务范围 + 事实归属 + `UiRequest`）、`docs/core/standalone-core-boundaries.md`（`UiRequest` 表与宿主读事实）、`docs/architecture/principles.md`（事实表）、新增 `docs/features/branch-conversation.md`、`docs/README.md` 地图、`docs/architecture/open-questions.md` 四项待定；依赖：T007、T009、T010；完成判据：`npm run test:unit -- docs-lint` 绿
 - [x] **T013**（FR-006、FR-007）：需求基线与 e2e 映射——`docs/features/user-stories/dialog-core.md` 收录 US-76、`tools.md` 收录 US-74 / US-75、`desktop.md` 补侧栏分支树、`docs/features/user-stories.md` 附录登记三条 US 的 e2e 落点与豁免理由；依赖：T012；完成判据：`npm run test:unit -- docs-lint` 绿（FR ↔ e2e 测试名双向对照）
 - [x] **T014**（FR-001 ~ FR-011）：全量回归与提交；依赖：T011 ~ T013；完成判据：`npm run check-types && npm run lint && npm run test:core && npm run test:all` 全绿，提交信息带 `Flow: L3` + `Spec: 037`
+
+## 追加任务（评审后 UI 收敛）
+
+- [x] **T015**（FR-006）：入口与展示的三处收敛——①webview 新对话下拉套 `dropdownMenuTheme` 的
+      `ConfigProvider` + `menuPanelShellStyle`（弹层配色跟随主题，与输入区两处菜单同源）、
+      分支项置灰时把原因写进下拉；②Electron 原生侧栏「新对话」改为 split button（主「+」+
+      小三角自绘 `.actions-menu`，浅 / 深色主题覆盖，前置数据经 `sidebar:branch-precheck` →
+      `UiRequest.branchPrecheckRequested`）、侧栏条目标题前显示分支名；③分支草稿页标题前加
+      `git-branch` 图标作形态标记（草稿页仍不显示分支名）；依赖：T009、T010；完成判据：
+      `branchModeEntry`、`e2e/webview/branchConversation.spec.ts`、
+      `e2e/electron/branchSidebar.spec.ts` 绿
+- [x] **T016**（FR-006）：多视图宿主的草稿形态透传——`openNewConversation` 带 `mode`、
+      新视图注入 `--draftMode=`、`startNewConversation` 上报 `getInjectedDraftMode()`；
+      「未发送新对话」视图只在**形态相同**时复用（注入值只在创建时生效）；
+      依赖：T015；完成判据：同上
+- [x] **T017**（FR-006 / FR-008）：回归与文档——分支草稿页被误判 `unavailable` 的 Core 缺陷
+      修复与回归用例（见 `specs/defects/branch-draft-page-false-unavailable.md`）、
+      as-built 基线同步（`docs/features/branch-conversation.md`、`docs/features/user-stories.md`、
+      `user-stories/dialog-core.md`、`docs/hosts/host-info.md`、`host-matrix.md`、
+      `docs/architecture/contracts.md`）；依赖：T016；完成判据：
+      `npm run check-types && npm run lint && npm run test:core && npm run test:unit` 绿

@@ -69,6 +69,7 @@ Electron 悬浮窗只把 `conversationListOwner` 切到 `webview`（原生侧栏
 | 界面语言 | `i18n` 的 `readInitialUiLanguage()` | `window.__uiLocale = "${uiLanguage}"`（宿主 `settings.json` 的 `uiLanguage`） | `exposeInMainWorld('__uiLocale', uiLanguage)` |
 | 界面字号 | `fontSize` 的 `readInitialUiFontSize()` | `window.__uiFontSize = "${uiFontSize}"`（宿主 `settings.json` 的 `uiFontSize`） | `exposeInMainWorld('__uiFontSize', uiFontSize)`（取自 `--uiFontSize=`） |
 | 首帧主题 | `getInitialTheme()` | `window.__initialTheme`（`activeColorTheme.kind === Light` → `'light'`，否则 `'dark'`） | `exposeInMainWorld('__initialTheme', initialTheme)` |
+| 新对话草稿形态 | `getInjectedDraftMode()` | 不注入（单视图宿主的新对话由界面动作就地决定形态） | `exposeInMainWorld('__draftMode', draftMode)`（取自 `--draftMode=`；只有以分支形态新建的视图带 `branch`，其余 `plain`，见 [docs/features/branch-conversation.md 第 4 节](../features/branch-conversation.md#fr-006入口与展示)） |
 
 注入都在 webview 的 module 脚本执行之前完成，读取方首次调用时一定已就绪。
 
@@ -95,7 +96,7 @@ webview 只按能力渲染，不判断宿主类型：
 | --- | --- | --- |
 | `App.tsx` 顶栏 | `rendersConversationListInWebview(hostInfo)` | `true` 时渲染对话历史下拉（`Dropdown`）；`false` 时由 Electron 原生侧栏接管，webview 不渲染 |
 | `App.tsx` 历史对话按钮提醒 | `sessionRuntimeStatesRef` 的 `waiting` + 本视图 `conversations` 的 `sessionId` 集合 | 对话列表由 webview 渲染（VS Code / Electron 悬浮窗）时，**本视图对话列表里**有「其它会话」在等待用户操作（ask user / 权限确认）时给历史按钮加黄色呼吸提醒（`history-btn--attention`）。只认本视图列表里的会话：列表按工作目录读盘（`loadConversationList(workspace)`），因此其它工作目录的 `waiting` 不提醒——浮窗顶栏只能看 / 切到本目录的对话，提醒了也过不去。列表与运行时状态都是**视图本地缓存**：列表只推给活动视图、状态只在变化时推，所以切到 webview 渲染列表时 `App.tsx` 会主动补发 `getConversations` + `requestSessionRuntimeStates`，避免「之前不是活动视图」的浮窗用旧数据判断（[docs/architecture/host-ui-modules.md 第 3 节](../architecture/host-ui-modules.md#3-webviewmessagehandler)） |
-| `App.tsx` 顶栏 | `newConversationEntryOf(hostInfo) === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发。点击后按 `openConversationModeOf(hostInfo)` 分支：`openConversation`（多视图）只发 `{ type: 'openNewConversation' }` 交给宿主另开 / 复用「未发送的新对话」视图，本视图不改自己的会话状态；`loadConversation`（单视图）在当前视图内原地新建（发 `startNewConversation`） |
+| `App.tsx` 顶栏 | `newConversationEntryOf(hostInfo) === 'webview'` | 渲染「新建对话」按钮；`'host'` 时由侧栏按钮触发。点击后按 `openConversationModeOf(hostInfo)` 分支：`openConversation`（多视图）只发 `{ type: 'openNewConversation', mode }` 交给宿主另开 / 复用「未发送的新对话」视图（`mode` 是这次创建动作的形态，specs/037 FR-006），本视图不改自己的会话状态；`loadConversation`（单视图）在当前视图内原地新建（发 `startNewConversation`） |
 | `App.tsx` 历史对话下拉的删除 | `openConversationModeOf(hostInfo)` | 删除当前对话后：`openConversation`（多视图）由宿主连同该会话的视图一起关（`deleteConversationWithViews`），关掉当前视图后由 `switchAwayFromClosedSession` 另开一个新对话视图，webview 不再自己新建；`loadConversation`（单视图）在当前视图内原地新建 |
 | `App.tsx` 顶栏 | `canCloseConversation(hostInfo)` | `true` 时渲染关闭按钮，发 `{ type: 'closeWebview' }`（销毁 webview，释放渲染进程） |
 | `App.tsx.navigateToSession()`（会话跳转的唯一 UI 入口，内部委托 `webviewEnv.navigateToConversation()`） | `openConversationModeOf(hostInfo)` | 对话列表 / 对话树 / 子代理 From 链接 / 返回父会话跳转时：`openConversation` 只发消息交给宿主另开视图；`loadConversation` 在当前视图内原地加载。任何入口都不得直连 `navigateToConversation`，否则会绕过 loading（统一入口见 9.3.1） |

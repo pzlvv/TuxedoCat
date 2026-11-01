@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { hasHostMessageApi, postMessage } from '../webviewEnv';
+import { hasHostMessageApi, postMessage, getInjectedDraftMode } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
 import type { SessionCreator } from '../../shared/sessionCreator';
@@ -219,7 +219,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       webSearch: nextWebSearch,
       modelRef: nextModelRef,
     }));
-    postMessage({ type: 'startNewConversation', sessionId: newSessionId });
+    postMessage({
+      type: 'startNewConversation',
+      sessionId: newSessionId,
+      // 草稿形态随首条消息上报（specs/037 FR-006 创建时序）：多视图宿主的新对话视图
+      // 由宿主以 `--draftMode=branch` 注入打开，形态只在这里回到 Core。
+      mode: getInjectedDraftMode(),
+    });
     // 聚焦输入框
     setTimeout(() => {
       props.mainInputRef.current?.focus();

@@ -34,6 +34,7 @@ export const enDict: Record<string, string> = {
   'branch.titleTip': 'Branch {ref}',
   'branch.listTipSource': 'tuxedo/{name} (branched from {baseBranch} · {base} · {time})',
   'branch.unavailableTip': 'Branch unavailable: {detail}',
+  'branch.draftTip': 'This conversation will be created as a branch conversation',
   'notice.branch.unavailable': 'Branch unavailable: {reason}',
   'files.branchTitle': 'File explorer ({branch})',
   'files.mainBranch': 'main branch',

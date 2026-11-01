@@ -740,17 +740,25 @@ export type WebviewToHostMessage = {
    */
   targetWorkspaceId: string | null;
 } | {
-  /** 多视图宿主：顶栏「+」新开一个「新建对话」视图 */
+  /**
+   * 多视图宿主：新开一个「新建对话」视图。
+   *
+   * `mode` 是**一次性创建动作**的形态（specs/037 FR-006）：宿主按它决定新视图的草稿形态
+   * （分支形态的首条消息带 `mode: 'branch'`）。不记住选择、没有选中态；缺省 = 普通对话。
+   */
   type: 'openNewConversation';
+  mode?: 'plain' | 'branch';
 } | {
   type: 'startNewConversation';
   sessionId: string;
   /**
    * 会话形态（specs/037 FR-006 创建时序）：`branch` = 分支对话，宿主翻译成
-   * `UiEvent.branchModeChanged` 让 Core 建 worktree；`plain`（缺省）= 普通对话。
+   * `UiEvent.branchModeChanged` 让 Core 建 worktree；缺省 = 普通对话。
    *
    * 形态只影响**创建这一刻**：此后由 core 的 `branchStateChanged` 承载持久事实，
-   * webview 不再回传（无「切换模式」入口）。
+   * webview 不再回传（无「切换模式」入口）。**缺省语义是普通对话**（既有调用点与
+   * 旧宿主不必改），因此这里是可选字段而不是判别联合——它表达的是「新增的可选标记」，
+   * 不是「两种互斥结果的缺一不可」（铁律 4.2 的判别联合口子留给真正的互斥形态）。
    */
   mode?: 'plain' | 'branch';
 } | {
