@@ -455,6 +455,12 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
     tmp+rename 主流写法）会**静默断链**：分支停在旧内容，零信号；且硬链接不能跨卷
     （worktree 在 Core 数据目录）。符号链接按路径共享、共享关系可见、失败显式（悬空链接
     读取报不存在）；Windows 权限缺口由「复制兜底」承担。否决（spec FR-010）。
+14. **单文件 bind mount（`mount --bind <主工作区>/<file> <worktree>/<file>`）**：Linux
+    上对普通文件合法（Docker 的 `-v a.txt:/app/a.txt` 即此），但语义与硬链接同源——挂载点
+    钉在旧 inode 上，主工作区一侧的原子替换保存后分支仍读旧内容（静默分叉，且比硬链接
+    更隐蔽：连 `st_nlink` 都不暴露共享关系）；特权门槛与 overlay 相同（`CAP_SYS_ADMIN`），
+    Windows 无对应物；挂载点在 worktree 内还引入卸载顺序与崩溃对账义务（符号链接零成本
+    随 worktree 删除）。否决，单文件用符号链接 + 复制兜底（spec FR-010）。
 
 > 第 1 条、第 2 条与第 5 / 6 条够分量，建议收敛时落两篇 ADR：
 > `docs/adr/0016-branch-conversation-worktree.md`（worktree vs 整体 overlay vs 自建 CoW）
