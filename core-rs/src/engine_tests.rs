@@ -8510,6 +8510,46 @@ fn tool_root_follows_the_branch_worktree() {
     assert!(core.branch_prompt_of("s-plain").is_none());
 }
 
+/// 分支草稿页的分支视图必须是 `ready`（specs/037 AC-16）：会话已建、`meta.json` 还没落盘
+/// （首条消息才创建）时，`emit_branch_state` 不能因为「按会话查不到 meta」就把工作区
+/// 判成不在 git 仓库里 → 草稿页一打开就顶着「分支不可用」的警告。
+///
+/// 回归点：可用性核对的工作区取 `project_of`（先读会话状态里的 project），不是
+/// `project_of_session`（只读磁盘上的 meta）。
+#[test]
+fn draft_branch_session_reports_ready_before_meta_exists() {
+    let sandbox = crate::test_support::GitSandbox::new("engine-branch-draft");
+    let workspace = sandbox.workspace_text();
+    let harness = EngineHarness::start(|_request| None);
+    let core = harness.core.clone();
+    crate::config::set_session_workspace("s-draft", Some(workspace.clone()));
+
+    let setup = crate::branch::worktree::create_or_reuse(&workspace, None).expect("create branch");
+    let worktree_text = setup.facts.worktree.clone();
+    {
+        let state = core.session("s-draft");
+        let mut state = state.lock().unwrap();
+        state.project = Some(workspace.clone());
+        state.branch = Some(setup.facts.clone());
+        state.branch_prompt = Some(setup.prompt_section());
+    }
+
+    core.emit_branch_state("s-draft");
+    let events = harness.sink.events_of("branchStateChanged");
+    let view = events
+        .last()
+        .and_then(|event| event.get("view"))
+        .expect("branchStateChanged carries a view");
+    assert_eq!(view.get("state").and_then(Value::as_str), Some("ready"));
+    assert_eq!(
+        view.get("worktree").and_then(Value::as_str),
+        Some(worktree_text.as_str())
+    );
+
+    // 收尾：删掉这次建的 worktree 与分支（沙箱只回收目录，git 分支留着不影响别的用例）
+    let _ = crate::branch::worktree::remove(&workspace, &setup.facts, &[]);
+}
+
 /// 分支会话的 Bash 防自毁闸门（specs/037 FR-004）：拒绝作用于自身的 `git worktree
 /// remove` 与 `git branch -D`，其余命令与非分支会话一律放行。
 #[test]

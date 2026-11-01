@@ -801,7 +801,13 @@ impl Core {
         let facts = state.lock().unwrap().branch.clone();
         let view = match facts {
             Some(facts) => {
-                let repo_root = history::project_of_session(session_id)
+                // 工作区取会话状态里的 project（`project_of` 先读它）：分支会话建立时
+                // `meta.json` 还没落盘（首条消息才创建），只查 `project_of_session`
+                // 会把草稿页误判成「工作区已不在 git 仓库里」→ 未发送的分支草稿页
+                // 一打开就显示分支不可用（specs/037 AC-16 的 ready 视图）。
+                let repo_root = self
+                    .project_of(session_id)
+                    .ok()
                     .and_then(|workspace| crate::branch::repo::detect_repo(std::path::Path::new(&workspace)).ok())
                     .map(|facts| facts.root);
                 crate::branch::worktree::check_available(&facts, repo_root.as_deref())
@@ -819,7 +825,9 @@ impl Core {
         let Some(facts) = self.branch_of(session_id) else {
             return;
         };
-        let repo_root = history::project_of_session(session_id)
+        let repo_root = self
+            .project_of(session_id)
+            .ok()
             .and_then(|workspace| {
                 crate::branch::repo::detect_repo(std::path::Path::new(&workspace)).ok()
             })
