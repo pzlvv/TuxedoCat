@@ -23,7 +23,7 @@ worktree 目录里工作，该目录位于 Core 数据目录（**不在仓库内
 ## 1. 用户场景与验收标准
 
 - 场景 1：分支对话在自己的 worktree 里工作
-  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `<工作区目录>/worktrees/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
+  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `<工作区短名>/worktrees/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
   - **AC-2**（FR-002）：GIVEN 分支对话 WHEN `Write` 写 `a.txt` 或 `Bash` 执行 `npm run build` THEN 文件落在 worktree 内；主工作区该路径不变、`git status` 无新增条目。
   - **AC-3**（FR-002）：GIVEN 分支对话 WHEN 调用工具 THEN 全部工具（`Read` / `Write` / `Edit` / `Bash` / `Grep` / `Glob`）以 worktree 为根——实现是会话级 `cwd` 一次改向，无逐工具分支。
   - **AC-4**（FR-002）：GIVEN 分支对话的 worktree 已存在 WHEN 重新打开该对话 THEN 复用同一 worktree（不重建、不丢失未提交改动）。
@@ -86,7 +86,7 @@ Core 全部经 `git worktree list --porcelain` 等命令读取，不解析其内
 `ToolContext.cwd` 跟随，无逐工具分支、无工具层钩子；`Bash` 的 `input.cwd` 语义不变
 （根内相对路径解析到根、绝对路径原样交子进程）。
 
-**worktree 位置**：`<Core 数据目录>/<工作区目录>/worktrees/<branch>/`——**不在仓库内**。
+**worktree 位置**：`<Core 数据目录>/worktrees/<工作区短名>/<branch>/`——**不在仓库内**。`<工作区短名>` 是 `w-<sha256 前 12 位>`，固定长度：目录名若随工作区完整路径编码（复用它上面的对话空间目录），再拼 `<branch>/` 与 worktree 内的 `.git` 后会越过 Windows 的 260 字符上限 （缺陷规格 `specs/defects/branch-worktree-path-exceeds-windows-max-path.md`）。工作区全路径仍由 `meta.json` 的 `branch.worktree` 承载。
 这一条决定可见性（FR-011）：放在仓库内会让主工作区的 `Grep` / `Glob` / `Bash ls` / IDE
 资源管理器 / 文件监视器全部看到分支内容，那是暴露而非隔离。
 
@@ -191,7 +191,7 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：标题�
 
 | 实现 | 装配条件 | 行为 |
 | --- | --- | --- |
-| `OverlayDeps` | Linux 且 Core 进程**内**试挂 overlay 成功 | 对主工作区里**已存在**的已知依赖目录（`node_modules` / `target` / `.venv` / `venv` / `vendor` / `.gradle` / `build`）在 worktree 内挂 overlay：lower = 主工作区那份，upper = `<工作区目录>/worktrees/deps/<branch>/<dir>`（与 worktree 同生命周期，但在 worktree 目录**外**） |
+| `OverlayDeps` | Linux 且 Core 进程**内**试挂 overlay 成功 | 对主工作区里**已存在**的已知依赖目录（`node_modules` / `target` / `.venv` / `venv` / `vendor` / `.gradle` / `build`）在 worktree 内挂 overlay：lower = 主工作区那份，upper = `<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/<dir>`（与 worktree 同生命周期，但在 worktree 目录**外**） |
 | `SkipDeps` | Windows / macOS / 探测失败 | 不搬，系统提示告知模型「依赖需自行安装」 |
 
 探测**在 Core 进程内**实际试挂一个临时 overlay 再卸载（读 `/proc/filesystems` 只看模块存在；

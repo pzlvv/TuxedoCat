@@ -48,7 +48,7 @@ plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用�
 ## 用户场景与验收标准
 
 - 场景 1：分支对话在自己的 worktree 里工作
-  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `<工作区目录>/worktrees/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
+  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `worktrees/<工作区短名>/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
   - **AC-2**（FR-002）：GIVEN 分支对话 WHEN `Write` 写 `a.txt` 或 `Bash` 执行 `npm run build` THEN 文件落在 worktree 内；主工作区该路径不变、`git status` 无新增条目。
   - **AC-3**（FR-002）：GIVEN 分支对话 WHEN 调用工具 THEN 全部工具（`Read` / `Write` / `Edit` / `Bash` / `Grep` / `Glob`）以 worktree 为根——实现是会话级 `cwd` 一次改向，无逐工具分支。
   - **AC-4**（FR-002）：GIVEN 分支对话的 worktree 已存在 WHEN 重新打开该对话 THEN 复用同一 worktree（不重建、不丢失未提交改动）。
@@ -110,7 +110,10 @@ plan「被否决的替代方案」。**能力边界**：仅对 git 仓库可用�
 `Read` / `Write` / `Edit` / `Bash` / `Grep` / `Glob` 全部自动跟随，无逐工具分支、无工具层钩子。
 `Bash` 的 `input.cwd` 语义不变（根内相对路径解析到根、绝对路径原样）。
 
-**worktree 位置**：Core 数据目录下的 `<工作区目录>/worktrees/<branch>/`——**不在仓库内**。
+**worktree 位置**：Core 数据目录下的 `worktrees/<工作区短名>/<branch>/`——**不在仓库内**。
+`<工作区短名>` 是 `w-<sha256 前 12 位>`（固定长度）：不复用按工作区完整路径编码的
+对话空间目录，否则再拼 `<branch>/` 与 worktree 内的 `.git` 会越过 Windows 的 260 字符
+上限（缺陷规格 `specs/defects/branch-worktree-path-exceeds-windows-max-path.md`）。
 这一条决定可见性（FR-011）：放在仓库内会让主工作区的 `Grep` / `Glob` / `Bash ls` / IDE
 资源管理器 / 文件监视器全部看到分支内容，那是暴露而非隔离。
 
@@ -268,7 +271,7 @@ Electron 侧栏的「文件资源管理器」跟随当前活动对话：
 
 | 平台 | 实现 | 行为 |
 | --- | --- | --- |
-| Linux（Core 进程可挂载 overlay） | `OverlayDeps` | 对主工作区里**已存在**的已知依赖目录（`node_modules` / `target` / `.venv` / `venv` / `vendor` / `.gradle` / `build`）在 worktree 内挂 overlay：lower = 主工作区那份（只读），upper = `<工作区目录>/worktrees/deps/<branch>/<dir>`（分支增量，与 worktree 同生命周期，但在 worktree 目录**外**）。分支读到的依赖与主工作区一致，`npm install` 只写 upper，主工作区不动 |
+| Linux（Core 进程可挂载 overlay） | `OverlayDeps` | 对主工作区里**已存在**的已知依赖目录（`node_modules` / `target` / `.venv` / `venv` / `vendor` / `.gradle` / `build`）在 worktree 内挂 overlay：lower = 主工作区那份（只读），upper = `<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/<dir>`（分支增量，与 worktree 同生命周期，但在 worktree 目录**外**）。分支读到的依赖与主工作区一致，`npm install` 只写 upper，主工作区不动 |
 | Linux（Core 进程不能挂载：非特权进程 / 内核不支持） | `SkipDeps` | 不搬，系统提示告知模型「依赖需自行安装」 |
 | Windows / macOS | `SkipDeps` | 同上（无 overlay 等价物） |
 

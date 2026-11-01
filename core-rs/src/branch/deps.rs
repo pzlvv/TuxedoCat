@@ -106,9 +106,9 @@ impl DepStrategy for SkipDeps {
 
 /// Linux overlayfs 只叠加依赖子目录（lower = 主工作区那份，upper = 分支自己的增量）。
 ///
-/// upper 与 workdir 放在 **worktree 之外**的 `worktrees/deps/<branch>/`（specs/037
-/// FR-010 的三个理由：不污染分支自己的 `git status`、不撞 `git worktree remove`、
-/// upper 与 workdir 同一文件系统）。
+/// upper 与 workdir 放在 **worktree 之外**的 `worktrees/<工作区短名>/deps/<branch>/`
+/// （specs/037 FR-010 的三个理由：不污染分支自己的 `git status`、不撞
+/// `git worktree remove`、upper 与 workdir 同一文件系统）。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OverlayDeps;
 
@@ -139,9 +139,9 @@ impl DepStrategy for OverlayDeps {
 
 /// upper / workdir 根：`<worktree 的父目录>/deps/<branch>/`
 ///
-/// worktree 在 `<Core 数据目录>/<工作区>/worktrees/<branch>/`，父目录是
-/// `<Core 数据目录>/<工作区>/worktrees/`，因此 upper 落在 `.../worktrees/deps/<branch>/`
-/// ——与 worktree 平级、在 worktree 目录之外。
+/// worktree 在 `<Core 数据目录>/worktrees/<工作区短名>/<branch>/`，父目录是
+/// `<Core 数据目录>/worktrees/<工作区短名>/`，因此 upper 落在
+/// `.../worktrees/<工作区短名>/deps/<branch>/`——与 worktree 平级、在 worktree 目录之外。
 pub fn deps_root_for(worktree: &Path, branch: &str) -> Option<PathBuf> {
     worktree.parent().map(|parent| parent.join("deps").join(branch))
 }

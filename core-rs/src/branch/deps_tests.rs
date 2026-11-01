@@ -81,7 +81,12 @@ fn probe_assembles_a_strategy_once() {
 
 // ==================== 单文件本地配置（全平台） ====================
 
-/// 被 `.gitignore` 忽略的 `.env`：worktree 内建符号链接，内容与主工作区一致
+/// 被 `.gitignore` 忽略的 `.env`：worktree 内共享，内容与主工作区一致
+///
+/// 共享有两种落法：**符号链接**（正常路径）或**创建时复制**（符号链接失败时的一档
+/// 回退——Windows 未启用开发者模式 / 非管理员时 `symlink_file` 返回
+/// `ERROR_PRIVILEGE_NOT_HELD`）。两者都是设计允许的档位，所以断言按实际档位分支，
+/// 而不是硬要求符号链接；两条分支各自的独有性质分开断。
 #[test]
 fn ignored_local_config_is_linked() {
     let sandbox = GitSandbox::new("deps-link");
@@ -96,21 +101,38 @@ fn ignored_local_config_is_linked() {
         .iter()
         .find(|entry| entry.name == ".env")
         .expect(".env should be shared");
-    assert_eq!(entry.mode, ConfigLink::Linked, "unix/windows should symlink here: {linked:?}");
-    let content = std::fs::read_to_string(worktree.join(".env")).expect("read through the link");
+    let content = std::fs::read_to_string(worktree.join(".env")).expect("read shared .env");
     assert_eq!(content, "TOKEN=1\n");
-    // 共享关系可见：符号链接（不是复制）
+
     let meta = worktree.join(".env").symlink_metadata().expect("lstat");
-    assert!(meta.file_type().is_symlink(), "expected a symlink");
+    match entry.mode {
+        ConfigLink::Linked => {
+            assert!(meta.file_type().is_symlink(), "Linked means a real symlink");
+            // 链接的独有性质：主工作区原子替换（tmp + rename）后，分支立刻读到新值
+            let temp = sandbox.workspace.join(".env.tmp");
+            std::fs::write(&temp, "TOKEN=2\n").expect("write temp");
+            std::fs::rename(&temp, sandbox.workspace.join(".env")).expect("atomic replace");
+            let updated =
+                std::fs::read_to_string(worktree.join(".env")).expect("read updated link");
+            assert_eq!(updated, "TOKEN=2\n", "symlink must follow atomic replacement");
+        }
+        ConfigLink::Copied => {
+            assert!(
+                !meta.file_type().is_symlink(),
+                "Copied means a plain file, not a link"
+            );
+            // 复制的独有性质：分支拿到的是创建时的快照，主工作区后续改动**不**跟进来
+            // （这正是回退档位的代价，写进系统提示让模型知道，不假装它是链接）
+            std::fs::write(sandbox.workspace.join(".env"), "TOKEN=3\n").expect("edit main .env");
+            let stale = std::fs::read_to_string(worktree.join(".env")).expect("read copied .env");
+            assert_eq!(
+                stale, "TOKEN=1\n",
+                "copied config is a snapshot; it must not track later main-workspace edits"
+            );
+        }
+    }
 
-    // 主工作区原子替换保存（tmp + rename）后分支读到新值
-    let temp = sandbox.workspace.join(".env.tmp");
-    std::fs::write(&temp, "TOKEN=2\n").expect("write temp");
-    std::fs::rename(&temp, sandbox.workspace.join(".env")).expect("atomic replace");
-    let updated = std::fs::read_to_string(worktree.join(".env")).expect("read updated link");
-    assert_eq!(updated, "TOKEN=2\n", "symlink must follow atomic replacement");
-
-    // 该分支 worktree 内 `git status` 不出现该名字
+    // 该分支 worktree 内 `git status` 不出现该名字（链接与复制都成立）
     let status = std::process::Command::new("git")
         .arg("-C")
         .arg(&worktree)

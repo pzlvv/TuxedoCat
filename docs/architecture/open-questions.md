@@ -33,7 +33,7 @@ last_reviewed: 2026-10-18
 
 ## 3. 分支对话
 
-现状：分支对话在 Core 数据目录下的 `<工作区目录>/worktrees/<branch>/` 建 git worktree，
+现状：分支对话在 Core 数据目录下的 `<工作区短名>/worktrees/<branch>/` 建 git worktree，
 依赖目录只在 Linux 且 Core 进程能挂 overlay 时叠加；单文件本地配置用符号链接共享
 （见 [branch-conversation.md](../features/branch-conversation.md)）。
 

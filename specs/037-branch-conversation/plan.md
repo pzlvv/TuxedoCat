@@ -73,8 +73,8 @@ IDE 资源管理器、主对话的 `Grep` / `Glob` / `Bash ls`、宿主文件监
 ### 3. worktree 布局与 git 交互
 
 ```
-<Core 数据目录>/<工作区目录>/worktrees/<branch>/      ← worktree 工作目录（仓库外）
-<Core 数据目录>/<工作区目录>/worktrees/deps/<branch>/ ← 依赖 overlay 的 upper 与 workdir（FR-010）
+<Core 数据目录>/worktrees/<工作区短名>/<branch>/     ← worktree 工作目录（仓库外）
+<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/ ← 依赖 overlay 的 upper 与 workdir
 <仓库根>/.git/worktrees/<branch>/                     ← git 自己管理，Core 不碰
 refs/heads/tuxedo/<branch>                            ← 真实分支（成果出口）
 ```
@@ -122,7 +122,7 @@ trait DepStrategy {
 
 | 实现 | 装配条件 | 行为 |
 | --- | --- | --- |
-| `OverlayDeps` | Linux 且探测成功（**Core 进程内**实际试挂 overlay 通过——实践上即进程持 `CAP_SYS_ADMIN`，如 root / 容器内 / 提权启动） | 对已有依赖目录挂 `overlay`：`lowerdir=<repo>/<dir>`、`upperdir=<Core 数据目录>/<工作区目录>/worktrees/deps/<branch>/<dir>`、`workdir=<Core 数据目录>/<工作区目录>/worktrees/deps/<branch>/.work/<dir>`，挂到 `<worktree>/<dir>` |
+| `OverlayDeps` | Linux 且探测成功（**Core 进程内**实际试挂 overlay 通过——实践上即进程持 `CAP_SYS_ADMIN`，如 root / 容器内 / 提权启动） | 对已有依赖目录挂 `overlay`：`lowerdir=<repo>/<dir>`、`upperdir=<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/<dir>`、`workdir=<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/.work/<dir>`，挂到 `<worktree>/<dir>` |
 | `SkipDeps` | 其余（Windows / macOS / Linux 非特权进程探测失败） | 不挂载，`describe()` 返回「依赖需自行安装」 |
 
 **探测与装配**：`probe_dep_policy()` 在首次创建分支对话时判定一次（`OnceLock` 缓存），
@@ -145,7 +145,7 @@ spec FR-010 与被否决第 13 条：符号链接按路径共享，主工作区�
 断链分叉**，且不能跨卷——否决。链接随 worktree 删除自然清理，无独立生命周期、不进崩溃
 对账。
 
-**upper 放 worktree 外**（`<Core 数据目录>/<工作区目录>/worktrees/deps/<branch>/`——
+**upper 放 worktree 外**（`<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/`——
 仓库外、与 worktree 平级、同生命周期）的三个理由：
 
 1. upper 的增量文件与 whiteout 字符设备若落进 worktree，会以未跟踪文件污染该分支自己的
@@ -430,7 +430,7 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
 7. **依赖目录挂在 worktree 内（upper 也放 worktree 里）**：upper 的增量与 whiteout 字符
    设备落进 git 工作树，以未跟踪文件污染该分支自己的 `git status` 与 `dirty` 判定
    （挂载点本身在 worktree 内是需求——依赖要出现在原路径，先卸载再 remove 即可）。
-   否决，upper 放 `<Core 数据目录>/<工作区目录>/worktrees/deps/<branch>/`（仓库外、
+   否决，upper 放 `<Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/`（仓库外、
    worktree 平级）。
 8. **分离 HEAD + 隐藏 ref（`refs/tuxedo/<name>`）**：上一版方案。ref 只能靠每轮
    `git update-ref` 补写，最多落后一轮，用户 `git merge` 时可能拿到旧提交——成果出口不可靠

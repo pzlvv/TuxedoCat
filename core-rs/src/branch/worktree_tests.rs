@@ -10,6 +10,19 @@ use crate::branch::worktree::{
 };
 use crate::test_support::GitSandbox;
 
+/// 路径比较（与生产代码的 `worktree::same_path` 同口径，仅供断言使用）。
+///
+/// 单列一份是因为 `same_path` 是私有实现细节；用例要断的是「两条路径指向同一位置」，
+/// 不是「两个字符串相等」——git 在 Windows 上也用正斜杠输出，字符串比较会假红。
+fn same_path_for_test(a: &str, b: &str) -> bool {
+    fn norm(path: &str) -> String {
+        let unified = path.replace('\\', "/");
+        let trimmed = unified.trim_end_matches('/');
+        if cfg!(windows) { trimmed.to_lowercase() } else { trimmed.to_string() }
+    }
+    norm(a) == norm(b)
+}
+
 /// worktree 建在 Core 数据目录下（**不在仓库里**，FR-002 / FR-011）
 #[test]
 fn worktree_lives_in_the_core_data_directory() {
@@ -292,7 +305,15 @@ fn reconcile_keeps_valid_worktrees_and_reports_orphans() {
     let sessions = vec![("s-kept".to_string(), kept.facts.clone())];
     let report = reconcile_on_start(&sessions, &[sandbox.workspace_text()]);
     assert_eq!(report.kept, vec![kept.facts.worktree.clone()]);
-    assert_eq!(report.orphans, vec![orphan.facts.worktree.clone()]);
+    // 孤儿路径由 `git worktree list --porcelain` 给出，git 在 Windows 上也输出正斜杠；
+    // 断言按路径比较而不是按字符串比较（生产代码同样用 `same_path` 归一两边）
+    assert_eq!(report.orphans.len(), 1, "exactly one orphan: {:?}", report.orphans);
+    assert!(
+        same_path_for_test(&report.orphans[0], &orphan.facts.worktree),
+        "orphan {:?} should be {}",
+        report.orphans[0],
+        orphan.facts.worktree
+    );
     assert!(report.missing.is_empty());
     // 孤儿不自动删
     assert!(Path::new(&orphan.facts.worktree).is_dir());
@@ -324,6 +345,57 @@ fn paths_follow_the_documented_layout() {
     );
     let deps_root = crate::branch::deps::deps_root_for(&path, "ellen-k3f").expect("deps root");
     assert_eq!(deps_root, root.join("deps").join("ellen-k3f"));
+}
+
+/// worktree 路径长度与**工作区路径长度无关**，且留有 Windows `MAX_PATH` 余量。
+///
+/// 回归的是「worktree 挂在 `conversations/<URI 编码的完整工作区路径>/` 之下」那次事故：
+/// 那一层的目录名随工作区路径线性增长，深层项目（或长临时目录）下 worktree 里再建
+/// `.git` 就越过 260，git 报 `'$GIT_DIR' too big` / `Filename too long`，分支对话直接
+/// 建不出来。修法是把 worktree 根提到与 `conversations/` 平级、目录名改用短哈希
+/// （`specs/defects/branch-worktree-path-exceeds-windows-max-path.md`）。
+#[test]
+fn worktree_path_stays_short_regardless_of_workspace_depth() {
+    let sandbox = GitSandbox::new("wt-path-len");
+    sandbox.register_workspace();
+
+    // 一个刻意很深的虚拟工作区路径：不落地，只用于路径推导
+    let deep = format!(
+        "C:/Users/someone/AppData/Local/Temp/{}/{}",
+        "very-long-directory-name-segment".repeat(4).replace("very-", "very-"),
+        "nested/project/root"
+    );
+    let short_root = worktrees_root(&sandbox.workspace_text()).expect("root for short ws");
+    let deep_root = worktrees_root(&deep).expect("root for deep ws");
+
+    // 核心不变量：两个根目录的**名字层数**一样，深度与工作区路径长度无关
+    assert_eq!(
+        short_root.components().count(),
+        deep_root.components().count(),
+        "worktree root depth must not depend on workspace path length"
+    );
+
+    let deep_path = worktree_path(&deep, "yanagi-n31").expect("deep worktree path");
+    // 余量：worktree 内还要建 `.git` 文件（+5），以及依赖目录的 upper 路径（`deps/<branch>/`）
+    let deepest = deep_path
+        .join("deps")
+        .join("yanagi-n31")
+        .join("node_modules");
+    let len = deepest.to_string_lossy().chars().count();
+    assert!(
+        len <= 200,
+        "worktree + deps path must leave room for .git under Windows MAX_PATH (260); got {len}: {}",
+        deepest.display()
+    );
+
+    // 同一工作区的两种分隔符写法必须落到同一个 slug（否则一份数据裂成两份）
+    let backslash = "C:\\Users\\someone\\project";
+    let forward = "C:/Users/someone/project";
+    assert_eq!(
+        worktrees_root(backslash).expect("bs root"),
+        worktrees_root(forward).expect("fs root"),
+        "separator spelling must not change the worktree root"
+    );
 }
 
 /// 单文件本地配置随创建一起共享（AC-36 的创建侧入口）

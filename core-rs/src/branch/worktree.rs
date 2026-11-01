@@ -3,10 +3,16 @@
 //! 布局（全部在 Core 数据目录内，**不在仓库里**——这是「分支不可见」的全部机制）：
 //!
 //! ```text
-//! <Core 数据目录>/<工作区>/worktrees/<branch>/       ← worktree 工作目录
-//! <Core 数据目录>/<工作区>/worktrees/deps/<branch>/  ← 依赖 overlay 的 upper 与 workdir
-//! refs/heads/tuxedo/<branch>                        ← 真实分支（成果出口）
+//! <Core 数据目录>/worktrees/<工作区短名>/<branch>/       ← worktree 工作目录
+//! <Core 数据目录>/worktrees/<工作区短名>/deps/<branch>/  ← 依赖 overlay 的 upper 与 workdir
+//! refs/heads/tuxedo/<branch>                           ← 真实分支（成果出口）
 //! ```
+//!
+//! `<工作区短名>` 是 `w-<sha256 前 12 位>`，**不复用** `conversations/<URI 编码的完整
+//! 工作区路径>/` 那层：那层目录名随工作区路径长度线性增长，再拼 `<branch>/` 后很容易
+//! 越过 Windows 的 260 字符 `MAX_PATH`（worktree 里还要建 `.git`，超限时 git 报
+//! `'$GIT_DIR' too big` / `Filename too long`）。工作区全路径由 `meta.json` 的
+//! `branch.worktree` 承载，不在目录名里重复编码。
 //!
 //! 创建序列（`specs/037-branch-conversation/plan.md` 的「worktree 布局与 git 交互」一节）：探测仓库 → 脏工作区判定 → `git worktree add
 //! <path> -b tuxedo/<name> HEAD` → 装配依赖策略 → 链接单文件本地配置。任一步失败即
@@ -60,16 +66,39 @@ impl BranchSetup {
     }
 }
 
-/// worktree 根目录：`<Core 数据目录>/<工作区>/worktrees/`
+/// 工作区在 worktree 根下的短目录名：`w-<sha256 前 12 位>`。
 ///
-/// 由会话工作目录推出 Core 数据目录里的对话空间目录，再拼 `worktrees`。目录创建失败
-/// 直接返回错误（不静默退回仓库内路径——那会破坏可见性边界，铁律 1）。
-pub fn worktrees_root(workspace: &str) -> Result<PathBuf, String> {
-    let project_dir = crate::config::project_conversation_dir(workspace)?;
-    Ok(project_dir.join("worktrees"))
+/// 为什么不复用对话空间目录（`conversations/<URI 编码的完整工作区路径>/`）：那一层的
+/// 目录名随工作区路径长度线性增长，`<branch>/` 再拼两级之后很容易越过 Windows 的
+/// 260 字符 `MAX_PATH`。git 在 worktree 里要写 `.git` 文件，超限时各版本报出的文案
+/// 不同（`fatal: '$GIT_DIR' too big` / `Filename too long`），但成因同一个。
+///
+/// 固定 12 位十六进制的目录名与工作区路径长度无关，`worktrees/` 这一层因此恒短；
+/// 工作区全路径仍然可查——由 `meta.json` 的 `branch.worktree` 承载（唯一事实源，
+/// FR-001），不在目录名里重复编码。
+fn workspace_slug(workspace: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    // 归一：Windows 上 `D:\a` 与 `D:/a` 是同一目录，不能让它们落到两个 slug
+    let normalized = workspace.replace('\\', "/");
+    hasher.update(normalized.as_bytes());
+    let digest = hasher.finalize();
+    let hash: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+    format!("w-{hash}")
 }
 
-/// worktree 目录：`<Core 数据目录>/<工作区>/worktrees/<branch>/`
+/// worktree 根目录：`<Core 数据目录>/worktrees/<工作区短名>/`
+///
+/// **与 `conversations/` 平级**，不挂在会话空间目录下：会话空间那层目录名由工作区
+/// 完整路径编码而来，长度随路径增长；worktree 里面还要建 `.git`，挂在那层之下会撞
+/// Windows 的 `MAX_PATH`（specs/defects/branch-worktree-path-exceeds-windows-max-path.md）。
+///
+/// 目录创建失败直接返回错误（不静默退回仓库内路径——那会破坏可见性边界，铁律 1）。
+pub fn worktrees_root(workspace: &str) -> Result<PathBuf, String> {
+    Ok(crate::config::config_home()?.join("worktrees").join(workspace_slug(workspace)))
+}
+
+/// worktree 目录：`<Core 数据目录>/worktrees/<工作区短名>/<branch>/`
 pub fn worktree_path(workspace: &str, branch: &str) -> Result<PathBuf, String> {
     Ok(worktrees_root(workspace)?.join(branch))
 }
