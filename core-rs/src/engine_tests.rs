@@ -8021,6 +8021,148 @@ fn cross_workspace_reply_routes_to_origin() {
     assert_eq!(event["content"], "做完了");
 }
 
+/// RT-1（`specs/defects/reply-parent-to-subagent-target-missing`）：跨工作区子代理作
+/// `Reply` 目标时，发起方 Core 只有远程登记、没有本地会话状态（`spawn_remote_agent`
+/// 不建 `SessionState`）。错误必须点明「它运行在另一个工作区、本机不可投递」，
+/// 不是「会话不存在」。
+#[test]
+fn reply_to_cross_workspace_subagent_reports_remote_workspace() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    // 造态：与 `spawn_remote_agent` 成功分支相同——只登记，不建本地会话状态
+    crate::subagent::register("sub_remote_target", "s-parent");
+    crate::subagent::register_remote("sub_remote_target", "s-parent", "HOST:/b");
+
+    let error = harness
+        .core
+        .deliver_agent_reply("sub_remote_target", "再做一件事", "s-parent")
+        .expect_err("跨工作区子代理在本机不可投递");
+    assert!(
+        error.contains("HOST:/b"),
+        "错误文案应点明目标工作区身份: {error}"
+    );
+    assert!(
+        error.contains("另一个工作区"),
+        "错误文案应说明它在另一个工作区: {error}"
+    );
+    assert!(
+        error.contains("Agent"),
+        "错误文案应给出可行动作（新起 Agent / 派发时写全）: {error}"
+    );
+    assert!(
+        !error.contains("不存在"),
+        "不再统一说「不存在」: {error}"
+    );
+    // 反向投递不能误发：「子代理 → 创建者」的事件只在目标等于调用者 creator 时发
+    assert!(
+        harness
+            .sink
+            .events()
+            .iter()
+            .all(|event| event["type"] != "crossWorkspaceAgentReplyRequested"),
+        "本地无会话时不得发跨工作区回投事件"
+    );
+    crate::subagent::reset_for_test();
+}
+
+/// RT-2：经 `Reply` 工具走同一条路径——工具结果同样点明目标工作区，且调用者会话按
+/// 真实语义标注（「当前会话 <id>」），不出现 `subAgentId=<session_*>` 这种错标。
+#[test]
+fn reply_tool_error_for_cross_workspace_target_names_the_remote_workspace() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    harness.core.session("session_parent").lock().unwrap().project =
+        Some("D:/repo/a".to_string());
+    crate::subagent::register("sub_remote_tool", "session_parent");
+    crate::subagent::register_remote("sub_remote_tool", "session_parent", "HOST:/b");
+
+    let outcome = crate::tools::execute(
+        "Reply",
+        &json!({ "message": "追加要求", "targetSessionId": "sub_remote_tool" }),
+        &crate::tools::ToolContext {
+            session_id: "session_parent".to_string(),
+            cwd: "D:/repo/a".to_string(),
+            tool_use_id: None,
+            on_progress: None,
+            cancel: None,
+            pause: None,
+            user_choice: None,
+            background: None,
+            subagent: Some(harness.core.subagent_hooks()),
+            transfer: None,
+        },
+    );
+    let text = outcome.text();
+    assert!(
+        text.contains("HOST:/b") && text.contains("另一个工作区"),
+        "工具结果应点明目标在另一个工作区: {text}"
+    );
+    assert!(
+        text.contains("当前会话 session_parent"),
+        "调用者会话按真实语义标注: {text}"
+    );
+    assert!(
+        !text.contains("subAgentId="),
+        "不再把调用者会话错标成 subAgentId: {text}"
+    );
+    assert!(!text.contains("不存在"), "不再统一说「不存在」: {text}");
+    crate::subagent::reset_for_test();
+}
+
+/// RT-3：本地子代理仍可投递（先绿，锁住「不要修坏本地路径」）——工具返回成功文本为
+/// message 原文，目标会话收到一条 `origin = agent` 的自动消息。
+#[test]
+fn reply_to_local_sub_agent_still_delivers() {
+    let sandbox = Sandbox::new("engine-reply-local-sub-agent");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    let parent = harness.core.session("s-reply-parent");
+    parent.lock().unwrap().project = Some(project.clone());
+    // 本地子代理：登记 + 本地会话状态（`create_sub_agent` 的成功形态）
+    let child = harness.core.session("sub_reply_local");
+    child.lock().unwrap().project = Some(project.clone());
+    child.lock().unwrap().parent_session_id = Some("s-reply-parent".to_string());
+    crate::subagent::register("sub_reply_local", "s-reply-parent");
+
+    let outcome = crate::tools::execute(
+        "Reply",
+        &json!({ "message": "本地子代理的回报" }),
+        &crate::tools::ToolContext {
+            session_id: "sub_reply_local".to_string(),
+            cwd: project,
+            tool_use_id: None,
+            on_progress: None,
+            cancel: None,
+            pause: None,
+            user_choice: None,
+            background: None,
+            subagent: Some(harness.core.subagent_hooks()),
+            transfer: None,
+        },
+    );
+    assert_eq!(
+        outcome.text(),
+        "本地子代理的回报",
+        "成功结果是 message 原文"
+    );
+    let delivered = harness
+        .core
+        .session("s-reply-parent")
+        .lock()
+        .unwrap()
+        .agent_messages
+        .clone();
+    assert_eq!(delivered.len(), 1, "本地子代理的 Reply 应入队");
+    assert_eq!(delivered[0].content, "本地子代理的回报");
+    assert_eq!(delivered[0].origin, "agent");
+    assert_eq!(delivered[0].from_session_id, "sub_reply_local");
+    crate::subagent::reset_for_test();
+}
+
 /// 发起方中止：远程子代理发中止事件，不在本地递归。
 #[test]
 fn cross_workspace_abort_emits_event() {

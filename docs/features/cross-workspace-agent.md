@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-23
+last_reviewed: 2026-11-01
 ---
 
 # 规格：跨工作区多 Agent 通信
@@ -88,7 +88,8 @@ TUI 不提供本能力。
   **silent 消息**注入（模型可见、落盘，UI 消息流与回放不展示）。
 - `Reply` 经 `CoreEvent.crossWorkspaceAgentReplyRequested` → 宿主 → `UiEvent.agentReplyReceived`
   回投发起方会话，作为 agent 消息出现；From 头展示目标工作区身份。回传路由的创建方
-  定位读 `creator`。
+  定位读 `creator`。方向是单向的：发起方不能把追加消息投递给运行中的跨工作区子代理
+  （[第 4 节](#4-边界与错误路径)）。
 - 会话级配置**全量继承发起方**（specs/025 FR-005）：发起方 Core 把本会话的生效值
   （agent mode / thinking effort / 模型 provider 成对 / 联网搜索 / MCP
   启用名单）随 `crossWorkspaceAgentRequested` 携带，目标 Core 全量应用、**不按角色
@@ -207,6 +208,10 @@ TUI 不提供本能力。
 - 非 Electron 宿主：`@` 是普通文本；`target` 报「当前宿主不支持」。
 - 发起方会话在子代理运行期间被删除：`Reply` 投递失败（与本地同口径），子代理按既有
   Reminder 重试后结束。
+- `Reply` 指向跨工作区子代理：发起方 Core 只有远程登记、没有该会话的本地状态，本机无投递
+  通道，工具错误点明它运行在 `<目标工作区身份>`、并给出「派发时把要求写全 / 等它 Reply /
+  追加任务请新起一个 `Agent`」；反向投递（发起方 → 子代理）的形态见
+  [docs/architecture/open-questions.md 第 3 节](../architecture/open-questions.md#3-跨工作区子代理的追加消息投递)。
 - 目标工作区 Core 断线 / 崩溃：发起方 `subAgentRunning` 收敛为假，跳转链接不可用。
 - 机器名在重启后变化：旧身份不再匹配，旧链接不可用并显示原因。
 
