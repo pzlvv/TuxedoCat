@@ -1039,6 +1039,89 @@ fn conversation_list_excludes_workspace_manifest() {
     assert_eq!(list[0]["sessionId"], "s1");
 }
 
+/// 列表条目必须带两个数字时间戳：宿主按数字格式化相对时间，缺任一项就渲染成
+/// `NaN/NaN/NaN`（specs/defects/conversation-list-nan-from-missing-meta-timestamps）。
+///
+/// 存量 Spin 会话的 meta.json 实测形态：只有 `title` / `workMode` / `messageCount`，
+/// `createdAt` 与 `updatedAt` 都不在盘上。
+#[test]
+fn conversation_list_fills_timestamps_for_legacy_metadata() {
+    let sandbox = Sandbox::new("history-list-legacy-timestamps");
+    let dir = sandbox.conversation_dir(PROJECT);
+    std::fs::write(
+        dir.join("s1.meta.json"),
+        serde_json::to_string(&json!({
+            "sessionId": "s1",
+            "project": PROJECT,
+            "title": "Spin Design",
+            "workMode": "spin",
+            "messageCount": 33,
+            "creator": { "kind": "user" },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let list = load_conversation_list(Some(PROJECT));
+    let entry = list
+        .iter()
+        .find(|item| item["sessionId"] == "s1")
+        .unwrap_or_else(|| panic!("列表应包含该会话：{list:?}"));
+    let created = entry["createdAt"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("createdAt 必须是数字：{entry}"));
+    let updated = entry["updatedAt"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("updatedAt 必须是数字：{entry}"));
+    assert!(created > 0 && updated > 0, "时间戳必须是真实毫秒：{entry}");
+    assert!(created <= updated, "createdAt 不得晚于 updatedAt：{entry}");
+}
+
+/// 任何写入 meta.json 的路径落盘后都带 `createdAt` / `updatedAt`：
+/// 补齐职责收在唯一写入点，调用方不各自记着写。
+///
+/// 这里直接读原始文件，绕开读取侧的存量补齐。
+#[test]
+fn metadata_writes_land_both_timestamps() {
+    let sandbox = Sandbox::new("history-write-timestamps");
+    let dir = sandbox.conversation_dir(PROJECT);
+    let read_raw = |session_id: &str| -> Value {
+        let text = std::fs::read_to_string(dir.join(format!("{session_id}.meta.json"))).unwrap();
+        serde_json::from_str(&text).unwrap()
+    };
+
+    // (a) 首条消息前的配置兜底建档（update_context 的 fallback 只写 sessionId / project / creator）
+    update_context("bootstrap", PROJECT, &[json!({ "key": "webSearch", "value": false })]).unwrap();
+    let bootstrapped = read_raw("bootstrap");
+    assert!(
+        bootstrapped["createdAt"].as_u64().is_some() && bootstrapped["updatedAt"].as_u64().is_some(),
+        "配置兜底建档必须带两个时间戳：{bootstrapped}"
+    );
+
+    // (b) 存量档案只有 updatedAt、没有 createdAt：后台消息的 touch 也要补上 createdAt，
+    //     同时不得改写既有 updatedAt（后台消息不刷「最后消息时间」）
+    std::fs::write(
+        dir.join("s2.meta.json"),
+        serde_json::to_string(&json!({
+            "sessionId": "s2",
+            "project": PROJECT,
+            "messageCount": 0,
+            "updatedAt": 111,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    append_message("s2", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    touch_metadata("s2", PROJECT, false, None, &SessionCreator::User).unwrap();
+
+    let legacy = read_raw("s2");
+    assert!(
+        legacy["createdAt"].as_u64().is_some(),
+        "存量档案的 createdAt 必须补齐：{legacy}"
+    );
+    assert_eq!(legacy["updatedAt"], 111, "后台消息不得改写 updatedAt：{legacy}");
+}
+
 #[test]
 fn delete_conversation_keeps_workspace_manifest() {
     // 闭包输入不含工作区清单——
