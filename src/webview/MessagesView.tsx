@@ -597,21 +597,23 @@ const ThinkingMessage = memo(function ThinkingMessage({
 
   const isOpen = userExpanded;
 
-  // 展开态内容区的滚动跟随：限高后思考内容在框内滚动，流式期间新增的文字落在框底部，
-  // 不跟随就会一直停在开头、看不到最新思路。用户自己在框内向上翻时停止跟随
-  // （与消息列表的自动滚动同一口径：用户滚动优先级最高），滚回底部即恢复。
+  // 展开后的视点：从内容开头看起（思考过程要从头读才有意义），不跟随末尾；
+  // 用户在本框内调过滚动位置时保留那一次的位置——「用户调整过位置」优先于默认落点
+  // （与消息列表的自动滚动同一口径：用户滚动优先级最高，docs/features/user-stories/dialog-core.md 的 US-4）。
+  // 位置只记在组件实例上（ref），不落盘、不跨会话：切走再回来重新从开头看起。
   const contentRef = useRef<HTMLDivElement>(null);
-  const userScrolledUpRef = useRef(false);
+  /** 用户最后一次在本框内滚到的位置；null = 用户没调过 */
+  const userScrollTopRef = useRef<number | null>(null);
+  /** 最近一次程序化写入的位置，用于把随之而来的 scroll 事件与用户滚动区分开 */
+  const programmaticTopRef = useRef<number | null>(null);
   useLayoutEffect(() => {
     const el = contentRef.current;
-    // 折叠态内容不参与布局，只有展开态需要把视点放到末尾：
-    // 流式期间是「跟随最新一行」，首次展开（历史加载 / 刚结束）同样落在末尾，
-    // 与流式期间的阅读位置连续；此后内容不变、effect 不重跑，用户的上滚位置得以保留。
-    if (!el || !isOpen || userScrolledUpRef.current) return;
-    // 写一个远超最大值的 scrollTop，浏览器按规范夹到 scrollHeight - clientHeight，
-    // 不必读 scrollHeight 触发同步布局（与 `Bash.tsx` 的流式跟随同一手法）。
-    el.scrollTop = 1e9;
-  }, [message.content, message.isStreaming, isOpen]);
+    // 折叠态内容不参与布局，只有展开态需要落视点；内容增长不重跑（不跟随末尾）。
+    if (!el || !isOpen) return;
+    const target = userScrollTopRef.current ?? 0;
+    programmaticTopRef.current = target;
+    el.scrollTop = target;
+  }, [isOpen]);
 
   return (
     <details
@@ -622,9 +624,9 @@ const ThinkingMessage = memo(function ThinkingMessage({
         // 用户手动展开时记录
         if ((e.target as HTMLDetailsElement).open) {
           setUserExpanded(true);
-          // 每次重新展开都从末尾看起：收起期间内容可能已经变长，上次的上滚位置
-          // 不再有意义（跟随逻辑见上方 useLayoutEffect）。
-          userScrolledUpRef.current = false;
+          // 重新展开保留用户上次调过的位置（`userScrollTopRef`）；没调过则回到开头，
+          // 由上方 useLayoutEffect 落视点。收起不清位置——「保留上次用户滚动的位置」
+          // 只在组件存活期间生效，不持久化。
         } else {
           setUserExpanded(false);
         }
@@ -650,8 +652,15 @@ const ThinkingMessage = memo(function ThinkingMessage({
         className="pl-5 whitespace-pre-wrap mt-1 thinking-content inner-scrollbar"
         onScroll={(e) => {
           const el = e.currentTarget;
-          // 距底 ≤ 2px 视为贴底（与消息列表 isAtBottom 同一抖动带）
-          userScrolledUpRef.current = el.scrollHeight - el.scrollTop - el.clientHeight > 2;
+          // 程序化落点引发的 scroll 事件不算「用户调过位置」——首次展开写 scrollTop
+          // 就会触发一次，误记会把「从开头看」变成「停在 0 但像是用户选的」，
+          // 之后内容变化时的语义就分不清了。
+          if (programmaticTopRef.current !== null && Math.abs(el.scrollTop - programmaticTopRef.current) <= 1) {
+            programmaticTopRef.current = null;
+            return;
+          }
+          programmaticTopRef.current = null;
+          userScrollTopRef.current = el.scrollTop;
         }}
         style={{
           overflowWrap: 'break-word',
