@@ -72,6 +72,8 @@ export class ElectronConversationManager extends ConversationManager {
           updatedAt: c.updatedAt,
           messageCount: c.messageCount,
           parentSessionId: c.parentSessionId,
+          // 分支事实随列表元数据下发（specs/037 AC-18）：webview 在条目标题前显示分支名
+          branch: c.branch,
         })),
       });
     }

@@ -443,6 +443,32 @@ export class ElectronUIHost implements UIHost {
     }
   }
 
+  /**
+   * 分支事实变化 → 侧栏文件资源管理器跟随（specs/037 FR-007）。
+   *
+   * 两件事：① 标题旁的分支名（普通对话标「主分支」）；② 按 `branch` 失效原因重读树
+   * ——复用 specs/030 的 `pushFilesInvalidate` 出口，不另开一条失效通道。
+   *
+   * 活动对话是分支对话时，树的内容由主进程经 `UiRequest.branchTreeRequested` 取
+   * worktree（见 `electron/main.ts` 的 `sidebar:files-list`），渲染层不判断来源。
+   */
+  onBranchStateChanged(
+    sessionId: string,
+    view: Extract<CoreEvent, { type: 'branchStateChanged' }>['view'],
+  ): void {
+    // 只关心活动对话：分支事实按会话到达，侧栏只有一份文件树
+    if (this.chatViews?.getActiveSessionId() !== sessionId) return;
+    const webContents = this.sidebarView?.webContents;
+    if (!webContents || webContents.isDestroyed()) return;
+    webContents.send(
+      'sidebar:active-branch-changed',
+      view.state === 'ready' ? { name: view.branch } : null,
+    );
+    // 「活动对话的分支事实变了」= 树的内容来源可能变了，按既有 `tree` 失效原因重读
+    const workspacePath = this.getWorkspacePath();
+    if (workspacePath) this.pushFilesInvalidate(workspacePath, ['tree']);
+  }
+
   // ── 文档视图 git 哨兵（specs/030 FR-003）───────────────────────────────────
 
   private docSentinels: DocSentinelManager | undefined;

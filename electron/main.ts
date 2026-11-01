@@ -94,6 +94,7 @@ import {
   resolveWithinRoot,
   resolveAllWithinRoot,
   formatRelativePaths,
+  type DirectoryEntry,
 } from './sidebarFiles.js';
 import {
   listRemoteDirectory,
@@ -1066,6 +1067,10 @@ function createMainWindow(): void {
     conversationListOwner: windowMode === 'floating' ? 'webview' : 'host',
     onActiveSessionChanged: (sessionId) => {
       sidebarView?.webContents.send('sidebar:active-session-changed', sessionId);
+      // 切换活动对话：分支标注先回落「主分支」，随后 core 的 `branchStateChanged`
+      // 到达时再按真实形态覆盖（specs/037 FR-007）。不缓存上一个对话的分支名——
+      // 那会让切到普通对话后标题还挂着别人的分支。
+      sidebarView?.webContents.send('sidebar:active-branch-changed', null);
       // 该对话成为当前对话 = 阅读了它的未读完成：清掉并同步（侧栏 / webview 灯条随之熄灭）
       if (sessionId && unreadCompletionSessions.delete(sessionId)) syncCompletionAttention();
       if (sessionId) {
@@ -5206,6 +5211,11 @@ function setupIpc(): void {
     }
     const abs = resolveWithinRoot(ref.path, p.dir, { allowRoot: true });
     if (!abs) return { ok: false, error: 'outside-root' };
+    // 分支对话的文件树（specs/037 FR-007）：活动对话是分支对话时读它的 worktree，
+    // 经 `UiRequest.branchTreeRequested` 向 Core 索取——宿主不自己拼 worktree 路径、
+    // 不自己跑 git。`not-branch` 即回落主工作区读盘（不是分支会话 / worktree 已不在）。
+    const branchEntries = await readBranchTreeDir(p.dir);
+    if (branchEntries !== null) return { ok: true, entries: branchEntries };
     try {
       return { ok: true, entries: await listDirectory(abs) };
     } catch (err) {
@@ -5215,6 +5225,31 @@ function setupIpc(): void {
       return { ok: false, error: message };
     }
   });
+
+  /**
+   * 活动对话是分支对话时，经 `UiRequest.branchTreeRequested` 取该 worktree 的一层目录。
+   *
+   * 返回 `null` 表示「该走主工作区读盘」（不是分支对话 / worktree 已不在 / Core 不可达）
+   * ——这是唯一的回落点，渲染层不需要判断会话形态。**不做差异标记**：条目只有
+   * `name` / `kind` / `mtimeMs`（新 / 改 / 删是本次范围之外的预留设计，specs/037 FR-007）。
+   */
+  const readBranchTreeDir = async (dir: string): Promise<DirectoryEntry[] | null> => {
+    const sessionId = chatViews?.getActiveSessionId();
+    if (!sessionId) return null;
+    try {
+      const result = await requireEventBus().requestCore({
+        type: 'branchTreeRequested',
+        sessionId,
+        dir,
+      });
+      return result.ok ? result.entries : null;
+    } catch (err) {
+      // Core 不可达 / 通道在重启窗口：按「不是分支对话」回落，读不到主工作区时
+      // 上层的 listDirectory 会如实报错
+      fileLogger.warn('sidebar-files', `branch tree request failed: ${String(err)}`);
+      return null;
+    }
+  };
 
   // 文档视图（specs/030 FR-003 / FR-004）：git 口径（本地直跑 / 远程 SSH exec——git
   // 输出永远产生在文件所在的那台机器上）与非 git 记录口径（workspace.meta.json，

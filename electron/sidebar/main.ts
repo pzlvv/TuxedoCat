@@ -104,6 +104,13 @@ interface SessionRuntimeState {
   waiting: boolean;
 }
 
+/**
+ * 活动对话的分支事实（specs/037 FR-007）：`null` = 普通对话。
+ *
+ * 只有分支名——worktree 路径是实现细节，侧栏不展示（也不自己跑 git）。
+ */
+type ActiveBranch = { name: string };
+
 /** 文件树条目（主进程 listDirectory 的产物；与 SSH 层同一份契约一个名字） */
 type DirectoryEntry = import('../../src/host/standalone/sshClient').DirectoryEntry;
 
@@ -155,6 +162,8 @@ interface SidebarAPI {
   onSessionCompletion: (cb: (sessionIds: string[]) => void) => void;
   onSessionLoadedChanged: (cb: (sessionIds: string[]) => void) => void;
   onActiveSessionChanged: (cb: (sessionId: string | null) => void) => void;
+  /** 活动对话的分支事实（specs/037 FR-007）：`null` = 普通对话 */
+  onActiveBranchChanged: (cb: (branch: ActiveBranch | null) => void) => void;
   onWorkspacesChanged: (cb: (state: WorkspacesState) => void) => void;
   // ── 文件浏览器（US-42 / US-43） ──
   // rel 一律是 '/' 分隔的相对路径（约定格式，见 electron/sidebarFiles.ts）；
@@ -194,6 +203,7 @@ const searchInputEl = document.getElementById('searchInput') as HTMLInputElement
 // 文件浏览器（US-42 / US-43）
 const filesSectionEl = document.getElementById('filesSection')!;
 const filesHeaderEl = document.getElementById('filesHeader')!;
+const filesTitleEl = document.getElementById('filesTitle')!;
 const filesBodyEl = document.getElementById('filesBody')!;
 const filesRefreshBtn = document.getElementById('filesRefresh') as HTMLButtonElement;
 const filesDocToggleBtn = document.getElementById('filesDocToggle') as HTMLButtonElement;
@@ -792,6 +802,21 @@ function setActive(sessionId: string | null): void {
 }
 
 /**
+ * 活动对话的分支事实（specs/037 FR-007）：决定文件资源管理器标题上标哪个分支名。
+ *
+ * 普通对话标「主分支」（树是主工作区）；分支对话标分支名（树是 worktree）。
+ * `branch === null` 是普通对话，与「分支事实还没到」在显示上一致——
+ * 侧栏不按猜测值渲染，两者都回落「主分支」。
+ */
+function setActiveBranch(branch: ActiveBranch | null): void {
+  activeBranch = branch;
+  // 分支对话标分支名、普通对话标「主分支」（specs/037 FR-007）
+  const label = branch ? branch.name : '主分支';
+  filesTitleEl.textContent = `文件资源管理器（${label}）`;
+  filesTitleEl.title = filesTitleEl.textContent;
+}
+
+/**
  * 列表事件代理（只绑定一次）。
  *
  * 增量渲染会不断增删 / 替换 .item 元素，逐元素绑定会随重建失效且开销大；
@@ -878,6 +903,9 @@ function subscribe(): void {
   });
   window.sidebarAPI.onActiveSessionChanged((sessionId) => {
     setActive(sessionId);
+  });
+  window.sidebarAPI.onActiveBranchChanged((branch) => {
+    setActiveBranch(branch);
   });
   window.sidebarAPI.onWorkspacesChanged((state) => {
     const next = state ?? { workspaces: [], active: null, recent: [] };
@@ -1005,6 +1033,9 @@ const filesStateByWorkspace = new Map<string, WorkspaceFilesState>();
  */
 let activeFilesId: string | null = null;
 let filesRemote = false;
+/** 活动对话的分支事实（`null` = 普通对话）：分支对话的文件树只读（specs/037 FR-007） */
+let activeBranch: ActiveBranch | null = null;
+
 /** 当前右键菜单目标（「在文件资源管理器中打开」只作用于它） */
 let filesMenuTarget: string | null = null;
 /** 右键目标的条目类型：「在此处打开命令行」对文件取其父目录，对目录就是它自己 */
@@ -1485,7 +1516,8 @@ function ensureFilesMenuEl(): HTMLDivElement {
     const target = filesMenuTarget;
     const targetKind = filesMenuKind;
     closeFilesMenu();
-    if (action === 'copy-full') copySelectedFilePaths(false);
+    if (action === 'open-preview' && target !== null && targetKind === 'file') openFileRow(target);
+    else if (action === 'copy-full') copySelectedFilePaths(false);
     else if (action === 'copy-rel') copySelectedFilePaths(true);
     else if (action === 'reveal' && target !== null) revealFilesTarget(target);
     else if (action === 'terminal' && target !== null) openTerminalHere(targetKind === 'directory' ? target : parentRelPath(target));
@@ -1501,7 +1533,15 @@ function openFilesMenu(x: number, y: number, targetPath: string, targetKind: 'fi
   const el = ensureFilesMenuEl();
   // 「在文件资源管理器中打开」「在此处打开命令行」只对本地工作区有意义：远程工作区
   // 不显示这两项（主进程对远程同样拒绝，双保险）。
-  el.innerHTML = `
+  // 分支对话的树是 worktree（specs/037 FR-007）：**只读**——右键只给「打开预览 / 复制路径」，
+  // 删除 / 定位 / 开终端一律不提供（从侧栏直接写会绕过 git，分支的写入口是工具调用与
+  // git 命令）。
+  const readOnly = activeBranch !== null;
+  el.innerHTML = readOnly
+    ? `<button class="files-menu-item" data-menu="open-preview">打开预览</button>
+    <button class="files-menu-item" data-menu="copy-full">复制完整路径</button>
+    <button class="files-menu-item" data-menu="copy-rel">复制相对路径</button>`
+    : `
     <button class="files-menu-item" data-menu="copy-full">复制完整路径</button>
     <button class="files-menu-item" data-menu="copy-rel">复制相对路径</button>
     ${filesRemote ? '' : '<button class="files-menu-item" data-menu="reveal">在文件资源管理器中打开</button><button class="files-menu-item" data-menu="terminal">在此处打开命令行</button>'}

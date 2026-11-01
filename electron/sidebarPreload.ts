@@ -107,6 +107,15 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   onFilesInvalidated: (callback: (payload: unknown) => void): void => {
     ipcRenderer.on('sidebar:files-invalidate', (_event, payload) => callback(payload));
   },
+  /**
+   * 活动对话的分支事实（specs/037 FR-007）：`null` = 普通对话。
+   *
+   * 标题旁据此标注分支名（普通对话回落「主分支」）；树内容由主进程按同一事实决定
+   * 读 worktree 还是主工作区，渲染层不做判断。
+   */
+  onActiveBranchChanged: (callback: (branch: { name: string } | null) => void): void => {
+    ipcRenderer.on('sidebar:active-branch-changed', (_event, branch) => callback(branch));
+  },
   // ── 侧栏宽度（US-44） ──
   // 拖拽过程高频 send（不落盘），final: true（松手 / 双击恢复）才落盘一次
   setSidebarWidth: (width: number | null, final: boolean): void => {
