@@ -83,6 +83,18 @@ runTests('sidebarDocViewGit', async () => {
     check('记录口径：现存条目保留（无行数），已删除过滤',
       record.map((e) => `${e.path}:${e.plus}`).join('|') === 'c.md:null|docs/a.md:null');
 
+    // —— 仓一（续）：文件名需要 git 的 C 风格引号转义（引号 / 制表符）——
+    // `core.quotepath=false` 只关掉非 ASCII 的八进制转义；含 `"`、`\`、制表符、换行的
+    // 路径仍然被双引号包裹并逐字符转义。未反转义时回查存在性必然失败，条目整条消失。
+    const quotedName = 'quo"te.md';
+    const tabName = 'tab\tname.md';
+    writeLines(path.join(root, quotedName), ['q1', 'q2']);
+    writeLines(path.join(root, tabName), ['t1']);
+    const quotedResult = await collectGitEntries(runner);
+    const quotedListed = quotedResult.ok ? quotedResult.entries.map((e) => `${e.path} +${e.plus}/-${e.minus}`) : [];
+    check('真实仓：含引号 / 制表符的文件名同样列出（C 风格引号被反转义）',
+      quotedListed.includes(`${quotedName} +2/-0`) && quotedListed.includes(`${tabName} +1/-0`));
+
     // —— 仓二：无 HEAD 新仓（已暂存按全文计）——
     const unborn = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-docview-unborn-'));
     try {
