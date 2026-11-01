@@ -61,10 +61,9 @@ Core 进程承载的 core 侧业务：
   Spin 引擎（`spin.json` 读写、拓扑排序、子代理执行、验收判定、`/spin` 命令）、
   智能命名 / 压缩归档展开 / DeepSeek 余额推送（都要读 core 的磁盘数据，因此整体在 Core 侧）；
 - 远程工作区文件监听（`core-rs/src/file_watch.rs`）：按宿主注册的 `watchId` 监听目标文件父目录，50ms 去抖后经 `CoreEvent.workspaceFileChanged` 上报 `changed` / `deleted` / `error`；事件只带路径与元数据（specs/018 FR-002）；
+- 分支对话（`core-rs/src/branch/`）：git worktree 生命周期与启动对账、分支命名、依赖目录策略、会话工具根改向（[docs/features/branch-conversation.md](../features/branch-conversation.md)）；
 - 系统睡眠阻断（`core-rs/src/power.rs`）：任一会话非 idle（含等待用户确认）时阻断 **Core 进程所在机器**的睡眠 / 休眠——Windows `SetThreadExecutionState(ES_SYSTEM_REQUIRED)`、Linux
-  `systemd-inhibit --what=idle:sleep`，都只要求系统不挂起、允许屏幕熄灭。远程工作区的长任务
-  在远端执行，宿主那台机器睡不睡与它无关，因此这一份必须在 Core 进程里；Electron 宿主另有
-  一份同口径的实现（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）；
+  `systemd-inhibit --what=idle:sleep`，都只要求系统不挂起、允许屏幕熄灭。远程工作区的长任务在远端执行，宿主那台机器睡不睡与它无关，因此这一份必须在 Core 进程里；Electron 宿主另有一份同口径的实现（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）；
 - 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经 `hostEnvironmentProvided` 的配置快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）；
 尚未覆盖的能力见 [docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)的「不覆盖范围」。
 
@@ -352,12 +351,12 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。`userChoice` 的载荷与结果按 `kind` 判别：`permission` 带 `message` / `choices`、结果为 `index` / `reply`；`question`（AskUserQuestion）带 `questions`、结果为 `answers`。
-- `UiRequest` 的十四个请求（`conversationListRequested` / `smartNamingRequested` / `balanceRequested` /
+- `UiRequest` 的十六个请求（`conversationListRequested` / `smartNamingRequested` / `balanceRequested` /
   `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
   `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /
-  `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：
-  宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。未知类型一律回 `ok:false` 的响应，
-  不做静默降级。
+  `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested` /
+  `branchTreeRequested` / `branchPrecheckRequested`）由 UI 发起、Core 应答：
+  宿主不直接读 core 的磁盘数据（[docs/core/standalone-core-boundaries.md 第 2 节](standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。未知类型一律回 `ok:false` 的响应，不做静默降级。
   - `balanceRequested`：唯一的异步应答——请求交独立线程执行、应答异步回写同 `id` 的
     `response` 帧；整体超时 3 秒，超时 / 非 2xx / 缺 `balance_infos` 都回 `null`。
   - `spinDesignRequested { sessionId }`：按会话工作目录读 `spin.json` + 设计器技能清单；
@@ -365,6 +364,7 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
     `{ status: 'error', message }`。
   - `spinDesignSaveRequested { sessionId, data }`：按会话工作目录写 `spin.json`，与 SpinLoop
     的节点 meta 更新共用同一把写锁；返回 `{ status: 'ok' }` 或 `{ status: 'error', message }`。
+  - `branchTreeRequested` / `branchPrecheckRequested`：分支对话的 worktree 目录树与创建前置数据，载荷与应答见 [docs/features/branch-conversation.md 第 2 节](../features/branch-conversation.md#fr-007文件资源管理器跟随对话)。
 - 配置不走请求：Core 不读 `settings.json` / `mcp.json`，也不请求写配置；配置由 UI 经
   `hostEnvironmentProvided` 的快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）。
   设置面板的整段 mutation（provider 表 + `modelConfigs` 补齐 + 顶层默认值 + MCP
@@ -488,6 +488,7 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 会话独占锁 `<conversations>/<project>/<sessionId>.session.lock` | Core | OS 建议性文件锁（`core-rs/src/session_lock.rs`）；宿主侧不读写。文件内容（版本 / pid / 启动时刻）只作诊断与版本拒外（specs/032） |
 | Spin 设计 `<conversations>/<project>/spin.json` | Core | 读与写都经 `UiRequest.spinDesignRequested` / `spinDesignSaveRequested`；宿主不直接读盘 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
+| 分支对话的 worktree 路径与分支名 | Core | 落盘形态是会话 `meta.json` 的 `branch` 字段（唯一来源）；经 `CoreEvent.branchStateChanged` 与 `UiRequest.branchTreeRequested` 下发，宿主不自行拼路径、不自行跑 git |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |
 | ripgrep | Core | 随 Core 分发：与可执行文件同级（`<exe 目录>/ripgrep/`），本地与远端上传是同一目录 |

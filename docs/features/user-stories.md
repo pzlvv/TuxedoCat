@@ -68,6 +68,7 @@ last_reviewed: 2026-10-20
 | `e2e/terminal/terminalUi.spec.ts` | US-54（首标签自动建立的页面侧）、US-55（标签新建 / 切换 / 关闭、断开态覆盖层与重连、主题跟随、复制粘贴） | terminal 页面 |
 | `e2e/webview/userChoicePaging.spec.ts` | US-58（分页进度 / 单选翻页 / 多选与其他并存 / Enter 语义 / answers 载荷） | webview UI |
 | `e2e/webview/spinModeInput.spec.ts` | US-39（spin 输入禁用的渲染层：禁用 + placeholder + 停止按钮转黄 + 单向不退出） | webview UI |
+| `e2e/webview/branchConversation.spec.ts` | US-74（标题前分支名 / 消息区无分支横幅）、US-75（对话列表的分支名）、US-76（split 下拉两项 / 置灰文案 / 草稿页脏工作区提示） | webview UI |
 | `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 他区忙碌汇总确认） | Electron 整应用 |
 | `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成 / 离场完成后重开绿灯） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 | `e2e/electron/completionAfterRestart.spec.ts` | US-65（离场完成的未读绿灯：重开按 `unreadCompletions` 补武装 / 打开即阅读清除） | Electron 整应用（本地车道，meta.json 计数预置） |
@@ -107,6 +108,11 @@ US-66 的双实例争用——双实例场景依赖两个宿主进程（electron
 对照 `core-rs/fixtures/coreTextKeys.json` 锁定；US-67 的 detach 闸门与授权——构造判据、
 闸门文案与权限分级由 core-rs 单测（`tools_tests` / `permission_tests` 的 detach 用例）
 锁定，确认弹窗复用既有权限确认组件（US-18 的 e2e 已覆盖渲染与提交链路），不新增
-e2e 用例）。
+e2e 用例）；US-74 / US-75 / US-76 的核心行为（worktree 创建 / 复用 / 清理、分支指针、
+启动对账、依赖策略装配、单文件配置共享、可见性边界）依赖真实 Core 二进制与真实 git
+仓库，e2e 车道没有 git 夹具（也不为此引入，会拖慢整车道）——由 `core-rs/src/branch/*_tests.rs`
+用真实 git 夹具（`test_support::GitSandbox`）锁定，契约往返由 `src/test/standaloneBranch.test.ts`
+驱动真实 Core 二进制锁定；`e2e/webview/branchConversation.spec.ts` 只覆盖不依赖 Core 的
+纯 UI 用例（下拉两项 / 置灰文案双语 / 标题前分支名 / 草稿页提示）。
 
 运行方式与前置构建见 `e2e/README.md`。

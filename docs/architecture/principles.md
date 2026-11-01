@@ -127,6 +127,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 | abort 按钮三态（红 / 黄 / 灰） | 纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`） | `InputArea` 渲染（[docs/features/abort-button.md](../features/abort-button.md)） |
 | webview 渲染阶段（thinking / text / tool） | `SessionUiState`（宿主侧渲染投影，[docs/hosts/webview-ui.md](../hosts/webview-ui.md)） | 渲染与 abort 按钮（不参与 abort 判定） |
 | 对话列表 | 磁盘（Core 对 `conversationListRequested` 的应答） | `ConversationManager.refresh()` 分发并留快照，`sidebar:get-conversations` 读快照（[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
+| 分支对话的 worktree 目录路径与分支名 | 会话 `meta.json` 的 `branch` 字段（Core 写入，`core-rs/src/history.rs` 的 `touch_metadata_with_branch`） | `CoreEvent.branchStateChanged` 与 `UiRequest.branchTreeRequested` 两个出口；宿主与 webview 只投影，标题前分支名 / 侧栏文件树 / 对话列表分支名都读它（[branch-conversation.md](../features/branch-conversation.md)） |
 | Spin 设计 `spin.json` | Core（`UiRequest.spinDesignSaveRequested` 与 SpinLoop 的节点 meta 更新共用同一把写锁） | 设计器画布（经 `UiRequest.spinDesignRequested` 读取，[contracts.md 第 2 节](contracts.md#2-spin-设计器契约spindesign)） |
 | 对话树删除闭包 | 纯函数 `collectConversationClosure`（`src/shared/history/Conversation.ts`，宿主侧）与 Core 进程 `core-rs/src/history.rs` 的删除规则——同一份格式两个读写方，格式变更两侧同步（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)） | Electron 宿主删多视图会话先调 TS 版求闭包；Core 收到 `conversationDeleted` 后按同一规则递归删盘 |
 | 「哪个会话在前台」 | UI（VS Code：`SingleWebViewConversationManager` 的 `activeSessionProvider`；Electron：`ChatViewManager.getActiveSessionId`） | 空闲回收的「前台会话不关」、MCP 面板取数。core **不保存**这份状态（曾经在 `Config` 里缓存过一份） |

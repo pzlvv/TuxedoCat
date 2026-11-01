@@ -57,6 +57,9 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 远程工作区文件监听注册 | `UiRequest.watchWorkspaceFileRequested`（`watchId` + `workspacePath` + `path`；失败回 `{ ok: false, error }`） |
 | 远程工作区文件监听注销 | `UiRequest.unwatchWorkspaceFileRequested`（`watchId` + `workspacePath`；未知 id 幂等） |
 | 远程工作区文件变化 | `CoreEvent.workspaceFileChanged`（只带 `watchId` / `path` / `kind` / `mtimeMs` / `size` / `error`，不带文件内容；宿主经 SFTP 读内容） |
+| 分支对话的 worktree 目录树 | `UiRequest.branchTreeRequested`（`sessionId` + worktree 根内相对 `dir`；应答 `{ ok: true, entries }` 或 `{ ok: false, reason: 'not-branch' }`——宿主据此回落主工作区读盘。条目只有 `name` / `kind` / `mtimeMs`，**没有**差异标记字段） |
+| 分支对话的创建入口前置数据 | `UiRequest.branchPrecheckRequested`（无 `sessionId`，按活动工作区路由；应答 `{ ok: true, head, dirty, baseBranch }` 或 `{ ok: false, reason: 'not-git', detail }`） |
+| 分支对话状态（分支名 / worktree / base） | `CoreEvent.branchStateChanged` 的全量推送；`meta.json` 的 `branch` 字段是同一条事实的落盘形态 |
 
 例外（与本机 Core 共用同一份磁盘，远程工作区落地时需要迁到 `UiRequest`）。Spin 设计器
 曾直接读宿主本地磁盘，已迁到 `spinDesignRequested` / `spinDesignSaveRequested`；例外表

@@ -30,3 +30,16 @@ last_reviewed: 2026-10-18
 现状：远程接入已落地且只有 SSH 一条路径（[docs/core/core-remote.md 第 2 节](../core/core-remote.md#2-远程服务start--kill)）——daemon 只绑回环、端口交内核分配，Host 经 SSH 转发接入；帧协议与磁盘格式不依赖「Core 与宿主同机」，宿主侧不直接读 core 的磁盘数据（[layering.md 第 2.1 节](layering.md#21-规则-9-的审计结论)、[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的例外表）。
 
 待定：传输形态本身——帧通道目前假定本机 stdin/stdout，没有认证、重连与多宿主复用；换成网络直连通道属于产品决策（[docs/core/standalone-core-boundaries.md 第 4 节](../core/standalone-core-boundaries.md#4-不覆盖范围)）。
+
+## 3. 分支对话
+
+现状：分支对话在 Core 数据目录下的 `<工作区目录>/worktrees/<branch>/` 建 git worktree，
+依赖目录只在 Linux 且 Core 进程能挂 overlay 时叠加；单文件本地配置用符号链接共享
+（见 [branch-conversation.md](../features/branch-conversation.md)）。
+
+| 项 | 现状 | 待定 |
+| --- | --- | --- |
+| 侧栏文件树的差异标记 | 树只展示 worktree 的文件与目录，不标注「新 / 改 / 删」（[branch-conversation.md FR-007](../features/branch-conversation.md#fr-007文件资源管理器跟随对话)） | 数据来源已定（`git status --porcelain` + `git diff --name-status <base>`），`branchTreeRequested` 的条目补一个 `change` 字段（判别联合，不用可选字段）+ UI 徽标；本次不做 |
+| Windows / macOS 的依赖目录复用 | 无 overlay 等价物，装配 `SkipDeps`，模型按需重装（[branch-conversation.md FR-010](../features/branch-conversation.md#fr-010依赖目录与单文件配置策略)） | 是否有值得做的等价机制（目录联接 + 链接 farm？） |
+| 非特权 Linux 的依赖目录复用 | Core 进程无 `CAP_SYS_ADMIN` 时 overlay 挂不上，退 `SkipDeps` | 候选如 `fuse-overlayfs` 等用户态方案；代价与收益未评估 |
+| 依赖策略的用户配置 | 按平台与能力自动装配，无 settings 项 | 是否开放用户选择（关闭 overlay / 指定目录名单） |
