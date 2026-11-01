@@ -75,6 +75,9 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     mcpPinFailed: false,
     // 按会话的 Todo 清单（requestSessionTodos 的应答；core 侧事实的假实现）
     sessionTodos: {},
+    // 分支创建入口的前置数据（requestBranchPrecheck 的应答，specs/037 FR-003）。
+    // 默认「本机是 git 仓库且干净」；置灰与脏提示用例改写它。
+    branchPrecheck: { ok: true, head: 'abc1234', dirty: false, baseBranch: 'main' },
   };
 
   // webview → 宿主 的全部上行消息（追加写，测试轮询断言）
@@ -367,6 +370,11 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
           });
           send({ type: 'queryEnd', sessionId: msg.sessionId });
         }
+        break;
+      }
+      case 'requestBranchPrecheck': {
+        // 分支对话的创建入口前置数据（specs/037 FR-003）：用例改写 state.branchPrecheck
+        send({ type: 'branchPrecheck', result: state.branchPrecheck });
         break;
       }
       case 'requestSessionTodos': {

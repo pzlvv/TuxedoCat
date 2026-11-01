@@ -42,6 +42,8 @@ const SKIP_DIRS = new Set([
   'resources',
   'build',
   '.gradle',
+  // `exp/` 是本机自备的试验 / 参考产物目录（.gitignore 覆盖），与构建产物同口径不扫
+  'exp',
   projectConfig.configDir,
 ]);
 
