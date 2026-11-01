@@ -3,7 +3,7 @@
 本方案落实 [spec.md](spec.md)（FR-001 ~ FR-011）的技术路线：分支能力整体沉在 Core
 （`core-rs/src/branch/`），工作根改向只在 `SessionState.project` 一处发生；宿主与 webview
 只消费一个新增 CoreEvent、一条新增 UiEvent、两条新增 UiRequest；UI 增量收敛到四点——
-新对话 split button 下拉、草稿页分支形态、会话标题后的分支标识、对话列表分支标记。
+新对话 split button 下拉、草稿页脏工作区提示、会话标题前的分支名、对话列表分支名。
 提交 / 历史 / 回退全部交给 git（提交历史不在 UI 展示），不自建快照体系；成果出口是用户
 自己执行 `git merge`，我们不做发布。
 
@@ -216,8 +216,8 @@ clone（reflink / 块克隆）保住了隔离但保不住路径——venv sheban
 
 | 落点 | 改动 |
 | --- | --- |
-| `src/webview/App.tsx` | 新对话 split button（主「+」+ 小三角下拉两项）；草稿页分支形态（图标 + 「分支对话」，无分支名）；会话标题后的分支标识（图标 + 「分支对话」+ 分支名，不含状态 / 并行计数）；对话列表分支标记 |
-| `src/webview/i18n/{zh,en}.ts` | 新增文案（下拉两项、草稿页与标题标识、置灰原因、脏工作区说明） |
+| `src/webview/App.tsx` | 新对话 split button（主「+」+ 小三角下拉两项）；草稿页只在主工作区脏时显示一行提示；会话标题**前**放分支名（无图标、无「分支对话」字样、不含状态 / 并行计数）；对话列表标题前放分支名 |
+| `src/webview/i18n/{zh,en}.ts` | 新增文案（下拉两项、草稿页脏工作区提示、置灰原因） |
 | `src/host/webviewMessages.ts` | `startNewConversation` wire 载荷补形态标记（spec FR-006 创建时序），宿主翻译成 `branchModeChanged` |
 | `src/host/ui/` | `branchTreeRequested` / `branchPrecheckRequested` 的 `UiRequest` 翻译与 `branch` 失效原因 |
 | `src/host/` 侧栏文件树 | 读 `branchTreeRequested` 应答，回落主工作区读盘 |
@@ -315,7 +315,7 @@ Windows 破了没人发现，等于发布即坏。
 | --- | --- | --- |
 | 新对话 split button 下拉两项 + 主「+」行为不变 | `webview` | 点击小三角出现两项、无选中态、主「+」走普通创建 |
 | 非 git 工作区下分支对话项置灰与提示文案 | `webview` | 置灰 + 原因文案（i18n 双语都验） |
-| 草稿页与标题标识渲染（用桩事件注入 `branchStateChanged`） | `webview` | 草稿页只有图标 + 「分支对话」（无分支名）；标题标识只含图标 + 「分支对话」+ 分支名；消息区无横幅、无依赖策略、无并行计数 |
+| 草稿页与标题前分支名渲染（用桩事件注入 `branchStateChanged`） | `webview` | 草稿页不显示分支名 / 图标 / 「分支对话」字样、脏工作区时显示一行提示；标题前只有分支名；标题区无图标；消息区无横幅、无依赖策略、无并行计数 |
 | 标识在 `unavailable` 时的警告色 | `webview` | 警告色 + 悬停原因，不出现常驻状态区 |
 
 **明确不做**：e2e 里不建真实 git 仓库、不跑 `git worktree`、不验证 overlay。三条新 US
@@ -371,7 +371,7 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
 | `core-rs/src/prompt.rs` | 分支会话提示段 | 单测：普通会话提示不变 |
 | `src/shared/AssistantEventBus.ts` | 1 CoreEvent + 1 UiEvent + 2 UiRequest | `standalone*` 帧往返 |
 | `src/shared/history/` | `meta.json` 的 `branch` 字段类型（读取侧缺失归一 `null`，成员必选） | 两侧同步测试 |
-| `src/webview/App.tsx` + i18n | 入口 / 草稿页 / 标题标识 / 列表标记 | e2e + 单测 |
+| `src/webview/App.tsx` + i18n | 入口 / 草稿页提示 / 标题前分支名 / 列表分支名 | e2e + 单测 |
 | `src/host/` | `branchTreeRequested` / `branchPrecheckRequested` 翻译、`branch` 失效原因 | 单测 |
 | `docs/architecture/events.md` / `docs/core/standalone-core.md` / `docs/core/standalone-core-boundaries.md` / `docs/architecture/principles.md` / 特性规格（新增 `docs/features/branch-conversation.md`） | 修改 / 新增 | docsLint 全量对照 |
 
@@ -476,7 +476,7 @@ mount -t overlay overlay -olowerdir="$d/l",upperdir="$d/u",workdir="$d/w" "$d/m"
 5. 契约面（1 CoreEvent + 1 UiEvent + 2 UiRequest）+ `standalone*` 帧往返
 6. 成果出口：系统提示写明 merge 出口；删除会话的计数诊断日志
 7. 启动对账 + 删除清理
-8. webview（split button / 草稿页 / 标题标识 / 列表标记）+ e2e
+8. webview（split button / 草稿页提示 / 标题前分支名 / 列表分支名）+ e2e
 9. 侧栏文件树读 `branchTreeRequested`
 10. 文档同步 + docsLint 绿
 
