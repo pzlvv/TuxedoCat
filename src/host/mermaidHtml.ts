@@ -1,7 +1,13 @@
 /**
  * Mermaid 预览 HTML 模板（纯函数，无宿主依赖）
  * 由 UIHost.openMermaidPreview 调用
+ *
+ * 图源来自模型输出的代码块，对页面零信任：进 `<pre>` 的走 `escapeHtml`，
+ * 进内联 `<script>` 的走 `toInlineScriptJson`（正文里的 `</script>` 不能提前
+ * 结束脚本元素，specs/defects/preview-html-script-close-injection.md）。
  */
+
+import { toInlineScriptJson } from '../shared/utils/inlineScript.js';
 
 function escapeHtml(code: string): string {
   return code
@@ -15,6 +21,7 @@ function escapeHtml(code: string): string {
 /** 渲染失败的错误展示页 */
 export function getMermaidErrorHtml(code: string, errorMsg: string): string {
   const escapedCode = escapeHtml(code);
+  const escapedError = escapeHtml(errorMsg);
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
@@ -23,7 +30,7 @@ export function getMermaidErrorHtml(code: string, errorMsg: string): string {
   pre { background: #1e1e24; padding: 16px; border-radius: 6px; overflow: auto; font-size: 12px; }
 </style></head><body>
   <h2>Failed to render Mermaid diagram</h2>
-  <pre>${errorMsg}</pre>
+  <pre>${escapedError}</pre>
   <h3 style="margin-top:20px">Source code:</h3>
   <pre>${escapedCode}</pre>
 </body></html>`;
@@ -144,7 +151,7 @@ export function getMermaidPreviewHtml(code: string, mermaidSrc: string, isDark: 
   <div id="error" style="display:none;color:#ef4444;font-size:13px;padding:16px;text-align:center;"></div>
   <script src="${mermaidSrc}"></script>
   <script>
-    let lastCode = ${JSON.stringify(code)};
+    let lastCode = ${toInlineScriptJson(code)};
     let scale = 1;
     let panX = 0;
     let panY = 0;

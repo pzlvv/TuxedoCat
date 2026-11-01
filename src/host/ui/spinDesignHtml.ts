@@ -4,7 +4,13 @@
  * 自包含的流程图编辑器（支持中/英国际化，语言优先取 settings.json 的
  * uiLanguage；auto 时再取 VS Code UI language 与操作系统系统语言，
  * 两者任一为中文即显示中文）
+ *
+ * 设计数据（`spin.json` 的任务描述）与技能名都进内联 `<script>`：一律走
+ * `toInlineScriptJson`，正文里的 `</script>` 不能提前结束脚本元素
+ * （specs/defects/preview-html-script-close-injection.md）。
  */
+
+import { toInlineScriptJson } from '../../shared/utils/inlineScript.js';
 
 // ── Spin Design UI 字符串（zh/en）───────────────────────────────
 const spinZhDict: Record<string, string> = {
@@ -173,8 +179,8 @@ export function getSpinDesignHtml(
     }
     return value;
   };
-  const initialData = existingData ? JSON.stringify(existingData) : 'null';
-  const availableSkillsJson = JSON.stringify(availableSkills || []);
+  const initialData = existingData ? toInlineScriptJson(existingData) : 'null';
+  const availableSkillsJson = toInlineScriptJson(availableSkills || []);
   const initialSaveEnabled = saveEnabled !== false;
 
   // Theme colors
@@ -676,8 +682,8 @@ export function getSpinDesignHtml(
   </div>
 
 <script>
-var __spinDict = ${JSON.stringify(dict)};
-var __spinFallbackDict = ${JSON.stringify(spinEnDict)};
+var __spinDict = ${toInlineScriptJson(dict)};
+var __spinFallbackDict = ${toInlineScriptJson(spinEnDict)};
 function __spinT(key, params) {
   var value = __spinDict[key];
   if (value === undefined) value = __spinFallbackDict[key];
