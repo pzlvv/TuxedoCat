@@ -332,6 +332,7 @@ export const enDict: Record<string, string> = {
   'messagesView.showFullContent': 'Show full content',
   'messagesView.collapse': 'Collapse',
   'messagesView.previewChart': 'Preview chart',
+  'messagesView.retry': 'Retry',
   'messagesView.preview': 'Preview',
   'messagesView.copyCode': 'Copy code',
   'messagesView.copied': 'Copied',

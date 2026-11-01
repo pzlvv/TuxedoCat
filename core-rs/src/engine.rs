@@ -288,6 +288,13 @@ pub struct SessionState {
     /// **替换**排队中的旧消息，
     /// 不是追加（Agent 回复才追加，见 `agent_messages`）。
     pub pending_user_message: Option<Value>,
+    /// 待消费的重试批次（`UiEvent.queryRetryRequested`，specs/036 FR-003）。
+    ///
+    /// 与 `pending_user_message` 同型的单槽位：只在会话空闲时受理（忙碌 / spin /
+    /// 已收尾子代理直接丢弃，见 `on_query_retry_requested`），因此不可能与真实
+    /// 消息批次并存；消费循环弹出后按 `QueuedBatch::Retry` 跑一轮无用户消息的
+    /// 查询（`run_turn(None)` 的既有 Reminder 形态），不落盘、不追加任何消息。
+    pub pending_retry: bool,
     /// 内存中的消息（含尚未落盘的）
     pub messages: Vec<Value>,
     /// `messages` 中前多少条已经落盘。
@@ -415,6 +422,7 @@ impl SessionState {
             spin_sub_agents: HashSet::new(),
             spin_replied: HashSet::new(),
             pending_user_message: None,
+            pending_retry: false,
             messages: Vec::new(),
             persisted_count: 0,
             last_uuid: None,
@@ -2298,6 +2306,66 @@ impl Core {
         }
     }
 
+    /// `UiEvent.queryRetryRequested`（specs/036 FR-003）：以既有上下文重跑一轮查询。
+    ///
+    /// 失败轮次的用户消息已落盘、已在上下文里，重试不追加、不落盘任何新消息——只
+    /// 登记重试批次槽位并拉起消费循环（`QueuedBatch::Retry` → `run_turn(None)`）。
+    /// 守卫与 `on_user_message` 同口径（spin / 已收尾子代理丢弃）；会话忙碌（查询 /
+    /// 压缩进行中）时丢弃并记日志——幂等忽略，与 `bashBackgroundRequested` 无匹配
+    /// 前台执行同口径：按钮可见时会话必为空闲（once 通知在轮次收尾才出现、任何
+    /// 新节点追加即被剥除），丢弃只兜多视图与提交时序的竞态。
+    pub fn on_query_retry_requested(self: &Arc<Self>, session_id: &str) {
+        // spin 期间父对话由 SpinLoop 程序控制（同 `on_user_message` 的兜底）
+        {
+            let state = self.session(&session_id);
+            if state.lock().unwrap().work_mode == WorkMode::Spin {
+                self.log("queryRetryRequested while spin; dropped");
+                return;
+            }
+        }
+        // 已收尾的子代理不再受理任何新轮次（同 `on_user_message`）
+        {
+            let state = self.session(&session_id);
+            let state = state.lock().unwrap();
+            if state.is_sub_agent_session()
+                && (state.sub_agent_reply_called || state.sub_agent_driver_done)
+            {
+                drop(state);
+                self.log("queryRetryRequested to a finished sub-agent; dropped");
+                return;
+            }
+        }
+
+        let _ = self.ensure_loaded(&session_id);
+
+        let state = self.session(&session_id);
+        let should_start = {
+            let mut state = state.lock().unwrap();
+            if state.running || state.compacting {
+                // 忙碌竞态兜底（见方法注释）：新轮次自会接管，重试作废
+                self.log("queryRetryRequested while busy; dropped");
+                false
+            } else {
+                state.pending_retry = true;
+                // 启动字段复位与 `on_user_message` 逐字段对齐
+                state.running = true;
+                state.cancel.store(false, Ordering::Relaxed);
+                state.silent_abort = false;
+                // 手工转后台的暂停标记只对「当时那轮查询」有意义
+                state.pause_loop.clear();
+                true
+            }
+        };
+        self.emit_runtime();
+        if should_start {
+            let core = Arc::clone(self);
+            let worker_session = session_id.to_string();
+            std::thread::spawn(move || {
+                run_consumer(core, worker_session);
+            });
+        }
+    }
+
     // ==================== 压缩 ====================
 
     /// 会话是否空闲（`sessionResources.isSessionIdle` 的唯一入口）：
@@ -2936,6 +3004,10 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         let mention_reminder = state.lock().unwrap().pending_mention_reminder.take();
 
         let result = match step {
+            QueuedBatch::Retry => {
+                // specs/036 FR-003：无用户消息、不落盘，以既有上下文直接重跑一轮。
+                run_turn(&core, &session_id, &state, None, None, None)
+            }
             QueuedBatch::Reminder {
                 content,
                 user_message,
@@ -2980,8 +3052,9 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         };
 
         if let Err(error) = result {
-            // 一次性通知：记 meta + 时间线末位显示，下一轮新节点追加前被移除
-            emit_once_notice(&core, &session_id, &llm_error_message(&error));
+            // 一次性通知：记 meta + 时间线末位显示，下一轮新节点追加前被移除。
+            // `llmError` 类别标记供 UI 渲染重试按钮（specs/036 FR-001）。
+            emit_once_notice(&core, &session_id, &llm_error_message(&error), Some("llmError"));
         }
         core.emit_runtime();
     }
@@ -3986,11 +4059,18 @@ fn llm_error_message(error: &str) -> String {
 /// 上报一条一次性通知（`docs/hosts/webview-ui.md` 第 11 节）：先记进 `meta.json`
 /// 的 `onceMessage`（一个对话至多一条，后到的覆盖先到的），再发 `message` 事件。
 ///
+/// `kind` 是通知的类别标记（如 `Some("llmError")` = LLM 失败通知，UI 据此渲染重试
+/// 按钮），随消息 JSON 整份写进 `meta.json`——重开对话恢复到末位时标记仍在；
+/// `None` 即不带类别的普通 once 通知。
+///
 /// 通知本体不进 `<sid>.jsonl`、内存消息列表与 LLM 上下文——它只是时间线末位的提示，
 /// 重开对话时由 UI 从 meta 追加回末位。meta 写入失败只记日志：提示本身仍要到达 UI，
 /// 落盘是「重开还能看到」的尽力而为，不是事件的前置条件。
-fn emit_once_notice(core: &Arc<Core>, session_id: &str, content: &str) {
-    let message = json!({ "role": "system", "content": content });
+fn emit_once_notice(core: &Arc<Core>, session_id: &str, content: &str, kind: Option<&str>) {
+    let mut message = json!({ "role": "system", "content": content });
+    if let Some(kind) = kind {
+        message["noticeKind"] = json!(kind);
+    }
     match core.project_of(session_id) {
         Ok(project) => {
             if let Err(error) = history::save_once_message(session_id, &project, &message) {
@@ -4016,7 +4096,7 @@ fn emit_user_interrupted(core: &Arc<Core>, session_id: &str, state: &Arc<Mutex<S
     if state.lock().unwrap().silent_abort {
         return;
     }
-    emit_once_notice(core, session_id, USER_INTERRUPTED_MESSAGE);
+    emit_once_notice(core, session_id, USER_INTERRUPTED_MESSAGE, None);
 }
 
 /// 把内存中尚未落盘的消息按顺序补写。
@@ -4266,6 +4346,10 @@ fn persist_spin_reply(
 
 /// 一批排队消息。
 enum QueuedBatch {
+    /// 重试批次（specs/036 FR-003）：无用户消息、不落盘，以既有上下文直接重跑
+    /// 一轮查询（`run_turn(None)` 的 Reminder 同款形态）。只在会话空闲时受理，
+    /// 弹出时不可能与真实消息批次并存。
+    Retry,
     /// Reminder 优先；同时有待处理用户消息时并入同一轮（reminder 在前、用户消息在末尾）。
     Reminder {
         content: String,
@@ -4297,6 +4381,12 @@ fn take_queued_batch(
     // 轮次边界与 LLM 请求前的 `flush_queued_messages` 共用这一处出队，没有绕过路径。
     if guard.sub_agent_reply_called {
         guard.pending_user_message = None;
+    }
+    // 重试批次最优先：它只在空闲时受理（`on_query_retry_requested` 的守卫），弹出时
+    // 队列必空——顺序无实际歧义，放最前只是让「无消息轮次」一眼可辨。
+    if guard.pending_retry {
+        guard.pending_retry = false;
+        return Some(QueuedBatch::Retry);
     }
     let has_user_message = guard
         .pending_user_message
@@ -4379,6 +4469,12 @@ fn flush_queued_messages(
             }
             QueuedBatch::Message(user_message) => {
                 persist_user_message(core, session_id, project, state, &user_message, true)?;
+            }
+            QueuedBatch::Retry => {
+                // 设计上不可达：重试批次只在会话空闲时受理（`on_query_retry_requested`
+                // 的守卫），消费循环出队即消费；`flush_queued_messages` 只在轮次内
+                // （`running = true`）执行，槽位此刻必空。空臂不是吞掉重试——重试
+                // 不存在于该路径，无可并入的消息。
             }
         }
     }

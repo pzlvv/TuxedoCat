@@ -329,6 +329,8 @@ export function restoreMessagesFromConversation(msg: Extract<HostToWebviewMessag
       role: 'system' as const,
       content: onceMessage.content,
       once: true,
+      // 类别标记随 meta.json 恢复（specs/036 FR-001）：LLM 失败通知恢复后仍渲染重试按钮
+      noticeKind: onceMessage.noticeKind,
       timestamp: Date.now(),
     });
   }
@@ -520,6 +522,8 @@ export function toUiMessage(msg: MessageData): Message {
     origin: msg.origin,
     // 一次性通知标记（specs/014-once-notification-message）：随载荷透传
     once: msg.once,
+    // 通知类别（specs/036 FR-001）：LLM 失败通知据此渲染重试按钮
+    noticeKind: msg.noticeKind,
     images: msg.images,
     meta: msg.meta as Record<string, unknown> | undefined,
     timestamp: Date.now(),

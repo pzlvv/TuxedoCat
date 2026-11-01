@@ -325,6 +325,12 @@ export class WebviewMessageHandler {
       // ===== 消息 / 压缩 / 中止（UiEvent 翻译）=====
       entry('requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })),
       entry('sendMessage', (msg) => this.handleUserMessage(msg)),
+      // 失败 once 通知上的「重试」（specs/036 FR-003）：与 sendMessage 同为用户动作，
+      // 刷新该会话的空闲关闭计时；翻译与守卫都在 core 侧（忙碌 / spin 丢弃）
+      entry('retryQuery', (msg) => {
+        this.uiPort?.noteSessionActivity(msg.sessionId);
+        return this.emitUiEvent({ type: 'queryRetryRequested', sessionId: msg.sessionId });
+      }),
       entry('abort', (msg) => this.handleAbort(msg)),
       entry('backgroundBashTool', (msg) => this.emitUiEvent({ type: 'bashBackgroundRequested', sessionId: msg.sessionId, toolUseId: msg.toolUseId })),
       entry('discardQueuedMessage', (msg) => this.emitUiEvent({ type: 'queuedMessageDiscarded', sessionId: msg.sessionId, uuid: msg.uuid })),
