@@ -139,11 +139,13 @@ TUI 不提供本能力。
 
 ### FR-008：`@` 命令的 reminder 注入
 
-- Core 在轮次边界识别 `@` 命令：用户消息去首尾空白后以 `@` 开头，且宿主声明支持
-  跨工作区代理。
+- Core 在消息入队时按内容识别 `@` 命令：用户消息去首尾空白后以 `@` 开头，且宿主声明
+  支持跨工作区代理（[user-message-pipeline.md FR-002](user-message-pipeline.md#fr-002消息的处置在入队时确定与出队时机无关)）。
 - 在用户消息之后注入一条 silent reminder（模型可见、UI 消息流不可见），点名目标身份、
   `target` 参数名与 `Agent` 工具，并说明用户任务需要跨工作区 `Agent`；是否远程调用
   由模型在理解用户意图后自主决定，不强制代理、不禁止本工作区执行。
+- 注入与消息一起走、不存会话侧槽位：查询中途追加的 `@` 消息在下一次 LLM 请求前进入
+  上下文时同样带上 reminder，与空闲时发送结果相同；撤回该消息则注入一并消失。
 - 用户消息原文（含 `@` 前缀）保持不变；身份是否存在不在这里校验，错误在 `Agent`
   执行时暴露。
 
@@ -236,6 +238,6 @@ TUI 不提供本能力。
 | FR-005 | `src/webview/App.tsx` 的「返回发起方」（按 `creator` 跳转）；`src/webview/tools/Agent.tsx` | `e2e/electron/crossWorkspaceAgent.spec.ts` | 自动 |
 | FR-006 | `core-rs/src/engine.rs` 的 `abort_session_scope`；`src/host/WebViewUI.ts` 的中止转发 | `core-rs/src/engine_tests.rs`、`src/test/abortButtonState.test.ts` | 自动 |
 | FR-007 | `src/webview/mentionState.ts`；`src/host/workspaceIdentity.ts` 的 `workspaceMentionCandidates`；`src/webview/InputArea.tsx` | `src/test/mentionState.test.ts`、`src/test/workspaceIdentity.test.ts`、`e2e/webview/workspaceMention.spec.ts` | 自动 |
-| FR-008 | `core-rs/src/engine.rs` 的 `parse_mention_identity` / `build_mention_reminder` / `resolve_pending_mention` | `core-rs/src/engine_tests.rs` | 自动 |
+| FR-008 | `core-rs/src/engine.rs` 的 `parse_mention_identity` / `build_mention_reminder` / `classify_injection`（入队时算处置）；`append_user_message`（轮次边界与中途 flush 共用） | `core-rs/src/engine_tests.rs` 的 `classify_injection_adds_reminder_only_when_capable` / `mention_reminder_names_target_and_agent_tool` / `mention_message_flushed_mid_turn_keeps_its_reminder` / `discarded_mention_message_also_drops_its_reminder` | 自动 |
 | FR-009 | `src/shared/AssistantEventBus.ts` 的 `hostEnvironmentProvided.crossWorkspaceAgent`；三个宿主发送点；`core-rs/src/config.rs` | `core-rs/src/tools_tests.rs`、`src/test/bootstrapWiring.test.ts` | 自动 |
 | FR-010 | `core-rs/src/subagent.rs` 的远程登记与 `release_slot_if_held`；`core-rs/src/engine.rs` 的结束收敛 | `core-rs/src/engine_tests.rs` | 自动 |

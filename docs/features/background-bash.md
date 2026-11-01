@@ -15,7 +15,7 @@ last_reviewed: 2026-10-18
 「core 描述事实，UI 决定表现」见 [principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)、
 「一份事实只有一个写入点」见 [principles.md 第 7 节](../architecture/principles.md#7-一份事实只有一个写入点)；
 转换后按钮转黄见 [abort-button.md](abort-button.md)（黄色 = 前台无工作、但仍有后台任务或子代理）；
-引擎消费循环见 [user-message-pipeline.md FR-002](user-message-pipeline.md#fr-002命令在轮次边界解析)。
+引擎消费循环见 [user-message-pipeline.md FR-002](user-message-pipeline.md#fr-002消息的处置在入队时确定与出队时机无关)。
 
 ## 1. 用户场景与验收标准
 

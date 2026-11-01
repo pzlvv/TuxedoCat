@@ -24,6 +24,8 @@ last_reviewed: 2026-10-20
 - 场景 2：命令消息
   - **AC-3**（FR-002）：GIVEN 查询进行中 WHEN 发送内置命令 THEN 命令在该轮 query 结束后执行一次；查询进行中不执行、不注入
   - **AC-4**（FR-004）：GIVEN 首条消息是 Skill 命令 WHEN 消费 THEN 上下文顺序为 `[用户消息, tool_use(Skill), tool_result]`，后续消息同序
+  - **AC-20**（FR-002）：GIVEN 查询进行中 WHEN 发送 `@` 工作区命令 THEN 该消息在下一次 LLM 请求前进入上下文，并紧跟一条点名目标身份的 silent reminder，与空闲时发送结果相同
+  - **AC-21**（FR-002）：GIVEN 排队中的消息带有注入 WHEN 按 `uuid` 撤回该消息 THEN 注入随消息一并消失，不进入后续任何一批用户消息
 - 场景 3：排队与撤回
   - **AC-5**（FR-003）：GIVEN 查询进行中 WHEN 发送内置命令 THEN 排队项在执行后被清除，`queryEnd` 不重复投递
   - **AC-6**（FR-003）：GIVEN 查询进行中 WHEN 发送 Skill 命令 THEN 消息进入上下文时补发用户气泡、排队项被清除
@@ -84,14 +86,11 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 - 入口不解析命令、不注入 Skill、不执行内置命令、不把消息直接写入 LLM 上下文。这些语义只在引擎的
   消费循环内决定。因此不存在「调用方已解析、消费方再解析」的重复解析，也不需要表达「调用方已解析」的标记。
 
-### FR-002：命令在轮次边界解析
+### FR-002：消息的处置在入队时确定，与出队时机无关
 
-消费循环在每轮 query 开始前，对队首的用户消息做一次命令解析。解析发生在轮次边界：
-
-- 上一轮 query（可能包含多步工具调用）结束之后；
-- 本轮 query 开始之前。
-
-查询进行中不解析队首命令：多步工具调用中途到达的命令消息停留在待处理队列，直到该轮 query 结束。
+用户消息的可观察效果由**消息自身**决定：入队时按内容算出它的处置（内置命令 / `@`
+reminder / `/skill` 注入），随消息走。同一条消息无论从轮次边界还是查询中途的 flush
+出队，结果相同。
 
 | 结果 | 判定 | 消息去向 | 本轮 LLM |
 | --- | --- | --- | --- |
@@ -100,11 +99,19 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 | 其它 | 未匹配任何命令 / Skill | 进入 LLM 上下文 | 运行 |
 
 - 命令名与参数的分割口径：第一个空白之前是命令名，其余（含换行）是参数。
-- 命令消息只解析一次：解析结果就地消费该消息（内置命令）或标记待注入（Skill）。
-- **`@` 工作区命令**（[cross-workspace-agent.md](cross-workspace-agent.md) FR-008）同一位置解析：
-  去首尾空白后以 `@` 开头的消息，身份取引号形态 `@"..."` 的引号内文本、或到第一个空白为止；
-  用户消息照常进上下文，随后注入一条 silent reminder（点名 `Agent.target`）。
+- **唯一的时机差异**是内置命令：它会改会话流程（`/spin` 等），只在轮次边界执行；
+  多步工具调用中途到达的内置命令留在队列里，直到该轮 query 结束。其余处置在中途
+  flush 时同样应用。
+- 中途 flush（下一次 LLM 请求前并入上下文）与轮次边界共用同一处出队
+  （`take_queued_batch`）与同一处落盘（`append_user_message`）。注入顺序固定在
+  `append_user_message` 一处：用户消息 → `/skill` 的 `tool_use` / `tool_result` →
+  `@` reminder。
+- **`@` 工作区命令**（[cross-workspace-agent.md](cross-workspace-agent.md) FR-008）由同一
+  分类点识别：去首尾空白后以 `@` 开头的消息，身份取引号形态 `@"..."` 的引号内文本、或到
+  第一个空白为止；用户消息照常进上下文，随后注入一条 silent reminder（点名 `Agent.target`）。
   仅在宿主声明 `crossWorkspaceAgent` 时生效。
+- 处置跟着消息走，不存会话侧槽位：撤回（编辑 / 删除）、被新消息替换、中止丢弃时，
+  随该消息算出的注入一并消失，不会挂到下一批用户消息上。
 
 ### FR-003：排队状态与消息归属一致
 
@@ -276,7 +283,7 @@ Agent 驱动，用户输入按「运行中开放、收尾即关闭」界定：
 | 待处理队列 | 引擎持有的待消费消息（用户消息 / reminder / agent 回复） | Core |
 | 轮次边界 | 消费循环中「上一轮 query 已结束、下一轮 query 未开始」的时刻 | Core |
 | 命令消息 | 去除首尾空白后以 `/` 开头的用户消息 | Core `commands.rs` 的 `dispatch` |
-| `@` 命令 | 去除首尾空白后以 `@` 开头的用户消息 | Core `engine.rs` 的 `resolve_pending_mention` |
+| `@` 命令 | 去除首尾空白后以 `@` 开头的用户消息 | Core `engine.rs` 的 `classify_injection` |
 | 内置命令 | 命令注册表中按名称 / 别名匹配的命令（如 `/spin`） | Core `commands.rs` |
 | Skill 命令 | 匹配 Skill 名称 / 别名的命令消息 | Core `skills.rs`（宿主侧斜杠菜单经 `UiRequest.skillsRequested` 取同一份技能目录） |
 | 排队项 | webview 中表示「已提交、尚未进入上下文」的 UI 状态 | webview |
@@ -345,7 +352,7 @@ US-39（Spin 设计器：spin 期间禁止用户输入与父对话不跑 LLM）�
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
 | FR-001 | `src/host/ui/webviewMessageHandler.ts` 的用户消息处理器（`handleUserMessage`）→ `Core::on_user_message` | `core-rs/src/engine_tests.rs`（用户消息入队与消费） | 自动 |
-| FR-002 | `core-rs/src/engine.rs` 的 `run_consumer`（轮次边界的命令解析）+ `core-rs/src/commands.rs` 的 `dispatch` | `core-rs/src/commands_tests.rs`（`non_slash_text_passes_through` 等解析用例）；`core-rs/src/engine_tests.rs` 的 `slash_builtin_command_is_handled_without_an_llm_round` | 自动 |
+| FR-002 | `core-rs/src/engine.rs` 的 `classify_injection`（入队时算处置）/ `append_user_message`（两个出口共用的落盘与注入）/ `take_queued_batch`（唯一出队口，只有内置命令按位置推迟）；`core-rs/src/commands.rs` 的 `builtin_invocation` / `skill_invocation` / `execute_builtin` | `core-rs/src/commands_tests.rs`（`non_slash_text_passes_through` 等解析用例）；`core-rs/src/engine_tests.rs` 的 `slash_builtin_command_is_handled_without_an_llm_round` / `mention_message_flushed_mid_turn_keeps_its_reminder` / `skill_command_flushed_mid_turn_keeps_its_injection` / `discarded_mention_message_also_drops_its_reminder` | 自动 |
 | FR-003 | 排队链路：`src/host/ui/webviewMessageHandler.ts` 的 `queuedMessage` 回推、`src/host/WebViewUI.ts` 的 `onCommandSend` / `onQueuedMessage`、`src/webview/hooks/useAppHandlers.ts` 的撤回（共用 `restoreQueuedMessage.ts`）→ `core-rs/src/engine.rs` 的 `on_queued_message_discarded`；空闲挂起（webview 本地）：`useAppHandlers` 的挂起 / 触发 / 中止回填 | `core-rs/src/engine_tests.rs` 的 `queued_message_is_discarded_by_uuid` / `queued_message_is_flushed_before_the_next_llm_round`；e2e `e2e/webview/sendModes.spec.ts`（US-46） | 自动 |
 | FR-004 | `core-rs/src/engine.rs` 的 `inject_skill_tool_use` | `core-rs/src/engine_tests.rs` 的 `slash_skill_command_injects_the_skill_tool_use` | 自动 |
 | FR-005 | `core-rs/src/prompt.rs` 的系统环境缓存（`GIT_CACHE` 等，按 `cwd` 分桶） | `core-rs/src/prompt_tests.rs`（环境信息组装用例） | 自动 |

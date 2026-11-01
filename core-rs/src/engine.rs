@@ -49,12 +49,12 @@ fn run_sub_agent(
     {
         let state = core.session(&sub_session_id);
         let mut state = state.lock().unwrap();
-        state.pending_user_message = Some(json!({
+        state.pending_user_message = Some(QueuedUserMessage::plain(json!({
             "type": "user",
             "message": { "role": "user", "content": prompt_text },
             "uuid": util::unique_id("subtask"),
             "timestamp": util::now_millis(),
-        }));
+        })));
         state.running = true;
         state.cancel.store(false, Ordering::Relaxed);
         state.silent_abort = false;
@@ -106,7 +106,6 @@ fn run_sub_agent(
         let mut state = state.lock().unwrap();
         state.pending_user_message = None;
         state.pending_reminder = None;
-        state.pending_mention_reminder = None;
         state.agent_messages.clear();
         state.sub_agent_driver_done = true;
     }
@@ -287,7 +286,10 @@ pub struct SessionState {
     /// **单槽位**：新消息直接
     /// **替换**排队中的旧消息，
     /// 不是追加（Agent 回复才追加，见 `agent_messages`）。
-    pub pending_user_message: Option<Value>,
+    ///
+    /// 消息自带处置（内置命令 / `@` reminder / `/skill` 注入，见 `QueuedUserMessage`），
+    /// 会话状态上不再另存待注入信息。
+    pub pending_user_message: Option<QueuedUserMessage>,
     /// 待消费的重试批次（`UiEvent.queryRetryRequested`，specs/036 FR-003）。
     ///
     /// 与 `pending_user_message` 同型的单槽位：只在会话空闲时受理（忙碌 / spin /
@@ -354,13 +356,6 @@ pub struct SessionState {
     /// `sessionRuntimeChanged` 快照暴露给宿主，abort 按钮悬停明细据此显示。
     /// 普通会话与恢复路径取不到时为 `None`（快照为 `null`，UI 显示回退文案）。
     pub sub_agent_description: Option<String>,
-    /// 待注入的 Skill（`QueryEngine.pendingSkillInjection`）：出队时解析出的
-    /// `/skill` 命令。用户消息照常进上下文，随后注入一条 Skill tool_use +
-    /// tool_result（技能正文），供本轮 LLM 读取。
-    pub pending_skill_injection: Option<SkillInjection>,
-    /// 待注入的 `@` 工作区提醒（specs/023 FR-008）：轮次边界解析出 `@<身份>` 后置位，
-    /// `run_turn` 在用户消息之后落一条 silent reminder。
-    pub pending_mention_reminder: Option<String>,
     /// 跨工作区子代理的来源已并入 creator（specs/025 FR-002），字段随其删除。
     pub creator: SessionCreator,
 }
@@ -391,6 +386,45 @@ pub enum SessionCreator {
 pub struct SkillInjection {
     pub skill_name: String,
     pub skill_args: String,
+}
+
+/// 一条用户消息进入上下文时要连带产生的注入。
+///
+/// 由消息内容算出、跟着消息走，不挂在会话状态上：同一条消息无论从轮次边界还是
+/// 查询中途 flush 出队，带上的注入完全相同（`docs/features/user-message-pipeline.md`
+/// FR-002）。这也让撤回 / 被替换 / 中止丢弃天然不会留下「上一条消息的注入」。
+#[derive(Clone, Debug, Default)]
+pub struct UserMessageInjection {
+    /// `@` 工作区 command 的 reminder（specs/023 FR-008）
+    pub mention_reminder: Option<String>,
+    /// 命中的 `/skill` 命令
+    pub skill: Option<SkillInjection>,
+}
+
+/// 排队中的一条用户消息：消息本体 + 它自带的处置结果。
+///
+/// 处置（内置命令 / `@` reminder / `/skill` 注入）在**入队时**按消息内容算一次，
+/// 之后跟着消息走。这样「同一条消息的可观察效果」与它从哪个出口出队、用户什么时候
+/// 按下发送都无关（`docs/features/user-message-pipeline.md` FR-002），撤回 / 被替换 /
+/// 中止丢弃也不会把上一条消息的注入留给下一条。
+#[derive(Clone, Debug)]
+pub struct QueuedUserMessage {
+    pub message: Value,
+    /// 命中的内置命令（`/spin` 等）：只在轮次边界就地执行，不进 LLM 上下文。
+    pub builtin: Option<crate::commands::BuiltinInvocation>,
+    /// 进上下文时要连带产生的注入
+    pub injection: UserMessageInjection,
+}
+
+impl QueuedUserMessage {
+    /// 不带任何处置的消息（子代理任务提示、测试构造）。
+    pub fn plain(message: Value) -> Self {
+        Self {
+            message,
+            builtin: None,
+            injection: UserMessageInjection::default(),
+        }
+    }
 }
 
 /// 一个后台任务的提醒调度项：
@@ -446,8 +480,6 @@ impl SessionState {
             transfer_counterpart: None,
             sub_agent_role: None,
             sub_agent_description: None,
-            pending_skill_injection: None,
-            pending_mention_reminder: None,
             creator: SessionCreator::User,
         }
     }
@@ -933,13 +965,13 @@ impl Core {
         let matches = state
             .pending_user_message
             .as_ref()
-            .and_then(|message| message.get("uuid").and_then(Value::as_str))
+            .and_then(|queued| queued.message.get("uuid").and_then(Value::as_str))
             .map(|pending| pending == uuid)
             .unwrap_or(false);
         if matches {
+            // 消息与它自带的处置一起丢弃：注入跟着消息走，不存在残留到下一批的路径
+            // （docs/features/user-message-pipeline.md FR-002）。
             state.pending_user_message = None;
-            // Skill 命令的待注入信息与排队消息同生共死：消息撤回后注入不再发生。
-            state.pending_skill_injection = None;
         }
     }
 
@@ -2273,10 +2305,25 @@ impl Core {
 
         let state = self.session(&session_id);
         let message = build_user_message(payload);
+        // 处置在入队时按消息内容算一次，随消息走（`QueuedUserMessage`）：此后无论从
+        // 轮次边界还是查询中途 flush 出队，效果都相同
+        // （docs/features/user-message-pipeline.md FR-002）。技能盘点要读目录，放在
+        // 锁外算；内置命令只查内存注册表。
+        let builtin = builtin_invocation(&message);
+        let injection = match self.project_of(&session_id) {
+            Ok(cwd) => classify_injection(&message_text(&message), &cwd),
+            // 工作目录解析不出时没有技能清单可查；`@` reminder 不依赖目录，照算。
+            Err(_) => classify_injection(&message_text(&message), ""),
+        };
+        let queued = QueuedUserMessage {
+            message,
+            builtin,
+            injection,
+        };
         let should_start = {
             let mut state = state.lock().unwrap();
             // **替换**排队中的旧消息
-            state.pending_user_message = Some(message);
+            state.pending_user_message = Some(queued);
             if state.running || state.compacting {
                 // 压缩期间只入队不启动消费循环：
                 // 压缩会整体替换消息数组，与运行中的查询并发会互相踩踏）
@@ -2895,30 +2942,12 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         let Some(state) = core.session_if_exists(&session_id) else {
             break;
         };
-        // 命令消息（`/xxx`）在**轮次边界**解析（对齐 `resolvePendingCommand` 在
-        // `messageConsumer` 里的位置）：内置命令就地执行、该消息不进 LLM 上下文；
-        // Skill 命令记下待注入信息，用户消息照常进上下文。
-        //
-        // 放在消费之前、且不放进 `flush_queued_messages`，保证命令不会在
-        // 「多步工具调用进行到一半」时被注入。
-        match resolve_pending_command(&core, &session_id, &state) {
-            CommandResolution::Handled => {
-                core.emit_runtime();
-                continue;
-            }
-            CommandResolution::Skill => {}
-            CommandResolution::None => {}
-        }
-        // specs/023 FR-008：`@` 工作区命令与 `/` 命令同口径在轮次边界解析；
-        // reminder 在 `run_turn` 里紧跟用户消息落盘。
-        resolve_pending_mention(&state);
         // 取消（`abortRequested`）：清空队列并退出消费循环。
         {
             let mut guard = state.lock().unwrap();
             if guard.cancel.load(Ordering::Relaxed) {
                 guard.pending_user_message = None;
                 guard.pending_reminder = None;
-                guard.pending_mention_reminder = None;
                 // reminder 已被丢弃：标记一并清掉，否则会顺延抑制下一轮的兜底提醒。
                 guard.reminder_driven_run = false;
                 guard.agent_messages.clear();
@@ -2930,10 +2959,23 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 break;
             }
         }
-        // 取一批排队消息：优先级与 `flush_queued_messages` 共用同一实现
-        // （消费循环与 `flushQueuedMessagesIntoContext` 都走 `consumeQueuedOnce`）。
-        // 轮次边界消费命令消息（`include_command_user_message = true`）。
-        let step = match take_queued_batch(&state, true) {
+        // 内置命令：轮次边界是唯一允许就地执行的位置。必须在取批次**之前**取出——
+        // 批次会把 reminder 与该用户消息并成一条，先取批次再执行命令会连带丢掉 reminder
+        // （`docs/features/user-message-pipeline.md` FR-002）。
+        if let Some(invocation) = take_pending_builtin(&state) {
+            match core.project_of(&session_id) {
+                Ok(cwd) => run_builtin_command(&core, &session_id, &invocation, &cwd),
+                // 工作目录解析不出时命令仍要执行（`/spin design` 之类不依赖目录），
+                // 空目录只影响技能盘点——内置命令不查技能。
+                Err(_) => run_builtin_command(&core, &session_id, &invocation, ""),
+            }
+            core.emit_runtime();
+            continue;
+        }
+        // 取一批排队消息：与 `flush_queued_messages` 共用同一实现（唯一出队口）。
+        // 消息自带的注入（`@` reminder / `/skill`）两个出口一样，由
+        // `append_user_message` 应用。
+        let step = match take_queued_batch(&state) {
             Some(batch) => Some(batch),
             None => {
                 // 用户排队的压缩：本轮结束、队列排空时立即执行，不再等下一轮用户消息。
@@ -2997,16 +3039,10 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             break;
         };
 
-        // 出队时解析出的 Skill 注入（若有）：随本轮一起消费，注入发生在
-        // 用户消息进上下文之后、query 之前（见 `run_turn` 的 1.5 步）。
-        let skill_injection = state.lock().unwrap().pending_skill_injection.take();
-        // specs/023 FR-008：`@` 命令的 reminder 与 Skill 注入同一位置消费。
-        let mention_reminder = state.lock().unwrap().pending_mention_reminder.take();
-
         let result = match step {
             QueuedBatch::Retry => {
                 // specs/036 FR-003：无用户消息、不落盘，以既有上下文直接重跑一轮。
-                run_turn(&core, &session_id, &state, None, None, None)
+                run_turn(&core, &session_id, &state, None)
             }
             QueuedBatch::Reminder {
                 content,
@@ -3016,23 +3052,11 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 // 它是一条 `silent` / `origin=agent` 的 user 消息，UI 不展示，但会写进
                 // `<sid>.jsonl`、计入 `meta.json` 的 `messageCount`，并刷新对话列表。
                 persist_reminder(&core, &session_id, &state, &content);
-                run_turn(
-                    &core,
-                    &session_id,
-                    &state,
-                    user_message.as_ref(),
-                    skill_injection,
-                    mention_reminder,
-                )
+                run_turn(&core, &session_id, &state, user_message)
             }
-            QueuedBatch::Message(message) => run_turn(
-                &core,
-                &session_id,
-                &state,
-                Some(&message),
-                skill_injection,
-                mention_reminder,
-            ),
+            QueuedBatch::Message(user_message) => {
+                run_turn(&core, &session_id, &state, Some(user_message))
+            }
             QueuedBatch::AutoMessages {
                 messages,
                 user_message,
@@ -3040,14 +3064,7 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 for item in &messages {
                     persist_auto_message(&core, &session_id, &state, item);
                 }
-                run_turn(
-                    &core,
-                    &session_id,
-                    &state,
-                    user_message.as_ref(),
-                    skill_injection,
-                    mention_reminder,
-                )
+                run_turn(&core, &session_id, &state, user_message)
             }
         };
 
@@ -3429,27 +3446,6 @@ fn emit_tool_outcome(
 
 // ==================== 命令解析与 Skill 注入 ====================
 
-/// `resolvePendingCommand` 的三种结果
-enum CommandResolution {
-    /// 内置命令已就地执行：该消息不进 LLM 上下文
-    Handled,
-    /// 命中 Skill：用户消息照常进上下文，随后注入 Skill tool_use
-    Skill,
-    /// 普通消息 / 未匹配的 `/` 文本
-    None,
-}
-
-/// 待处理的用户消息是否是 `/` 命令（对齐 `isPendingUserCommand`）
-fn is_pending_user_command(state: &Arc<Mutex<SessionState>>) -> bool {
-    state
-        .lock()
-        .unwrap()
-        .pending_user_message
-        .as_ref()
-        .map(|message| util::js_trim(&message_text(message)).starts_with('/'))
-        .unwrap_or(false)
-}
-
 /// 解析 `@` 工作区命令的身份（specs/023 FR-008）。
 ///
 /// 语法：去首尾空白后以 `@` 开头。身份两种形态——
@@ -3487,88 +3483,63 @@ fn build_mention_reminder(identity: &str) -> String {
     )
 }
 
-/// 轮次边界：待处理用户消息是 `@` 命令时，把 reminder 文案挂到会话状态上
-/// （`run_turn` 在用户消息之后落一条 silent reminder）。
+/// 消息是内置命令时返回它的调用（注册名 + 参数）。
 ///
-/// 只在宿主声明支持跨工作区代理时生效（FR-009）；身份是否存在不在这里校验——
-/// 不存在时由 `Agent.target` 执行时报错（FR-008）。
-fn resolve_pending_mention(state: &Arc<Mutex<SessionState>>) {
-    if !crate::config::cross_workspace_agent() {
-        return;
-    }
-    let mut guard = state.lock().unwrap();
-    if guard.pending_mention_reminder.is_some() {
-        return;
-    }
-    let Some(message) = guard.pending_user_message.as_ref() else {
-        return;
-    };
-    let Some(identity) = parse_mention_identity(&message_text(message)) else {
-        return;
-    };
-    guard.pending_mention_reminder = Some(build_mention_reminder(&identity));
+/// 只查内存注册表，可在持锁路径调用——引擎用它判断「这条消息要不要等轮次边界」。
+fn builtin_invocation(message: &Value) -> Option<crate::commands::BuiltinInvocation> {
+    crate::commands::builtin_invocation(&message_text(message))
 }
 
-/// 解析队首的命令消息（`"/<skill|command> args"`）。
+/// 按消息内容算出它自带的处置：`@` reminder 与命中的 `/skill`。
 ///
-/// 命令在**出队时**才解析，而不是消息一发出就生效：这样即使当前正在跑一轮多步
-/// 工具调用，Skill 也不会被中途注入、内置命令也不会被中途执行。
-fn resolve_pending_command(
+/// **唯一的分类点**：入队时算一次，结果随消息走。轮次边界与查询中途 flush 都用它，
+/// 不再有「哪个出口才解析」的分叉（`docs/features/user-message-pipeline.md` FR-002）。
+///
+/// `cwd` 取会话工作目录：技能盘点要读技能目录，因此本函数不持锁调用。
+fn classify_injection(text: &str, cwd: &str) -> UserMessageInjection {
+    // `@` 只在宿主声明支持跨工作区代理时生效（specs/023 FR-009）；身份是否存在
+    // 不在这里校验——不存在时由 `Agent.target` 执行时报错（FR-008）。
+    let mention_reminder = if crate::config::cross_workspace_agent() {
+        parse_mention_identity(text).map(|identity| build_mention_reminder(&identity))
+    } else {
+        None
+    };
+    let skill = crate::commands::skill_invocation(text, cwd)
+        .map(|(skill_name, skill_args)| SkillInjection {
+            skill_name,
+            skill_args,
+        });
+    UserMessageInjection {
+        mention_reminder,
+        skill,
+    }
+}
+
+/// 就地执行一条已出队的内置命令，并把该消息从队列里消掉。
+///
+/// 内置命令会改会话流程（`/spin` 等），只允许在**轮次边界**执行：查询中途 flush
+/// 不消费这类消息，把它们留在队列里等本轮结束（`take_queued_batch`）。其余处置
+/// （`@` reminder、`/skill` 注入）与时机无关，随消息自带。
+fn run_builtin_command(
     core: &Arc<Core>,
     session_id: &str,
-    state: &Arc<Mutex<SessionState>>,
-) -> CommandResolution {
-    if !is_pending_user_command(state) {
-        return CommandResolution::None;
-    }
-
-    let text = {
-        let state = state.lock().unwrap();
-        state
-            .pending_user_message
-            .as_ref()
-            .map(message_text)
-            .unwrap_or_default()
-    };
-
-    let Ok(cwd) = core.project_of(session_id) else {
-        return CommandResolution::None;
-    };
-
+    invocation: &crate::commands::BuiltinInvocation,
+    cwd: &str,
+) {
     let emitter = Arc::clone(core);
     let spin_core = Arc::clone(core);
     let spin_session = session_id.to_string();
-    let spin_cwd = cwd.clone();
+    let spin_cwd = cwd.to_string();
     let context = crate::commands::CommandContext {
         session_id: session_id.to_string(),
-        cwd,
+        cwd: cwd.to_string(),
         command_name: None,
         emit: Arc::new(move |event| emitter.emit(event)),
         start_spin: Some(Arc::new(move |args: &str| {
             crate::spin_host::run_spin_command(&spin_core, &spin_session, &spin_cwd, args)
         })),
     };
-
-    match crate::commands::dispatch(&text, &context) {
-        crate::commands::DispatchOutcome::Handled => {
-            // 丢弃该消息（命令已就地执行）
-            let mut state = state.lock().unwrap();
-            state.pending_user_message = None;
-            state.pending_skill_injection = None;
-            CommandResolution::Handled
-        }
-        crate::commands::DispatchOutcome::Skill {
-            skill_name,
-            skill_args,
-        } => {
-            state.lock().unwrap().pending_skill_injection = Some(SkillInjection {
-                skill_name,
-                skill_args,
-            });
-            CommandResolution::Skill
-        }
-        crate::commands::DispatchOutcome::Passthrough => CommandResolution::None,
-    }
+    crate::commands::execute_builtin(invocation, &context);
 }
 
 /// 注入 Skill tool_use（assistant tool_use + tool_result 携带技能正文）。
@@ -3709,9 +3680,7 @@ fn run_turn(
     core: &Arc<Core>,
     session_id: &str,
     state: &Arc<Mutex<SessionState>>,
-    user_message: Option<&Value>,
-    skill_injection: Option<SkillInjection>,
-    mention_reminder: Option<String>,
+    user_message: Option<QueuedUserMessage>,
 ) -> Result<(), String> {
     let project = core.project_of(session_id)?;
     let (agent_mode, model, provider) = {
@@ -3734,25 +3703,10 @@ fn run_turn(
         }
     }
 
-    // 1. 用户消息落盘 + 通知 UI（Reminder 轮次没有用户消息，只跑查询）
+    // 1. 用户消息落盘 + 通知 UI，并应用这条消息自带的注入（Reminder 轮次没有
+    // 用户消息，只跑查询）。
     if let Some(user_message) = user_message {
-        persist_user_message(core, session_id, &project, state, user_message, true)?;
-    }
-
-    // 1.5 Skill 注入：`/skill` 命令的用户消息已进上下文，紧接着注入 Skill tool_use
-    // （assistant tool_use + tool_result 携带技能正文），供本轮 LLM 读取。
-    // 位置：队列消费之后、query 之前。
-    if let Some(injection) = skill_injection {
-        if let Err(error) = inject_skill_tool_use(core, session_id, &project, state, &injection) {
-            // 注入失败不中断流程，继续走 LLM query
-            eprintln!("[core] Skill tool call error: {error}");
-        }
-    }
-
-    // 1.6 `@` 工作区 reminder（specs/023 FR-008）：用户消息之后紧跟一条 silent 消息，
-    // 点名目标身份与 `Agent.target`；是否远程调用由模型理解用户意图后自主决定。
-    if let Some(reminder) = mention_reminder {
-        persist_reminder(core, session_id, state, &reminder);
+        append_user_message(core, session_id, &project, state, user_message)?;
     }
 
     // 2. 轮次循环（`aiBegin` / `aiEnd` 每轮各一次，见 run_query_loop）。
@@ -4353,27 +4307,47 @@ enum QueuedBatch {
     /// Reminder 优先；同时有待处理用户消息时并入同一轮（reminder 在前、用户消息在末尾）。
     Reminder {
         content: String,
-        user_message: Option<Value>,
+        user_message: Option<QueuedUserMessage>,
     },
     /// 自动消息（子代理 Reply / 后台 Bash 通知）+ 用户消息合并：自动消息先追加、
     /// 用户消息放末尾，保证同一轮 LLM 按序看到。
     AutoMessages {
         messages: Vec<AgentMessage>,
-        user_message: Option<Value>,
+        user_message: Option<QueuedUserMessage>,
     },
     /// 纯用户消息。
-    Message(Value),
+    Message(QueuedUserMessage),
+}
+
+/// 轮次边界：队首消息是内置命令时取出并返回，由调用方就地执行。
+///
+/// 必须在 `take_queued_batch` **之前**判断：批次会把 reminder 与用户消息并成一条，
+/// 先取批次再执行命令会连 reminder 一起丢掉（`docs/features/user-message-pipeline.md`
+/// FR-002）。
+fn take_pending_builtin(
+    state: &Arc<Mutex<SessionState>>,
+) -> Option<crate::commands::BuiltinInvocation> {
+    let mut guard = state.lock().unwrap();
+    // Reply 已收尾的子代理不再受理用户输入：命令同样不执行
+    if guard.sub_agent_reply_called {
+        return None;
+    }
+    let queued = guard.pending_user_message.as_ref()?;
+    if queued.builtin.is_none() {
+        return None;
+    }
+    let queued = guard.pending_user_message.take()?;
+    queued.builtin
 }
 
 /// 从队列取一批待消费消息（消费优先级）：
 /// Reminder > (Agent + 用户合并) > 纯用户 > 纯 Agent。
 ///
-/// `include_command_user_message = false`（查询中途 flush）时不消费命令消息（`/xxx`）：
-/// 命令只在轮次边界生效，不能在多步工具调用进行到一半时注入 Skill / 执行内置命令。
-fn take_queued_batch(
-    state: &Arc<Mutex<SessionState>>,
-    include_command_user_message: bool,
-) -> Option<QueuedBatch> {
+/// 唯一的出队口，轮次边界与查询中途 flush 共用。**唯一的时机差异**：内置命令
+/// （`/spin` 等会改会话流程的命令）只在轮次边界消费——`allow_builtin = false` 时
+/// 这类消息留在队列里等本轮结束。其余处置（`@` reminder、`/skill` 注入）随消息
+/// 自带，两个出口一样（`docs/features/user-message-pipeline.md` FR-002）。
+fn take_queued_batch(state: &Arc<Mutex<SessionState>>) -> Option<QueuedBatch> {
     let mut guard = state.lock().unwrap();
     // Reply 已调用的子代理：用户队列就地丢弃——对话进入收尾，不再受理补充输入
     // （docs/features/user-message-pipeline.md 第 3.3 节）。自动消息与 Reminder 照常
@@ -4388,12 +4362,13 @@ fn take_queued_batch(
         guard.pending_retry = false;
         return Some(QueuedBatch::Retry);
     }
+    // 内置命令不从这里出队：它由 `take_pending_builtin` 在轮次边界单独取出并就地
+    // 执行（改会话流程的命令不能在中途生效）。留在这里会让「等待执行的命令」混进
+    // 普通批次，也让中途 flush 有机会把它带进上下文。
     let has_user_message = guard
         .pending_user_message
         .as_ref()
-        .map(|message| {
-            include_command_user_message || !util::js_trim(&message_text(message)).starts_with('/')
-        })
+        .map(|queued| queued.builtin.is_none())
         .unwrap_or(false);
     let has_agent_messages = !guard.agent_messages.is_empty();
 
@@ -4439,13 +4414,18 @@ fn take_queued_batch(
 /// `mutableMessages`，而不是等整轮结束再单独起一轮。被 flush 的消息同步落盘
 /// （`persistUnpersistedMessages`），因此这里逐条走与普通消息相同的落盘 / 标题 / 列表刷新路径
 /// （用户消息的 `_userInitiated` 为真）。
+///
+/// 消息自带处置（`QueuedUserMessage`）：`@` reminder 与 `/skill` 注入在这里同样应用，
+/// 与轮次边界的效果一致；只有内置命令被留在队列里等轮次边界
+/// （`docs/features/user-message-pipeline.md` FR-002）。
 fn flush_queued_messages(
     core: &Arc<Core>,
     session_id: &str,
     project: &str,
     state: &Arc<Mutex<SessionState>>,
 ) -> Result<(), String> {
-    while let Some(batch) = take_queued_batch(state, false) {
+    // 中途不可消费内置命令：会改会话流程（`/spin` 等）的命令只在轮次边界执行。
+    while let Some(batch) = take_queued_batch(state) {
         match batch {
             QueuedBatch::Reminder {
                 content,
@@ -4453,7 +4433,7 @@ fn flush_queued_messages(
             } => {
                 persist_reminder(core, session_id, state, &content);
                 if let Some(user_message) = user_message {
-                    persist_user_message(core, session_id, project, state, &user_message, true)?;
+                    append_user_message(core, session_id, project, state, user_message)?;
                 }
             }
             QueuedBatch::AutoMessages {
@@ -4464,11 +4444,11 @@ fn flush_queued_messages(
                     persist_auto_message(core, session_id, state, item);
                 }
                 if let Some(user_message) = user_message {
-                    persist_user_message(core, session_id, project, state, &user_message, true)?;
+                    append_user_message(core, session_id, project, state, user_message)?;
                 }
             }
             QueuedBatch::Message(user_message) => {
-                persist_user_message(core, session_id, project, state, &user_message, true)?;
+                append_user_message(core, session_id, project, state, user_message)?;
             }
             QueuedBatch::Retry => {
                 // 设计上不可达：重试批次只在会话空闲时受理（`on_query_retry_requested`
@@ -4477,6 +4457,32 @@ fn flush_queued_messages(
                 // 不存在于该路径，无可并入的消息。
             }
         }
+    }
+    Ok(())
+}
+
+/// 一条已出队的用户消息进上下文：用户消息本身 + 它自带的注入（`@` reminder、`/skill`）。
+///
+/// 轮次边界（`run_turn`）与查询中途 flush 都走这里，保证同一条消息在两种时机下产生
+/// 相同的上下文与落盘结果（`docs/features/user-message-pipeline.md` FR-002）。
+fn append_user_message(
+    core: &Arc<Core>,
+    session_id: &str,
+    project: &str,
+    state: &Arc<Mutex<SessionState>>,
+    queued: QueuedUserMessage,
+) -> Result<(), String> {
+    persist_user_message(core, session_id, project, state, &queued.message, true)?;
+    // 1.5 Skill 注入：紧跟用户消息，注入一条 assistant tool_use + tool_result（技能正文）
+    if let Some(injection) = queued.injection.skill {
+        if let Err(error) = inject_skill_tool_use(core, session_id, project, state, &injection) {
+            // 注入失败不中断流程，继续走 LLM query
+            eprintln!("[core] Skill tool call error: {error}");
+        }
+    }
+    // 1.6 `@` 工作区 reminder（specs/023 FR-008）：用户消息之后紧跟一条 silent 消息
+    if let Some(reminder) = queued.injection.mention_reminder {
+        persist_reminder(core, session_id, state, &reminder);
     }
     Ok(())
 }
