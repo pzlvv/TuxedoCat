@@ -2116,6 +2116,17 @@ impl Core {
                 }));
                 return Ok(());
             }
+            // 反向不成立时区分两种「取不到目标」：目标若是已登记的跨工作区子代理，它的
+            // 运行时在目标工作区的 Core 里（`spawn_remote_agent` 只登记、不建本地会话，
+            // specs/023 FR-002），本机没有投递通道——文案必须点明这一点并给出可行动作，
+            // 不能报「会话不存在」（`specs/defects/reply-parent-to-subagent-target-missing`）。
+            if let Some(workspace_id) = crate::subagent::remote_workspace_of(target_session_id) {
+                return Err(format!(
+                    "目标会话 {target_session_id} 是跨工作区子代理，运行在另一个工作区 \
+                     {workspace_id}：本机无法直接投递消息。请在派发时把要求写全，或等它用 \
+                     Reply 回传结果；需要追加任务请新起一个 Agent"
+                ));
+            }
             return Err(format!("目标会话 {target_session_id} 不存在"));
         };
 

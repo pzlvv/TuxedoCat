@@ -433,6 +433,37 @@ fn agent_role_table_lists_all_registered_roles() {
     }
 }
 
+/// RT-4（`specs/defects/reply-parent-to-subagent-target-missing`）：`Reply` 的提示词承诺
+/// 与真实投递能力一致——回投创建者、投递本工作区子代理可以，跨工作区子代理运行期间
+/// 收不到，要求须在派发时写全。核心原则与 `Agent` 工具说明两处都不得再无条件承诺
+/// 「可给子代理追加消息」。
+#[test]
+fn reply_promise_matches_delivery_capability() {
+    let usage = tool_usage_section(&tools::definitions(), None);
+    for (label, text) in [("核心原则", core_prompt()), ("Agent 工具说明", usage.as_str())] {
+        assert!(
+            text.contains("another workspace"),
+            "{label} 应点明跨工作区子代理收不到追加消息"
+        );
+        assert!(
+            text.contains("dispatch prompt"),
+            "{label} 应给出可行动作（派发时把要求写全）"
+        );
+    }
+    // 本地子代理可投递的事实保留
+    assert!(core_prompt().contains("this workspace"));
+    assert!(usage.contains("this workspace"));
+    // 旧的无条件承诺不得残留
+    assert!(
+        !core_prompt().contains("When the sub-agent provides feedback"),
+        "核心原则仍无条件承诺可给子代理追加消息"
+    );
+    assert!(
+        !usage.contains("If you have additional requests for the sub-agent"),
+        "Agent 工具说明仍无条件承诺可给子代理追加消息"
+    );
+}
+
 // ==================== Transfer 简详双形态（specs/028 FR-006）====================
 
 /// 简述形态位于 `Reply` 与 `AskUserQuestion` 之间、不展开参数表；
