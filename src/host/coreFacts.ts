@@ -13,6 +13,8 @@
 
 import { requireEventBus } from '../shared/AssistantEventBus.js';
 import type {
+  BranchPrecheckResult,
+  BranchTreeResult,
   LoadedConversation,
   SkillListItem,
   SpinDesignReadResult,
@@ -207,6 +209,31 @@ export async function unwatchWorkspaceFile(request: {
   workspacePath: string;
 }): Promise<void> {
   await requireEventBus().requestCore({ type: 'unwatchWorkspaceFileRequested', ...request });
+}
+
+/**
+ * 分支对话的目录树（specs/037 FR-007）。
+ *
+ * 不是分支会话 / worktree 已不在时 Core 回 `{ ok: false, reason: 'not-branch' }`，
+ * 调用方据此回落主工作区读盘——宿主不自己判断会话形态。
+ */
+export async function requestBranchTree(request: {
+  sessionId: string;
+  dir: string;
+}): Promise<BranchTreeResult> {
+  return requireEventBus().requestCore({ type: 'branchTreeRequested', ...request });
+}
+
+/**
+ * 分支对话创建入口的前置数据（specs/037 FR-003）。
+ *
+ * 会话建立前没有 `branchStateChanged`，是否 git 仓库 / `<base>` 短 id / 脏工作区判定
+ * 只有这一条来源；宿主不跑 git（`workspacePath` 为 `null` 时按活动工作区路由）。
+ */
+export async function requestBranchPrecheck(
+  workspacePath: string | null,
+): Promise<BranchPrecheckResult> {
+  return requireEventBus().requestCore({ type: 'branchPrecheckRequested', workspacePath });
 }
 
 /**

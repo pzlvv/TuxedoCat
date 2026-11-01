@@ -95,6 +95,14 @@ async function run(): Promise<void> {
       sent.push(req);
       return null;
     },
+    branchTreeRequested: async (req) => {
+      sent.push(req);
+      return { ok: false, reason: 'not-branch' };
+    },
+    branchPrecheckRequested: async (req) => {
+      sent.push(req);
+      return { ok: false, reason: 'not-git', detail: 'stub' };
+    },
   };
   bus.onUiRequests(handlers);
   setGlobalEventBus(bus);

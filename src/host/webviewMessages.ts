@@ -160,6 +160,30 @@ export type HostToWebviewMessage = {
   sessionId: string;
   workMode: 'normal' | 'spin';
 } | {
+  /**
+   * 某会话的分支对话状态（core `branchStateChanged` 的 webview 投影，specs/037 FR-008）。
+   *
+   * 全量快照：`view` 是判别联合，只带渲染「标题前分支名」所需的最小事实
+   * （`plain` / `ready` / `unavailable`）。webview 据此渲染标题前的分支名、对话列表的
+   * 分支名与 `unavailable` 的警告色——消息区与状态条不出现任何分支横幅。
+   */
+  type: 'branchState';
+  sessionId: string;
+  view:
+    | { state: 'plain' }
+    | {
+        state: 'ready';
+        branch: string;
+        worktree: string;
+        baseCommit: string;
+        baseBranch: string;
+      }
+    | {
+        state: 'unavailable';
+        reason: 'not-git' | 'worktree-missing' | 'git-failed';
+        detail: string;
+      };
+} | {
   type: 'aiBegin';
   sessionId: string;
 } | {
@@ -240,6 +264,14 @@ export type HostToWebviewMessage = {
     updatedAt: number;
     messageCount: number;
     parentSessionId?: string;
+    /**
+     * 分支对话事实（specs/037 FR-006 / AC-18）：`null` = 普通会话。
+     *
+     * 数据随对话列表元数据下发（来源是 `meta.json` 的 `branch` 字段），webview 在
+     * 列表条目标题**前**显示截断的分支名（`<name>`，无 `tuxedo/` 前缀），悬停显示
+     * 全名与来源。成员必选、用 `null` 表示「没有」（不用可选字段）。
+     */
+    branch: { name: string; worktree: string; baseCommit: string; baseBranch: string } | null;
   }>;
 } | {
   /**
@@ -289,6 +321,17 @@ export type HostToWebviewMessage = {
    */
   type: 'sessionCompletionAttention';
   sessionIds: string[];
+} | {
+  /**
+   * 创建入口的前置数据（`requestBranchPrecheck` 的应答，specs/037 FR-003）。
+   *
+   * 会话建立前没有 `branchStateChanged`，分支对话入口的置灰判定与脏工作区提示只有
+   * 这一条来源。`ok: false` 即「不是 git 仓库」，下拉项置灰并说明原因。
+   */
+  type: 'branchPrecheck';
+  result:
+    | { ok: true; head: string; dirty: boolean; baseBranch: string }
+    | { ok: false; reason: 'not-git'; detail: string };
 } | {
   /**
    * 某会话的 Todo 清单（`docs/features/todo-list.md` FR-002）。
@@ -677,6 +720,14 @@ export type WebviewToHostMessage = {
   type: 'requestSessionTodos';
   sessionId: string;
 } | {
+  /**
+   * 索取创建入口的前置数据（specs/037 FR-003；应答是下行 `branchPrecheck`）。
+   *
+   * 下拉展开与分支草稿页打开时各发一次；宿主翻译成 `UiRequest.branchPrecheckRequested`
+   * ——宿主不跑 git。
+   */
+  type: 'requestBranchPrecheck';
+} | {
   type: 'loadConversation';
   sessionId: string;
 } | {
@@ -694,6 +745,14 @@ export type WebviewToHostMessage = {
 } | {
   type: 'startNewConversation';
   sessionId: string;
+  /**
+   * 会话形态（specs/037 FR-006 创建时序）：`branch` = 分支对话，宿主翻译成
+   * `UiEvent.branchModeChanged` 让 Core 建 worktree；`plain`（缺省）= 普通对话。
+   *
+   * 形态只影响**创建这一刻**：此后由 core 的 `branchStateChanged` 承载持久事实，
+   * webview 不再回传（无「切换模式」入口）。
+   */
+  mode?: 'plain' | 'branch';
 } | {
   type: 'deleteConversation';
   sessionId: string;

@@ -44,6 +44,7 @@ import {
   requestConversationSpaces,
   requestFlushSession,
   requestMcpServers,
+  requestBranchPrecheck,
   requestSessionTodos,
   requestSkills,
   requestSmartNaming,
@@ -303,6 +304,7 @@ export class WebviewMessageHandler {
       entry('requestConversationSpaces', () => this.handleRequestConversationSpaces()),
       // 会话 Todo 清单：core 持有事实，视图切换 / 重挂载时拉一次（按来源回包）
       entry('requestSessionTodos', (msg, ctx) => this.handleRequestSessionTodos(msg, ctx)),
+      entry('requestBranchPrecheck', (msg, ctx) => this.handleRequestBranchPrecheck(msg, ctx)),
       entry('requestMcpServers', (msg) => this.handleRequestMcpServers(msg)),
       entry('getConversations', () => this.handleGetConversations()),
       // 会话运行时状态全量快照：状态流只在「变化」时推，视图创建 / 激活不会补发，
@@ -955,6 +957,12 @@ export class WebviewMessageHandler {
     this.trackedActiveSessionId = newSessionId;
     // 先登记该会话的工作目录：core 收到 conversationStarted 后要按会话解析目录建引擎
     this.ensureSessionWorkspace(newSessionId);
+    // 会话形态先于 conversationStarted 到达（specs/037 FR-006 创建时序第 2 步）：
+    // Core 在 `branchModeChanged` 里同步建 worktree 并把该会话的工具根改向，随后的
+    // 首条消息才落在 worktree 内。`plain` 是空操作（普通会话不建 worktree）。
+    if (message.mode === 'branch') {
+      await this.emitUiEvent({ type: 'branchModeChanged', sessionId: newSessionId, mode: 'branch' });
+    }
     // UI → core：报告「用户新建了对话」（core 预创建引擎）
     await this.emitUiEvent({ type: 'conversationStarted', sessionId: newSessionId });
     // 登记为「已打开会话」：Standalone 下 Core 重启后据此重放 conversationOpened。
@@ -1469,6 +1477,37 @@ export class WebviewMessageHandler {
   ): Promise<void> {
     const todos = await requestSessionTodos(msg.sessionId);
     const message: WebviewMessage = { type: 'sessionTodos', sessionId: msg.sessionId, todos };
+    if (ctx.sender) {
+      this.host.sendToWebviewView(ctx.sender, message);
+    } else {
+      this.host.sendToWebview(message);
+    }
+  }
+
+  /**
+   * 创建入口的前置数据（specs/037 FR-003）：宿主翻译成 `UiRequest.branchPrecheckRequested`。
+   *
+   * 宿主**不跑 git**（worktree 与分支名是 core 的事实）；按来源视图自己的工作目录问
+   * 该目录自己的 Core。Core 不可达时回 `ok: false` 的第二形态（`not-git` + 原因），
+   * 分支项因此置灰——这是唯一不需要编造值的失败形态。
+   */
+  private async handleRequestBranchPrecheck(
+    _msg: Extract<WebviewMessage, { type: 'requestBranchPrecheck' }>,
+    ctx: WebviewRequestContext,
+  ): Promise<void> {
+    // 多视图宿主下每个视图绑着自己的工作区；单视图宿主就是当前工作目录
+    const workspacePath = this.host.getWorkspacePath() ?? null;
+    let result: Extract<WebviewMessage, { type: 'branchPrecheck' }>['result'];
+    try {
+      result = await requestBranchPrecheck(workspacePath);
+    } catch (err) {
+      result = {
+        ok: false,
+        reason: 'not-git',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const message: WebviewMessage = { type: 'branchPrecheck', result };
     if (ctx.sender) {
       this.host.sendToWebviewView(ctx.sender, message);
     } else {

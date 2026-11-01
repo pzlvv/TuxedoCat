@@ -553,6 +553,11 @@ export class Client implements AssistantEventBus {
     ) {
       return this.connectionForWorkspacePath(request.workspacePath) ?? null;
     }
+    // 分支创建前置数据按工作区路由（specs/037 FR-003）：会话还不存在，只能按目录定位
+    // 该目录自己的 Core；`workspacePath` 为 null 时落到当前 Connection（活动工作区）。
+    if (request.type === 'branchPrecheckRequested' && request.workspacePath) {
+      return this.connectionForWorkspacePath(request.workspacePath) ?? null;
+    }
     return this.currentConnection();
   }
 

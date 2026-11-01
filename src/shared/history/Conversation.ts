@@ -297,6 +297,46 @@ export interface ConversationMetadata {
    * 会话恒为 0——在线完成不经过该路径，重启后不翻旧账）。宿主只读，不写 meta.json。
    */
   unreadCompletions?: number;
+  /**
+   * 分支对话事实（specs/037 FR-001 / FR-008）：`null` 即普通会话。
+   *
+   * core 在首条消息建立会话时写入（`branch` 键），宿主只读——worktree 路径与分支名
+   * 是 core 的事实，宿主不自行拼路径、不自行跑 git。**成员必选、不用可选**：
+   * 旧会话没有该键时读取侧归一为 `null`（`normalizeBranch`），不是「字段缺失」。
+   *
+   * 字段名与 Rust 侧 `BranchFacts::to_meta` 逐一对应，两侧同步测试锁定。
+   */
+  branch: ConversationBranch | null;
+}
+
+/** 分支对话事实（`meta.json` 的 `branch` 字段；specs/037 FR-001） */
+export interface ConversationBranch {
+  /** 分支名（不含 `tuxedo/` 前缀） */
+  name: string;
+  /** worktree 绝对路径（在 Core 数据目录内，不在仓库里） */
+  worktree: string;
+  /** 创建时的基准提交（完整 id） */
+  baseCommit: string;
+  /** 创建时的基准分支名 */
+  baseBranch: string;
+}
+
+/**
+ * 把 `meta.json` 里的 `branch` 键归一成 `ConversationBranch | null`。
+ *
+ * 旧会话没有该键 → `null`（按普通会话处理，specs/037 AC-30）；形态不对同样 `null`
+ * ——读取侧不猜值，也不因为一个坏字段让整个会话读不出来。
+ */
+export function normalizeBranch(value: unknown): ConversationBranch | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const name = raw.name;
+  const worktree = raw.worktree;
+  const baseCommit = raw.baseCommit;
+  const baseBranch = raw.baseBranch;
+  if (typeof name !== 'string' || typeof worktree !== 'string') return null;
+  if (typeof baseCommit !== 'string' || typeof baseBranch !== 'string') return null;
+  return { name, worktree, baseCommit, baseBranch };
 }
 
 /**
@@ -729,6 +769,8 @@ async function updateMetadataForNewMessage(
           messageCount: 1,
           // TS 侧建档只发生在用户消息落盘（子代理 meta 由 core 预建，不会走到 ENOENT）
           creator: { kind: 'user' },
+          // TS 侧建档只可能是普通会话：分支形态由 core 在会话建立时写入（specs/037 FR-001）
+          branch: null,
         };
         created = true;
       } else {
@@ -818,6 +860,8 @@ export function createConversationMetadataSync(
       : { kind: 'user' },
     ...(modelRef?.model ? { model: modelRef.model } : {}),
     ...(modelRef?.provider ? { provider: modelRef.provider } : {}),
+    // 宿主侧建档（测试 / 诊断路径）不产生分支会话：分支事实只由 core 写
+    branch: null,
   };
   writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
 
@@ -867,7 +911,13 @@ export async function loadConversationList(workspacePath: string | undefined): P
         const parsed = JSON.parse(content) as ConversationMetadata;
         // creator 缺失 / 形态不对 = 数据异常（specs/025 FR-002）：报错跳过该条目，
         // 不猜测回退（当 user 会让 Agent 会话误判成可输入 / 会提醒的正常对话）
-        const metadata: ConversationMetadata = { ...parsed, creator: parseSessionCreator(parsed.creator) };
+        // `branch` 缺失即 `null`（旧会话按普通对话处理，specs/037 AC-30）；
+        // 成员必选、不用可选字段
+        const metadata: ConversationMetadata = {
+          ...parsed,
+          creator: parseSessionCreator(parsed.creator),
+          branch: normalizeBranch((parsed as { branch?: unknown }).branch),
+        };
         // 跳过未发送过消息的空对话（messageCount === 0）；
         // 但清空过的会话保留在列表中（标题和条目不随内容清空而消失）
         if (metadata.messageCount === 0 && !metadata.clearedAt) {
@@ -1159,6 +1209,8 @@ export async function replaceConversationMessages(sessionId: string, messages: M
         // 防御性建档（meta 丢失）的修复值：优先取内存缓存的既有归属；该分支只在
         // 异常状态下触发，正常会话的 creator 已在盘上
         creator: conversationCache.get(effectiveSessionId)?.metadata.creator ?? { kind: 'user' },
+        // 分支事实随 meta 一起丢：缓存里有就保留，否则按普通会话（不猜 worktree 路径）
+        branch: conversationCache.get(effectiveSessionId)?.metadata.branch ?? null,
       };
       await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 });
     }
@@ -1437,6 +1489,8 @@ export async function updateConversationMetadataTitle(
         messageCount,
         // TS 侧建档只发生在用户消息落盘（子代理 meta 由 core 预建，不会走到 ENOENT）
         creator: { kind: 'user' },
+        // 同上：TS 侧建档只产生普通会话
+        branch: null,
       };
       // 补空 .jsonl：loadConversation 要求消息文件存在（同 createConversationMetadataSync）
       try {

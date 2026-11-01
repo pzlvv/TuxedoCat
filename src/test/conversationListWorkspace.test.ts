@@ -36,6 +36,8 @@ function meta(sessionId: string, project: string): ConversationMetadata {
     updatedAt: 1,
     messageCount: 1,
     creator: { kind: 'user' },
+    // 本用例只关心列表的按目录分发，不涉及分支事实
+    branch: null,
   };
 }
 

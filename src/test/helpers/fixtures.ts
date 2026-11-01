@@ -116,6 +116,7 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
     crossWorkspaceAgentReplyRequested: (e) => record('crossWorkspaceAgentReplyRequested', e),
     crossWorkspaceAgentAbortRequested: (e) => record('crossWorkspaceAgentAbortRequested', e),
     crossWorkspaceAgentEnded: (e) => record('crossWorkspaceAgentEnded', e),
+    branchStateChanged: (e) => record('branchStateChanged', e),
   };
 
   const list = <T extends CoreEvent['type']>(type: T): Array<Extract<CoreEvent, { type: T }>> =>
@@ -207,6 +208,7 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     openMermaidPreview: async () => undefined,
     onWorkspaceFileChanged: () => undefined,
     onToolResult: () => undefined,
+    onBranchStateChanged: () => undefined,
     closePreview: () => undefined,
     openExternalUrl: async () => undefined,
     saveTextFile: async () => ({ success: false, canceled: true }),

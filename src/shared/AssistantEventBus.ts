@@ -190,7 +190,43 @@ export type CoreEvent =
         | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
         | { key: 'agentMode'; value: AgentMode }
         | { key: 'webSearch'; value: boolean }
-        | { key: 'mcpEnabled'; value: string[] };
+        | { key: 'mcpEnabled'; value: string[] }
+        /** 会话形态（specs/037 FR-008）：`meta.json` 的 `branch` 字段派生的事实 */
+        | { key: 'branchMode'; value: 'plain' | 'branch' };
+    }
+  /**
+   * 某会话的分支对话状态（specs/037 FR-008）。
+   *
+   * 推**全量快照**（漏推即错，与 `sessionRuntimeChanged` 同口径）：每个会话只有一份
+   * 状态，消费者不维护状态表。`view` 是判别联合，只带渲染「标题前分支名」所需的最小
+   * 事实——**不带** `commits` / `dirty` / `peers` / `deps`（刻意的窄口径：多一个字段
+   * 就多一个要维护、要同步、要对着 docsLint 校验的东西，而它不改善任何用户可见行为）。
+   *
+   * 不是分支对话的会话推 `{ state: 'plain' }`；worktree 被删 / 分支被删 → `unavailable`
+   * （异常提示，不是常驻状态区）。
+   */
+  | {
+      type: 'branchStateChanged';
+      sessionId: string;
+      view:
+        | { state: 'plain' }
+        | {
+            state: 'ready';
+            /** 分支名（不含 `tuxedo/` 前缀） */
+            branch: string;
+            /** worktree 绝对路径（在 Core 数据目录内，不在仓库里） */
+            worktree: string;
+            /** 创建时的基准提交（完整 id） */
+            baseCommit: string;
+            /** 创建时的基准分支名 */
+            baseBranch: string;
+          }
+        | {
+            state: 'unavailable';
+            reason: 'not-git' | 'worktree-missing' | 'git-failed';
+            /** git 的 stderr 原文 / 缺失说明（UI 悬停展示，不解析、不改写） */
+            detail: string;
+          };
     }
   /**
    * core 日志行（已格式化）。
@@ -438,6 +474,15 @@ export type UiEvent =
    */
   | { type: 'conversationStarted'; sessionId: string }
   | { type: 'conversationOpened'; sessionId: string }
+  /**
+   * 会话形态到达 Core 的唯一一跳（specs/037 FR-006 创建时序）。
+   *
+   * webview 在**首条消息发送时**经 `startNewConversation` 的形态标记告诉宿主「这个
+   * 会话是分支形态」，宿主翻译成本事件：Core 同步建 worktree 与 `tuxedo/<name>`
+   * 分支并把该会话的工具根改向（`plain` 是空操作）。此后形态不变——它承载
+   * `meta.json` 的持久事实（会话是 plain 还是 branch），UI 上不暴露「切换模式」入口。
+   */
+  | { type: 'branchModeChanged'; sessionId: string; mode: 'plain' | 'branch' }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。
    * core 收到后调 `sessionResources.releaseSessionResources(sessionId)`。
@@ -695,12 +740,64 @@ export type UiRequest =
       path: string;
     }
   /** 注销远程工作区文件监听；`workspacePath` 用于宿主按工作区路由到对应 Connection，未知 `watchId` 按已注销处理（幂等） */
-  | { type: 'unwatchWorkspaceFileRequested'; watchId: string; workspacePath: string };
+  | { type: 'unwatchWorkspaceFileRequested'; watchId: string; workspacePath: string }
+  /**
+   * 分支对话的目录树（specs/037 FR-007）。
+   *
+   * 宿主按活动会话索取该分支 worktree 的目录树；`dir` 是 worktree 根内的相对路径
+   * （`''` 即根）。应答与既有文件树条目同形，或 `{ ok: false, reason: 'not-branch' }`
+   * ——宿主据此回落主工作区读盘（不是分支会话 / worktree 已不在）。
+   *
+   * 条目上**没有** `change` 字段：侧栏的差异标记（新 / 改 / 删）是本次开发范围之外
+   * 的预留设计（specs/037 FR-007）。
+   */
+  | { type: 'branchTreeRequested'; sessionId: string; dir: string }
+  /**
+   * 分支对话的创建入口前置数据（specs/037 FR-003 / FR-008）。
+   *
+   * 会话建立前没有 `branchStateChanged`，创建入口的数据只有这一条来源：是否 git
+   * 仓库、`<base>` 短 id、脏工作区判定。宿主不跑 git。不带 `sessionId`（会话还不
+   * 存在），按活动工作区路由；`workspacePath` 用于多工作区宿主按目录路由。
+   */
+  | { type: 'branchPrecheckRequested'; workspacePath: string | null };
 
 /** 远程文件监听注册结果（`UiRequest.watchWorkspaceFileRequested`） */
 export type WatchWorkspaceFileResult =
   | { ok: true }
   | { ok: false; error: string };
+
+/**
+ * 分支 worktree 的目录树条目（`UiRequest.branchTreeRequested`，specs/037 FR-007）。
+ *
+ * 与侧栏既有文件树条目同形（`DirectoryEntry`），因此宿主复用同一套渲染。
+ * **没有** `change` 字段：差异标记不做（预留设计见 specs/037 FR-007）。
+ */
+export interface BranchTreeEntry {
+  name: string;
+  kind: 'file' | 'directory';
+  /** 修改时间（毫秒时间戳）；取不到为 `null`（不猜值） */
+  mtimeMs: number | null;
+}
+
+/**
+ * 分支目录树的应答（`UiRequest.branchTreeRequested`）。
+ *
+ * `not-branch` 是唯一的失败形态：不是分支会话 / worktree 已不在 / 相对路径越界——
+ * 三种情形宿主的表现相同（回落主工作区读盘），因此不细分成多个 reason。
+ */
+export type BranchTreeResult =
+  | { ok: true; entries: BranchTreeEntry[] }
+  | { ok: false; reason: 'not-branch' };
+
+/**
+ * 分支对话创建入口的前置数据（`UiRequest.branchPrecheckRequested`，specs/037 FR-003）。
+ *
+ * `head` 是 `<base>` 的短 id（创建入口与草稿页的提示文案用），`dirty` 是主工作区的
+ * 未提交改动判定——**只说明不阻塞**：不做 stash、不弹确认框。
+ */
+export type BranchPrecheckResult =
+  | { ok: true; head: string; dirty: boolean; baseBranch: string }
+  | { ok: false; reason: 'not-git'; detail: string };
 
 /** 会话加载结果（`UiRequest.conversationLoadRequested`） */
 export interface LoadedConversation {
@@ -767,6 +864,8 @@ export type UiRequestResultMap = {
   spinDesignSaveRequested: SpinDesignSaveResult;
   watchWorkspaceFileRequested: WatchWorkspaceFileResult;
   unwatchWorkspaceFileRequested: null;
+  branchTreeRequested: BranchTreeResult;
+  branchPrecheckRequested: BranchPrecheckResult;
 };
 
 // ==================== 会话运行时状态 ====================

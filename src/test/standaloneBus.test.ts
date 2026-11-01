@@ -36,7 +36,7 @@ import {
   corePlatformDir,
 } from '../host/standalone/coreBinary';
 import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
-import type { CoreRequestHandlers } from '../shared/AssistantEventBus';
+import type { BranchPrecheckResult, BranchTreeResult, CoreRequestHandlers } from '../shared/AssistantEventBus';
 import { createChecker, runTests } from './helpers/harness';
 import { createRecordingCoreEventHandlers, type RecordingCoreEventHandlers, emptySettingsSnapshot } from './helpers/fixtures';
 
@@ -498,6 +498,8 @@ async function run(): Promise<void> {
       spinDesignSaveRequested: async () => ({ status: 'ok' as const }),
       watchWorkspaceFileRequested: async () => ({ ok: true as const }),
       unwatchWorkspaceFileRequested: async () => null,
+      branchTreeRequested: async (): Promise<BranchTreeResult> => ({ ok: false, reason: 'not-branch' }),
+      branchPrecheckRequested: async (): Promise<BranchPrecheckResult> => ({ ok: false, reason: 'not-git', detail: 'stub' }),
     };
     core.bus.onUiRequests(handlers);
     check('onUiRequests rejects a second registration', throws(() => core.bus.onUiRequests(handlers)));

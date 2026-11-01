@@ -223,6 +223,18 @@ export interface UIHost extends WorkspaceProvider {
   onToolResult(event: Extract<CoreEvent, { type: 'toolResult' }>): void;
 
   /**
+   * Core 上报某会话的分支对话状态（specs/037 FR-007）。
+   *
+   * 事件由 `WebViewUI` 的 `branchStateChanged` handler 在投递 webview 之外旁路转交；
+   * 有侧栏文件资源管理器的宿主（Electron）据此判「活动对话是不是分支对话」并让文件树
+   * 按分支 worktree 重读，其余宿主实现为 no-op。宿主只翻译与路由，不改写分支事实。
+   */
+  onBranchStateChanged(
+    sessionId: string,
+    view: Extract<CoreEvent, { type: 'branchStateChanged' }>['view'],
+  ): void;
+
+  /**
    * 关闭当前预览（diff / 虚拟文档 / 预览窗口）。
    * 预览句柄由宿主自己持有，共享模块不再保存任何宿主句柄。
    */

@@ -230,6 +230,13 @@ export class VSCodeUIHost implements UIHost {
     // 有意 no-op：VS Code 宿主没有侧栏文件浏览器。
   }
 
+  onBranchStateChanged(
+    _sessionId: string,
+    _view: Extract<CoreEvent, { type: 'branchStateChanged' }>['view'],
+  ): void {
+    // 有意 no-op：VS Code 宿主没有侧栏文件浏览器（分支名由 webview 自己的标题区渲染）。
+  }
+
   closePreview(): void {
     this.documentManager.closePreview();
   }

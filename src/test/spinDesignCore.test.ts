@@ -55,6 +55,8 @@ async function run(): Promise<void> {
       workMode: 'normal' as const,
     }),
     skillsRequested: async () => ({ skills: [] }),
+    branchTreeRequested: async () => ({ ok: false, reason: 'not-branch' as const }),
+    branchPrecheckRequested: async () => ({ ok: false, reason: 'not-git' as const, detail: 'stub' }),
     spinDesignRequested: async (req) => {
       sent.push(req);
       return readResult;

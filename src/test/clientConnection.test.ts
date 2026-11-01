@@ -153,6 +153,7 @@ function createClientHarness(): ClientHarness {
   });
   // 模拟 WebViewUI：先登记 UI 处理器，再打开工作区
   client.onCoreEvents({
+    branchStateChanged: () => undefined,
     coreReady: () => undefined,
     message: () => undefined,
     streamMessage: () => undefined,

@@ -44,6 +44,8 @@ export class SingleWebViewConversationManager extends ConversationManager {
         updatedAt: c.updatedAt,
         messageCount: c.messageCount,
         parentSessionId: c.parentSessionId,
+        // 分支事实随列表元数据下发（specs/037 AC-18）
+        branch: c.branch,
       })),
     });
   }

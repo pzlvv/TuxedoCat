@@ -356,6 +356,7 @@ export class WebViewUI implements WebViewUiPort {
       compactEnd: (e) => this.onCompactEnd(e.sessionId, e.result),
       commandDispatched: (e) => void this.onCommandSend(e.commandName, e.args, e.sessionId),
       sessionConfigChanged: (e) => this.onSessionConfigChanged(e.sessionId, e.change),
+      branchStateChanged: (e) => this.onBranchStateChanged(e.sessionId, e.view),
 
       // ===== 宿主事实（不投递 webview）=====
       // 远程工作区文件变化由 Core 上报，只有宿主查看器窗口消费（specs/018 FR-002）。
@@ -920,7 +921,8 @@ export class WebViewUI implements WebViewUiPort {
       | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
       | { key: 'agentMode'; value: 'manual' | 'risk' | 'auto' }
       | { key: 'webSearch'; value: boolean }
-      | { key: 'mcpEnabled'; value: string[] },
+      | { key: 'mcpEnabled'; value: string[] }
+      | { key: 'branchMode'; value: 'plain' | 'branch' },
   ): void {
     switch (change.key) {
       case 'model':
@@ -947,7 +949,28 @@ export class WebViewUI implements WebViewUiPort {
         // 连接成功 / 失败；不能只发一个不带 servers 的裸消息（webview 会清空列表）。
         void this.webviewMessageHandler.pushMcpServers(sessionId);
         break;
+      case 'branchMode':
+        // 会话形态是 core 的持久事实（specs/037 FR-008）：UI 上不暴露「切换模式」，
+        // 本分支只做透传，落点由 `branchStateChanged` 承担（形态 → 视图的映射在那里）
+        break;
     }
+  }
+
+  /**
+   * 某会话的分支对话状态（specs/037 FR-008）。
+   *
+   * 宿主只翻译和路由，不本地改写分支事实（AC-19）：把 core 的 `view` 原样投递 webview，
+   * 由 webview 决定渲染（标题前分支名 / 不可用的警告色）。同时按 `branch` 失效原因
+   * 通知宿主侧的文件树重读（specs/030 的 `pushFilesInvalidate` 出口，Electron 侧栏用）。
+   */
+  onBranchStateChanged(
+    sessionId: string,
+    view: Extract<CoreEvent, { type: 'branchStateChanged' }>['view'],
+  ): void {
+    this.postToWebview(sessionId, { type: 'branchState', view });
+    // 侧栏文件资源管理器跟随活动对话（specs/037 FR-007）：分支事实变化即失效重读。
+    // 只对宿主侧有文件树实现的宿主有意义，其余宿主实现为空操作。
+    this.host.onBranchStateChanged(sessionId, view);
   }
 
   // ===================== 公开方法（供宿主接线 / core 调用）=====================
