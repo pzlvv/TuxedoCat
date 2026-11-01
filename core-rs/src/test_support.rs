@@ -234,6 +234,206 @@ impl Drop for Sandbox {
     }
 }
 
+// ==================== git 仓库夹具 ====================
+
+/// 装在临时目录里的最小真实 git 仓库（specs/037 plan「测试夹具」）。
+///
+/// 分支能力的全部行为都落在 git 命令的**真实输出**上（`worktree add` 的错误文案、
+/// `status --porcelain` 的转义、`rev-list --count` 的语义），用桩替代 git 只能测出
+/// 我们自己写的假设。因此夹具是一个真仓库，不 mock。
+///
+/// 三件必须做的事（否则测试在 CI 上会互相污染）：
+/// - `git init` 后立刻写仓库本地 `user.email` / `user.name`：CI runner 上没有
+///   `~/.gitconfig`，`git commit` 会直接失败；
+/// - `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` 指向夹具内的空文件：隔离开发机上的
+///   `includeIf` / `commit.gpgsign` / 钩子；
+/// - `core.hooksPath` 指向空目录：我们仓库自己的 `scripts/githooks` 会被继承，
+///   测试提交会被 commit-msg 钩子拦下。
+pub struct GitSandbox {
+    /// 底层沙箱（持有进程级串行锁与 HOME / PATH 隔离；`workspace` 就是仓库根）
+    pub core: Sandbox,
+    /// 夹具根（`<root>/home` 是伪造的 HOME，`<root>/workspace` 是仓库根）
+    pub root: PathBuf,
+    pub home: PathBuf,
+    pub workspace: PathBuf,
+    /// 伪造的 HOME 下的空 git 配置（`GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` 指向它）
+    pub config_stub: PathBuf,
+    /// 空钩子目录（`core.hooksPath` 指向它）
+    pub hooks_dir: PathBuf,
+}
+
+impl GitSandbox {
+    /// 建一个已提交一次的最小仓库。
+    ///
+    /// 底层复用 `Sandbox`：它持有进程级串行锁（其它触碰全局静态状态的用例因此不会
+    /// 与本夹具交错），并把 HOME / PATH / 配置快照钉进临时目录。夹具自建的仓库放在
+    /// 沙箱根下，git 配置隔离靠仓库本地配置 + `GIT_CONFIG_*` 环境变量。
+    pub fn new(name: &str) -> GitSandbox {
+        let core = Sandbox::new(name);
+        let root = core.root.clone();
+        let home = core.home.clone();
+        let workspace = root.join("git-repo");
+        let config_stub = root.join("gitconfig-stub");
+        let hooks_dir = root.join("empty-hooks");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&hooks_dir).expect("create hooks dir");
+        std::fs::write(&config_stub, "").expect("write git config stub");
+        let sandbox = GitSandbox {
+            core,
+            root,
+            home,
+            workspace,
+            config_stub,
+            hooks_dir,
+        };
+        sandbox.git(&["init", "-b", "main"]);
+        sandbox.git(&["config", "user.email", "test@example.com"]);
+        sandbox.git(&["config", "user.name", "Test"]);
+        sandbox.git(&[
+            "config",
+            "core.hooksPath",
+            &sandbox.hooks_dir.to_string_lossy().to_string(),
+        ]);
+        sandbox.write("README.md", "# sandbox\n");
+        sandbox.commit_all("init");
+        sandbox
+    }
+
+    /// 在仓库里跑一条 git 命令（隔离后的全局 / 系统配置），返回（退出码, stdout, stderr）
+    pub fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        let mut command = std::process::Command::new("git");
+        command
+            .arg("-C")
+            .arg(&self.workspace)
+            .args(args)
+            // 用户 / 系统级 git 配置一律指到空文件：开发机的 includeIf / 钩子 / 签名
+            // 配置不该渗进用例
+            .env("GIT_CONFIG_GLOBAL", &self.config_stub)
+            .env("GIT_CONFIG_SYSTEM", &self.config_stub)
+            .env("HOME", &self.home)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        util::hide_console(&mut command);
+        let output = command.output().expect("run git");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// 断言成功的 git 调用（失败直接 panic，把 stderr 带出来）
+    pub fn git(&self, args: &[&str]) -> String {
+        let (code, stdout, stderr) = self.run(args);
+        assert_eq!(
+            code,
+            Some(0),
+            "git {:?} failed: {stderr}",
+            args
+        );
+        stdout
+    }
+
+    /// 写一个文件（父目录自动创建）
+    pub fn write(&self, relative: &str, content: &str) -> PathBuf {
+        let path = self.workspace.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&path, content).expect("write file");
+        path
+    }
+
+    /// 造未提交改动（改一个已跟踪文件的内容）
+    pub fn dirty(&self, relative: &str, content: &str) {
+        self.write(relative, content);
+    }
+
+    /// 提交全部改动
+    pub fn commit_all(&self, message: &str) {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-m", message]);
+    }
+
+    /// 仓库里全部分支名（`git for-each-ref`，断言分支指针用）
+    pub fn branches(&self) -> Vec<String> {
+        let text = self.git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+        text.lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// 当前 HEAD 的完整提交 id
+    pub fn head(&self) -> String {
+        self.git(&["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    /// 某个提交的短 id
+    pub fn short_head(&self) -> String {
+        self.git(&["rev-parse", "--short", "HEAD"]).trim().to_string()
+    }
+
+    /// 主工作区的 `git status --porcelain` 输出
+    pub fn status(&self) -> String {
+        self.git(&["status", "--porcelain"])
+    }
+
+    /// 工作区路径的字符串形态（拼 Core 数据目录下的 worktree 路径用）
+    pub fn workspace_text(&self) -> String {
+        self.workspace.to_string_lossy().to_string()
+    }
+
+    /// 把活动工作目录 / 会话工作目录登记到本夹具的仓库根
+    ///
+    /// Core 侧的 `project_conversation_dir` 因此落在夹具沙箱的 HOME 下，
+    /// worktree 也就落在临时目录里（不会写进仓库）。
+    pub fn register_workspace(&self) {
+        config::set_active_workspace(Some(self.workspace_text()));
+        config::set_session_workspace("branch-session", Some(self.workspace_text()));
+    }
+}
+
+impl Drop for GitSandbox {
+    fn drop(&mut self) {
+        // 先尽力卸掉本夹具残留的 overlay 挂载（用例 panic 时可能没走到卸载）
+        #[cfg(target_os = "linux")]
+        {
+            let worktrees = self.root.join("worktrees");
+            if worktrees.is_dir() {
+                unmount_all_under(&worktrees);
+            }
+        }
+        // 目录清理与缓存复位由 `Sandbox` 的 Drop 负责（它覆盖整个夹具根）
+    }
+}
+
+/// 尽力卸载 `dir` 下仍挂着的文件系统（`/proc/self/mountinfo` 里挂载点前缀匹配）
+#[cfg(target_os = "linux")]
+fn unmount_all_under(dir: &std::path::Path) {
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return;
+    };
+    let prefix = dir.to_string_lossy().to_string();
+    let mut targets: Vec<String> = Vec::new();
+    for line in mountinfo.lines() {
+        // 字段 5 是挂载点；空格与特殊字符在 mountinfo 里以八进制转义
+        let fields: Vec<&str> = line.split(' ').collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let mount_point = fields[4].replace("\\040", " ");
+        if mount_point.starts_with(&prefix) {
+            targets.push(mount_point);
+        }
+    }
+    for target in targets.iter().rev() {
+        let _ = std::process::Command::new("umount").arg(target).status();
+    }
+}
+
 /// 把磁盘形状的 `provider.modelConfigs` 合并成快照形状的 `modelLimits`。
 ///
 /// Host 侧的 `resolveSettingsSnapshot` 会做同一件事：注册表匹配 → 用户 context/output
