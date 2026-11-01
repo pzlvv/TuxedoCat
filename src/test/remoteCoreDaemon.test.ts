@@ -177,6 +177,112 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boo
   return predicate();
 }
 
+/**
+ * 给一个 promise 套上限：返回 `null` 表示超时。
+ *
+ * 残行缺陷的表现就是「请求永远没有应答」，用例必须自己收尾，不能挂在被测实现上。
+ */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), timeoutMs);
+      timer.unref();
+    }),
+  ]);
+}
+
+/** 第 1 条连接断在半个帧上的假 daemon（复现残行跨链路） */
+interface TruncatingRemote extends FakeRemote {
+  /** 发出过半个帧的连接数 */
+  truncatedConnections: () => number;
+}
+
+/**
+ * 进程内假 daemon：**第 1 条**连接在发出半个帧后断开，之后的连接正常应答。
+ *
+ * 半个帧是真实场景：TCP 断开可以落在任意字节边界，上一条链路的最后一个 `data`
+ * 事件里只有半个 JSON 行。
+ */
+function startTruncatingRemote(): Promise<TruncatingRemote> {
+  let connections = 0;
+  let truncated = 0;
+  let closedCount = 0;
+  const sockets = new Set<Socket>();
+
+  const server: Server = createServer((socket) => {
+    connections += 1;
+    const index = connections;
+    sockets.add(socket);
+    socket.setEncoding('utf8');
+    let buffer = '';
+    const send = (frame: unknown): void => {
+      socket.write(`${JSON.stringify(frame)}\n`);
+    };
+    socket.on('close', () => {
+      sockets.delete(socket);
+      closedCount += 1;
+    });
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      for (;;) {
+        const lineEnd = buffer.indexOf('\n');
+        if (lineEnd < 0) break;
+        const line = buffer.slice(0, lineEnd);
+        buffer = buffer.slice(lineEnd + 1);
+        if (line.trim().length === 0) continue;
+        let frame: Record<string, unknown>;
+        try {
+          frame = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (index === 1) {
+          // 半个帧之后断开：残行留在宿主侧解码器里
+          truncated += 1;
+          socket.write('{"kind":"pong"');
+          setTimeout(() => socket.destroy(), 10);
+          continue;
+        }
+        if (frame['kind'] === 'ping') {
+          send({ kind: 'pong' });
+          continue;
+        }
+        if (frame['kind'] === 'listDirectories') {
+          const path = typeof frame['path'] === 'string' ? frame['path'] : '/home';
+          send({
+            kind: 'directoriesListed',
+            id: frame['id'],
+            path,
+            parent: '/',
+            entries: [],
+          });
+        }
+      }
+    });
+  });
+
+  return new Promise<TruncatingRemote>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      resolve({
+        port,
+        connections: () => connections,
+        closed: () => closedCount,
+        received: () => [],
+        setPong: () => undefined,
+        truncatedConnections: () => truncated,
+        close: () =>
+          new Promise<void>((done) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -485,6 +591,37 @@ async function run(): Promise<void> {
     check('沉默判死后重连：重开 channel 重新就绪', await waitFor(() => second.isReady(), 3_000));
     check('沉默判死后重连：重开未再 fatal', secondFailure.error === null);
     check('沉默判死后重连：重开是全新连接', fake.connections() === 2);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 残行不跨链路（specs/defects/daemon-decoder-keeps-stale-partial-line）----------
+  {
+    // 上一条链路在任意字节边界断开（TCP 断开可以落在半个帧里）：残行若留在解码器里，
+    // 新链路的第一帧会被拼在它后面，得到一个永远不成立的 JSON 前缀——这一整条连接上
+    // 每一帧都解析失败，请求方挂到自己的超时（心跳照发，链路看起来还活着）。
+    const fake = await startTruncatingRemote();
+    const logs: string[] = [];
+    const daemon = new CoreDaemon({
+      log: (...args: unknown[]) => logs.push(args.join(' ')),
+      handshakeTimeoutMs: 1_000,
+      shutdownTimeoutMs: 500,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
+    });
+    let firstFailed = false;
+    try {
+      await daemon.listDirectories('/home');
+    } catch {
+      firstFailed = true;
+    }
+    check('残行：第 1 条链路断开时请求失败', firstFailed);
+    check('残行：第 1 条链路确实断在半个帧上', fake.truncatedConnections() === 1);
+
+    const second = await withTimeout(daemon.listDirectories('/home'), 3_000);
+    check('残行：第 2 条链路的请求拿到应答', second?.path === '/home');
+    check('残行：第 2 条链路上没有 malformed frame', !logs.some((line) => line.includes('malformed frame')));
+    const third = await withTimeout(daemon.listDirectories('/home'), 3_000);
+    check('残行：第 2 条链路上的后续请求仍可用', third?.path === '/home');
     await daemon.shutdown();
     await fake.close();
   }

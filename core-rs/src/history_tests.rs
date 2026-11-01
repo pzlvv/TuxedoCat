@@ -788,6 +788,25 @@ fn derive_title_truncates_to_fifty_characters() {
     assert_eq!(title.chars().count(), 50);
 }
 
+/// 第 50 个 UTF-16 code unit 落在代理对中间时，标题必须在边界前停住，既不切开代理对，
+/// 也不产出孤立代理项——宿主侧 `buildConversationTitle` 用 `surrogateSafeHeadEnd` 对齐到
+/// 同一口径（specs/defects/conversation-title-truncates-surrogate-pair.md）。
+#[test]
+fn derive_title_never_splits_a_surrogate_pair() {
+    // 49 个 ASCII + 1 个占 2 个 code unit 的字符：整对放不下 → 只保留 49 个单元
+    let text = format!("{}😀 tail", "a".repeat(49));
+    let messages = vec![json!({ "type": "user", "message": { "content": text } })];
+    let title = derive_title(&messages).unwrap();
+    assert_eq!(title, "a".repeat(49));
+    assert!(!title.chars().any(|ch| (0xD800..=0xDFFF).contains(&(ch as u32))));
+
+    // 48 个 ASCII + 同一个字符：整对放得下 → 完整保留
+    let fits = format!("{}😀 tail", "a".repeat(48));
+    let messages = vec![json!({ "type": "user", "message": { "content": fits } })];
+    let title = derive_title(&messages).unwrap();
+    assert_eq!(title, format!("{}😀", "a".repeat(48)));
+}
+
 #[test]
 fn count_messages_excludes_stream_events_and_tool_use_updates() {
     // `tool_use_update` 只回放更新、不算消息。

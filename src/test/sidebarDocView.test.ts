@@ -6,6 +6,7 @@ import {
   parseLsFiles,
   parseNumstat,
   probeGitWorkspace,
+  unquoteGitPath,
   type DocEntry,
   type GitCommandRunner,
 } from '../../electron/sidebarDocView';
@@ -54,10 +55,35 @@ runTests('sidebarDocView', async () => {
         && entries[2].path === 'docs/new/z.md';
     })());
 
-  check('normalizeRenamedPath：引号剥除与空串拒绝',
+  // 引号只剥两端、**不做 trim**：文件名允许首尾空格（` lead.md` / `trail.md `），
+  // git 对这类名字既不引号包裹也不转义，trim 会把它们变成不存在的路径。
+  check('normalizeRenamedPath：剥引号、保留首尾空格、空串拒绝',
     normalizeRenamedPath('"a b.md"') === 'a b.md'
-    && normalizeRenamedPath('  plain.md ') === 'plain.md'
+    && normalizeRenamedPath(' lead.md') === ' lead.md'
+    && normalizeRenamedPath('trail.md ') === 'trail.md '
     && normalizeRenamedPath('') === null);
+
+  // git 在文件名含引号 / 反斜杠 / 制表符 / 换行时**即使 `core.quotepath=false`** 也用
+  // C 风格引号包裹并转义（`"a\"b.md"`、`"tab\tname.md"`）。此前只剥两端引号、不反转义，
+  // 回查存在性必然失败——这类文件在文档视图里整条消失。
+  check('normalizeRenamedPath：C 风格引号内的转义被还原',
+    normalizeRenamedPath('"a\\"b.md"') === 'a"b.md'
+    && normalizeRenamedPath('"tab\\tname.md"') === 'tab\tname.md'
+    && normalizeRenamedPath('"back\\\\slash.md"') === 'back\\slash.md');
+
+  check('parseLsFiles：C 风格引号路径反转义',
+    parseLsFiles('"a\\"b.md"\nplain.md\n"tab\\tname.md"\n').join('|')
+      === 'a"b.md|plain.md|tab\tname.md');
+
+  check('parseLsFiles / parseNumstat：首尾空格的文件名不被 trim 掉',
+    parseLsFiles(' lead.md\ntrail.md \n').join('|') === ' lead.md|trail.md '
+    && parseNumstat('1\t0\t lead.md\n2\t0\ttrail.md \n').map((e) => e.path).join('|')
+      === ' lead.md|trail.md ');
+
+  check('unquoteGitPath：连续八进制按 UTF-8 解码（quotepath 打开时的非 ASCII 字节）',
+    unquoteGitPath('"\\303\\274n.md"') === 'ün.md'
+    && unquoteGitPath('"ctl\\001x.md"') === 'ctl\u0001x.md'
+    && unquoteGitPath('"q\\z.md"') === 'q\\z.md');
 
   check('countLines：末尾换行不另计、空文件 0 行',
     countLines('a\nb\nc') === 3

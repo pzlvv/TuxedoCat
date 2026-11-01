@@ -9,6 +9,8 @@
  * UI 层只消费轻量的 dataUrl 图片对象，避免依赖具体 API 格式。
  */
 
+import { surrogateSafeHeadEnd } from './stringUtils.js';
+
 export interface UiImage {
   /** 完整的 data URL，例如 data:image/png;base64,xxxx */
   dataUrl: string;
@@ -35,6 +37,15 @@ export interface TextContentBlock {
 }
 
 export type UserContentBlock = TextContentBlock | ImageContentBlock;
+
+/**
+ * 对话标题的最大长度（UTF-16 code unit）。
+ *
+ * 与 Core 的 `history::derive_title`（`util::utf16_take(text, 50)`）同一个数：
+ * 两处都是「首条用户消息的前 50 个 code unit」，漂移会让同一条消息在宿主侧与
+ * Core 侧得到不同标题。
+ */
+const TITLE_MAX_CHARS = 50;
 
 /** 从 dataUrl 中解析 media type 与 base64 数据 */
 export function parseDataUrl(dataUrl: string): { mediaType: string; data: string } {
@@ -129,11 +140,17 @@ export function hasUserVisibleImages(content: unknown): boolean {
  * - 图片 + 文本：使用文本作为标题（与纯文本规则一致）。
  * - 仅图片：优先使用第一张图片的实际宽高生成 `Image[<width>*<height>]`；
  *   宽高缺失时退化为 `Image`。
+ *
+ * 文本截断走 `surrogateSafeHeadEnd`（不是裸 `substring`）：第 50 个 UTF-16 code unit
+ * 落在代理对中间时会切出孤立代理项，`JSON.stringify` 写出语义非法的 `"\ud83d"`，
+ * 落盘与帧通道两侧各自修一遍、显示值还会出现 U+FFFD。Core 的
+ * `history::derive_title` 用 `util::utf16_take`（放不下就停），这里与之同口径
+ * （`docs/architecture/principles.md` 第 8 节：同一派生只有一份口径）。
  */
 export function buildConversationTitle(text: string, images?: UiImage[]): string {
   const trimmedText = (text || '').trim();
   if (trimmedText) {
-    return trimmedText.substring(0, 50);
+    return trimmedText.slice(0, surrogateSafeHeadEnd(trimmedText, TITLE_MAX_CHARS));
   }
 
   const firstImage = (images ?? []).find(

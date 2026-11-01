@@ -40,9 +40,9 @@ last_reviewed: 2026-10-18
 | `src/host/ui/userChoice.ts` | 用户选择队列与预览 |
 | `src/host/ui/webviewMessageHandler.ts` | webview 协议消息分发，并翻译为 `UiEvent` |
 | `src/host/ui/types.ts` | 共享子模块的接口定义（`ShowVirtualDocumentEvent` / `ShowDiffInVirtualDocumentEvent` 等） |
-| `src/host/ui/spinDesignHtml.ts` | Spin 设计器 HTML 生成 |
+| `src/host/ui/spinDesignHtml.ts` | Spin 设计器 HTML 生成（设计数据与技能名进内联脚本前走 `src/shared/utils/inlineScript.ts` 的 `toInlineScriptJson`） |
 | `src/host/SessionUiState.ts` | 会话级 UI 运行时状态（活动阶段 / 工具计数 / 查询计数） |
-| `src/host/queryActivity.ts`、`conversationPayload.ts`、`mermaidHtml.ts`、`imageFiles.ts`、`spinDesignExport.ts`、`types.ts`、`workspacePaths.ts` | 共享辅助：活动查询判定、`conversationLoaded` 组装、Mermaid HTML、图片判定、Spin 导出、`HostInfo`、工作目录路径归一与去重 |
+| `src/host/queryActivity.ts`、`conversationPayload.ts`、`mermaidHtml.ts`、`imageFiles.ts`、`spinDesignExport.ts`、`types.ts`、`workspacePaths.ts` | 共享辅助：活动查询判定、`conversationLoaded` 组装、Mermaid HTML（图源进内联脚本前走 `src/shared/utils/inlineScript.ts` 的 `toInlineScriptJson`）、图片判定、Spin 导出、`HostInfo`、工作目录路径归一与去重 |
 | `src/VSCodeUIHost.ts` + `src/VSCodeUIHost/` | `UIHost` 的 VS Code 实现（含 `documentManager.ts` / `diffUris.ts`） |
 | `electron/ElectronUIHost.ts` | `UIHost` 的 Electron 实现 |
 | `src/VSCodeSpinDesign.ts` / `electron/ElectronSpinDesign.ts` | `SpinDesign` 的两个实现（构造注入 `UIHost`） |

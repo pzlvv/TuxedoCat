@@ -59,12 +59,33 @@ export function localWorkspaceRef(path: string): WorkspaceRef {
  */
 export const SSH_WORKSPACE_SCHEME = 'ssh';
 
-/** 远程工作区引用：接入方式恒为 SSH */
+/**
+ * 远程路径归一到「无尾分隔符」形态（根路径保持 `/`）。
+ *
+ * 远程路径是目标机器上的字符串，**不能**跑本地规范化（Windows 上
+ * `path.resolve('/home/pz/a')` 会变成 `D:\home\pz\a`）；但尾分隔符必须抹平，否则
+ * 同一个目录会以两种写法各自成为一个工作区：目录选择器交给宿主的目录**恒带尾分隔符**
+ * （`electron/remoteWorkspace/pathInput.ts` 的 `ensureTrailingSeparator`，
+ * `docs/core/core-remote.md` 第 2.6 节），daemon 回显的 `listing.path` 保留用户输入的
+ * 原样（`core-rs/src/remote.rs` 的 `list_directories`）；而 Core 的对话空间目录按
+ * `encodeURIComponent(path)` 派生（`core-rs/src/config.rs` 的
+ * `project_conversation_dir`），带尾斜杠与不带是两个空间。
+ *
+ * 归一**只有这一份**：构造（`remoteWorkspaceRef`）、反序列化（`workspaceState.ts`）、
+ * 身份键（`workspaceRefKey`）与判等（`sameRemotePath` / `sameWorkspaceRef`）全部走它，
+ * 否则「一处归一、一处逐字」会让 Identity 与判等互相矛盾。
+ */
+export function normalizeRemoteWorkspacePath(path: string): string {
+  // 根不能剥成空串：`/` 是唯一的单分隔符路径
+  return path.length > 1 ? path.replace(/\/+$/, '') || '/' : path;
+}
+
+/** 远程工作区引用：接入方式恒为 SSH；路径在构造处即归一（见 `normalizeRemoteWorkspacePath`） */
 export function remoteWorkspaceRef(
   endpoint: WorkspaceEndpoint,
   path: string,
 ): WorkspaceRef {
-  return { scheme: SSH_WORKSPACE_SCHEME, path, endpoint };
+  return { scheme: SSH_WORKSPACE_SCHEME, path: normalizeRemoteWorkspacePath(path), endpoint };
 }
 
 /**
@@ -94,8 +115,25 @@ export function workspaceRefKey(ref: WorkspaceRef): string {
     ? `${endpoint.user ?? ''}@${endpoint.host}:${endpoint.port ?? ''}`
     : 'local';
   if (!ref.path) return `${ref.scheme}//${target}`;
-  const path = ref.scheme === 'file' ? normalizeWorkspacePath(ref.path) : ref.path;
+  const path = ref.scheme === 'file'
+    ? normalizeWorkspacePath(ref.path)
+    : normalizeRemoteWorkspacePath(ref.path);
   return `${ref.scheme}//${target}${path}`;
+}
+
+/**
+ * 落盘的 `activeWorkspaceKey` 是否指向该引用。
+ *
+ * 除当前键外还兼容归一之前写下的远程键：当时选择器交给宿主的目录恒带尾分隔符
+ * （`docs/core/core-remote.md` 第 2.6 节），落盘的键末尾因此多一个 `/`。升级后打开集合里
+ * 的路径已归一，逐字比较会失配、活动标签页回落到最后一项——这里只兼容「远程键末尾多一个
+ * `/`」这一种历史写法，不做前缀匹配
+ * （`specs/defects/remote-workspace-trailing-slash-splits-identity.md`）。
+ */
+export function workspaceRefKeyMatches(ref: WorkspaceRef, persistedKey: string): boolean {
+  const key = workspaceRefKey(ref);
+  if (key === persistedKey) return true;
+  return ref.scheme !== 'file' && ref.path !== '' && ref.path !== '/' && `${key}/` === persistedKey;
 }
 
 /** 两个工作区引用是否指向同一个连接目标与目录 */
@@ -115,7 +153,7 @@ export function sameWorkspaceRef(a: WorkspaceRef, b: WorkspaceRef): boolean {
   }
   return a.scheme === 'file'
     ? sameWorkspace(a.path, b.path)
-    : a.path === b.path;
+    : normalizeRemoteWorkspacePath(a.path) === normalizeRemoteWorkspacePath(b.path);
 }
 
 /**
@@ -123,11 +161,10 @@ export function sameWorkspaceRef(a: WorkspaceRef, b: WorkspaceRef): boolean {
  *
  * 远程路径不能跑本地规范化（Windows 上 `path.resolve('/home/pz/a')` 会变成
  * `D:\home\pz\a`）；但工作区引用与对话元数据可能一个带尾斜杠、一个不带，
- * 逐字比较会把同一个目录判成两个。
+ * 逐字比较会把同一个目录判成两个。归一口径是 `normalizeRemoteWorkspacePath`（唯一一份）。
  */
 export function sameRemotePath(a: string, b: string): boolean {
-  const strip = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p);
-  return strip(a) === strip(b);
+  return normalizeRemoteWorkspacePath(a) === normalizeRemoteWorkspacePath(b);
 }
 
 /** 工作目录路径是否属于该引用（本地按宿主口径判等，远程逐字比较、忽略末尾分隔符差异） */

@@ -3,64 +3,17 @@ import { Icon } from '../Icon';
 import { postMessage } from '../webviewEnv';
 import { t } from '../i18n';
 import { AnsiText } from '../ansi';
+import { parsePersistedOutput } from '../persistedOutputParse';
 
 /**
- * 解析持久化输出标签（Bash / assistant 超长文本共用）
- * 格式:
- * <persisted-output>
- * Output too large (XXKB). Full output saved to: /path/to/file
+ * 解析持久化输出标签（Bash / assistant 超长文本共用）。
  *
- * Preview (first 2K + last 2K):
- * ...前 2K...
- * ... (N chars omitted) ...
- * ...后 2K...
- * </persisted-output>
- *
- * 预览内容由工具层统一裁剪（见 core/tools/toolResultStorage.ts），
- * UI 只负责解析展示，不再二次截断。
+ * 解析本身在 `src/webview/persistedOutputParse.ts`（纯函数，组件与单测共用一份）；
+ * 预览内容由工具层统一裁剪（见 shared/tools/toolResultStorage.ts 与
+ * core-rs/src/tools.rs 的同一份格式），UI 只负责展示，不再二次截断。
  */
-export function parsePersistedOutput(output: string): {
-  isPersisted: boolean;
-  originalSize: number;
-  filePath: string;
-  preview: string;
-} | null {
-  const persistedTag = '<persisted-output>';
-  const closingTag = '</persisted-output>';
-
-  const startIdx = output.indexOf(persistedTag);
-  const endIdx = output.indexOf(closingTag);
-
-  if (startIdx === -1 || endIdx === -1) {
-    return null;
-  }
-
-  const body = output.slice(startIdx + persistedTag.length, endIdx).trim();
-
-  // 解析文件路径
-  // 格式: "Output too large (XXKB). Full output saved to: /path/to/file"
-  const filePathMatch = body.match(/Full output saved to: (.+)$/m);
-  const sizeMatch = body.match(/Output too large \((\d+)KB\)/);
-
-  // 预览文本在 "Preview (first 2K + last 2K):" 之后
-  const previewMarker = 'Preview';
-  const previewMarkerIdx = body.indexOf(previewMarker);
-  let preview = '';
-
-  if (previewMarkerIdx !== -1) {
-    const previewStart = body.indexOf('\n', previewMarkerIdx);
-    if (previewStart !== -1) {
-      preview = body.slice(previewStart + 1).trimEnd();
-    }
-  }
-
-  return {
-    isPersisted: true,
-    originalSize: sizeMatch ? parseInt(sizeMatch[1], 10) * 1024 : 0,
-    filePath: filePathMatch ? filePathMatch[1] : '',
-    preview,
-  };
-}
+export { parsePersistedOutput };
+export { isPersistedOutput } from '../persistedOutputParse';
 
 /**
  * 格式化文件大小
@@ -69,13 +22,6 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-/**
- * 检查内容是否为持久化输出消息
- */
-export function isPersistedOutput(content: string): boolean {
-  return content.indexOf('<persisted-output>') !== -1 && content.indexOf('</persisted-output>') !== -1;
 }
 
 /**

@@ -3070,7 +3070,7 @@
       ]
     },
     {
-      "name": "已取消的 tool_result 不产生结果",
+      "name": "已取消的 tool_result 落成失败态与取消说明",
       "messages": [
         {
           "type": "assistant",
@@ -3108,12 +3108,12 @@
       "result": [
         {
           "role": "toolcall",
-          "content": "",
+          "content": "canceled",
           "param": "⚙️ Bash",
           "toolName": "Bash",
           "toolArgs": {},
           "toolCallId": "call_9",
-          "status": "running"
+          "status": "fail"
         }
       ]
     },

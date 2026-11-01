@@ -107,9 +107,18 @@ pub fn message_origin(message: &Value) -> Option<&'static str> {
     }
 }
 
-/// 收集 tool_result 的展示信息（`buildToolResultMap`），跳过已取消的结果
-pub fn build_tool_result_map(messages: &[Value]) -> Vec<(String, ToolResultInfo)> {
+/// 收集 tool_result 的展示信息（`buildToolResultMaps`）。
+///
+/// 返回 `(未被取消的结果表, 被取消的说明表)`：取消不是「执行成功 / 失败」，
+/// 它的 `exit_code` 通常是 -1 / 130 这类哨兵值，混进结果表会让「被中止」和
+/// 「工具报错」长成同一张卡片。调用方据此把对应 `tool_use` 落成 `fail` + 说明文本，
+/// 与 webview 的 `restoreMessagesFromConversation` 同口径
+/// （specs/defects/replay-drops-canceled-tool-results.md）。
+pub fn build_tool_result_maps(
+    messages: &[Value],
+) -> (Vec<(String, ToolResultInfo)>, Vec<(String, String)>) {
     let mut map: Vec<(String, ToolResultInfo)> = Vec::new();
+    let mut canceled: Vec<(String, String)> = Vec::new();
     for message in messages {
         if message.get("type").and_then(Value::as_str) != Some("user") {
             continue;
@@ -129,6 +138,13 @@ pub fn build_tool_result_map(messages: &[Value]) -> Vec<(String, ToolResultInfo)
                 continue;
             };
             if block.get("is_canceled").and_then(Value::as_bool) == Some(true) {
+                // 取消说明文本即卡片内容；数组内容（图片）没有可读文本，留空串
+                let content = match block.get("content") {
+                    Some(Value::Array(_)) | None => String::new(),
+                    Some(other) => util::js_string(other),
+                };
+                canceled.retain(|(id, _)| id != tool_use_id);
+                canceled.push((tool_use_id.to_string(), content));
                 continue;
             }
             let content = match block.get("content") {
@@ -144,12 +160,17 @@ pub fn build_tool_result_map(messages: &[Value]) -> Vec<(String, ToolResultInfo)
             ));
         }
     }
-    map
+    (map, canceled)
+}
+
+/// 未被取消的工具结果（`buildToolResultMap`）；取消结果见 `build_tool_result_maps`
+pub fn build_tool_result_map(messages: &[Value]) -> Vec<(String, ToolResultInfo)> {
+    build_tool_result_maps(messages).0
 }
 
 /// 持久化格式的历史消息 → UI 显示用的 `MessageData[]`（`buildReplayMessageData`）
 pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
-    let tool_results = build_tool_result_map(messages);
+    let (tool_results, canceled_results) = build_tool_result_maps(messages);
     let mut out: Vec<Value> = Vec::new();
 
     for message in messages {
@@ -325,19 +346,36 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                                 }
                             }
 
-                            let status = match &result {
-                                Some(info) => {
-                                    if info.exit_code != 0 {
-                                        "fail"
-                                    } else {
-                                        "success"
+                            // 被取消的工具：失败态 + 取消说明（与
+                            // `restoreMessagesFromConversation` 同口径）。落成 running
+                            // 会让卡片时间线画旋转风扇、自动滚动轮询一直空转。
+                            let canceled_content = canceled_results
+                                .iter()
+                                .find(|(id, _)| *id == tool_use_id)
+                                .map(|(_, text)| text.clone());
+                            let status = match &canceled_content {
+                                Some(_) => "fail",
+                                None => match &result {
+                                    Some(info) => {
+                                        if info.exit_code != 0 {
+                                            "fail"
+                                        } else {
+                                            "success"
+                                        }
                                     }
-                                }
-                                None => "running",
+                                    None => "running",
+                                },
+                            };
+                            let content = match &canceled_content {
+                                Some(text) => text.clone(),
+                                None => result
+                                    .as_ref()
+                                    .map(|info| info.content.clone())
+                                    .unwrap_or_default(),
                             };
                             out.push(json!({
                                 "role": "toolcall",
-                                "content": result.as_ref().map(|info| info.content.clone()).unwrap_or_default(),
+                                "content": content,
                                 "param": format!("⚙️ {}", if tool_name.is_empty() { "tool" } else { &tool_name }),
                                 "toolName": tool_name,
                                 "toolArgs": Value::Object(tool_args),

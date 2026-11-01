@@ -171,6 +171,12 @@ export function stringifyJsonSafe(value: unknown): string {
  *
  * 安全处理大型输出，当超过大小限制时从末尾截断，防止 RangeError 崩溃
  * 同时保留输出开头的内容
+ *
+ * 本文件是**零 Node 类型**的纯字符串工具：`src/webview/` 会经
+ * `src/shared/utils/contentBlocks.ts` 用到同文件的 `surrogateSafeHeadEnd`，
+ * 而 webview 的 tsconfig（`tsconfig.webview.json`）不带 node 类型。
+ * 因此 `append` 的入参写成结构化类型而不是 `Buffer`——`Buffer` 结构上满足
+ * `{ toString(): string }`，解码口径（`toString()` 默认 utf8）与原先完全一致。
  */
 export class EndTruncatingAccumulator {
   private content: string = '';
@@ -185,7 +191,7 @@ export class EndTruncatingAccumulator {
   /**
    * 追加数据到累加器。如果总大小超过 maxSize，末尾将被截断以维持大小限制
    */
-  append(data: string | Buffer): void {
+  append(data: string | { toString(): string }): void {
     const str = typeof data === 'string' ? data : data.toString();
     this.totalBytesReceived += str.length;
 

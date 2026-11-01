@@ -217,6 +217,11 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
   显式值 > 已有 `modelConfigs` 值 > 内置注册表 > 兜底；弹层清空该字段即移除显式值，
   写回注册表数字——与从未设置的模型保存后的落盘内容逐字节同态。
 - 兜底是全局常量、与 provider 无关，因此放在 `llm` 级而不是每个 provider 一份。
+- `modelLimits` 的 `context` / `output` / `thinkingTokenBudget` 与 `llm.maxTokens` 在 Core
+  侧都是 `u64`（`core-rs/src/settings.rs` 的 `ModelLimits` / `LlmSettings`）。快照解析把它们
+  收窄成**非负整数**：负数与小数按「未配置」处理，回落注册表 / 兜底（`settings.json` 是用户
+  可编辑的，`context: 12.5` 这类误输入不能变成「Core 收不到快照」——serde 的校验粒度是整份
+  快照，一个字段类型不符就整体失败、`coreReady` 一次都不发）。
 - `provider.baseURL` **允许为空串**：快照原样携带 provider 表，是否可用由消费方各自判定
   （调 LLM 要求非空；余额查询按 provider key / hostname 匹配，允许没有 baseURL）。
 - 快照**不含** `uiLanguage`、`uiFontSize` 与 `highlightLanguages`：这三个字段只有 UI 消费

@@ -85,12 +85,81 @@ export async function probeGitWorkspace(runner: GitCommandRunner): Promise<GitPr
   return { error: `git 探测失败（code ${out.code}）: ${out.stderr.trim()}` };
 }
 
+/**
+ * 解开 git 的 C 风格引号路径（`core.quotepath` 的输出格式）。
+ *
+ * git 对含 `"` / `\` / 制表符 / 换行等字符的路径**总是**用双引号包裹并逐字符转义
+ * （`"a\"b.md"`、`"tab\tname.md"`）；`-c core.quotepath=false` 只关掉非 ASCII 的
+ * 八进制转义，关不掉这条规则。不解开的话，回查存在性必然失败，条目被当成已删除过滤掉
+ * ——这类文件在文档视图里整条消失（specs/defects/sidebar-doc-view-quoted-git-paths.md）。
+ *
+ * 三位八进制 `\nnn` 是**原始字节**（git 对控制字符用它，非 ASCII 在 quotepath 打开时
+ * 也是逐字节转义），因此连续的八进制转义要按 UTF-8 解码，不能逐个 `fromCharCode`
+ * ——那样 `\303\274` 会变成两个 latin-1 字符而不是 `ü`。
+ *
+ * 未加引号的路径原样返回（含 `old => new` 这类重命名写法，由调用方后续归一）。
+ *
+ * **不 trim**：文件名允许首尾空格（` lead.md` / `trail.md `），git 对这类名字既不
+ * 加引号也不转义——按行读到的原文就是文件名，trim 会把它们变成不存在的路径而整条丢
+ * （specs/defects/sidebar-doc-view-quoted-git-paths.md）。行尾的 `\r` 由调用方按
+ * 行切分时处理。
+ */
+export function unquoteGitPath(raw: string): string {
+  const text = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+  if (text.length < 2 || !text.startsWith('"') || !text.endsWith('"')) {
+    return text;
+  }
+  const body = text.slice(1, -1);
+  const pieces: string[] = [];
+  /** 待解码的连续八进制字节（UTF-8 序列可能跨多个转义） */
+  let bytes: number[] = [];
+  const flushBytes = (): void => {
+    if (bytes.length === 0) return;
+    pieces.push(Buffer.from(bytes).toString('utf8'));
+    bytes = [];
+  };
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      flushBytes();
+      pieces.push(ch);
+      continue;
+    }
+    const next = body[i + 1];
+    if (next === undefined) {
+      flushBytes();
+      pieces.push('\\');
+      break;
+    }
+    i += 1;
+    const octal = /^[0-7]{3}/.exec(body.slice(i));
+    if (octal) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      i += 2;
+      continue;
+    }
+    flushBytes();
+    switch (next) {
+      case 'a': pieces.push('\x07'); break;
+      case 'b': pieces.push('\b'); break;
+      case 'f': pieces.push('\f'); break;
+      case 'n': pieces.push('\n'); break;
+      case 'r': pieces.push('\r'); break;
+      case 't': pieces.push('\t'); break;
+      case 'v': pieces.push('\v'); break;
+      case '"': pieces.push('"'); break;
+      case '\\': pieces.push('\\'); break;
+      // 认不出的转义按字面保留（不吞字符）
+      default: pieces.push(`\\${next}`);
+    }
+  }
+  flushBytes();
+  return pieces.join('');
+}
+
 /** 重命名路径形态归一到新名：`old => new` 取 new；目录重命名 `a/{o => n}b` 取 `a/nb` */
 export function normalizeRenamedPath(raw: string): string | null {
-  let cleaned = raw.trim();
-  if (cleaned.startsWith('"') && cleaned.endsWith('"') && cleaned.length >= 2) {
-    cleaned = cleaned.slice(1, -1);
-  }
+  let cleaned = unquoteGitPath(raw);
   const brace = /^(.*?)\{(.*?) => (.*?)\}(.*)$/.exec(cleaned);
   if (brace) cleaned = `${brace[1]}${brace[3]}${brace[4]}`;
   const whole = /^(.*) => (.*)$/.exec(cleaned);
@@ -106,7 +175,8 @@ export function normalizeRenamedPath(raw: string): string | null {
 export function parseNumstat(text: string): DocEntry[] {
   const entries: DocEntry[] = [];
   for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
+    // 只跳空行：路径可以首尾是空格，不能整行 trim
+    if (line.length === 0) continue;
     const parts = line.split('\t');
     if (parts.length < 3) continue;
     const [addText, delText, ...restPath] = parts;
@@ -123,12 +193,15 @@ export function parseNumstat(text: string): DocEntry[] {
   return entries;
 }
 
-/** 解析 `git ls-files` 输出：每行一个路径 */
+/** 解析 `git ls-files` 输出：每行一个路径（C 风格引号按 git 的转义还原）。
+ *
+ * 只跳**空行**：文件名可以首尾是空格，不能 trim（见 `unquoteGitPath`）。 */
 export function parseLsFiles(text: string): string[] {
   return text
     .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
+    .filter((line) => line.length > 0)
+    .map((line) => unquoteGitPath(line));
 }
 
 /** 计行（git 口径）：末尾换行不另计一行；空文件 0 行 */

@@ -686,6 +686,11 @@ export class CoreDaemon {
         // 上一次链路已经结束过：这次是新链路，退出要重新算一次
         this.exitHandled = false;
         this.writer = link;
+        // 一条链路一个解码起点：上一条链路可能在任意字节边界断开，把残行 / 半个
+        // UTF-8 字符一起丢掉，否则它会被拼在新链路的第一帧前面，让这条连接上的
+        // 每一帧都变成坏帧（请求挂到超时，心跳却照发）
+        // （specs/defects/daemon-decoder-keeps-stale-partial-line.md）
+        this.decoder.reset();
         link.onData((chunk) => this.decoder.push(chunk));
         link.onClose(() => this.handleExit());
         // 链路建立即可写：清掉就绪超时、开始心跳，放行排队的帧

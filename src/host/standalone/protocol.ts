@@ -9,6 +9,7 @@
 
 import type { CoreEvent, CoreRequest, UiEvent, UiRequest } from '../../shared/AssistantEventBus.js';
 import { stringifyJsonSafe } from '../../shared/utils/stringUtils.js';
+import { StringDecoder } from 'node:string_decoder';
 
 /**
  * 协议版本；握手时由 Core 校验。
@@ -124,19 +125,34 @@ export interface FrameDecoderOptions {
  *
  * 输入是任意切分的字节块；按 `\n` 切分并缓存残行。空行跳过。
  * 单行 JSON 解析失败只报告该行，不中断后续行。
+ *
+ * 字节块走 `StringDecoder` 而不是 `chunk.toString('utf8')`：一个多字节 UTF-8 字符
+ * 完全可能被 TCP / SSH 通道切在两次 `push` 之间，逐块解码会把两半各自换成 U+FFFD。
+ * 替换字符是合法字符，`JSON.parse` 照样成功——坏掉的文本因此**静默**流进 Core 与 UI
+ * （日志乱码、对话正文出现 `�`），不留任何错误记录
+ * （specs/defects/frame-decoder-splits-multibyte-chunks.md）。
  */
 export class FrameDecoder {
   private buffer = '';
+  /**
+   * 跨块暂存半个 UTF-8 字符的解码器。
+   *
+   * `reset` 会换一个新实例：`StringDecoder` 没有公开的「丢弃余量」入口，而重启进程
+   * 时必须把上一段字节流留下的半字符一起丢掉，否则它会与重启后的第一块拼在一起，
+   * 解出一个凭空多出来的字符。
+   */
+  private decoder = new StringDecoder('utf8');
 
   constructor(private readonly options: FrameDecoderOptions) {}
 
-  /** 丢弃残行（重启进程时调用） */
+  /** 丢弃残行与未完成的字符（重启进程时调用） */
   reset(): void {
     this.buffer = '';
+    this.decoder = new StringDecoder('utf8');
   }
 
   push(chunk: Buffer | string): void {
-    this.buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    this.buffer += typeof chunk === 'string' ? chunk : this.decoder.write(chunk);
     let index = this.buffer.indexOf('\n');
     while (index >= 0) {
       const line = this.buffer.slice(0, index);

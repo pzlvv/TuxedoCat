@@ -171,9 +171,23 @@ function normalizeModels(raw: unknown): string[] {
 }
 
 /**
+ * 是否为 Core 契约里的 `u64` 取值（非负整数）。
+ *
+ * 快照里 `provider.modelLimits[*].context` / `.output` / `.thinkingTokenBudget` 与
+ * `llm.maxTokens` 在 Core 侧都是 `u64`（`core-rs/src/settings.rs` 的 `ModelLimits` /
+ * `LlmSettings`），serde 只接受非负整数，且校验粒度是**整份快照**：一个字段类型不符，
+ * `apply_from_host_environment` 整体失败、`coreReady` 一次都不发，宿主侧永远未就绪
+ * （specs/defects/settings-snapshot-non-u64-limits.md）。因此这里必须比
+ * `Number.isFinite` 严——负数与小数一律按「未配置」处理。
+ */
+function isU64(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
  * 规范化 provider 的 `modelConfigs`（用户覆盖）。
  *
- * 保留口径与 `getModelConfig` 一致：`context` / `output` 只要求是有限数，
+ * 保留口径与 `getModelConfig` 一致：`context` / `output` 只接受 `u64`（见 `isU64`），
  * `apiType` 只要求是字符串，`multimodal` 只要求是布尔；其余字段一律丢弃。
  */
 function normalizeModelConfigs(raw: unknown): Record<string, ModelTokenLimits> {
@@ -182,10 +196,10 @@ function normalizeModelConfigs(raw: unknown): Record<string, ModelTokenLimits> {
   for (const [model, limits] of Object.entries(raw)) {
     if (!isPlainObject(limits)) continue;
     const entry: ModelTokenLimits = {};
-    if (typeof limits.context === 'number' && Number.isFinite(limits.context)) {
+    if (isU64(limits.context)) {
       entry.context = limits.context;
     }
-    if (typeof limits.output === 'number' && Number.isFinite(limits.output)) {
+    if (isU64(limits.output)) {
       entry.output = limits.output;
     }
     if (typeof limits.apiType === 'string') {
@@ -298,7 +312,9 @@ export function resolveSettingsSnapshot(rawSettings: unknown): SettingsSnapshot 
       webSearch: typeof llm.webSearch === 'boolean' ? llm.webSearch : DEFAULT_WEB_SEARCH,
       thinkingEffort: resolveThinkingEffort(llm.thinking_effort),
       model: typeof llm.model === 'string' ? llm.model.trim() : '',
-      maxTokens: typeof llm.maxTokens === 'number' && Number.isFinite(llm.maxTokens) && llm.maxTokens > 0
+      // `llm.maxTokens` 在 Core 侧是 `u64`（见 `isU64`）：非正数沿用既有回落语义，
+      // 小数同样回落默认值——否则整份快照被 Core 拒收，Core 永远不就绪。
+      maxTokens: isU64(llm.maxTokens) && llm.maxTokens > 0
         ? llm.maxTokens
         : FALLBACK_MODEL_PARAMS.maxOutputTokens,
       enableUsageStats: typeof llm.enableUsageStats === 'boolean'

@@ -56,6 +56,7 @@ import {
   workspacePathMatches,
   workspaceRefDisplayPath,
   workspaceRefKey,
+  workspaceRefKeyMatches,
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
@@ -4458,7 +4459,8 @@ function readOpenWorkspaces(): WorkspaceRef[] {
 function readActiveWorkspace(open: readonly WorkspaceRef[]): WorkspaceRef | undefined {
   const { activeWorkspaceKey, activeWorkspace } = readWorkspaceState();
   if (typeof activeWorkspaceKey === 'string' && activeWorkspaceKey) {
-    const found = open.find((ref) => refKey(ref) === activeWorkspaceKey);
+    // 兼容归一之前写下的远程键（末尾多一个 `/`，见 workspaceRefKeyMatches）
+    const found = open.find((ref) => workspaceRefKeyMatches(ref, activeWorkspaceKey));
     if (found) return found;
   }
   // 旧版本只记本地路径
