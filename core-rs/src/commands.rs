@@ -134,7 +134,7 @@ pub fn check_skill_conflict(skill_name: &str, aliases: &[String]) -> bool {
 
 // ==================== 派遣 ====================
 
-/// 派遣结果
+/// 派遣结果（对照表与 `dispatch` 的返回值口径；引擎侧直接组合下面三个函数）。
 #[derive(Clone, Debug, PartialEq)]
 pub enum DispatchOutcome {
     /// 内置命令已就地执行（消息不进 LLM 上下文）
@@ -145,23 +145,25 @@ pub enum DispatchOutcome {
     Passthrough,
 }
 
-/// 派遣一条用户消息（对齐 `CommandDispatcher.dispatch`）
-pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
-    // 只处理以 `/` 开头的消息。
+/// 命中的内置命令调用（名称取注册名，别名也归到注册名）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuiltinInvocation {
+    pub name: String,
+    pub args: String,
+}
+
+/// 解析 `/name args`：名称到第一个空白，其余是参数（含换行）。
+///
+/// 只做语法解析，不查注册表、不触文件系统——调用方决定接下来查什么。
+fn parse_invocation(prompt: &str) -> Option<(String, String)> {
     // `prompt.trim()` 必须用 JS 空白口径（ECMAScript WhiteSpace + LineTerminator）：
     // Rust 的 `str::trim` 含 U+0085 却不含 U+FEFF，会让 `/` 前面带这两种字符的消息
     // 在两侧分别命中 / 落空（对照表 `commandDispatch` 的空白用例）。
     let trimmed = crate::util::js_trim(prompt);
-    if !trimmed.starts_with('/') {
-        return DispatchOutcome::Passthrough;
-    }
-
+    let rest = trimmed.strip_prefix('/')?;
     // 解析命令名和参数。参数用 `[\s\S]` 而非 `.`：多行输入
     // （如 `/commit 修复 A\n再修 B`）也必须能匹配到，否则会被判为 passthrough。
-    let Some(rest) = trimmed.strip_prefix('/') else {
-        return DispatchOutcome::Passthrough;
-    };
-    let (cmd_name, cmd_args) = match rest.find(crate::util::is_js_whitespace) {
+    let (name, args) = match rest.find(crate::util::is_js_whitespace) {
         Some(index) => {
             let name = &rest[..index];
             // 只去前导空白：`\s+` 之后是 `[\s\S]*`，尾随空白属于参数
@@ -171,60 +173,98 @@ pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
         None => (rest, ""),
     };
     // `^\/(\S+)(?:\s+([\s\S]*))?$`：命令名不能含空白；含空白说明首个 token 为空
-    if cmd_name.is_empty() {
-        return DispatchOutcome::Passthrough;
+    if name.is_empty() {
+        return None;
     }
+    Some((name.to_string(), args.to_string()))
+}
 
-    // 1. 查找匹配的内置命令（含别名）
+/// 消息是否是内置命令调用；命中时返回注册名与参数。
+///
+/// 只查内存注册表（`skills::ensure_builtins` 装的是编译进产物的定义），不触文件
+/// 系统——引擎的查询中途 flush 用它判断「这条消息要不要等轮次边界」，可以在持锁
+/// 路径里安全调用（`docs/features/user-message-pipeline.md` FR-002）。
+pub fn builtin_invocation(prompt: &str) -> Option<BuiltinInvocation> {
+    let (name, args) = parse_invocation(prompt)?;
     let commands = builtin_commands();
     let matched = commands
         .iter()
-        .find(|command| command.name == cmd_name || command.aliases.iter().any(|a| a == cmd_name));
+        .find(|command| command.name == name || command.aliases.iter().any(|alias| *alias == name))?;
+    Some(BuiltinInvocation {
+        name: matched.name.clone(),
+        args,
+    })
+}
 
-    if let Some(command) = matched {
-        eprintln!("[core] CommandDispatcher: Dispatching builtin command: /{cmd_name} {cmd_args}");
+/// 消息命中哪个 Skill；命中时返回技能名与参数。
+///
+/// 会做一次技能盘点（读技能目录），因此**不在持锁路径**调用；引擎把它算进消息
+/// 自身的处置里，轮次边界与查询中途 flush 共用同一判定。
+pub fn skill_invocation(prompt: &str, cwd: &str) -> Option<(String, String)> {
+    let (name, args) = parse_invocation(prompt)?;
+    // 只匹配用户可主动触发的技能：`user-invocable: false` 的技能是给模型用的，
+    // `/name` 不认它，落到与未知 `/xxx` 相同的 passthrough（ADR-0011）。
+    let trimmed_name = name.trim_start_matches('/');
+    skills::get_all_skills(cwd)
+        .into_iter()
+        .find(|skill| skill.user_invocable && skill.matches(trimmed_name))
+        .map(|skill| (skill.name, args))
+}
 
-        let mut cmd_context = context.clone();
-        cmd_context.command_name = Some(command.name.clone());
+/// 就地执行一条已命中的内置命令（`commandDispatched` + 可选的 system 消息）。
+pub fn execute_builtin(invocation: &BuiltinInvocation, context: &CommandContext) {
+    eprintln!(
+        "[core] CommandDispatcher: Dispatching builtin command: /{} {}",
+        invocation.name, invocation.args
+    );
 
-        // 通知 UI 层执行客户端操作（如 /spin 打开设计器）
-        context.emit(json!({
-            "type": "commandDispatched",
-            "sessionId": context.session_id,
-            "commandName": command.name,
-            "args": cmd_args,
-        }));
+    let mut cmd_context = context.clone();
+    cmd_context.command_name = Some(invocation.name.clone());
+    let command = builtin_commands()
+        .into_iter()
+        .find(|command| command.name == invocation.name);
 
-        // 只上报非空返回值
-        if let Some(result) = (command.execute)(cmd_args, &cmd_context) {
-            if !result.is_empty() {
-                context.emit(json!({
-                    "type": "message",
-                    "sessionId": context.session_id,
-                    "data": { "role": "system", "content": result },
-                }));
-            }
+    // 通知 UI 层执行客户端操作（如 /spin 打开设计器）
+    context.emit(json!({
+        "type": "commandDispatched",
+        "sessionId": context.session_id,
+        "commandName": invocation.name,
+        "args": invocation.args,
+    }));
+
+    // 只上报非空返回值
+    let Some(command) = command else {
+        return;
+    };
+    if let Some(result) = (command.execute)(&invocation.args, &cmd_context) {
+        if !result.is_empty() {
+            context.emit(json!({
+                "type": "message",
+                "sessionId": context.session_id,
+                "data": { "role": "system", "content": result },
+            }));
         }
+    }
+}
 
+/// 派遣一条用户消息（对齐 `CommandDispatcher.dispatch`）。
+///
+/// 「匹配 + 就地执行」一把做完的便捷入口：调用方不关心决定与执行分离时用它
+/// （对照表与单测）；引擎要按出队位置区分处置（内置命令留到轮次边界），因此直接
+/// 组合 `builtin_invocation` / `skill_invocation` / `execute_builtin`。
+pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
+    // 1. 内置命令（含别名）就地执行
+    if let Some(invocation) = builtin_invocation(prompt) {
+        execute_builtin(&invocation, context);
         return DispatchOutcome::Handled;
     }
 
-    // 2. 检查是否匹配 Skill 名称（非内置命令的 / 命令）
-    //
-    // 只匹配用户可主动触发的技能：`user-invocable: false` 的技能是给模型用的，
-    // `/name` 不认它，落到与未知 `/xxx` 相同的 passthrough（ADR-0011）。
-    let all_skills = skills::get_all_skills(&context.cwd);
-    let trimmed_name = cmd_name.trim_start_matches('/');
-    if let Some(skill) = all_skills
-        .into_iter()
-        .find(|skill| skill.user_invocable && skill.matches(trimmed_name))
-    {
-        eprintln!(
-            "[core] CommandDispatcher: Matched skill: /{cmd_name}, returning 'skill' result"
-        );
+    // 2. 命中 Skill：调用方据此注入 Skill tool_use
+    if let Some((skill_name, skill_args)) = skill_invocation(prompt, &context.cwd) {
+        eprintln!("[core] CommandDispatcher: Matched skill: /{skill_name}");
         return DispatchOutcome::Skill {
-            skill_name: skill.name,
-            skill_args: cmd_args.to_string(),
+            skill_name,
+            skill_args,
         };
     }
 

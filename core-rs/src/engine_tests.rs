@@ -476,7 +476,7 @@ fn session_state_reports_idle_only_without_work() {
     state.waiting = true;
     assert!(!state.is_idle());
     state.waiting = false;
-    state.pending_user_message = Some(json!({}));
+    state.pending_user_message = Some(QueuedUserMessage::plain(json!({})));
     assert!(!state.is_idle());
 }
 
@@ -883,12 +883,12 @@ fn reply_called_sub_agent_discards_user_messages() {
             .pending_user_message
             .as_ref()
             .expect("Reply 前的排队消息应仍在队列");
-        assert_eq!(pending["message"]["content"], "排队消息");
+        assert_eq!(pending.message["message"]["content"], "排队消息");
         assert!(!state.running, "不得由用户消息拉起裸消费循环");
     }
 
     // 唯一出队收口：排队中的用户消息就地丢弃，不进上下文
-    let batch = take_queued_batch(&harness.core.session("sub1"), true);
+    let batch = take_queued_batch(&harness.core.session("sub1"));
     assert!(batch.is_none(), "Reply 后用户队列应被丢弃");
     let state = harness.core.session("sub1");
     let state = state.lock().unwrap();
@@ -1138,11 +1138,11 @@ fn run_consumer_does_not_resurrect_a_dropped_session() {
     let harness = EngineHarness::allow_all();
 
     let state = harness.core.session("s1");
-    state.lock().unwrap().pending_user_message = Some(json!({
+    state.lock().unwrap().pending_user_message = Some(QueuedUserMessage::plain(json!({
         "type": "user",
         "uuid": "u1",
         "message": { "role": "user", "content": "hi" },
-    }));
+    })));
     state.lock().unwrap().running = true;
     // 会话被关闭 / 删除：运行时状态已丢弃
     harness.core.drop_session("s1");
@@ -1466,7 +1466,7 @@ fn run_consumer_stops_when_cancelled() {
     let state = harness.core.session("s1");
     {
         let mut state = state.lock().unwrap();
-        state.pending_user_message = Some(json!({ "type": "user" }));
+        state.pending_user_message = Some(QueuedUserMessage::plain(json!({ "type": "user" })));
         state.running = true;
         state.cancel.store(true, Ordering::Relaxed);
     }
@@ -1483,6 +1483,50 @@ fn run_consumer_stops_when_cancelled() {
 
 // ==================== 排队消息撤回（`queuedMessageDiscarded`）====================
 
+/// 撤回排队中的 `@` 消息：随消息一起算出的 reminder 必须同生共死。
+///
+/// 与 `mention_message_flushed_mid_turn_keeps_its_reminder` 同族：reminder 是「这条消息的
+/// 处置结果」而不是会话级残留。消息被撤回 / 被新消息替换后，旧 reminder 不得挂到下一批
+/// 用户消息上。
+#[test]
+fn discarded_mention_message_also_drops_its_reminder() {
+    let _sandbox = Sandbox::new("engine-discard-mention-reminder");
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s1");
+    {
+        let mut state = state.lock().unwrap();
+        // 入队即带处置：reminder 挂在消息自己身上，不落会话状态
+        state.pending_user_message = Some(QueuedUserMessage {
+            message: json!({
+                "type": "user",
+                "message": { "role": "user", "content": "@HOST:/b 把这件事做了" },
+                "uuid": "u-mention",
+                "timestamp": 1,
+            }),
+            builtin: None,
+            injection: classify_injection("@HOST:/b 把这件事做了", ""),
+        });
+        state.running = true;
+    }
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .pending_user_message
+            .as_ref()
+            .and_then(|queued| queued.injection.mention_reminder.clone())
+            .is_some(),
+        "前置：@ 消息应自带 reminder"
+    );
+
+    harness.core.on_queued_message_discarded("s1", "u-mention");
+
+    // 先取快照再断言：断言失败时不能持有会话锁，否则 EngineHarness 收尾与工作线程
+    // 抢锁会中断进程（既有用例同样在作用域内取快照）。
+    let pending_message = state.lock().unwrap().pending_user_message.is_some();
+    assert!(!pending_message, "撤回后消息与它的 reminder 一并离开队列");
+}
+
 /// 撤回排队中的用户消息（webview 排队项的
 /// 「编辑 / 删除」，`docs/features/user-message-pipeline.md` FR-003）。
 #[test]
@@ -1492,15 +1536,22 @@ fn queued_message_is_discarded_by_uuid() {
     let state = harness.core.session("s1");
     {
         let mut state = state.lock().unwrap();
-        state.pending_user_message = Some(json!({
-            "type": "user",
-            "message": { "role": "user", "content": "排队消息" },
-            "uuid": "u1",
-            "timestamp": 1,
-        }));
-        state.pending_skill_injection = Some(SkillInjection {
-            skill_name: "spin".to_string(),
-            skill_args: String::new(),
+        // 处置随消息走：Skill 待注入不再是会话侧槽位
+        state.pending_user_message = Some(QueuedUserMessage {
+            message: json!({
+                "type": "user",
+                "message": { "role": "user", "content": "/spin design" },
+                "uuid": "u1",
+                "timestamp": 1,
+            }),
+            builtin: None,
+            injection: UserMessageInjection {
+                mention_reminder: None,
+                skill: Some(SkillInjection {
+                    skill_name: "spin".to_string(),
+                    skill_args: String::new(),
+                }),
+            },
         });
         state.running = true;
     }
@@ -1509,8 +1560,8 @@ fn queued_message_is_discarded_by_uuid() {
 
     let state = state.lock().unwrap();
     assert!(state.pending_user_message.is_none(), "uuid 配对时丢弃排队消息");
-    // Skill 待注入与排队消息同生共死
-    assert!(state.pending_skill_injection.is_none(), "Skill 待注入一并清除");
+    // 消息带着自己的处置一起被丢弃：不存在残留到下一批的注入
+    assert!(state.pending_user_message.is_none(), "消息与注入一并清除");
     // 不置 cancel：撤回排队项不打断正在运行的查询（区别于 abort 第一阶段）
     assert!(!state.cancel.load(Ordering::Relaxed), "撤回不置 cancel");
 }
@@ -1522,12 +1573,12 @@ fn queued_message_discard_is_a_noop_on_uuid_mismatch() {
     let state = harness.core.session("s1");
     {
         let mut state = state.lock().unwrap();
-        state.pending_user_message = Some(json!({
+        state.pending_user_message = Some(QueuedUserMessage::plain(json!({
             "type": "user",
             "message": { "role": "user", "content": "排队消息" },
             "uuid": "u1",
             "timestamp": 1,
-        }));
+        })));
     }
 
     // uuid 不匹配（已被消费 / 被更新的排队消息替换）与未知会话：都不动
@@ -1546,11 +1597,11 @@ fn run_consumer_reports_turn_failures_as_system_messages() {
     {
         let mut state = state.lock().unwrap();
         state.project = Some("D:/repo".to_string());
-        state.pending_user_message = Some(json!({
+        state.pending_user_message = Some(QueuedUserMessage::plain(json!({
             "type": "user",
             "uuid": "u1",
             "message": { "role": "user", "content": "hi" },
-        }));
+        })));
         state.running = true;
     }
 
@@ -6881,6 +6932,63 @@ fn deferred_builtin_command_does_not_reemit_the_user_message() {
     crate::skills::reset_registries();
 }
 
+/// 内置命令与 reminder 同时在队时，消费循环的轮次边界不能丢 reminder。
+///
+/// 内置命令由 `take_pending_builtin` 在取批次**之前**单独取出：批次会把 reminder 与
+/// 用户消息并成一条，先取批次再执行命令会连带丢掉 reminder
+/// （`docs/features/user-message-pipeline.md` FR-002）。
+#[test]
+fn builtin_command_does_not_swallow_a_pending_reminder() {
+    let sandbox = Sandbox::new("engine-builtin-vs-reminder");
+    crate::skills::reset_registries();
+    let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    // 前置：一条已排队的内置命令
+    harness.core.on_user_message(&json!({
+        "sessionId": "s1",
+        "content": "/spin",
+        "uuid": "u-spin",
+        "deferEcho": true,
+    }));
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            Duration::from_secs(30),
+        ),
+        "消费循环应当收尾: {:?}",
+        harness.sink.event_types()
+    );
+
+    // 命令就地执行后：发起一轮提醒也能照常消费，不被命令批次吞掉
+    harness.core.deliver_background_reminder("s1", "后台任务仍在跑");
+    assert!(
+        harness.wait_for(
+            |sink| sink.events_of("queryEnd").len() >= 2,
+            Duration::from_secs(30),
+        ),
+        "带 reminder 的一轮应当跑完: {:?}",
+        harness.sink.event_types()
+    );
+
+    // 落盘里必须有 reminder 那条（命令进不了上下文，reminder 不该跟着消失）
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let messages = crate::history::load_messages("s1", &project);
+    assert!(
+        messages.iter().any(|message| {
+            message["silent"] == json!(true)
+                && message["message"]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("后台任务仍在跑")
+        }),
+        "reminder 必须落盘: {messages:?}"
+    );
+
+    crate::skills::reset_registries();
+}
+
 /// `/spin design`：内置命令就地执行 → 该消息**不进** LLM 上下文，也不发起查询；
 /// 执行前发一次 `commandDispatched` 让 UI 打开设计器。
 #[test]
@@ -7528,26 +7636,16 @@ fn mention_identity_parsing_covers_quoted_and_plain_forms() {
     assert_eq!(parse_mention_identity("看 @HOST:/b"), None);
 }
 
-/// 轮次边界：`@` 命令把 reminder 挂到会话状态；宿主能力位为假时不挂。
+/// `@` 命令的处置在分类时算出、随消息走；宿主能力位为假时不算 reminder。
 #[test]
-fn resolve_pending_mention_sets_reminder_only_when_capable() {
+fn classify_injection_adds_reminder_only_when_capable() {
     // Sandbox 自己持有全局 serial 锁
     let sandbox = Sandbox::new("engine-mention");
-    let harness = EngineHarness::allow_all();
-    let state = harness.core.session("s-mention");
-    state.lock().unwrap().pending_user_message = Some(json!({
-        "type": "user",
-        "message": { "role": "user", "content": "@HOST:/b
-把这件事做了" },
-        "uuid": "u-mention",
-    }));
-    resolve_pending_mention(&state);
-    let reminder = state
-        .lock()
-        .unwrap()
-        .pending_mention_reminder
-        .clone()
-        .expect("reminder");
+    let _harness = EngineHarness::allow_all();
+    let text = "@HOST:/b
+把这件事做了";
+    let injection = classify_injection(text, "");
+    let reminder = injection.mention_reminder.expect("reminder");
     assert!(reminder.contains("target=\"HOST:/b\""));
     assert!(reminder.contains("Agent tool"));
 
@@ -7559,9 +7657,10 @@ fn resolve_pending_mention_sets_reminder_only_when_capable() {
         cross_workspace_agent: false,
         cross_workspace_transfer: false,
     });
-    state.lock().unwrap().pending_mention_reminder = None;
-    resolve_pending_mention(&state);
-    assert!(state.lock().unwrap().pending_mention_reminder.is_none());
+    assert!(
+        classify_injection(text, "").mention_reminder.is_none(),
+        "宿主不支持跨工作区代理时不算 reminder"
+    );
 }
 
 /// reminder 文案点名目标身份与 `Agent.target`；只提示自主决定，不强制代理。
@@ -7581,6 +7680,160 @@ fn mention_reminder_names_target_and_agent_tool() {
         ('\u{2E80}'..='\u{9FFF}').contains(&c) || ('\u{FF00}'..='\u{FFEF}').contains(&c)
     }));
     assert!(text.trim_end().ends_with("</Reminder>"));
+}
+
+/// `@` 命令由**查询中途**的 flush 出口出队时，reminder 同样要在用户消息之后进上下文。
+///
+/// 回归用例（`specs/defects/mention-reminder-lost-on-mid-turn-flush.md`）：中途 flush 曾
+/// 只把 `/` 开头的消息留在队列里等轮次边界，`@` 消息被当作普通文本并入上下文、不解析
+/// reminder——永久丢失。口径：用户消息的可观察效果与它到达的时机无关（reminder 是
+/// 消息自身的处置，`docs/features/user-message-pipeline.md` FR-002）。
+#[test]
+fn mention_message_flushed_mid_turn_keeps_its_reminder() {
+    let sandbox = Sandbox::new("engine-mention-mid-turn-flush");
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
+    let submitter = Arc::clone(&slot);
+    let llm = FakeLlm::start(move |index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if index == 0 {
+            // 多步工具调用进行中追加一条 `@` 消息：它由下一次请求前的 flush 并入上下文
+            if let Some(core) = submitter.lock().unwrap().as_ref() {
+                core.on_user_message(&json!({
+                    "sessionId": "s1",
+                    "content": "@HOST:/b 把这件事做了",
+                    "uuid": "u-2",
+                    "workspacePath": null,
+                }));
+            }
+            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+        } else {
+            openai_text_sse(&["收到"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    *slot.lock().unwrap() = Some(Arc::clone(&harness.core));
+    submit(&harness, "s1", "第一条", "u-1");
+
+    assert!(
+        harness.wait_for(
+            |sink| sink.events_of("queryEnd").len() >= 1,
+            std::time::Duration::from_secs(30),
+        ),
+        "轮次应当跑完: {:?}",
+        harness.sink.event_types()
+    );
+
+    // 中途 flush 的那条消息原样进上下文
+    let requests = bodies.lock().unwrap();
+    let second = serde_json::to_string(&requests[1]).expect("第二次请求");
+    assert!(
+        second.contains("把这件事做了"),
+        "@ 消息应并入下一次请求: {second}"
+    );
+    // 且紧跟一条点名目标身份的 reminder
+    assert!(
+        second.contains("<Reminder>") && second.contains("target=\\\"HOST:/b\\\""),
+        "@ 消息的 reminder 不得因为中途出队而丢失: {second}"
+    );
+    drop(requests);
+
+    // 落盘顺序：用户消息 → silent reminder（`origin=agent`、不进 UI 消息流）
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let messages = history::load_messages("s1", &workspace);
+    let user_index = messages
+        .iter()
+        .position(|message| message["uuid"] == "u-2")
+        .unwrap_or_else(|| panic!("@ 用户消息应落盘: {messages:?}"));
+    let reminder = messages
+        .get(user_index + 1)
+        .unwrap_or_else(|| panic!("@ 用户消息之后应有 reminder: {messages:?}"));
+    assert_eq!(reminder["silent"], json!(true), "reminder 必须是 silent");
+    assert_eq!(reminder["origin"], json!("agent"), "reminder 归属 agent");
+    assert!(
+        reminder["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("target=\"HOST:/b\""),
+        "reminder 要点名目标身份: {reminder:?}"
+    );
+}
+
+/// `/skill` 命令由**查询中途**的 flush 出口出队时，Skill 注入同样要发生。
+///
+/// 与 `mention_message_flushed_mid_turn_keeps_its_reminder` 同一条口径：注入是消息自身的
+/// 处置结果，不随到达时机变化。现状下中途 flush 只按 `/` 前缀把命令**留在队列**里等轮次
+/// 边界，因此这半条是既有行为（绿），修复后仍须绿——两条一起锁住统一后的语义。
+#[test]
+fn skill_command_flushed_mid_turn_keeps_its_injection() {
+    let sandbox = Sandbox::new("engine-skill-mid-turn-flush");
+    crate::skills::reset_registries();
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let slot: Arc<Mutex<Option<Arc<Core>>>> = Arc::new(Mutex::new(None));
+    let submitter = Arc::clone(&slot);
+    let llm = FakeLlm::start(move |index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if index == 0 {
+            if let Some(core) = submitter.lock().unwrap().as_ref() {
+                core.on_user_message(&json!({
+                    "sessionId": "s1",
+                    "content": "/commit -m 'Fix bug'",
+                    "uuid": "u-2",
+                    "workspacePath": null,
+                }));
+            }
+            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+        } else {
+            openai_text_sse(&["收到"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::allow_all();
+    *slot.lock().unwrap() = Some(Arc::clone(&harness.core));
+    submit(&harness, "s1", "第一条", "u-1");
+
+    assert!(
+        harness.wait_for(
+            |sink| !sink.events_of("queryEnd").is_empty(),
+            std::time::Duration::from_secs(30),
+        ),
+        "轮次应当跑完: {:?}",
+        harness.sink.event_types()
+    );
+
+    // Skill 注入发生了（Skill tool_use 落进上下文 / 卡片进 UI）
+    assert!(
+        harness
+            .sink
+            .events_of("toolResult")
+            .iter()
+            .any(|event| event["toolName"] == "Skill" && event["status"] == "success"),
+        "中途追加的 /skill 必须完成注入: {:?}",
+        harness.sink.event_types()
+    );
+    // 且注入的是那条命令声明的技能与参数
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let messages = history::load_messages("s1", &workspace);
+    let skill_tool_use = messages
+        .iter()
+        .flat_map(|message| {
+            message["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_use")
+                && block.get("name").and_then(Value::as_str) == Some("Skill")
+        })
+        .unwrap_or_else(|| panic!("应当有 Skill tool_use: {messages:?}"));
+    assert_eq!(skill_tool_use["input"]["skill"], "commit");
+    assert_eq!(skill_tool_use["input"]["args"], "-m 'Fix bug'");
 }
 
 /// 跨工作区派发：宿主应答成功后登记远程子代理，`subAgentRunning` 计入它。
