@@ -23,7 +23,7 @@ worktree 目录里工作，该目录位于 Core 数据目录（**不在仓库内
 ## 1. 用户场景与验收标准
 
 - 场景 1：分支对话在自己的 worktree 里工作
-  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `<工作区短名>/worktrees/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
+  - **AC-1**（FR-002）：GIVEN 主工作区是 git 仓库 WHEN 发送分支对话的第一条消息 THEN 会话与 worktree 一并建立：Core 在 Core 数据目录下的 `worktrees/<工作区短名>/<branch>/` 建出 worktree，`branchStateChanged` 推送 `{ state: 'ready', branch, worktree, baseCommit, baseBranch }`。
   - **AC-2**（FR-002）：GIVEN 分支对话 WHEN `Write` 写 `a.txt` 或 `Bash` 执行 `npm run build` THEN 文件落在 worktree 内；主工作区该路径不变、`git status` 无新增条目。
   - **AC-3**（FR-002）：GIVEN 分支对话 WHEN 调用工具 THEN 全部工具（`Read` / `Write` / `Edit` / `Bash` / `Grep` / `Glob`）以 worktree 为根——实现是会话级 `cwd` 一次改向，无逐工具分支。
   - **AC-4**（FR-002）：GIVEN 分支对话的 worktree 已存在 WHEN 重新打开该对话 THEN 复用同一 worktree（不重建、不丢失未提交改动）。
