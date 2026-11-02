@@ -183,10 +183,23 @@ export class WebViewUI implements WebViewUiPort {
     conversation: any,
     extra: ConversationLoadedExtra,
   ): void {
+    // 长对话排查的锚点：整条会话要经 trimConversationForWebview 深拷贝 + 裁剪后再
+    // 一次性投给 webview，消息数上千时这段耗时与载荷体量直接决定视图能不能打开。
+    // 只记消息数与耗时（不重新序列化载荷——那会把这里的开销翻倍），
+    // 落在宿主日志出口（Electron 走 fileLogger 的 host 组件）。
+    const startedAt = Date.now();
     const payload = buildConversationLoadedPayload(sessionId, conversation, extra, {
       // 统一传（11.1 #2）：webview 依赖该字段恢复 thinking/text/tool 动画
       activityPhase: this.getActivityPhase(sessionId),
     });
+    const messageCount = Array.isArray(payload.conversation?.messages)
+      ? payload.conversation.messages.length
+      : 0;
+    this.log(
+      `conversationLoaded: session=${sessionId} messages=${messageCount}`
+        + ` metaEntries=${Object.keys(payload.toolMetaMap ?? {}).length}`
+        + ` buildMs=${Date.now() - startedAt}`,
+    );
     this.host.sendToWebview(payload);
   }
 

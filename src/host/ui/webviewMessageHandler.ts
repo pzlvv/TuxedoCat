@@ -777,8 +777,17 @@ export class WebviewMessageHandler {
     // 先登记该会话的工作目录：core 加载要按它定位 meta.json / jsonl
     this.ensureSessionWorkspace(message.sessionId);
     // 会话内容与派生事实一次取齐（经 UiRequest）
+    // 读盘耗时与消息数落一行：长会话「点了没反应」时，先看这一步是慢还是后续渲染慢
+    // （渲染侧由 WebViewUI.postConversationLoaded 记 conversationLoaded 耗时）。
+    const diskLoadStartedAt = Date.now();
     const loaded = await loadConversationForHost(message.sessionId);
     const conversation = { messages: loaded.messages, metadata: loaded.metadata ?? undefined };
+    this.log(
+      `[WebviewMessageHandler] conversation loaded from disk: session=${message.sessionId}`
+        + ` messages=${loaded.messages?.length ?? 0}`
+        + ` pendingTools=${loaded.pendingToolUseIds.length}`
+        + ` readMs=${Date.now() - diskLoadStartedAt}`,
+    );
     if (isStaleLoad()) {
       this.log(`[WebviewMessageHandler] loadConversation stale after disk load, abort: ${message.sessionId}`);
       return;

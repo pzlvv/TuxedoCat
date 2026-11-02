@@ -17,6 +17,7 @@
  */
 
 import { fileLogger } from '../src/shared/Logger.js';
+import { diag } from './diagnostics.js';
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, WebContentsView, shell, webContents, globalShortcut, Tray, nativeImage, screen, clipboard, powerSaveBlocker, type NativeImage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -595,15 +596,33 @@ app.setPath(
 );
 
 // 单实例锁：避免多开导致会话文件冲突（--multi-instance 测试开关命中时跳过）
+//
+// 两条分支都留痕：拿不到锁时进程立刻 quit，若这里不写日志，「双击图标没反应」
+// 与「用户根本没点」在日志里完全无法区分——事后排查只能靠猜。所以
+//   - 拿到锁 → `launch acquired`（一行，确定本次启动了）
+//   - 没拿到   → `launch second-instance denied`（带旧实例 pid 时一并记下）
+// 落盘走 `diag`（fileLogger），打包态无 console 也能看到。
 if (multiInstance) {
+  diag('info', 'launch', `[main] multi-instance mode, single-instance lock skipped (suffix=${multiInstanceSuffix || '-'})`);
   void main();
 } else {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
+    // 旧实例持有锁：它会收到 second-instance 并被唤醒（见下面的监听器）。
+    // 本进程的唯一职责就是把这次「用户点了图标」记下来然后退出。
+    diag('warn', 'launch', `[main] second-instance launch denied (pid=${process.pid}); forwarding to the running instance and exiting`);
     app.quit();
   } else {
-    app.on('second-instance', () => {
+    diag('info', 'launch', `[main] single-instance lock acquired (pid=${process.pid}), argv=${JSON.stringify(process.argv.slice(1))}`);
+
+    app.on('second-instance', (_event, argv, workingDirectory) => {
       // 启动早期 mainWindow 可能尚未创建，此时不做处理，避免与 main() 的初始化竞争
+      diag(
+        'info',
+        'launch',
+        `[main] second-instance received: window=${mainWindow && !mainWindow.isDestroyed() ? 'existing' : 'absent'}`
+          + ` argv=${JSON.stringify(argv.slice(1))} cwd=${workingDirectory}`,
+      );
       if (mainWindow && !mainWindow.isDestroyed()) {
         showMainWindowFromTray();
       }
@@ -614,7 +633,11 @@ if (multiInstance) {
 }
 
 async function main(): Promise<void> {
+  // whenReady 之前没有窗口、没有 core，这段挂了只会表现为「进程在但没有界面」。
+  // 前后各一行留痕，把「卡在早期初始化」与「卡在建窗口 / core」分开。
+  diag('info', 'launch', `[main] waiting for app ready (electron=${process.versions.electron}, node=${process.versions.node})`);
   await app.whenReady();
+  diag('info', 'launch', `[main] app ready: userData=${app.getPath('userData')}`);
 
   // ── 宿主本地状态（userData/workspace-state.json）──
   // 旧版本的状态文件（旧 userData 目录 / lastWorkspace 字段）在这里一次性迁移；
@@ -706,8 +729,14 @@ async function main(): Promise<void> {
   registerWakeShortcut();
   // GPU 进程异常（合成表面丢失 → 整个页面空白）时强制重绘所有视图
   app.on('child-process-gone', (_event, details) => {
+    // 不只记 GPU：任何子进程异常都是「窗口在但内容不对」的常见根因，
+    // 而打包态没有 console，必须落盘才能事后对时。
+    diag(
+      'error',
+      'main',
+      `[main] child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`,
+    );
     if (details.type === 'GPU') {
-      console.error(`[main] GPU process gone: reason=${details.reason}`);
       setTimeout(repaintAllViews, 150); // 等待 GPU 进程重启完成后再重绘
     }
   });
@@ -728,12 +757,29 @@ async function main(): Promise<void> {
   });
 
   app.on('window-all-closed', () => {
+    // 先留痕再判定：某些「窗口在但内容不对」的现象最后落在这里（所有窗口被销毁），
+    // 与「用户主动退出」区分开才查得动（打包态没有 console）。
+    diag(
+      'info',
+      'launch',
+      `[main] window-all-closed: windows=${BrowserWindow.getAllWindows().length} platform=${process.platform}`,
+    );
     if (process.platform !== 'darwin') {
       app.quit();
     }
   });
 
   app.on('will-quit', () => {
+    // 退出路径的唯一留痕点：正常退出 / 用户从托盘退出 / window-all-closed 都到这里，
+    // 崩溃与断电不会到——两种「日志突然断掉」因此可以区分。
+    // 不记 appQuitting（本函数里才置 true，写在这里恒为 false，是假信息）。
+    diag(
+      'info',
+      'launch',
+      `[main] will-quit: windows=${BrowserWindow.getAllWindows().length}`
+        + ` openWorkspaces=${openWorkspaces.length}`
+        + ` openSessions=${chatViews?.getLoadedSessionIds().length ?? 0}`,
+    );
     appQuitting = true;
     // 停止白屏恢复相关的重绘定时器（窗口销毁回调可能未触发，双保险）
     if (focusRepaintTimer) {
@@ -851,7 +897,9 @@ function createMainWindow(): void {
   const showMainWindow = (): void => {
     if (windowShown || !mainWindow || mainWindow.isDestroyed()) return;
     windowShown = true;
-    console.log('[main] showing window');
+    // 窗口首次显示是「应用真的起来了」的判定点：启动卡在 core / 侧栏加载时，
+    // 日志里只有 settings loaded 而没有这一行，能直接把范围缩到窗口出现之前。
+    diag('info', 'launch', `[main] showing window: workspace=${workspacePath ? refDisplay(workspacePath) : '-'}`);
     mainWindow.show();
   };
   mainWindow.once('ready-to-show', showMainWindow); // 无子视图场景仍可用
@@ -967,7 +1015,13 @@ function createMainWindow(): void {
 
   // 渲染进程崩溃/GPU 异常时恢复侧栏显示
   sidebarView.webContents.on('render-process-gone', (_e, details) => {
-    console.error(`[sidebar] render-process-gone: reason=${details.reason}, exitCode=${details.exitCode}`);
+    // 侧栏崩溃时主窗口还在但左侧只剩空白，看起来就是「应用坏了」——
+    // 这是必须能事后查到的故障，走 diag 落盘而不是只 console。
+    diag(
+      'error',
+      'main',
+      `[sidebar] render-process-gone: reason=${details.reason}, exitCode=${details.exitCode}`,
+    );
     if (details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed') {
       setTimeout(() => {
         // webContents 可能已随视图销毁变为 undefined（同 ChatViewManager 的视图销毁竞态）
@@ -976,6 +1030,15 @@ function createMainWindow(): void {
         if (wc.isCrashed()) wc.reload();
       }, 500);
     }
+  });
+
+  // 侧栏「卡住」与「崩溃」是两种不同的故障：前者进程活着但不响应任何 IPC，
+  // 后者进程已经没了。两个事件都落盘——用户报「点不动」时先看这里有没有痕迹。
+  sidebarView.webContents.on('unresponsive', () => {
+    diag('warn', 'main', '[sidebar] unresponsive');
+  });
+  sidebarView.webContents.on('responsive', () => {
+    diag('info', 'main', '[sidebar] responsive again');
   });
 
   // 外部链接防御（与聊天视图同一份实现）：侧栏内点击链接不在 Electron 中打开，
@@ -1185,6 +1248,14 @@ function createMainWindow(): void {
   });
 
   mainWindow.on('closed', () => {
+    // 窗口被销毁但进程还活着（托盘 / activate 会重建）：与 will-quit 的时间差
+    // 能区分「窗口被关掉」和「整个应用退出」。
+    diag(
+      'info',
+      'launch',
+      `[main] main window closed: quitting=${appQuitting}`
+        + ` openSessions=${chatViews?.getLoadedSessionIds().length ?? 0}`,
+    );
     // 后台预热的聊天视图未挂在窗口上，需显式清理（其余视图随窗口销毁）
     chatViews?.dispose();
     mainWindow = undefined;
