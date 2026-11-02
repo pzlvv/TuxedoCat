@@ -108,7 +108,8 @@ bootstrapCore(host, spinDesign, conversations, options): { bus, client, ui }
 | `conversations.setStatusListener` | Electron | 托盘状态点、闪烁提醒、未读完成呼吸与系统睡眠阻断 |
 | 侧栏出口（`sendToSidebar`） | Electron | 原生侧栏三条流 |
 | `chatViews.closeConversation = (sid) => ui.releaseConversation(sid)` | Electron | 视图销毁序列只卸内存 |
-| 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成 |
+| 菜单 / 托盘 / 全局唤醒快捷键 / 单实例锁 | Electron | 桌面端集成。单实例锁的两条分支都经 `electron/diagnostics.ts` 的 `diag` 落盘（`launch` 组件）：拿到锁记 `single-instance lock acquired`，拿不到锁记 `second-instance launch denied` 后 `app.quit()`，旧实例收到 `second-instance` 时记一条带 argv / cwd 的唤醒记录。打包态没有 console，这三行是「双击图标没反应」类现象的唯一证据 |
+| 主进程诊断出口（`electron/diagnostics.ts` 的 `diag`） | Electron | 一条诊断同时走 `console`（开发期终端）与 `fileLogger`（落盘）。渲染进程 `render-process-gone` / `unresponsive` / `did-fail-load`（主框架）/ 渲染层 `console-message` 的 error 级别、GPU 等 `child-process-gone`、`window-all-closed` / `will-quit` / 主窗口 `closed` 都经它落盘——这些是「窗口在但内容空白」「点了没反应」「自己退出了」的唯一事后证据 |
 | 自绘标题栏（`titlebarView` + 菜单视图 + `titlebar:*` / `titlebar-menu:*` IPC） | Electron | 无边框窗口下替代系统标题栏与菜单栏；菜单定义与原生菜单同源（`buildMenuSections`），无边框窗口下原生 accelerator 是否生效依平台而定，故另挂 `before-input-event` 兜底并按 id 去重 |
 | 窗口模式（`applyWindowMode` / `floatingWindowSize` / `chatViews.setConversationListOwner`） | Electron | 完整模式（侧栏 + 聊天视图）↔ 悬浮窗模式（隐藏侧栏、列表移到 webview 顶栏、可置顶）；两种模式尺寸独立落盘。布局开关与能力声明由 `setConversationListOwner` 一起更新，不再单独暴露侧栏开关 |
 

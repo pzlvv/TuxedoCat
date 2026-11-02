@@ -19,6 +19,7 @@ import * as path from 'path';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { guardViewNavigation } from './viewNavigation.js';
+import { diag } from './diagnostics.js';
 
 /** 侧栏默认宽度（无持久化记录 / 双击拖拽手柄恢复时使用） */
 export const SIDEBAR_DEFAULT_WIDTH = 280;
@@ -1041,26 +1042,65 @@ export class ChatViewManager {
     // 未被 JS 拦截的导航（修饰键点击 / 脚本导航 / 拖放）同样落到这里。
     guardViewNavigation(view.webContents, 'chat-view');
 
-    view.webContents.on('did-fail-load', (_e, code, desc) => {
-      console.error(`[chat-view] did-fail-load: ${code} ${desc}`);
+    view.webContents.on('did-fail-load', (_e, code, desc, failedUrl, isMainFrame) => {
+      // 只记主框架：子资源（图片 / 字体）失败不影响可用性，混进来会把真故障淹掉
+      if (!isMainFrame) return;
+      diag(
+        'error',
+        'chat-view',
+        `[chat-view] did-fail-load: ${code} ${desc} url=${failedUrl} session=${sessionId ?? '-'} workspace=${workspace ?? '-'}`,
+      );
     });
     view.webContents.on('console-message', (details) => {
       console.log(`[chat-view:${details.level}] ${details.message}`);
+      // webview 没有 error boundary：渲染期抛错会让整棵 React 树卸载，用户看到的是
+      // 空白界面（见 specs/defects/tool-card-missing-file-path-crash.md）。这类错误
+      // 只出现在渲染进程的控制台里，打包态完全不可见——所以 error 级别必须落盘。
+      // warn / info 不落：长对话里噪音太大，会把真故障淹掉。
+      if (details.level === 'error') {
+        diag(
+          'error',
+          'chat-view',
+          `[chat-view] renderer error: ${details.message}`
+            + ` (source=${details.sourceId || '-'} line=${details.lineNumber} session=${sessionId ?? '-'})`,
+        );
+      }
     });
 
     // 渲染进程崩溃/OOM：延迟重载，避免崩溃循环
     view.webContents.on('render-process-gone', (_e, details) => {
-      console.error(`[chat-view] render-process-gone: reason=${details.reason}, exitCode=${details.exitCode}`);
-      if (details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed') {
+      // 这条是「聊天区白屏 / 整页消失」的头号证据：日志里必须有 reason 与 exitCode，
+      // 否则事后只能看到主进程一切正常、页面却不再有任何消息进来。
+      // 分级：只有 crashed / oom / killed 是异常。正常退出（clean-exit）也走这个事件，
+      // 一律记 error 会让每次正常关窗都像崩溃，真故障反而被淹掉。
+      const abnormal = details.reason === 'crashed' || details.reason === 'oom' || details.reason === 'killed';
+      diag(
+        abnormal ? 'error' : 'info',
+        'chat-view',
+        `[chat-view] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`
+          + ` session=${sessionId ?? '-'} workspace=${workspace ?? '-'}`,
+      );
+      if (abnormal) {
         setTimeout(() => {
           // 视图可能在等待期间被销毁（删除 / 切工作区）：webContents.close() 后
           // WebContentsView.webContents 变为 undefined（类型标注已不反映运行时），
           // 崩溃重载对死视图无意义，直接跳过
           const wc = view.webContents as WebContents | undefined;
           if (!wc || wc.isDestroyed()) return;
-          if (wc.isCrashed()) wc.reload();
+          if (wc.isCrashed()) {
+            diag('info', 'chat-view', `[chat-view] reloading after crash: session=${sessionId ?? '-'}`);
+            wc.reload();
+          }
         }, 500);
       }
+    });
+    // 页面活着但不响应（长对话里一次巨大的 layout / commit 就可能触发）：
+    // 用户看到的是「点了没反应」，进程却还在——只有这两个事件能证明它发生过。
+    view.webContents.on('unresponsive', () => {
+      diag('warn', 'chat-view', `[chat-view] unresponsive: session=${sessionId ?? '-'} workspace=${workspace ?? '-'}`);
+    });
+    view.webContents.on('responsive', () => {
+      diag('info', 'chat-view', `[chat-view] responsive again: session=${sessionId ?? '-'}`);
     });
     // GPU 进程异常（合成表面丢失的常见原因）由 app 级 child-process-gone 统一处理
     // （见 main.ts），此处只处理渲染进程本身。
