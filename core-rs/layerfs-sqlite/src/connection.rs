@@ -53,6 +53,33 @@ impl Session {
         create: bool,
         selected: SqlitePersistenceProfile,
     ) -> Result<Self, BackendError> {
+        let (connection, profile) = Self::establish(&path, writable, create, selected)?;
+        Ok(Self {
+            admission: Admission::default(),
+            state: Mutex::new(State {
+                connection,
+                quarantined: false,
+                writer_hold: None,
+            }),
+            writable,
+            profile,
+            path,
+        })
+    }
+
+    /// 建立连接并应用 / 实测 profile。
+    ///
+    /// 调用方必须持有跨进程车道：打开留有热 WAL 的库时，SQLite 要在首条语句上做 WAL
+    /// 索引恢复（独占 `-shm`），而 `busy_timeout` 固定为 0——车道之外就会用精确 `Busy`
+    /// 拒绝后到者，违反「排队者不用 Busy 拒绝」。车道须包住 connect 与随后的
+    /// `validate` 两步**整体**：中间松开一次，别的进程的 WAL 恢复就会被本连接持有的
+    /// `-shm` 共享锁挡住（specs/defects/layerfs-open-busy-outside-writer-lane.md）。
+    fn establish(
+        path: &StorePath,
+        writable: bool,
+        create: bool,
+        selected: SqlitePersistenceProfile,
+    ) -> Result<(Connection, ConnectionProfile), BackendError> {
         let flags = if writable {
             OpenFlags::SQLITE_OPEN_READ_WRITE
         } else {
@@ -69,17 +96,7 @@ impl Session {
         profile::apply(&connection, create, selected)?;
         let profile = profile::read_back(&connection, selected)?;
         profile::check(&profile)?;
-        Ok(Self {
-            admission: Admission::default(),
-            state: Mutex::new(State {
-                connection,
-                quarantined: false,
-                writer_hold: None,
-            }),
-            writable,
-            profile,
-            path,
-        })
+        Ok((connection, profile))
     }
 
     /// 只读不可变行的读取：经准入与状态锁，不开显式事务——每条语句各自取隐式快照。

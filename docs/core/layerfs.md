@@ -187,16 +187,24 @@ WITHOUT ROWID，role 1–13、规范长度 1–16 MiB、组 / 记录序号边界
 （因此 `STRICT`、role 边界等 CHECK 文本都被核对）。更高或更低的 schema 版本一律拒绝，
 不迁移、不修改文件。
 
-**并发车道**（`admission.rs` + `writer_lock.rs` + `connection.rs`）：顺序是——
+**并发车道**（`admission.rs` + `writer_lock.rs` + `connection.rs` + `open.rs`）：顺序是——
 
 1. 进程内每会话 FIFO 准入（`Mutex` + `Condvar`）：排队无时限、无计数上限（每票一个
    阻塞线程）；出口只有 `Closed`（会话已 `close`）、`Unknown`（队列互斥量中毒）、
    `Integrity`（本线程重入自锁，拒绝而非挂死）。持有者 unwind 仍释放轮次。
-2. 写事务取 Store 父目录的独占 flock（仅 Linux；独立打开的目录 fd，绝不对主 / WAL /
+2. 连接建立与打开期校验（`open_writable` / `open_read_only`）取 Store 父目录的独占
+   flock，`connect` 与 `validate` 跑在同一个持有期内。打开留有热 WAL 的库时 SQLite 要
+   在首条语句上做 WAL 索引恢复（独占 `-shm`），车道之外就会用精确 `Busy` 拒绝后到者；
+   两步之间松开一次，另一个进程的恢复会被本连接持有的 `-shm` 共享锁挡住
+   （[缺陷 layerfs-open-busy-outside-writer-lane](../../specs/defects/layerfs-open-busy-outside-writer-lane.md)）。
+   车道在返回前释放，不跨 `Handles` 的生命周期。`Handles::create` 不取外层车道：刚用
+   `create_new` 建出的文件没有别的进程会恢复它的 WAL，而 `initialize` 的写事务本身要取
+   一次车道，外层再包一层会因同进程两个 fd 对同一 inode 互相阻塞而自锁。
+3. 写事务取 Store 父目录的独占 flock（仅 Linux；独立打开的目录 fd，绝不对主 / WAL /
    SHM 文件另开描述符——关闭主文件描述符会取消本进程在该 inode 的全部 POSIX 锁；
    同目录多个 Store 共享这条粗粒度车道；`EINTR` → `Cancelled`）。非 Linux 目标没有这层：
    跨进程写者冲突由 SQLite 自身文件锁以精确 `Busy` 上报（与上游 macOS 同款）。
-3. 单次 `BEGIN IMMEDIATE`：`SQLITE_BUSY` / `LOCKED` / `PROTOCOL` 映射为类型化 `Busy`，
+4. 单次 `BEGIN IMMEDIATE`：`SQLITE_BUSY` / `LOCKED` / `PROTOCOL` 映射为类型化 `Busy`，
    绝不重试、不重放。锁持有范围 = 单个原子事务（到已知 COMMIT 或明确 ROLLBACK）。
 
 只读不可变行（定位行、pack 行、计数行）的 `locate` / `read_packs` 不开显式事务：每条

@@ -53,6 +53,10 @@ impl Session {
     }
 
     /// 打开期校验：身份、表名单、定义文本逐字一致。
+    ///
+    /// 校验开的是读事务，但它持有 `-shm` 共享锁，会挡住另一进程在连接建立期的 WAL 索引
+    /// 恢复（恢复要独占 `-shm`）。调用方（`open.rs`）在 connect 到 validate 之间始终持有
+    /// 写者车道，两步之间不松开（specs/defects/layerfs-open-busy-outside-writer-lane.md）。
     pub(crate) fn validate(&self) -> Result<(), BackendError> {
         self.run(false, |connection| check(connection))
     }

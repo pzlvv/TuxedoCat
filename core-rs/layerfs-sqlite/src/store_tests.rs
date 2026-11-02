@@ -155,8 +155,34 @@ fn await_line(reader: &mut BufReader<std::process::ChildStdout>, prefix: &str) -
     }
 }
 
-fn child_config() -> PersistenceConfig {
-    let path = PathBuf::from(std::env::var(STORE).expect("store env"));
+/// 进入连接建立期用例的子进程角色：`open_writable` / `open_read_only`。
+fn spawn_open(role: &str, store: &std::path::Path) -> Child {
+    Command::new(std::env::current_exe().expect("current exe"))
+        .args(["--exact", "seal::tests::child_role", "--nocapture"])
+        .env(ROLE, role)
+        .env(STORE, store)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn open child")
+}
+
+/// 读到以 `opened` 或 `busy` 任一前缀开头的握手行。
+fn await_any(reader: &mut BufReader<std::process::ChildStdout>, opened: &str, busy: &str) -> String {
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line).expect("read child stdout");
+        assert!(read != 0, "child exited before '{opened}' / '{busy}'");
+        if line.starts_with(opened) || line.starts_with(busy) {
+            return line;
+        }
+    }
+}
+
+const OPENED: &str = "OPENED";
+const BUSY: &str = "BUSY ";
+
+fn child_config() -> PersistenceConfig {    let path = PathBuf::from(std::env::var(STORE).expect("store env"));
     PersistenceConfig::sqlite(
         StorePath::from_os(&path).expect("store path"),
         SqlitePersistenceProfile::Disposable,
@@ -239,6 +265,31 @@ fn child_role() {
             writeln!(stdout, "RELEASED").expect("write");
             stdout.flush().expect("flush");
         }
+        // 只占住父目录写者车道（不碰 SQLite）：用来观察打开期是否真的进了车道。
+        #[cfg(target_os = "linux")]
+        "hold_lane" => {
+            let path = PathBuf::from(std::env::var(STORE).expect("store env"));
+            let directory = path.parent().expect("parent").to_path_buf();
+            let file = std::fs::File::open(&directory).expect("open parent dir");
+            let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+                .map_err(|(_, error)| error)
+                .expect("flock parent dir");
+            writeln!(stdout, "HOLDING").expect("write");
+            stdout.flush().expect("flush");
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(lock);
+            writeln!(stdout, "RELEASED").expect("write");
+            stdout.flush().expect("flush");
+        }
+        // 只建立连接并立刻退出：并发打开期的结果就是本角色要报告的东西。
+        "open_writable" => match Handles::open_writable(child_config()) {
+            Ok(_) => writeln!(stdout, "OPENED").expect("write"),
+            Err(error) => writeln!(stdout, "BUSY {error}").expect("write"),
+        },
+        "open_read_only" => match Handles::open_read_only(child_config()) {
+            Ok(_) => writeln!(stdout, "OPENED").expect("write"),
+            Err(error) => writeln!(stdout, "BUSY {error}").expect("write"),
+        },
         other => panic!("unknown child role {other}"),
     }
 }
@@ -356,6 +407,104 @@ fn writer_in_another_process_queues_or_reports_busy() {
             elapsed < Duration::from_millis(1000),
             "must not wait: {elapsed:?}"
         );
+    }
+    await_line(&mut reader, "RELEASED");
+    assert!(child.wait().expect("wait").success());
+}
+
+// ---- 连接建立期的写者车道（缺陷 layerfs-open-busy-outside-writer-lane）------------
+
+/// 在一个已有热 WAL 的 Store 上并发打开 N 个写会话：Linux 下必须全部成功。
+///
+/// 打开期的 PRAGMA 序列要走 WAL 索引恢复（独占 `-shm`），不进写者车道时后到者会拿到
+/// 精确 `Busy`——这正是 PR 29 CI 的 `two_processes_write_concurrently` 被打红的路径。
+#[test]
+fn concurrent_open_writers_queue_instead_of_busy() {
+    const WIDTH: usize = 6;
+    const ROUNDS: usize = 20;
+    let temp = TempStore::new("open-multi");
+    let handles = temp.create();
+    // 先把 WAL 撑起来：留有需要恢复的 -wal 才复现得到打开期竞态。
+    store_chunks(&handles, &[b"warm the wal one", b"warm the wal two"]);
+    drop(handles);
+
+    let mut failures = Vec::new();
+    for round in 0..ROUNDS {
+        let children: Vec<Child> = (0..WIDTH)
+            .map(|_| spawn_open("open_writable", &temp.file()))
+            .collect();
+        for mut child in children {
+            let mut reader = BufReader::new(child.stdout.take().expect("stdout"));
+            let line = await_any(&mut reader, OPENED, BUSY);
+            let status = child.wait().expect("wait");
+            assert!(status.success(), "child {status:?}");
+            if !line.trim_end().starts_with("OPENED") {
+                failures.push(format!("round {round}: {}", line.trim_end()));
+            }
+        }
+    }
+    if cfg!(target_os = "linux") {
+        assert!(
+            failures.is_empty(),
+            "concurrent open must queue, not Busy: {failures:#?}"
+        );
+    } else {
+        // 非 Linux 没有跨进程写车道：Busy 是文档化行为（FR-008），只要不是别的错误。
+        assert!(
+            failures.iter().all(|line| line.contains("BUSY ")),
+            "unexpected open failure: {failures:#?}"
+        );
+    }
+}
+
+/// 只读会话的连接建立同样进车道：读者不该被别人的 WAL 恢复撞成 `Busy`。
+#[test]
+fn concurrent_open_readers_queue_instead_of_busy() {
+    let temp = TempStore::new("open-readers");
+    let handles = temp.create();
+    store_chunks(&handles, &[b"reader payload"]);
+    drop(handles);
+
+    let children: Vec<Child> = (0..5)
+        .map(|_| spawn_open("open_read_only", &temp.file()))
+        .collect();
+    let mut failures = Vec::new();
+    for mut child in children {
+        let mut reader = BufReader::new(child.stdout.take().expect("stdout"));
+        let line = await_any(&mut reader, OPENED, BUSY);
+        child.wait().expect("wait");
+        if !line.trim_end().starts_with("OPENED") {
+            failures.push(line.trim_end().to_owned());
+        }
+    }
+    if cfg!(target_os = "linux") {
+        assert!(
+            failures.is_empty(),
+            "concurrent read-only open must queue, not Busy: {failures:#?}"
+        );
+    }
+}
+
+/// 另一进程持着写者车道时，`open_writable` 排队等待到释放之后才成功。
+#[test]
+fn open_writable_waits_for_writer_lane_in_another_process() {
+    let temp = TempStore::new("open-lane");
+    let handles = temp.create();
+    drop(handles);
+    let mut child = spawn_child("hold_lane", &temp.file(), "");
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout"));
+    await_line(&mut reader, "HOLDING");
+    let started = Instant::now();
+    let result = Handles::open_writable(temp.config());
+    let elapsed = started.elapsed();
+    if cfg!(target_os = "linux") {
+        result.expect("open queues until the lane is released");
+        assert!(
+            elapsed >= Duration::from_millis(1000),
+            "open did not wait for the lane: {elapsed:?}"
+        );
+    } else {
+        result.expect("non-Linux has no cross-process lane: open succeeds");
     }
     await_line(&mut reader, "RELEASED");
     assert!(child.wait().expect("wait").success());
