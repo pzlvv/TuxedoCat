@@ -4977,6 +4977,28 @@ fn run_query_loop(
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
+                        let raw_input = tool_use.get("input").cloned().unwrap_or(json!({}));
+                        // 中断发生在授权之前，这条工具从没走过权限请求——卡片也就
+                        // 从没上架过。只补 `toolResult` 会让 UI 收到一条找不到卡片的
+                        // 状态更新（进缓冲后被丢弃），卡片直到下次重放（压缩 / 重开
+                        // 对话）才出现，看起来就是「中断后压缩，压缩完工具调用又冒
+                        // 出来」（specs/defects/aborted-tool-card-appears-only-after-compaction）。
+                        // 因此这里先按「工具不存在」同款形态发一次
+                        // `toolPermissionRequested`（`permResult` 恒 allow，只为上架
+                        // 卡片），`displayArgs` 与正常授权路径同一份展开实现——重放
+                        // 路径产出的卡片形状因此与实时路径一致。
+                        core.request_tool_permission(
+                            session_id,
+                            &tool_use_id,
+                            &tool_name,
+                            &json!({ "behavior": "allow" }),
+                            &permission::display_args_for_unknown(
+                                &tool_name,
+                                &raw_input,
+                                project,
+                            ),
+                            agent_mode,
+                        );
                         core.emit(json!({
                             "type": "toolResult",
                             "sessionId": session_id,
