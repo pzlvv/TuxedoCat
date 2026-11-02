@@ -10,7 +10,7 @@ SQLite 持久化适配器。对照基线是上游 [Ephemeral-AI-Lab/layerfs](htt
 v1.1.0（commit `9f97a7ec95b662e9cb288704afa165feff132cfa`）；文件语义（映射树 / 文件系统）、
 Branch / Commit / 物理编码（zstd / PREFIX / pack 分组）与宿主接线由系列后续 spec 承接。
 本篇只描述已落地的 043 形态（改动规格见
-[docs/archive/specs/043-layerfs-store](../../specs/043-layerfs-store/spec.md)，收敛后归档）。
+[docs/archive/specs/043-layerfs-store](../archive/specs/043-layerfs-store/spec.md)，已归档）。
 
 ## 1. 范围、crate 布局与上游对齐
 
