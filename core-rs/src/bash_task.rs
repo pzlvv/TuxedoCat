@@ -406,7 +406,8 @@ pub fn read_output_tail(task_id: &str, max_chars: usize) -> String {
     let mut buffer = vec![0u8; byte_count];
     let read = file.read(&mut buffer).unwrap_or(0);
     buffer.truncate(read);
-    String::from_utf8_lossy(&buffer).into_owned()
+    // 码页解码（`text_decode`）：`from_utf8_lossy` 会把 GBK 输出变成一片 U+FFFD
+    crate::text_decode::decode_bytes(&buffer)
 }
 
 /// 构造后台任务的提醒文案（纯文本，纯函数）。
@@ -592,8 +593,12 @@ fn handle_finish(task_id: &str, exit_code: i32, hooks: &Option<Hooks>) {
     };
     // 完成事件（前台命令据此决定是否自动转后台）
     emit_task_completed(&finished);
-    // file mode 的 stdout 就是输出文件内容（对齐 `TaskOutput.getStdout`）
-    let stdout = std::fs::read_to_string(task_output_path(task_id)).unwrap_or_default();
+    // file mode 的 stdout 就是输出文件内容（对齐 `TaskOutput.getStdout`）。
+    // 读**字节**再解码：`read_to_string` 是严格 UTF-8，Windows 上 cmd / 老工具按控制台
+    // 代码页（简体中文 936 = GBK）写出时整份读失败、完成通知里的输出预览直接变空。
+    let stdout = std::fs::read(task_output_path(task_id))
+        .map(|bytes| crate::text_decode::decode_bytes(&bytes))
+        .unwrap_or_default();
     let notification = build_completion_notification(&finished, &stdout);
     if let Some(hooks) = hooks {
         (hooks.notify)(&finished.session_id, &notification);

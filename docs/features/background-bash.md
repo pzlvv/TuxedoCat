@@ -186,6 +186,23 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
   两类提醒的投递点（周期提醒入口 `deliver_background_reminder`，以及兜底提醒本身），
   消费循环收尾取走；取消分支额外清一次（reminder 已被丢弃）。
 
+### 3.3 输出解码
+
+子进程输出按**字节**收集，交给模型与 UI 前经 `core-rs/src/text_decode.rs` 解码：
+
+| 环节 | 落点 |
+| --- | --- |
+| 判定顺序 | `text_decode::decode_bytes`：显式 BOM（UTF-8 / UTF-16 LE / BE）→ 严格 UTF-8 → GBK 系（`encoding_rs` 的 GBK 解码器即 GB18030 超集，同时覆盖 GBK / GB2312）→ 宽松 UTF-8 |
+| 前台管道 | `tools.rs` 的 `read_pipe` 用 `OutputDecoder` 逐块解码：`read` 的 8 KiB 边界劈开的多字节字符留到下一块，只有流结束才按整条流判定码页 |
+| 前台结果 | `tools.rs` 的 `run_bash` 对 stdout / stderr 的完整字节调 `decode_bytes` |
+| 后台任务完成通知 | `bash_task.rs` 的 `handle_finish` 读字节后解码（严格 `read_to_string` 会让 GBK 输出整份读失败、预览变空） |
+| 后台提醒预览 | `bash_task.rs` 的 `read_output_tail` 同上 |
+| 转后台落盘 | `PipeSink.raw` 保留原始字节，转入后台时写输出文件——解码只发生在提交给模型 / UI 那一侧 |
+
+为什么按内容判定而不是按平台猜码页：输出可能来自 Git Bash（UTF-8）、`chcp 65001`
+（UTF-8）或 cmd / 老工具（控制台代码页），同一台机器上两种都有；而合法 UTF-8 的字节流
+几乎不可能同时是合法 GBK，因此「先试 UTF-8、再试 GBK」是可靠的判别，不需要按字节猜窄码表。
+
 ## 4. 边界与错误路径
 
 - **注册表未命中**：按钮与实际状态竞态 → 幂等忽略，调用方不补兜底（AC-2）。
@@ -196,6 +213,9 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 - **同一 tick 多任务到点**：追加不覆盖（AC-10）。
 - **detach 豁免的进程**：`detach: true` 的命令进程不属于后台任务事实（无注册、无
   完成通知、abort 不杀）——见 [bash-detach.md](bash-detach.md)。
+- **两种解码都不干净**（混合编码 / 被截断的流）：回到宽松 UTF-8，至少不丢可读部分。
+- **BOM 声明的编码与内容不符**：按宽松 UTF-8 收尾，不抛错——输出只能尽力而为，失败不
+  值得让工具报错。
 
 ## 5. 非目标
 
@@ -214,3 +234,4 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 | FR-002 | `core-rs/src/engine.rs` 的 `run_query_loop` | `core-rs/src/engine_tests.rs` 的 `manual_background_pauses_the_loop_until_a_queued_message_arrives`；e2e `e2e/electron/backgroundBash.spec.ts` | 自动 |
 | FR-003 | `core-rs/src/engine.rs` 的 `background_reminder`（门槛与刷新，`core-rs/src/bash_task.rs` 的 `qualifies_fallback_reminder`） | `core-rs/src/engine_tests.rs` 的 `fallback_reminder_gate`；`core-rs/src/tools_tests.rs` 的 `contains_sleep_command_splits_on_separators` | 自动 |
 | FR-004 | `core-rs/src/engine.rs` 的 `tick_background_reminders`（纯函数 `core-rs/src/bash_task.rs` 的 `advance_reminder_clock` / `build_background_reminder_text`） | `core-rs/src/bash_task_tests.rs` 的 `background_reminder_parity`；事件序列对照表 `core-rs/fixtures/eventTypes.json` | 自动 |
+| 输出解码（第 3.3 节） | `core-rs/src/text_decode.rs`；`core-rs/src/tools.rs` 的 `read_pipe` / `run_bash`；`core-rs/src/bash_task.rs` 的 `handle_finish` / `read_output_tail` | `core-rs/src/text_decode_tests.rs`（码页判定与增量不劈字）；`core-rs/src/tools_tests.rs` 的 `bash_decodes_gbk_output_to_readable_chinese` / `bash_decodes_utf8_output_unchanged` / `bash_does_not_split_multibyte_chars_across_pipe_chunks` | 自动 |

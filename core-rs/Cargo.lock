@@ -1365,6 +1365,7 @@ name = "standalone-core"
 version = "0.0.1"
 dependencies = [
  "calamine",
+ "encoding_rs",
  "mimalloc",
  "notify",
  "reqwest",

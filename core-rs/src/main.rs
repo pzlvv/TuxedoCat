@@ -54,6 +54,7 @@ mod web_search;
 mod spin;
 mod spin_host;
 mod subagent;
+mod text_decode;
 mod tool_input;
 mod tools;
 mod util;

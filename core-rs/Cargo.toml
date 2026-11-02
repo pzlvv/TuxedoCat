@@ -36,6 +36,10 @@ ryu-js = "1"
 # keepalive 参数配置尚未稳定（`tcp_keepalive` feature），用 socket2 设置。
 socket2 = "0.6"
 notify = "8.2.0"
+# 子进程输出 / 文件内容的码页解码（`text_decode.rs`）：Windows 上 cmd.exe 与老工具按
+# 控制台代码页输出（简体中文 936 = GBK），直接按 UTF-8 解会整片乱码。GBK 解码器即
+# GB18030 的超集实现，GBK / GB2312 一并覆盖，因此不需要再引窄码表。
+encoding_rs = "0.8"
 
 # Linux 发布产物（musl 静态）的全局分配器换成 mimalloc，替掉 musl 自带的 mallocng
 # （docs/core/standalone-core.md 第 3.3 节）。只在 musl 目标上挂：ASAN 变体走 gnu

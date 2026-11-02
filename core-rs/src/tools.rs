@@ -1646,8 +1646,8 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             .map(|handle| handle.join().unwrap_or_default())
             .unwrap_or_default();
         (
-            String::from_utf8_lossy(&stdout).to_string(),
-            String::from_utf8_lossy(&stderr).to_string(),
+            crate::text_decode::decode_bytes(&stdout),
+            crate::text_decode::decode_bytes(&stderr),
         )
     };
 
@@ -1701,6 +1701,10 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 #[derive(Default)]
 struct PipeSink {
     full: String,
+    /// 已累积输出的**原始字节**（与 `full` 同序）。转入后台时用它写输出文件：
+    /// `full` 是解码后的文本，按 UTF-8 写回会把 GBK 等非 UTF-8 的字节永久改形
+    /// （`docs/features/background-bash.md` 第 4 节）。
+    raw: Vec<u8>,
     file: Option<std::fs::File>,
 }
 
@@ -1765,10 +1769,11 @@ fn auto_background_command(
         }
     };
 
-    // 已累积输出先落文件，再原子地挂上文件句柄
+    // 已累积输出先落文件，再原子地挂上文件句柄（写**原始字节**：解码只发生在提交给
+    // 模型 / UI 的那一侧，落盘保留进程实际吐出的内容）
     let (stdout, pid) = {
         let mut sink = sink.lock().unwrap();
-        let _ = file.write_all(sink.full.as_bytes());
+        let _ = file.write_all(&sink.raw);
         let _ = file.flush();
         sink.file = Some(file);
         (sink.full.clone(), child.id())
@@ -1929,6 +1934,11 @@ fn read_pipe(
 
     let mut collected: Vec<u8> = Vec::new();
     let mut buffer = [0u8; 8192];
+    // 逐块解码，跨块不劈字（`docs/features/background-bash.md` 第 4 节）：`read` 的
+    // 8 KiB 边界会把多字节字符切成两半，逐块 `from_utf8_lossy` 会让一个汉字变成
+    // 两个 U+FFFD。解码器把不完整的尾巴留到下一块，并在收尾时按整条流判定码页
+    // （Windows 上 cmd.exe / 老工具按控制台代码页输出，简体中文是 GBK）。
+    let mut decoder = crate::text_decode::OutputDecoder::new();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -1937,11 +1947,12 @@ fn read_pipe(
             Ok(0) | Err(_) => break,
             Ok(size) => {
                 collected.extend_from_slice(&buffer[..size]);
-                let chunk = String::from_utf8_lossy(&buffer[..size]).to_string();
+                let chunk = decoder.push(&buffer[..size]);
                 let snapshot = {
                     let mut full = full.lock().unwrap();
                     full.full.push_str(&chunk);
-                    // 已转入后台：原始字节追加到输出文件（不经过 lossy 解码，
+                    full.raw.extend_from_slice(&buffer[..size]);
+                    // 已转入后台：原始字节追加到输出文件（不经过解码，
                     // 等价于直接写 `data` Buffer）
                     if let Some(file) = full.file.as_mut() {
                         let _ = file.write_all(&buffer[..size]);
@@ -1983,6 +1994,8 @@ fn read_pipe(
             }
         }
     }
+    // 收尾：按整条流判定码页解完（尾巴上被切开的字符在这里补齐）
+    let _ = decoder.finish(&collected);
     collected
 }
 
