@@ -85,7 +85,7 @@
     "build:core:linux-x64": "node scripts/build-core.mjs --target x86_64-unknown-linux-musl",
     "build:core:linux-arm64": "node scripts/build-core.mjs --target aarch64-unknown-linux-musl",
     "build:core:win32-arm64": "node scripts/build-core.mjs --target aarch64-pc-windows-msvc",
-    "test:core": "cargo test --manifest-path core-rs/Cargo.toml",
+    "test:core": "cd core-rs && cargo test --workspace",
     "docs:freshness": "node scripts/docs-freshness.mjs",
     "coverage:core": "node scripts/coverage-core.mjs",
     "coverage:core:html": "node scripts/coverage-core.mjs --html",

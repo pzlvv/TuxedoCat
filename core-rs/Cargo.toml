@@ -7,6 +7,11 @@ license = "Apache-2.0"
 # 构建脚本把 build-core.mjs 的构建指纹烧进编译期环境（docs/standalone-core.md 第 4.4 节）
 build = "build.rs"
 
+# LayerFS 内核库两个 lib crate 与 Core 同 workspace（docs/core/layerfs.md 第 1 节）：
+# `layerfs` 纯算法无 I/O，`layerfs-sqlite` 是唯一触碰文件的持久化适配器。
+[workspace]
+members = ["layerfs", "layerfs-sqlite"]
+
 # 包名与二进制名保持中性的 `standalone-core`：对外可执行文件名由
 # `src/config/project.json` 的 `core.binaryName` 决定，构建脚本按它落位，
 # 产品名不出现在 Rust 侧。
@@ -36,6 +41,10 @@ ryu-js = "1"
 # keepalive 参数配置尚未稳定（`tcp_keepalive` feature），用 socket2 设置。
 socket2 = "0.6"
 notify = "8.2.0"
+# LayerFS 持久化适配器（传递编译 `layerfs`）：Core 本期不引用其符号，挂依赖是为了
+# 让四个发布目标在构建期验证 bundled SQLite 的 musl（zig cc）/ MSVC 可编译性
+# （docs/core/layerfs.md 第 1 节）；release 的 LTO 剔除未引用代码。
+layerfs-sqlite = { path = "layerfs-sqlite" }
 
 # Linux 发布产物（musl 静态）的全局分配器换成 mimalloc，替掉 musl 自带的 mallocng
 # （docs/core/standalone-core.md 第 3.3 节）。只在 musl 目标上挂：ASAN 变体走 gnu

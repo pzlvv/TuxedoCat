@@ -75,6 +75,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/core/core-remote.md` | Core 远程服务：`start` / `kill`、状态文件、远端目录选择与 SSH 接入 |
 | `docs/core/client-connection.md` | 连接模型：宿主级 `Client` 与每工作区 `Connection` |
 | `docs/core/session-runtime.md` | 会话运行时状态：Core 为唯一 owner，`sessionRuntimeChanged` 全量推送 |
+| `docs/core/layerfs.md` | LayerFS 内核库：对象身份 / 封装 / 冻结 CDC、`Save` / `Reader` 端口面、SQLite 适配器的 profile / schema / 并发车道 / seal |
 
 ### 宿主与 UI（docs/hosts/）
 

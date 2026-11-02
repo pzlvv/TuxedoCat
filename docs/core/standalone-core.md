@@ -12,8 +12,6 @@ last_reviewed: 2026-10-20
 宿主侧读取边界、不覆盖范围与验收要点见 `docs/core/standalone-core-boundaries.md`。
 事件词汇表见 [docs/architecture/events.md 第 1 节](../architecture/events.md#1-总线契约)、[第 2 节](../architecture/events.md#2-事件词汇表)。
 
----
-
 ## 目录
 
 | 节 | 标题 |
@@ -25,8 +23,6 @@ last_reviewed: 2026-10-20
 | 5. | [传输与协议](#5-传输与协议) |
 | 6. | [生命周期](#6-生命周期) |
 | 7. | [事实归属](#7-事实归属) |
-
----
 
 ## 1. 能力
 
@@ -66,9 +62,8 @@ Core 进程承载的 core 侧业务：
   在远端执行，宿主那台机器睡不睡与它无关，因此这一份必须在 Core 进程里；Electron 宿主另有
   一份同口径的实现（[docs/hosts/host-matrix.md 第 6 节](../hosts/host-matrix.md#6-宿主固有差异有意保留)）；
 - 全局配置与 MCP 配置的读写**不在** Core 侧：两者由 UI 持有，经 `hostEnvironmentProvided` 的配置快照下发（[docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)）；
+- LayerFS 内核库（`core-rs/layerfs/`、`core-rs/layerfs-sqlite/`，与 Core 同 workspace 的 lib crate）：不可变内容对象的身份 / 封装 / 分块、`Save` / `Reader` 端口面与 SQLite 持久化适配器（[docs/core/layerfs.md](layerfs.md)）；Core 本期挂依赖但不引用其符号，接线由后续 spec 承接；
 尚未覆盖的能力见 [docs/core/standalone-core-boundaries.md 第 4 节](standalone-core-boundaries.md#4-不覆盖范围)的「不覆盖范围」。
-
----
 
 ## 2. 术语与事实来源
 
@@ -91,8 +86,6 @@ Core 进程承载的 core 侧业务：
 不出现产品名。
 
 事件词汇表的 owner 见 [docs/architecture/core-ui-separation.md 第 2 节](../architecture/core-ui-separation.md#2-术语与事实来源)。
-
----
 
 ## 3. Core 形态
 
@@ -285,7 +278,8 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
    - Linux gnu（ASAN 变体）：没有自包含的 crt / libc，链接交给 zig 的 cc 驱动（见下）；
    - Windows arm64：MSVC 目标的链接器由 rustc 经 Visual Studio 定位，需要装好 VS 的
      「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
-2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）与 mimalloc（Linux musl 产物的分配器）
+2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）、mimalloc（Linux musl 产物的分配器）与
+   bundled SQLite（`layerfs-sqlite` 的 `rusqlite` 依赖，[docs/core/layerfs.md 第 5 节](layerfs.md#5-适配器profileschema并发车道与-seal)）
    都有 C 源码，cc-rs 需要一个能产出该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：
    它自带 clang 与头文件 / libc，一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处
    用环境变量 `ZIG` 指定）；构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默
@@ -294,6 +288,9 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
      打包用 `zig ar`；gnu 的链接也经 `zig cc`（`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；
    - Windows arm64：ring 的 build.rs 对该目标**硬性要求 clang**（MSVC 的 cl.exe 不被
      接受），由 zig cc 充当；静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
+     `core-rs/.cargo/config.toml` 的 `[env]` 对该三元组固化同一份 `CC_aarch64_pc_windows_msvc` /
+     `CFLAGS_aarch64_pc_windows_msvc` 注入，让不经构建脚本的 `cargo test` 在 Windows arm64
+     宿主上同样可编译；构建脚本注入的同名变量优先。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：
 产物缺失、比 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。
@@ -337,8 +334,6 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
   并拉起。Electron / vsix 打包把 `fingerprint` 文件与产物一起携带，宿主运行时经
   `readCoreFingerprint` 读取（缺失 / 格式非法抛错，不猜）。
 
----
-
 ## 4. 契约
 
 - Core 实现 core 侧：发 `CoreEvent` 与 `CoreRequest`，收 `UiEvent`，
@@ -379,8 +374,6 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
     不让对端挂起。
 - 协议版本在握手中校验；不匹配时 Core 拒绝服务并退出，UI 报错。
 - 事件类型未知视为契约漂移：该帧被丢弃并记录，连接保持。
-
----
 
 ## 5. 传输与协议
 
@@ -438,8 +431,6 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 - 出站队列越过软水位时记录诊断；不因此丢弃帧。
 - 读取方逐行读取，不阻塞同进程的其它工作。
 
----
-
 ## 6. 生命周期
 
 | 阶段 | 行为 |
@@ -472,8 +463,6 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 - 就绪前发出的其它 `UiEvent` 在 Client 侧排队，握手后按原顺序发出。
 - 重放由总线适配器承担，业务代码不感知重连。
 
----
-
 ## 7. 事实归属
 
 Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-separation.md 第 4 节](../architecture/core-ui-separation.md#4-配置归-ui)、[第 5 节](../architecture/core-ui-separation.md#5-core-的部署形态)一致。
@@ -486,6 +475,7 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 项目清单 `<conversations>/<project>/workspace.meta.json` | Core | 在 Core 数据目录内，读与写都在 Core |
 | 会话数据（元数据 / 消息 / 归档） | Core | 落盘格式（meta.json / JSONL），宿主侧 `src/shared/history/` 是同一格式的 TS 读写库 |
 | 会话独占锁 `<conversations>/<project>/<sessionId>.session.lock` | Core | OS 建议性文件锁（`core-rs/src/session_lock.rs`）；宿主侧不读写。文件内容（版本 / pid / 启动时刻）只作诊断与版本拒外（specs/032） |
+| LayerFS Store 文件（单个自包含 SQLite 文件） | Core（库内） | 对象数据的唯一写入点是 `layerfs-sqlite` 的发布事务；宿主侧不读写、`src/shared/history/` 没有对应读写库（[docs/core/layerfs.md 第 5 节](layerfs.md#5-适配器profileschema并发车道与-seal)） |
 | Spin 设计 `<conversations>/<project>/spin.json` | Core | 读与写都经 `UiRequest.spinDesignRequested` / `spinDesignSaveRequested`；宿主不直接读盘 |
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
