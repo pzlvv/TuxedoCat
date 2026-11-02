@@ -155,6 +155,18 @@ test('US-4 展开的 thinking 内容限高并在框内滚动', async () => {
   expect(metrics.scrollbarWidth).toBe('auto');
   expect(metrics.scrollbarWidthPx).toBe('3px');
   expect(metrics.thumbBg).toMatch(/^rgba?\(128, 128, 128/);
+
+  // 展开落点在内容开头（思考过程从头读才有意义），不跟随末尾
+  await expect.poll(async () => content.evaluate((el) => el.scrollTop)).toBe(0);
+
+  // 用户调过位置后收起再展开：保留那一次的位置（不持久化，只在本视图存活期间生效）
+  await content.evaluate((el) => { el.scrollTop = 120; });
+  await expect.poll(async () => content.evaluate((el) => el.scrollTop)).toBe(120);
+  await summary.click();
+  await expect(content).toBeHidden();
+  await summary.click();
+  await expect(content).toBeVisible();
+  await expect.poll(async () => content.evaluate((el) => el.scrollTop)).toBe(120);
 });
 
 test('US-4 thinking 流结束后内容是种子全文（specs/defects/fakehost-thinking-accumulated-chunk-only RT-2）', async () => {

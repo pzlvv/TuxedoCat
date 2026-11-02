@@ -3599,6 +3599,47 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
     assert_eq!(results[0]["status"], "error");
     assert_eq!(results[0]["output"], "Command was interrupted");
 
+    // 卡片必须当场就上架：工具卡片由 `toolPermissionRequested` 建立（宿主
+    // `ToolHandler.requestToolPermission` 的 `addMessage`），中断发生在授权之前时
+    // 这条请求从没发出过——只补 `toolResult` 会让 UI 只收到一个找不到卡片的
+    // 状态更新（缓冲后丢弃），卡片直到下次重放（压缩 / 重开对话）才出现，
+    // 看起来就是「中断后压缩，压缩完工具调用又冒出来」
+    // （specs/defects/aborted-tool-card-appears-only-after-compaction）。
+    let permissions = harness.sink.requests_of("toolPermissionRequested");
+    assert_eq!(permissions.len(), 1, "中断也必须上架工具卡片: got {permissions:?}");
+    assert_eq!(permissions[0]["toolUseId"], "call_1");
+    assert_eq!(permissions[0]["toolName"], "Bash");
+    assert_eq!(
+        permissions[0]["displayArgs"]["command"], "touch should-not-run",
+        "卡片要带展开后的入参，重放路径（`build_replay_message_data`）才能给出同样的卡片"
+    );
+    assert_eq!(permissions[0]["permResult"]["behavior"], "allow");
+    // 请求必须先于结果：宿主按 toolCallId 找卡片，顺序颠倒同样落不上
+    // （帧序，`toolPermissionRequested` 是 request 帧、`toolResult` 是 event 帧）
+    let kinds: Vec<String> = harness
+        .sink
+        .frames()
+        .iter()
+        .map(|frame| {
+            frame
+                .get("event")
+                .and_then(|event| event.get("type"))
+                .or_else(|| frame.get("request").and_then(|request| request.get("type")))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    let permission_at = kinds
+        .iter()
+        .position(|kind| kind == "toolPermissionRequested")
+        .expect("toolPermissionRequested");
+    let result_at = kinds
+        .iter()
+        .position(|kind| kind == "toolResult")
+        .expect("toolResult");
+    assert!(permission_at < result_at, "帧序: {kinds:?}");
+
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     let messages = history::load_messages("s1", &workspace);
     let blocks = messages

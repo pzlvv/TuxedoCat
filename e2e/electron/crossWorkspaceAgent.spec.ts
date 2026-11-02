@@ -284,3 +284,145 @@ test('US-56 会话设置全量继承与 creator 落盘（specs/025 FR-002 / FR-0
   expect(meta.model).toBe('mock-model');
   expect(meta.provider).toBe('mock');
 });
+
+test('US-56 dst 侧跨工作区对话打开后切标签页再切回，选中不丢（specs/defects/cross-workspace-dst-selection-lost-on-tab-switch RT-1）', async () => {
+  const repoRoot = process.cwd().replace(/[\/]e2e$/, '');
+  app = await launchApp({
+    repoRoot,
+    mockLlm,
+    workspaceDir: workspaceA,
+    openWorkspaces: [workspaceA, workspaceB],
+    activeWorkspace: workspaceA,
+    agentMode: 'auto',
+  });
+
+  mockLlm.setHandler((req): ScriptDecision => {
+    const text = lastUserText(req.body.messages);
+    if (text === '在 B 里做点事') {
+      if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+        return { kind: 'text', text: 'B 里做完了。' };
+      }
+      return { kind: 'tool', name: 'Reply', args: { message: 'B 里做完了。' } };
+    }
+    if (JSON.stringify(req.body.messages).includes('派给另一个工作区')) {
+      if (JSON.stringify(req.body.messages).includes('Sub-agent created with ID')) {
+        return { kind: 'text', text: '已经派给 B。' };
+      }
+      return {
+        kind: 'tool',
+        name: 'Agent',
+        args: {
+          prompt: '在 B 里做点事',
+          agentRole: 'Master',
+          description: '跨工作区任务',
+          target: agentId(workspaceB),
+        },
+      };
+    }
+    return { kind: 'text', text: `收到：${text.slice(0, 40)}` };
+  });
+
+  const titlebar = await app.titlebarPage();
+  const tabs = titlebar.locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+  const chatA = await app.chatPage();
+  await chatA.fill('textarea.input-textarea', '派给另一个工作区');
+  await chatA.press('textarea.input-textarea', 'Enter');
+
+  // 切到 B，打开 dst 侧跨工作区对话
+  await tabs.nth(1).click();
+  const sidebarB = await app.sidebarPage();
+  const row = sidebarB.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区任务' });
+  await expect(row).toHaveCount(1, { timeout: 30_000 });
+  const dstSid = await row.getAttribute('data-session-id');
+  expect(dstSid).toBeTruthy();
+  await row.click();
+  const chatB = await app.chatPage({ sessionIncludes: dstSid ?? '' });
+  await expect(chatB.getByText('在 B 里做点事')).toBeVisible({ timeout: 20_000 });
+  await expect(row).toHaveClass(/active/);
+
+  // 切到 A 再切回 B：仍停在这条 dst 对话上（消息还在，行仍是选中态）
+  await tabs.nth(0).click();
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await tabs.nth(1).click();
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+
+  const backRow = sidebarB.locator(`${SIDEBAR_ITEM}[data-session-id="${dstSid}"]`);
+  await expect(backRow).toHaveClass(/active/, { timeout: 15_000 });
+  await expect(chatB.getByText('在 B 里做点事')).toBeVisible({ timeout: 15_000 });
+  expect(await chatB.evaluate(() => ((window as any).__currentSessionId as string | null) ?? null))
+    .toBe(dstSid);
+});
+
+test('US-56 从发起方 Agent 卡片跳转到 dst 对话后切标签页再切回，仍停在 dst 对话（specs/defects/cross-workspace-dst-selection-lost-on-tab-switch RT-2）', async () => {
+  const repoRoot = process.cwd().replace(/[\/]e2e$/, '');
+  app = await launchApp({
+    repoRoot,
+    mockLlm,
+    workspaceDir: workspaceA,
+    openWorkspaces: [workspaceA, workspaceB],
+    activeWorkspace: workspaceA,
+    agentMode: 'auto',
+  });
+
+  mockLlm.setHandler((req): ScriptDecision => {
+    const text = lastUserText(req.body.messages);
+    if (text === '在 B 里做点事') {
+      if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+        return { kind: 'text', text: 'B 里做完了。' };
+      }
+      return { kind: 'tool', name: 'Reply', args: { message: 'B 里做完了。' } };
+    }
+    if (JSON.stringify(req.body.messages).includes('派给另一个工作区')) {
+      if (JSON.stringify(req.body.messages).includes('Sub-agent created with ID')) {
+        return { kind: 'text', text: '已经派给 B。' };
+      }
+      return {
+        kind: 'tool',
+        name: 'Agent',
+        args: {
+          prompt: '在 B 里做点事',
+          agentRole: 'Master',
+          description: '跨工作区任务',
+          target: agentId(workspaceB),
+        },
+      };
+    }
+    return { kind: 'text', text: `收到：${text.slice(0, 40)}` };
+  });
+
+  const titlebar = await app.titlebarPage();
+  const tabs = titlebar.locator('#workspaceTabs [role="tab"]');
+  await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+  const chatA = await app.chatPage();
+  await chatA.fill('textarea.input-textarea', '派给另一个工作区');
+  await chatA.press('textarea.input-textarea', 'Enter');
+
+  // Agent 卡片上的会话链接：点它跳到目标工作区的 dst 对话
+  const link = chatA.locator('[title="点击跳转到子代理对话"]');
+  await expect(link).toBeVisible({ timeout: 30_000 });
+  await link.click();
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+  // dst 会话 id 从侧栏行取（B 已是活动标签页）：按 id 选页，避开预加载的空白新对话视图
+  const sidebarB2 = await app.sidebarPage();
+  const dstRow = sidebarB2.locator(SIDEBAR_ITEM).filter({ hasText: '跨工作区任务' });
+  await expect(dstRow).toHaveCount(1, { timeout: 30_000 });
+  const dstSid = await dstRow.getAttribute('data-session-id');
+  expect(dstSid).toBeTruthy();
+  const chatJump = await app.chatPage({ sessionIncludes: dstSid ?? '' });
+  await expect(chatJump.getByText('在 B 里做点事')).toBeVisible({ timeout: 20_000 });
+  expect(await chatJump.evaluate(() => ((window as any).__currentSessionId as string | null) ?? null)).toBe(dstSid);
+
+  // 切回 A 再切回 B：仍停在 dst 对话，而不是别的对话 / 一个新的空对话。
+  // 判据取侧栏的选中行（`onActiveSessionChanged` 的投影，即用户看到的「当前对话」）：
+  // 后台预热视图与已打开视图都还活着，页面 URL / __currentSessionId 分不出前台是谁。
+  await tabs.nth(0).click();
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await tabs.nth(1).click();
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+  const backRow = sidebarB2.locator(`${SIDEBAR_ITEM}[data-session-id="${dstSid}"]`);
+  await expect(backRow).toHaveClass(/active/, { timeout: 15_000 });
+  await expect(sidebarB2.locator(`${SIDEBAR_ITEM}.active`)).toHaveCount(1);
+});

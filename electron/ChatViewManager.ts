@@ -205,6 +205,18 @@ export class ChatViewManager {
   private readonly viewWorkspaces = new Map<string, string>();
   /** 工作区 id → 展示 / 注入用路径（登记于 setActiveWorkspace / 预热 / 新建对话） */
   private readonly workspacePathById = new Map<string, string>();
+  /**
+   * 工作区 id → 该工作区**最近一次真正展示**的视图 key。
+   *
+   * 切标签页要恢复的是「这个工作区上次在看哪条对话」，这个事实只能由 `show()` 写，
+   * 不能让 LRU 顺序替它作答：新对话视图的正式 sessionId 是页面加载完成后才上报的
+   * （`registerSession` 把它 push 到 LRU 队尾），从别处跳转打开的对话随后就被挤到
+   * 前面去——按 LRU 尾部找会「切回来变成另一条对话 / 一个新的空对话」
+   * （specs/defects/cross-workspace-dst-selection-lost-on-tab-switch）。
+   *
+   * 键用工作区 id 而不是路径：远程同路径不同主机是两个工作区。
+   */
+  private readonly lastShownByWorkspace = new Map<string, string>();
 
   constructor(opts: ChatViewManagerOptions) {
     this.opts = opts;
@@ -252,16 +264,32 @@ export class ChatViewManager {
 
   /**
    * 切换活动工作区（id = `workspaceRefKey`，path 用于视图注入）：
-   * 把可见视图切到该目录最近使用的对话；没有则在该目录新建对话。
+   * 把可见视图切到该目录上次展示的对话；没有记录 / 视图已不在则新建对话。
    *
    * 视图按对话自己的工作区保留（不随切换销毁），因此切回时能直接恢复上次的对话。
-   * 属于其它工作区的后台预热视图不再适用：销毁它（预热定时器保留，触发时按
-   * 新的活动目录创建），避免留下无人跟踪的孤儿视图。
+   * 恢复依据是 `lastShownByWorkspace`（由 `show()` 写入），**不是** LRU 顺序：
+   * 新对话视图的正式 sessionId 在页面加载完成后才入 LRU 队尾，按尾部找会把「刚
+   * 跳转打开的那条对话」判成旧的（见该字段注释）。
    */
   setActiveWorkspace(workspace: string, id: string): void {
     this.setWorkspacePath(workspace, id);
     // 其它工作区的后台预热视图保留：它们是那些标签页的预加载视图，
     // 切过去时直接 show()（消除首次切换的闪烁）；关闭工作区 / 窗口时统一销毁。
+    const remembered = this.lastShownByWorkspace.get(id);
+    const rememberedAlive = remembered !== undefined
+      && this.isSameWorkspace(this.viewWorkspaces.get(remembered), id)
+      && this.isViewAlive(remembered);
+    if (rememberedAlive && remembered !== this.currentSessionId) {
+      this.touch(remembered);
+      this.show(remembered);
+      this.emitLoadedChanged();
+      return;
+    }
+    if (rememberedAlive) {
+      // 已经是该工作区的活动视图：无需切换
+      return;
+    }
+    // 没有展示记录（首次激活 / 视图已被淘汰或关闭）：回退到该目录最近使用的存活视图
     const next = [...this.lru]
       .reverse()
       .find((key) => this.isSameWorkspace(this.viewWorkspaces.get(key), id) && this.isViewAlive(key));
@@ -708,6 +736,11 @@ export class ChatViewManager {
     // 丢掉它会让 closeWorkspace('') 找不到空态视图（残留隐藏 webContents）。
     if (tempWorkspace !== undefined) {
       this.viewWorkspaces.set(sessionId, tempWorkspace);
+      // 临时 key 正是「该工作区当前展示的那条对话」时，展示记录跟着换据：否则切走
+      // 再切回这个工作区会认不出「上次看的就是它」，退化到按 LRU 猜
+      if (this.lastShownByWorkspace.get(tempWorkspace) === tempKey) {
+        this.lastShownByWorkspace.set(tempWorkspace, sessionId);
+      }
     }
     // 预热视图已上报正式 sessionId：激活完成，清掉预热标记
     this.prewarmKeys.delete(tempKey);
@@ -826,6 +859,7 @@ export class ChatViewManager {
     this.views.clear();
     this.viewWorkspaces.clear();
     this.lru = [];
+    this.lastShownByWorkspace.clear();
     this.unsentNewKeys.clear();
     this.prewarmKeys.clear();
     this.currentSessionId = null;
@@ -887,7 +921,13 @@ export class ChatViewManager {
       console.error(`[chat-view] view close failed (${key}):`, err);
     }
     this.views.delete(key);
+    const destroyedWorkspace = this.viewWorkspaces.get(key);
     this.viewWorkspaces.delete(key);
+    // 展示记录指向已销毁的视图时一并清掉：留着它只会让 setActiveWorkspace 走一遍
+    // 「记录命中但视图已死」的判定，等价于没有记录（两份事实各写一份必然各自腐烂）
+    if (destroyedWorkspace !== undefined && this.lastShownByWorkspace.get(destroyedWorkspace) === key) {
+      this.lastShownByWorkspace.delete(destroyedWorkspace);
+    }
     if (opts?.removeFromLru !== false) {
       this.lru = this.lru.filter((k) => k !== key);
     }
@@ -1085,6 +1125,10 @@ export class ChatViewManager {
     this.opts.win.contentView.addChildView(view);
     view.setBounds(this.chatBounds());
     this.currentSessionId = sessionId;
+    // 「该工作区上次在看哪条对话」只在这里写：视图被其它来源（页面加载完成上报、
+    // 预热、新建）登记进 map / LRU 都不等于「用户看到过它」。
+    const workspaceId = this.viewWorkspaces.get(sessionId);
+    if (workspaceId !== undefined) this.lastShownByWorkspace.set(workspaceId, sessionId);
     // 预热视图被切到前台：补发激活消息让它完成启动初始化。
     // 任何路径把预热视图切到前台（复用预热 / 切回目录 / 关闭善后）都必须覆盖，
     // 否则 webview 会一直停在 Loading；重复发送由 webview 幂等忽略。

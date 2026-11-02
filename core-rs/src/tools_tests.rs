@@ -290,6 +290,53 @@ fn input_helpers_accept_expected_shapes() {
 // ==================== Bash ====================
 
 #[test]
+fn bash_decodes_gbk_output_to_readable_chinese() {
+    // Windows 上 cmd.exe / 老工具按控制台代码页输出（简体中文 936 = GBK）。工具结果要
+    // 交给模型，必须是正确 Unicode：改动前 `String::from_utf8_lossy` 会把 GBK 字节逐个
+    // 变成 U+FFFD（用户看到的就是乱码，specs/... 见 docs/features/background-bash.md 第 4 节）。
+    // 这里让 shell 直接吐 GBK 字节（`printf` 的 `\xNN` 与编码无关），断言解出中文原文。
+    let sandbox = Sandbox::new("tools-bash-gbk");
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "printf '\\326\\320\\316\\304\\262\\342\\312\\324\\n'" }),
+        &context(&sandbox),
+    );
+    assert!(!outcome.is_error(), "got {}", text(&outcome));
+    let out = text(&outcome);
+    assert_eq!(out, "中文测试", "GBK 输出未解成中文（仍是乱码？）");
+    assert!(!out.contains('\u{FFFD}'), "输出里出现替换字符: {out:?}");
+}
+
+#[test]
+fn bash_decodes_utf8_output_unchanged() {
+    // 回归基线：合法 UTF-8 走原路径，逐字不变（Git Bash / Linux / chcp 65001 的主形态）
+    let sandbox = Sandbox::new("tools-bash-utf8");
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "printf '中文测试 %s\\n' ok" }),
+        &context(&sandbox),
+    );
+    assert!(!outcome.is_error(), "got {}", text(&outcome));
+    assert_eq!(text(&outcome), "中文测试 ok");
+}
+
+#[test]
+fn bash_does_not_split_multibyte_chars_across_pipe_chunks() {
+    // `read` 的 8 KiB 边界会把多字节字符劈成两半：逐块 lossy 会让一个汉字变成两个
+    // U+FFFD。构造一段长度刚好跨块边界的 UTF-8 输出（8190 个 ASCII + 多字节汉字）。
+    let sandbox = Sandbox::new("tools-bash-chunk-boundary");
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "python3 -c \"import sys; sys.stdout.write('a'*8190 + '中文')\" 2>/dev/null || perl -e \"print 'a' x 8190; print '中文'\"" }),
+        &context(&sandbox),
+    );
+    let out = text(&outcome);
+    assert!(!outcome.is_error(), "got {out}");
+    assert!(!out.contains('\u{FFFD}'), "分块解码劈了字（{} 个替换字符）", out.matches('\u{FFFD}').count());
+    assert!(out.ends_with("中文"), "尾部应为完整中文: {:?}", &out[out.len().saturating_sub(16)..]);
+}
+
+#[test]
 fn bash_requires_a_command() {
     let sandbox = Sandbox::new("tools-bash-missing");
     let outcome = execute("Bash", &json!({}), &context(&sandbox));
