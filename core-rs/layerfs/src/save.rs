@@ -332,9 +332,13 @@ impl Save<'_> {
     }
 }
 
-impl AuthenticatedObjects for Save<'_> {
-    fn read_canonical_batch(&self, ids: &[ObjectId]) -> ContentResult<Vec<Vec<u8>>> {
-        // 同保存可见性：先查本保存仍待发布的批次，其余走存储；缺席即 MissingObject。
+impl Save<'_> {
+    /// 读取本保存可见的对象：先查本保存仍待发布的批次，其余走存储；按请求顺序返回。
+    ///
+    /// 缺席是 `ObjectMissing(id)`（本保存与存储都没有），其余失败沿用 [`Reader`] 的分类。
+    ///
+    /// [`Reader`]: crate::Reader
+    pub fn read_objects(&self, ids: &[ObjectId]) -> StorageResult<Vec<Vec<u8>>> {
         let mut result: Vec<Option<Vec<u8>>> = vec![None; ids.len()];
         let mut rest: Vec<(usize, ObjectId)> = Vec::new();
         {
@@ -353,11 +357,7 @@ impl AuthenticatedObjects for Save<'_> {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
-            let bytes = self
-                .storage
-                .reader()
-                .read_objects(&unique)
-                .map_err(|error| provider_error(&error))?;
+            let bytes = self.storage.reader().read_objects(&unique)?;
             let resolved: BTreeMap<ObjectId, Vec<u8>> = unique.into_iter().zip(bytes).collect();
             for (index, id) in &rest {
                 result[*index] = resolved.get(id).cloned();
@@ -365,8 +365,15 @@ impl AuthenticatedObjects for Save<'_> {
         }
         result
             .into_iter()
-            .map(|slot| slot.ok_or(ContentError::MissingObject))
+            .zip(ids)
+            .map(|(slot, id)| slot.ok_or(StorageError::ObjectMissing(*id)))
             .collect()
+    }
+}
+
+impl AuthenticatedObjects for Save<'_> {
+    fn read_canonical_batch(&self, ids: &[ObjectId]) -> ContentResult<Vec<Vec<u8>>> {
+        self.read_objects(ids).map_err(|error| provider_error(&error))
     }
 }
 

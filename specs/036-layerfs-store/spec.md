@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：LayerFS 内核库 · 对象库地基（上游对齐版）
@@ -26,7 +26,7 @@ C1 对象身份/封装/CDC 与 C2 存储/保存/读取、加上持久化适配�
   重新授权不得执行）；持久化适配器行为（FIFO 准入、父目录 flock、一次 SQL 尝试、
   PRAGMA 清单、schema 校验、seal 交付）对照上游同代实现。
 - **有意分叉**：Store 文件本身不与上游互开——schema 版本号独立（本系列从 1 起）、
-  表组只含对象层所需；上游的遥测 `TimingScope` 参数不引入（本仓库无该遥测框架，
+  表组只含对象层所需；上游每个入口携带的遥测作用域参数不引入（本仓库无该遥测框架，
   以计数器代替）。
 - **后置**：zstd 压缩、PREFIX delta、pack 分组编码、池化元数据、文件映射树、history
   由后续 spec 承接；本 spec 的物理布局与端口形状为其预留（见「非目标」的去向）。
@@ -38,7 +38,7 @@ C1 对象身份/封装/CDC 与 C2 存储/保存/读取、加上持久化适配�
 | [docs/core/standalone-core.md](../../docs/core/standalone-core.md#11-core-侧业务范围) | 1.1 Core 侧业务范围 | 新增 | Core 新增 layerfs 内核库能力面（对象库） |
 | [docs/core/standalone-core.md](../../docs/core/standalone-core.md#33-构建与目标平台) | 3.3 构建与目标平台 | 新增 | bundled SQLite 的 C 编译沿用既有 zig / MSVC 链 |
 | [docs/core/standalone-core.md](../../docs/core/standalone-core.md#7-事实归属) | 7 事实归属 | 新增 | Store 内对象数据的事实归属与唯一写入点 |
-| `docs/core/layerfs.md` | — | 新增 | 内核库独立成篇：身份、分块、保存、并发与端口规格（落地前为行内代码，落地后改链接） |
+| [docs/core/layerfs.md](../../docs/core/layerfs.md) | 全文 | 新增 | 内核库独立成篇：范围与上游对齐、身份与封装、冻结 CDC 与策略、存储与端口、适配器与并发车道、限制 |
 | [docs/README.md](../../docs/README.md#地图) | 地图 | 修改 | 登记 `docs/core/layerfs.md` |
 
 ## 用户场景与验收标准
@@ -215,10 +215,10 @@ Windows 侧未来在本层内以锁文件替代目录 flock，其他文件不动
 
 | 项 | 形态 | 说明 | FR |
 | --- | --- | --- | --- |
-| `PersistenceConfig` | `sqlite(path)`、`with_profile(SqlitePersistenceProfile)` | 路径 + 显式 profile；本地文件、绝无网络端点 | FR-001 |
+| `PersistenceConfig` | `sqlite(path, profile)` | 路径 + 显式 profile 都是必填构造参数（无默认值，收敛时由 `sqlite(path)` + `with_profile(..)` 改为必填，留痕）；本地文件、绝无网络端点 | FR-001 |
 | `SqlitePersistenceProfile` | 仅 `Disposable`（WAL/OFF，身份串 `sqlite-wal-off-v2`） | 打开时逐项实测校验；`Durable` 不实现（上游已停用，重新授权前不得执行） | FR-001 |
-| `Handles::create(config, policy)` / `open_writable(config)` / `open_read_only(config)` | 创建拒已存在；只读会话在任何 BEGIN / SQL 之前拒绝写 | 持有实现端口的 provider 组合（`storage` 字段即 `Arc<dyn ObjectPersistence>`） | FR-001 |
-| `StorePath` | `from_os(&Path) -> Result<StorePath>`、`as_os_path() -> PathBuf`、`Display`、`Eq + Hash` | 库内规范化路径；所有接收路径的入口只收它 | FR-008 |
+| `Handles::create(config, policy)` / `open_writable(config)` / `open_read_only(config)` | 创建拒已存在；只读会话在任何 BEGIN / SQL 之前拒绝写 | 持有实现端口的 provider（`storage` 字段是 `Arc<StorageProvider>`，可直接作为 `Arc<dyn ObjectPersistence>` 交给 `Storage::new`） | FR-001 |
+| `StorePath` | `from_os(&Path) -> Result<StorePath>`、`as_path() -> &Path`、`into_path_buf() -> PathBuf`、`parent_dir() -> PathBuf`、`Display`、`Eq + Hash` | 库内规范化路径；所有接收路径的入口只收它（收敛时 `as_os_path` 改为 `as_path` / `into_path_buf`，留痕） | FR-008 |
 | `Handles::close(&self)` | 关闭准入：排队与后续调用一律 `Closed` | FR-007 |
 | `Handles::seal(self) -> SealedStore` | 消费唯一会话、TRUNCATE checkpoint 一次、校验无侧文件 | 仍有活引用时报 `Busy`，不做删除猜测 | FR-001 |
 | `SealedStore` | `path / profile / sqlite_version / bytes` | 已检查的闭库交付物 | FR-001 |
@@ -228,7 +228,7 @@ Windows 侧未来在本层内以锁文件替代目录 flock，其他文件不动
 以下示意按调用方视角串起 API，`?` 所在函数返回 `Result<_, ContentError>` 或
 `Result<_, StorageError>`，省略 `use` 导入；示意块不对应任何源文件。贯穿语义：
 **对象库只存对象、不记录归属**——`WholeFile` / `Chunk` 对象的根身份与块序列由
-调用方持有（接入映射树后由 `specs/037-layerfs-fs/` 负责），Store 不知道
+调用方持有（接入映射树后由 037（layerfs-fs） 负责），Store 不知道
 「哪些对象属于哪个文件」。
 
 用例 1 —— 创建 Store 并写入一份文件（阈值下走 `WholeFile`，阈值上走 `Chunk` 序列；
@@ -237,7 +237,8 @@ FR-001 / FR-002 / FR-003 / FR-004 / FR-005；AC-1 / AC-9）：
 ```rust 示意
 let config = PersistenceConfig::sqlite(
     StorePath::from_os(Path::new("/var/lib/demo/project.layerfs"))?,
-).with_profile(SqlitePersistenceProfile::Disposable);
+    SqlitePersistenceProfile::Disposable,
+);
 let handles = Handles::create(config, StoragePolicy::frozen_default())?;
 let storage = Storage::new(Arc::clone(&handles.storage))?;
 let policy = ConstructionPolicy::frozen_default();
@@ -340,26 +341,27 @@ assert_eq!(a.to_string(), "/data/stores/main.layerfs"); // 对外一律是规范
 - Store 文件损坏（校验不通过、截断、PRAGMA 实测不符）：打开报错，不做修复尝试（架构铁律 1：不过度 fallback）。
 - 在已存在的路径上创建 Store：报错，不覆盖、不打开。
 - 读取的身份与字节不符：`IdentityMismatch`（内容层）；缺失与 provider 故障严格两类（`MissingObject` / `ProviderFailure`），不冒充。
-- 首次胜出败方：定位行不入库；胜败字节不一致报 `Collision`，一致则计 `reused`。
+- 首次胜出败方：定位行不入库；胜败字节不一致报 `Collision`，一致则计 `reused`。同一身份下字节不一致只能来自真实哈希碰撞（那时胜方字节能通过身份认证、进入字节裁决）；若胜方是无法通过身份认证的他者对象（定位行被他者占据），读回以 `IdentityMismatch` 拒绝，认证严格先于裁决（收敛留痕）。
 - `finish` 失败且确认未证明（`UnknownOutcome`）：调用方按失败上报，库不重试、不重放、不猜测删除。
 - 非协作写者绕过车道直接抢占 SQLite：该次 `BEGIN IMMEDIATE` 得到精确 `Busy`，不重试。
 - 空内容（0 字节）：本 spec 不产出对象（`Empty` 表示形态随映射树 spec 引入）；`WholeFile` / `Chunk` 编码要求非空载荷。
 - 孤儿对象（崩溃残留、不被任何引用闭包覆盖）：不影响打开与正确性；本 spec 不做清理（去向见非目标）。
 - 同进程对同一 Store 的多句柄并发写：与跨进程同语义（车道排队），不因同进程而绕过互斥。
 - 跨线程共享同一句柄：编译期拒绝（句柄非 `Sync`）；跨线程并发各自打开句柄。
-- 网络文件系统 / 非本地卷：打开时拒绝（`UnsupportedPolicy`），不降级——车道依赖本地 flock 与共享内存语义。
+- 网络文件系统 / 非本地卷：不受支持的放置契约（车道依赖本地 flock 与共享内存语义），与上游同口径**不做探测**、由供给流程保证本地放置；收敛时由「打开时拒绝」改为文档化契约（留痕：可靠探测需逐平台的卷类型判定，不属本 spec）。
+- 非 Linux 平台没有跨进程写车道（`writer_lock` 为空锁）：并发写者的第二个 `BEGIN IMMEDIATE` 得到 SQLite 自身的精确 `Busy` 而不是排队（上游 macOS 同款）；AC-11 / AC-12 的「排队到释放」语义只在 Linux 成立，非 Linux 由同一测试断言 `Busy` 分支（收敛留痕）。
 
 ## 非目标
 
-- 文件语义（映射树 FileState / extent、inode / 目录 / 属性页、read / write / edit / 目录操作、glob / grep / diff）→ 系列下一份 spec（`specs/037-layerfs-fs/`，本 spec 评审通过后起草）。
-- Branch / Commit / Layer / LayerStack、checkpoint / rewind、三方合并、`.lww` 冲突规则、发布车道（头部检查 + 合并 + 发布的原子步）→ 系列第三份 spec（暂定 `specs/038-layerfs-branch-merge/`）。
-- 物理编码增强（zstd 压缩、PREFIX delta、pack 分组与 lane、池化元数据 inode_value、相似度签名环）→ 编码 spec（暂定 `specs/039-layerfs-encoding/`）；036 的 pack 为单记录存储布局，schema 以 `user_version` 前向演进、旧版拒开不迁移（上游同口径）。
+- 文件语义（映射树 FileState / extent、inode / 目录 / 属性页、read / write / edit / 目录操作、glob / grep / diff）→ 系列下一份 spec（037（layerfs-fs），本 spec 评审通过后起草）。
+- Branch / Commit / Layer / LayerStack、checkpoint / rewind、三方合并、`.lww` 冲突规则、发布车道（头部检查 + 合并 + 发布的原子步）→ 系列第三份 spec（暂定 038（layerfs-branch-merge））。
+- 物理编码增强（zstd 压缩、PREFIX delta、pack 分组与 lane、池化元数据 inode_value、相似度签名环）→ 编码 spec（暂定 039（layerfs-encoding））；036 的 pack 为单记录存储布局，schema 以 `user_version` 前向演进、旧版拒开不迁移（上游同口径）。
 - FUSE / Workspace 挂载、overlay 数据库、Docker Sandbox 执行面 → Phase 2，未来 spec。
 - 接入 core 引擎与 TS 侧（事件 / 契约 / 宿主 UI）→ 后续接线 spec；本 spec 无任何 TS 侧改动。
 - 垃圾回收（孤儿对象回收与空间回收）→ 接入提交模型后另立 spec（上游同样未实现，需要独立契约）。
 - 与上游 Store 文件互开（schema 版本与表组独立）→ 非目标；身份 / 封装 / CDC 层保持逐字节兼容。
-- 初始采集端口（上游 `Acquisition`：Project Init 的可恢复工作表）→ 接线 spec 按本仓库的导入路径另行评估。
-- Windows 原生运行 → 不做；平台抽象缝见 FR-008。
+- 初始采集端口（上游的 Acquisition 端口：Project Init 的可恢复工作表）→ 接线 spec 按本仓库的导入路径另行评估。
+- Windows 的跨进程写车道（锁文件替代 flock）→ 不做；库本身在 Windows 可运行（进程内 FIFO 车道 + SQLite 自身 `Busy`），平台抽象缝见 FR-008（收敛留痕：原「Windows 原生运行不做」表述过宽）。
 
 ## 对需求基线的影响
 
@@ -386,8 +388,32 @@ assert_eq!(a.to_string(), "/data/stores/main.layerfs"); // 对外一律是规范
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+收敛于 2026-11-02（实施提交 `963ac98`）。闸门：`npm run check-types` / `npm run lint` /
+`npm run test:unit -- docs-lint` / `npm run build:core:host` 后 `npm run test:core`
+（layerfs 37 + layerfs-sqlite 26 + standalone-core 1048）全绿；musl 目标
+`cargo check --tests` 验证 Linux `cfg` 分支可编译。
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+- 已满足：
+  - AC-1 / AC-14（FR-001）→ `core-rs/layerfs-sqlite/src/store_tests.rs`：`seal_leaves_one_self_contained_file_and_reopens`（单文件、`bytes`、无 `-wal` / `-shm` / `-journal`、重开）、`seal_with_live_references_is_busy`；`schema_tests.rs`：`create_then_reopen_round_trips`（profile 读回值逐项断言）。
+  - AC-2（FR-001）→ `schema_tests.rs`：`higher_schema_version_is_refused_without_touching_bytes`（`user_version` 99 与 0 都拒、文件字节前后一致）、`unexpected_table_is_refused`。
+  - AC-3（FR-001）→ `schema_tests.rs`：`non_wal_journal_is_refused`。
+  - AC-4（FR-002）→ `core-rs/layerfs/src/object/object_tests.rs`：`identity_and_envelope_match_upstream_bytes`、`whole_file_and_chunk_grammar_match_upstream`（身份 / 封装 / 两种角色值语法的对照常量由上游 v1.1.0 代码在独立进程里产出）、`envelope_rejects_in_upstream_order`、`thirteen_role_codes_match_upstream_table`。
+  - AC-16（FR-003）→ `core-rs/layerfs/src/cdc/cdc_tests.rs`：`chunk_boundaries_match_upstream_bytes`（1 MiB 确定性输入 59 块逐长度一致，块长落在 8–32 KiB）、`zero_runs_match_upstream_repeat_blocks`、`zero_hole_path_matches_plain_scan_boundaries`、`constants_match_frozen_upstream_profile`（`profile_id` 对照）；`policy_tests.rs` 四例。
+  - AC-5（FR-004）→ `store_tests.rs`：`same_content_twice_is_reused_and_stored_once`（`pack` 表计数 1）；`core-rs/layerfs/src/save_tests.rs`：`same_content_resave_counts_reused_without_new_pack`、`first_wins_loser_with_identical_bytes_counts_reused`。
+  - AC-6 / AC-7（FR-006）→ `store_tests.rs`：`finish_acknowledges_and_reads_in_order_with_missing_classified`；`core-rs/layerfs/src/reader_tests.rs`：`reads_in_request_order_keeping_duplicates`、`absence_reports_object_missing`、`tampered_pack_reports_integrity_not_absence`、`lying_locator_identity_reports_identity_mismatch`、`lying_locator_length_reports_integrity`、`request_count_over_window_rejected`。
+  - AC-8（FR-005）→ `store_tests.rs`：`published_batch_survives_process_kill_and_pending_does_not`（子进程发布 512 对象波次后被 `kill`，重开后已发布可读、批内未发布 `ObjectMissing`）。
+  - AC-9（FR-005）→ `save_tests.rs`：`whole_file_save_acknowledged_by_finish`、`batch_bound_publishes_previous_wave`、`abandoned_save_keeps_published_batches`、`unproven_outcome_reports_unknown_outcome`、`sink_error_surfaces_through_finish`、`save_reads_pending_and_stored_objects_with_same_save_visibility`；`store_tests.rs` 同名往返用例。
+  - AC-10（FR-004）→ `store_tests.rs`：`missing_dependency_leaves_no_effect_in_store`（`object_location` 行数 0）；`save_tests.rs`：`missing_reference_rejects_whole_batch_without_effect`。
+  - AC-11 / AC-12（FR-007）→ `store_tests.rs`：`two_processes_write_concurrently`、`writer_in_another_process_queues_or_reports_busy`（Linux 断言双方完成 / 排队到释放，非 Linux 断言精确 `Busy`）。本机（Windows arm64）走 `Busy` 分支通过；Linux 排队分支的运行证据来自 CI `tests` job 的 `npm run test:core`（本机只做了 musl 目标的编译验证）。
+  - AC-13（FR-007）→ `core-rs/layerfs-sqlite/src/lane_tests.rs`：`close_wakes_queued_caller_with_closed`、`in_process_concurrent_saves_serialize_without_busy`、`same_thread_reentry_is_refused_not_deadlocked`。
+  - AC-15（FR-008）→ `core-rs/layerfs-sqlite/src/platform_tests.rs`：`equivalent_spellings_normalize_to_one_path`、`two_spellings_open_the_same_store`、`empty_or_directory_like_paths_are_refused`。
+  - 反向对照补齐：`provider_tests.rs`（first-wins 败方名单、`store_totals` 只按胜方累加、`reserve` 连续分配、缺席省略）；`schema_tests.rs`：`read_only_session_refuses_writes_before_sql`、`create_over_existing_path_is_refused`、`policy_round_trips_through_store`；`save_tests.rs`：`role_without_decoder_rejected_and_save_terminates`、`second_begin_save_on_same_handle_is_ownership_unavailable`、`first_wins_loser_failing_authentication_reports_identity_mismatch`。
+- 偏差（均已留痕）：
+  - `PersistenceConfig` 由 `sqlite(path)` + `with_profile(..)` 改为 `sqlite(path, profile)`（铁律 2：无默认值）——改 spec 公开 API 表与用例 1。
+  - `StorePath::as_os_path()` 落为 `as_path()` / `into_path_buf()` / `parent_dir()`——改 spec 公开 API 表。
+  - spec 承诺的 `Save::read_objects` 初版只有 `AuthenticatedObjects` 端口形式——改代码补公开方法（端口实现委托它），补 `save_reads_pending_and_stored_objects_with_same_save_visibility`。
+  - 边界「网络文件系统打开时拒绝」未实现探测——改 spec 为文档化放置契约（与上游同口径）。
+  - 非 Linux 平台无跨进程写车道、并发写者得精确 `Busy`——补进 spec 边界与非目标（原「Windows 原生运行不做」过宽）。
+  - `StorageError` 不含上游的 Unpublished / VisibilityCeiling / CleanupFailed 三个变体（036 无水位线与清理步）——改 spec 错误表；`Collision` 的可达条件（哈希碰撞）与 `IdentityMismatch` 先于裁决——补进边界。
+  - 影响基线之外的构建接线：`test:core` 改为 `cd core-rs && cargo test --workspace`（cargo 按 cwd 发现 `.cargo/config.toml`），`core-rs/.cargo/config.toml` 为 aarch64-pc-windows-msvc 固化 `zig cc` 注入——已写进 [docs/core/standalone-core.md 3.3](../../docs/core/standalone-core.md#33-构建与目标平台)。
+- 未做：无。

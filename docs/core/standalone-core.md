@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-02
 ---
 
 # 规格：Standalone Core（Rust）

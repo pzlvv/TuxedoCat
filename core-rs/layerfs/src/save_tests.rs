@@ -405,3 +405,42 @@ fn first_wins_loser_failing_authentication_reports_identity_mismatch() {
     ));
     drop(winner_bytes);
 }
+
+#[test]
+fn save_reads_pending_and_stored_objects_with_same_save_visibility() {
+    let (_port, storage) = storage();
+    let stored = store_before(&storage, &[7, 7]);
+    let save = storage.begin_save().expect("save");
+    let pending = chunk_object(&[8, 8, 8]).expect("object");
+    let pending_id = pending.id();
+    let pending_bytes = pending.canonical().to_vec();
+    save.accept(pending).expect("accept");
+    // 待发布的对象对本保存可见，对存储级读取器不可见。
+    let read = save.read_objects(&[pending_id, stored]).expect("read");
+    assert_eq!(read[0], pending_bytes);
+    assert_eq!(ObjectId::for_bytes(&read[1]), stored);
+    assert!(matches!(
+        storage.reader().read_objects(&[pending_id]).unwrap_err(),
+        StorageError::ObjectMissing(_)
+    ));
+    // 两边都没有的身份是 ObjectMissing。
+    let ghost = ObjectId::for_bytes(b"ghost");
+    assert!(matches!(
+        save.read_objects(&[ghost]).unwrap_err(),
+        StorageError::ObjectMissing(id) if id == ghost
+    ));
+    // 端口形式沿用同一语义。
+    assert_eq!(
+        AuthenticatedObjects::read_canonical(&save, pending_id).expect("read"),
+        pending_bytes
+    );
+}
+
+fn store_before(storage: &Storage, payload: &[u8]) -> ObjectId {
+    let save = storage.begin_save().expect("save");
+    let object = chunk_object(payload).expect("object");
+    let id = object.id();
+    save.accept(object).expect("accept");
+    save.finish().expect("finish");
+    id
+}
