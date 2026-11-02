@@ -1,0 +1,12 @@
+[package]
+name = "layerfs"
+version = "0.0.1"
+edition = "2021"
+description = "LayerFS 内核库：对象身份、LFSO 封装、冻结 CDC、Storage / Save / Reader 端口面（无 I/O）"
+license = "Apache-2.0"
+
+[dependencies]
+# 对象身份与 CDC profile 身份都是 BLAKE3 域分隔摘要，版本与上游 v1.1.0 同钉
+blake3 = "=1.8.5"
+# pack 摘要 `ObjectKey`（SHA-256）；与 standalone-core 共用同一份 0.10
+sha2 = "0.10"

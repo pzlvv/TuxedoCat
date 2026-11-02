@@ -1,0 +1,16 @@
+[package]
+name = "layerfs-sqlite"
+version = "0.0.1"
+edition = "2021"
+description = "LayerFS SQLite 持久化适配器：profile PRAGMA、schema v1、FIFO 准入 + 父目录 flock、seal"
+license = "Apache-2.0"
+
+[dependencies]
+layerfs = { path = "../layerfs" }
+# `bundled`：所有目标都自带 SQLite C 源由 cc-rs 编译（Linux musl 走构建脚本注入的
+# zig cc，Windows 走 MSVC），不依赖系统库；`cache`：语句缓存；`limits`：SQLITE_LIMIT 设置。
+rusqlite = { version = "=0.40.2", features = ["bundled", "cache", "limits"] }
+
+# Linux 写车道：Store 父目录的独占 flock（docs/core/layerfs.md 第 5 节）。
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "=0.31.3", default-features = false, features = ["fs"] }

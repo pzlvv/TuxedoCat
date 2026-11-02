@@ -11,3 +11,12 @@ linker = "rust-lld"
 
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
+
+# Windows ARM64 目标的 C 依赖（ring 的 C / 汇编、bundled SQLite 的 sqlite3.c）：ring 的
+# build.rs 对该目标硬性要求 clang（MSVC cl.exe 不被接受），与 scripts/build-core.mjs 同一
+# 口径用 zig cc 充当；写在这里让 `cargo test` 等不经构建脚本的调用在 Windows ARM64 宿主
+# 上同样可编译（docs/core/standalone-core.md 第 3.3 节）。变量名只匹配该三元组，其他目标
+# 不受影响；构建脚本注入的同名变量优先（cargo `[env]` 默认不覆盖已存在的环境变量）。
+[env]
+CC_aarch64_pc_windows_msvc = "zig cc"
+CFLAGS_aarch64_pc_windows_msvc = "--target=aarch64-windows-msvc"

@@ -26,10 +26,13 @@ const PROFRAW_DIR = path.join(COVERAGE_DIR, 'profraw');
 const PROFDATA = path.join(COVERAGE_DIR, 'core.profdata');
 const HTML_DIR = path.join(COVERAGE_DIR, 'html');
 
-/** 依赖与工具链的源码不进报告，只度量 core-rs/src 下的产品代码 */
+/** 依赖与工具链的源码不进报告，只度量 workspace 各 crate `src/` 下的产品代码 */
 const EXCLUDE =
   'registry[\\\\/]src|rustlib[\\\\/]src|library[\\\\/]std|_tests\\.rs$|test_support\\.rs$';
-const SOURCE_ROOT = path.join(CORE_DIR, 'src').replace(/\\/g, '/');
+/** workspace 成员的产品源码根：Core 自身 + layerfs 两个 lib crate */
+const SOURCE_ROOTS = ['src', 'layerfs/src', 'layerfs-sqlite/src'].map((dir) =>
+  path.join(CORE_DIR, dir).replace(/\\/g, '/'),
+);
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -78,7 +81,7 @@ function locateLlvmTools() {
 function buildTestBinaries() {
   const result = mustRun(
     'cargo',
-    ['test', '--no-run', '--message-format=json'],
+    ['test', '--workspace', '--no-run', '--message-format=json'],
     {
       env: {
         ...process.env,
@@ -171,14 +174,16 @@ function parseRows(output) {
 }
 
 /**
- * 只保留 core-rs/src 下的产品代码。
- * llvm-cov 以 cwd（core-rs）为基准打印相对路径，依赖库则是绝对路径。
+ * 只保留 workspace 各 crate `src/` 下的产品代码。
+ * llvm-cov 以 cwd（core-rs）为基准打印相对路径（单 crate 时是裸文件名，多 crate 时带
+ * `src/` / `layerfs/src/` 前缀），依赖库则是绝对路径。
  */
 function isProductFile(file) {
   if (file.endsWith('_tests.rs') || file.endsWith('test_support.rs')) return false;
   const absolute = /^[A-Za-z]:\//.test(file) || file.startsWith('/');
-  if (absolute) return file.startsWith(`${SOURCE_ROOT}/`);
-  return !file.includes('/');
+  if (absolute) return SOURCE_ROOTS.some((root) => file.startsWith(`${root}/`));
+  if (!file.includes('/')) return true;
+  return /^(src|layerfs\/src|layerfs-sqlite\/src)\//.test(file);
 }
 
 function productRows(rows) {
