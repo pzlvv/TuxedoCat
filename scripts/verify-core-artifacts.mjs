@@ -50,6 +50,8 @@ import {
   asanTripleFor,
   computeFingerprint,
   FINGERPRINT_FILE_NAME,
+  isProductSourceFile,
+  primeSourceTreeHash,
 } from './build-core.mjs';
 
 const require = createRequire(import.meta.url);
@@ -57,7 +59,14 @@ const project = require('../project.config.cjs');
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Rust 侧源码根；只看 src 与两个清单，不碰 `target/`（构建产物永远更新） */
+/**
+ * 「产物是否比源码新」的 mtime 扫描根。
+ *
+ * 只取 `src` 与两个清单：这一条是**快速诊断**（给出「源码改在什么时候、该跑哪条重建命令」），
+ * 覆盖面窄于指纹输入集是安全的——`layerfs/` / `layerfs-sqlite/` / `build.rs` 的改动由指纹
+ * 重算那一关兜住（重算值对不上同样报错，只是提示语笼统一些）。反过来放宽到整个 `core-rs/`
+ * 就会踩到 `target/`（构建产物永远更新），所以这里**不**跟着 `collectCoreSourceFiles` 扩。
+ */
 const RUST_SOURCES = ['core-rs/src', 'core-rs/Cargo.toml', 'core-rs/Cargo.lock'];
 
 /** asan 变体：只校验 asan 默认构建集合（本机平台 + Linux x64，见 build-core.mjs） */
@@ -115,16 +124,6 @@ function newestMtime(target, include = () => true) {
   return newest;
 }
 
-/**
- * 参与「产物是否比源码新」判定的 Rust 源。
- *
- * `#[cfg(test)]` 专属文件（`*_tests.rs`、`test_support.rs`）不算：它们不进产物，
- * cargo 不会为它们的改动重链可执行文件，算进来会让校验永远失败。
- */
-function isProductSource(fileName) {
-  return !fileName.endsWith('_tests.rs') && fileName !== 'test_support.rs';
-}
-
 /** 展示用相对路径 */
 function show(target) {
   return relative(repoRoot, target).split('\\').join('/');
@@ -135,10 +134,13 @@ function fileDigest(target) {
   return createHash('sha256').update(readFileSync(target)).digest('hex');
 }
 
-function main() {
+async function main() {
   const sourceMtime = Math.max(
-    ...RUST_SOURCES.map((entry) => newestMtime(join(repoRoot, entry), isProductSource)),
+    ...RUST_SOURCES.map((entry) => newestMtime(join(repoRoot, entry), isProductSourceFile)),
   );
+  // 指纹的源码树哈希先算一遍（并发读）：下面每个平台都要重算一次指纹，
+  // 命中这份缓存后只花哈希时间，不再重复读盘（FUSE 上每次 open 都是一次往返）。
+  await primeSourceTreeHash();
   const problems = [];
   const checked = [];
 
@@ -249,4 +251,7 @@ function main() {
   );
 }
 
-main();
+main().catch((error) => {
+  console.error(`[verify-core] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+});
