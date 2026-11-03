@@ -38,10 +38,10 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import project from '../project.config.cjs';
@@ -136,8 +136,12 @@ export const PACKAGE_DIRS = ['x64-win32', 'arm64-win32', 'x64-linux', 'arm64-lin
 
 /**
  * 指纹算法版本标签：参与哈希输入，输入集或归一规则变化时递增，避免新旧指纹意外同槽。
+ *
+ * v2：输入集从「core-rs/ 工作树全部文件」收窄到「会被编译进产物的文件」
+ * （排除 `*_tests.rs` / `test_support.rs` / `tests/` / `fixtures/`，见
+ * `isProductSourceFile`）。v1 让改一个测试文件也换远端槽位，等于每次都得重传整份 Core。
  */
-const FINGERPRINT_ALGO = 'core-fingerprint-v1';
+const FINGERPRINT_ALGO = 'core-fingerprint-v2';
 
 /** 产物目录里指纹文件的文件名 */
 export const FINGERPRINT_FILE_NAME = 'fingerprint';
@@ -152,12 +156,15 @@ export const FINGERPRINT_FILE_NAME = 'fingerprint';
  * 编译器；因此远端部署以「指纹目录存在」为准，不再做产物哈希比对。
  *
  * 输入集：
- * - `core-rs/` 工作树全部文件（排除 `target/`），按 POSIX 相对路径排序后哈希
- *   (路径 + '\0' + 内容)。遍历**工作树**而不是 `git ls-files`：未提交的新文件
+ * - `core-rs/` 工作树里**会被编译进产物**的文件（排除 `target/`；`isProductSourceFile`
+ *   再排除 `*_tests.rs` / `test_support.rs` / `tests/` / `fixtures/`），按 POSIX 相对路径
+ *   排序后哈希 (路径 + '\0' + 内容)。遍历**工作树**而不是 `git ls-files`：未提交的新文件
  *   也必须改变指纹，否则两个不同版本会共用一个远端槽位；`Cargo.lock` 与
  *   `.cargo/config.toml` 都在目录内，依赖版本与链接器配置自然被覆盖。
- * - 行尾归一（`\r\n` → `\n`）：`.gitattributes` 只管 `resources/**`，
- *   `autocrlf` 设置不同的构建机对同一 commit 会检出不同行尾，不归一会分裂指纹。
+ *   产品代码里的 `include_str!` 目标（如 `layerfs-sqlite/sql/schema_v1.sql`）也在集合内，
+ *   由 `assertIncludesAreHashed` 兜住——漏进来就地抛错，不静默少算一个文件。
+ * - 行尾归一（`\r\n` → `\n`，字节级）：`autocrlf` 设置不同的构建机对同一 commit 会检出
+ *   不同行尾，不归一会分裂指纹。
  * - rustc 身份：`rustc -vV` 的 release / commit-hash / commit-date 三行。
  *   **不含 host 行**：Windows 与 Linux 构建机上是「同一个编译器」，不该分裂指纹。
  *   asan profile 由 nightly 编译，身份取 `rustc +nightly -vV`。
@@ -165,19 +172,59 @@ export const FINGERPRINT_FILE_NAME = 'fingerprint';
  *   不共享远端槽位。
  * - 不混入 zig / C 工具链版本：同源码同 rustc 下 C 部分的工具链差异不构成
  *   版本差异，混入只会让不同构建机分裂槽位（这正是要避免的）。
+ *
+ * 读取方式不影响指纹值：`computeFingerprint` 是同步的（冷路径自己按序遍历），构建 / 校验
+ * 入口先 `await primeSourceTreeHash()` 用并发读预热同一份缓存——路径排序后喂哈希，所以
+ * 两种路径产出逐位相同的摘要。`.mjs` 侧并发读是为了 FUSE 之类「每次 open 一次往返」的
+ * 工作区：文件数越少、同时打开越多，指纹算得越快。
  */
 
-/** 递归收集 core-rs 工作树的文件（排除 target/），返回按 POSIX 相对路径排序的列表 */
-function collectCoreSourceFiles() {
+/**
+ * cargo 的产物目录：`target/`，以及「另开一个 target 目录」时的 `target-*` 命名习惯。
+ *
+ * 只跳过目录（源码文件可以是 `target-platform.rs` 这种名字）。`CARGO_TARGET_DIR` 指到
+ * core-rs 外面时这里不涉及；指到里面、或有人把别的机器的 `target-linux` 整份同步进来时，
+ * 构建产物会被当成源码读进指纹——内容每次都变，同一份源码再也得不到稳定指纹，
+ * 远端槽位等于每次都换。
+ */
+function isCargoOutputDir(name) {
+  return name === 'target' || name.startsWith('target-');
+}
+
+/**
+ * 该文件是否会被编译进产物（构建指纹的输入集判据）。
+ *
+ * `#[cfg(test)]` 专属文件（`*_tests.rs` / `test_support.rs`）与 `tests/`（集成测试）、
+ * `fixtures/`（只被测试代码 `include_str!`）不进二进制：cargo 不会为它们重链产物，
+ * 算进指纹只会让「改一个测试」变成「远端重传整份 Core」。
+ *
+ * `verify-core-artifacts.mjs` 复用这一份判据（产物是否比源码新的 mtime 闸门同口径）。
+ * 传相对路径或裸文件名都可以：只看末段与路径段。
+ */
+export function isProductSourceFile(relPathOrName) {
+  const segments = String(relPathOrName).split('/');
+  const name = segments[segments.length - 1];
+  if (name.endsWith('_tests.rs')) return false;
+  if (name === 'test_support.rs') return false;
+  if (segments.some((segment) => segment === 'tests' || segment === 'fixtures')) return false;
+  // 路径里出现产物目录（`target/` / `target-*`）也不算源码；只看目录段，文件名
+  // `target-platform.rs` 是正常源码（构建指纹跳过的是目录，不是以 target 开头的文件）
+  if (segments.slice(0, -1).some(isCargoOutputDir)) return false;
+  return true;
+}
+
+/** 递归收集 core-rs 工作树里参与指纹的文件（排除 `target/` 与非产物文件），按 POSIX 相对路径排序 */
+export function collectCoreSourceFiles() {
   const files = [];
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === 'target') continue;
+        if (isCargoOutputDir(entry.name)) continue;
         walk(full);
       } else if (entry.isFile()) {
-        files.push(relative(manifestDir, full).split('\\').join('/'));
+        const relPath = relative(manifestDir, full).split('\\').join('/');
+        if (isProductSourceFile(relPath)) files.push(relPath);
       }
     }
   };
@@ -186,8 +233,163 @@ function collectCoreSourceFiles() {
   return files;
 }
 
+/**
+ * 行尾归一：`\r\n` / `\r` → `\n`，**字节级**（见 computeFingerprint 的说明）。
+ *
+ * 不走 utf8 解码再编码：二进制文件（万一进了输入集）会被有损替换成 U+FFFD，指纹
+ * 依旧确定但与字节无关；纯文本上两者等效（无 CR 时直接返回原 Buffer，零拷贝）。
+ *
+ * 导出供 `src/test/coreFingerprint.test.ts` 对照「字节归一 == 原文 CJK 内容按行归一」。
+ */
+export function normalizeLineEndings(buffer) {
+  if (buffer.indexOf(13) === -1) return buffer;
+  const out = Buffer.allocUnsafe(buffer.length);
+  let write = 0;
+  for (let read = 0; read < buffer.length; read++) {
+    const byte = buffer[read];
+    if (byte === 13) {
+      out[write++] = 10;
+      if (buffer[read + 1] === 10) read++;
+    } else {
+      out[write++] = byte;
+    }
+  }
+  return out.subarray(0, write);
+}
+
+/** `include_str!("…")` / `include_bytes!("…")` / `include!("…")` 的字面量参数 */
+const INCLUDE_MACRO = /\binclude(?:_str|_bytes)?!\s*\(\s*"([^"]+)"\s*\)/g;
+
+/** 把 `include!` 的相对路径（相对所在文件）折成 core-rs 内的 POSIX 相对路径 */
+function resolveIncludeTarget(fromRelPath, target) {
+  const stack = fromRelPath.split('/').slice(0, -1);
+  for (const segment of target.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') stack.pop();
+    else stack.push(segment);
+  }
+  return stack.join('/');
+}
+
+/**
+ * 产品代码 `include!` 的目标必须在指纹输入集内，否则抛错。
+ *
+ * 输入集收窄到「会进产物的文件」之后，一个被 `include_str!` 进二进制、却落在
+ * `fixtures/` 之类的文件会被静默少算（改了它指纹不变 = 两个版本共用远端槽位）。
+ * 这里是**接线检查**：缺了直接报错，由人决定是加进输入集还是把 include 挪进测试文件
+ * （docs/architecture/principles.md 不过度 fallback）。
+ *
+ * 导出供 `src/test/coreFingerprint.test.ts` 直接覆盖：真实仓库里一旦「该报错的情形」存在
+ * 就已经构建失败了，回归用例没法靠仓库现状触发它。
+ */
+export function assertIncludesAreHashed(relPath, content, hashedPaths) {
+  if (content.indexOf('include') === -1) return;
+  const text = content.toString('utf8');
+  for (const match of text.matchAll(INCLUDE_MACRO)) {
+    const target = resolveIncludeTarget(relPath, match[1]);
+    if (hashedPaths.has(target)) continue;
+    throw new Error(
+      `[build-core] ${relPath} 用 include! 引入了不在构建指纹输入集里的 ${target}。` +
+        '要么让它留在核心源码目录（不要在 tests/ 或 fixtures/ 下），要么把这段 include 挪进 ' +
+        '`#[cfg(test)]` 文件（见 scripts/build-core.mjs 的 isProductSourceFile）。',
+    );
+  }
+}
+
+/** 已读出内容的源码文件（relPath + 归一后的 Buffer） */
+function hashSourceEntries(entries) {
+  const hashedPaths = new Set(entries.map((entry) => entry.relPath));
+  const hash = createHash('sha256');
+  for (const { relPath, content } of entries) {
+    assertIncludesAreHashed(relPath, content, hashedPaths);
+    hash.update(relPath);
+    hash.update('\0');
+    hash.update(content);
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+/**
+ * 并发读的通道数。
+ *
+ * 同时挂起 16 个读请求，避免「等上一个读回来才发下一个」——真正的并行度由 libuv 的
+ * 线程池决定（默认 4），16 个通道让池子始终有话干、不空转。通道数只影响「同时在途多少个
+ * open」，不影响哈希结果（喂给 sha256 的顺序由排序决定），所以调大调小都不改指纹。
+ */
+const SOURCE_READ_CONCURRENCY = 16;
+
+/** core-rs 源码树的内容哈希（冷路径：按序遍历） */
+function sourceTreeHashSync() {
+  const files = collectCoreSourceFiles();
+  return hashSourceEntries(
+    files.map((relPath) => ({
+      relPath,
+      content: normalizeLineEndings(readFileSync(join(manifestDir, relPath))),
+    })),
+  );
+}
+
+/** core-rs 源码树的内容哈希（热路径：并发读，摘要与冷路径逐位相同） */
+async function sourceTreeHashAsync() {
+  const files = collectCoreSourceFiles();
+  const contents = new Array(files.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(SOURCE_READ_CONCURRENCY, files.length) }, async () => {
+      while (next < files.length) {
+        const index = next++;
+        contents[index] = normalizeLineEndings(await readFile(join(manifestDir, files[index])));
+      }
+    }),
+  );
+  return hashSourceEntries(files.map((relPath, index) => ({ relPath, content: contents[index] })));
+}
+
+let cachedSourceTreeHash = null;
+let pendingSourceTreeHash = null;
+
+/**
+ * 预热指纹的源码树哈希（并发读）。
+ *
+ * 构建 / 校验入口在跑多个目标前调用一次：`computeFingerprint` 保持同步（调用方不必记得
+ * await，写进文件的不会是个 Promise），但命中这份缓存后不再重复读盘。不预热也照常正确，
+ * 只是走冷路径。
+ */
+export async function primeSourceTreeHash() {
+  if (cachedSourceTreeHash !== null) return cachedSourceTreeHash;
+  if (pendingSourceTreeHash === null) {
+    pendingSourceTreeHash = sourceTreeHashAsync().then(
+      (hash) => {
+        cachedSourceTreeHash = hash;
+        return hash;
+      },
+      (error) => {
+        // 失败不缓存：接线检查抛错时要能以原样冒到调用方，而不是留一个永远 reject 的
+        // promise（后续调用会拿到同一个错误对象、栈也指向第一次调用）。
+        pendingSourceTreeHash = null;
+        throw error;
+      },
+    );
+  }
+  return pendingSourceTreeHash;
+}
+
+/** core-rs 源码树的内容哈希（进程内缓存：一次构建跑多个目标只算一遍） */
+function coreSourceTreeHash() {
+  if (cachedSourceTreeHash === null) cachedSourceTreeHash = sourceTreeHashSync();
+  return cachedSourceTreeHash;
+}
+
 /** `rustc -vV` 的编译器身份（release / commit-hash / commit-date 三行，不含 host） */
+const rustcIdentities = new Map();
+
 function rustcIdentity(toolchainArgs = []) {
+  // 一次构建要算多个目标的指纹，每次都 spawn 一个 rustc 是纯浪费（Windows 上实测
+  // 每次 ~140ms）；同一工具链的身份在进程内不会变，按工具链参数缓存。
+  const cacheKey = toolchainArgs.join('\0');
+  const cached = rustcIdentities.get(cacheKey);
+  if (cached !== undefined) return cached;
   const result = spawnSync('rustc', [...toolchainArgs, '-vV'], { encoding: 'utf8' });
   if (result.error || result.status !== 0) {
     const toolchain = toolchainArgs.join(' ') || '默认';
@@ -206,28 +408,9 @@ function rustcIdentity(toolchainArgs = []) {
     console.error('[build-core] `rustc -vV` 输出里没有 release / commit-hash / commit-date。');
     process.exit(1);
   }
-  return lines.join('\n');
-}
-
-let cachedTreeHash = null;
-
-/** core-rs 源码树的内容哈希（进程内缓存：一次构建跑多个目标只算一遍） */
-function coreSourceTreeHash() {
-  if (cachedTreeHash === null) {
-    const hash = createHash('sha256');
-    for (const relPath of collectCoreSourceFiles()) {
-      // 行尾归一见 computeFingerprint 的说明；Cargo.lock 等都是文本，统一按此处理
-      const content = readFileSync(join(manifestDir, relPath), 'utf8')
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n');
-      hash.update(relPath);
-      hash.update('\0');
-      hash.update(content);
-      hash.update('\0');
-    }
-    cachedTreeHash = hash.digest('hex');
-  }
-  return cachedTreeHash;
+  const identity = lines.join('\n');
+  rustcIdentities.set(cacheKey, identity);
+  return identity;
 }
 
 /** 计算一个构建目标的指纹（64 位小写 hex） */
@@ -530,8 +713,10 @@ function buildTarget(target, options) {
 
   // 指纹文件与可执行文件同级落位：宿主运行时读它确定远端部署槽位
   // 部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`；随 copy-assets 进入打包产物（Electron / vsix 携带）。
+  // 复用构建前算好的那份：指纹只依赖源码与编译器身份，重算只会多读一遍盘（且编译器身份
+  // 每算一次都要 spawn 一个 rustc），值必然相同。
   const fingerprintPath = join(outDir, FINGERPRINT_FILE_NAME);
-  writeFileSync(fingerprintPath, `${computeFingerprint(triple, profile)}\n`);
+  writeFileSync(fingerprintPath, `${fingerprint}\n`);
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
 
   copyBundledRipgrep(target, outDir);
@@ -675,7 +860,7 @@ function probeNightly(triples) {
   }
 }
 
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   // 环境变量与 --asan 旗标同效：打包链内嵌的裸 `npm run build:core` 靠环境变量进 asan 模式
   options.asan = options.asan || asanEnabled();
@@ -697,10 +882,17 @@ function main() {
     process.exit(1);
   }
 
+  // 源码树哈希只算一遍（并发读），之后每个目标的 computeFingerprint 直接命中缓存；
+  // 见 computeFingerprint 的输入集说明与 primeSourceTreeHash。
+  await primeSourceTreeHash();
+
   for (const target of targets) buildTarget(target, options);
 }
 
 // 被 import 时（`scripts/verify-core-artifacts.mjs` 复用平台列表）只暴露数据，不执行构建。
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main().catch((error) => {
+    console.error(`[build-core] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
 }
