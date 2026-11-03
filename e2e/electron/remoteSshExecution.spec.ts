@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { Client } from 'ssh2';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
@@ -503,6 +505,140 @@ test('US-42 远程（SSH）文件浏览：树来自远端、悬停显示修改�
   expect(await sshReadFile(addedPath)).toBeNull();
   // 同目录的既有文件不受影响
   expect(await sshReadFile(`${remoteWs}/notes/hello.txt`)).toContain('e2e-remote-marker-42');
+});
+
+/**
+ * specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md（RT-3）。
+ *
+ * 侧栏文件池与 Core 传输层是**两条独立的 SSH 连接**：远端不可用时两条都失败，Core 那侧
+ * 重连后重建，侧栏那条在首连失败时已被移出缓存，不会自己再连。本用例用一个可切换的
+ * TCP 代理制造「先连不上、后恢复」：代理初始直接掐断连接（等价远端没起来），随后转发到
+ * 真实 sshd。恢复并点「重新连接」转绿后，**不点错误行、不点刷新按钮**，树必须自己重读出
+ * 条目——现状下它停在「读取失败，点击重试」。
+ */
+test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读取失败）', async () => {
+  test.setTimeout(600_000);
+  /** 转发开关：false = 掐断（远端不可用），true = 正常连到本机 sshd */
+  let forwarding = false;
+  /** 活的客户端 socket：收尾时先销毁，否则 proxy.close() 在仍有连接时永不回调 */
+  const sockets = new Set<net.Socket>();
+  const proxy = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => undefined);
+    if (!forwarding) {
+      socket.destroy();
+      return;
+    }
+    const upstream = net.connect(SSH.port, '127.0.0.1');
+    sockets.add(upstream);
+    upstream.on('close', () => sockets.delete(upstream));
+    upstream.on('error', () => socket.destroy());
+    socket.pipe(upstream);
+    upstream.pipe(socket);
+  });
+  const proxyPort = await new Promise<number>((resolve, reject) => {
+    proxy.listen(0, '127.0.0.1', () => {
+      resolve((proxy.address() as net.AddressInfo).port);
+    });
+    proxy.on('error', reject);
+  });
+  // 代理是本机自环：endpoint 指向 127.0.0.1 + 代理端口，凭证沿用环境文件
+  const proxiedRef: SerializedWorkspaceRef = {
+    scheme: 'ssh',
+    path: remoteWs,
+    endpoint: {
+      host: '127.0.0.1',
+      port: proxyPort,
+      user: SSH.user,
+      auth: { kind: 'sshPassword', password: SSH.password },
+    },
+  };
+
+  try {
+    // 另开一个本地工作区：`launchApp` 要等一个 webview 聊天视图出现，而活动项落在
+    // 不可用的远程工作区时聊天区是占位页（data:text/html），没有聊天视图可等
+    const localDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'e2e-ws-ready-'));
+    mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+    app = await launchApp({
+      repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
+      mockLlm,
+      workspaceDir: localDir,
+      openWorkspaces: [localDir, proxiedRef],
+      activeWorkspace: proxiedRef,
+      agentMode: 'auto',
+      // 保留沙箱 home：失败要读它的日志定位（成功路径在 finally 里清）
+      keepHomeOnClose: true,
+    });
+    /** 读沙箱里的应用日志（诊断用：`[workspace-tab]` / `[sidebar-files]` 行） */
+    const appLog = (): string => {
+      try {
+        return fs.readFileSync(path.join(app!.homeDir, CONFIG_DIR_NAME, 'logs', 'tuxedo-cat.log'), 'utf8');
+      } catch {
+        return '';
+      }
+    };
+
+    // 1) 不可用落定：标签页红点 + 占位页「重新连接」
+    const titlebar = await app.titlebarPage();
+    const tab = titlebar.locator('#workspaceTabs [role="tab"]').filter({ hasText: 'tuxedo-e2e-ssh' });
+    await expect(tab.locator('.ws-tab-dot')).toBeVisible({ timeout: 60_000 });
+
+    // 2) 在侧栏页装一个失效信号记录器：本用例断言的就是「主进程在就绪时推了 tree 失效」，
+    //    不依赖文件分区的显隐（那个由启动期那次工作区广播决定，与本次修复无关）
+    const sb = await app.sidebarPage();
+    await sb.evaluate(() => {
+      const log: Array<{ workspaceId: string; reasons: string[] }> = [];
+      (window as unknown as { __invalidateLog: typeof log }).__invalidateLog = log;
+      (window as unknown as {
+        sidebarAPI: { onFilesInvalidated: (cb: (p: { workspaceId: string; reasons: string[] }) => void) => void };
+      }).sidebarAPI.onFilesInvalidated((payload) => { log.push(payload); });
+    });
+
+    // 3) 远端恢复（代理开始转发）→ 点「重新连接」→ 等日志里的 connection ready
+    forwarding = true;
+    const placeholder = await app.waitForPage('data:text/html', 120_000);
+    await expect(placeholder.locator('#reconnectBtn')).toBeVisible({ timeout: 120_000 });
+    await placeholder.locator('#reconnectBtn').click();
+    // 判据取主进程日志（标签页的 .ws-tab-loading 只因 connecting 消失，可用 / 不可用都成立）
+    await expect
+      .poll(() => /connection ready: ssh:\/\/[^\n]*tuxedo-e2e-ssh/.test(appLog()), { timeout: 240_000, intervals: [1_000] })
+      .toBe(true);
+
+    // 4) 就绪即推一次 tree 失效（用户不必去点「读取失败，点击重试」）
+    await expect
+      .poll(async () => {
+        const log = await sb.evaluate(() => (window as unknown as {
+          __invalidateLog: Array<{ workspaceId: string; reasons: string[] }>;
+        }).__invalidateLog);
+        return log.filter((p) => p.reasons.includes('tree') && p.workspaceId.includes('tuxedo-e2e-ssh')).length;
+      }, { timeout: 120_000, intervals: [500, 1_000] })
+      .toBeGreaterThan(0);
+    const records = await sb.evaluate(() => (window as unknown as {
+      __invalidateLog: Array<{ workspaceId: string; reasons: string[] }>;
+    }).__invalidateLog);
+    console.log(`[诊断] 失效推送记录: ${JSON.stringify(records)}`);
+    await fs.promises.rm(localDir, { recursive: true, force: true }).catch(() => undefined);
+  } catch (err) {
+    // 失败时把诊断行打出来（沙箱 home 保留了日志，另可人工翻）
+    const log = (() => {
+      try {
+        return fs.readFileSync(path.join(app!.homeDir, CONFIG_DIR_NAME, 'logs', 'tuxedo-cat.log'), 'utf8');
+      } catch {
+        return '';
+      }
+    })();
+    console.log('[诊断] workspace-tab 日志：\n' + log.split('\n').filter((l) => l.includes('[workspace-tab]')).slice(-25).join('\n'));
+    console.log('[诊断] sidebar-files 日志：\n' + log.split('\n').filter((l) => l.includes('[sidebar-files]')).slice(-15).join('\n'));
+    console.log(`[诊断] 沙箱 home（含日志）：${app?.homeDir ?? '<未创建>'}`);
+    throw err;
+  } finally {
+    // 先销毁残留连接再关监听：proxy.close() 只等已建立的连接自然结束，转发中的
+    // SSH 会话不会自己断，直接关会永不回调（用例通过后在收尾处挂死）
+    for (const socket of sockets) socket.destroy();
+    sockets.clear();
+    await new Promise<void>((resolve) => proxy.close(() => resolve()));
+  }
 });
 
 /** 桩住 Menu.buildFromTemplate：记录弹出的菜单（点击条目用），popup 不真弹 */

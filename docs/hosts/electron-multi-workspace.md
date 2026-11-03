@@ -259,7 +259,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   Write 新建自动刷新（US-61 / US-62 / US-63，specs/030）——数据走 Electron 私有 IPC
   （`sidebar:files-list` / `sidebar:files-doc-list` / `sidebar:files-doc-watch` /
   `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与文档记录读取
-  复用 §14.5 的共享连接池。
+  复用 §14.5 的共享连接池。远程工作区的 Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层独立，首连失败后不会自连，不推就停在「读取失败，点击重试」（`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
 
 ### 9.1 空态
 
