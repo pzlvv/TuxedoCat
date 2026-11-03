@@ -229,14 +229,14 @@ CMD ["sh", "-lc", "node scripts/build-core.mjs --target x86_64-pc-windows-msvc &
 
 # 用法：
 #   git lfs pull
-#   docker build -t tuxedo-cat-package .
-#   docker run --rm -v \"$PWD/release:/app/release\" tuxedo-cat-package
+#   docker build -t <image-name> .
+#   docker run --rm -v "$PWD/release:/app/release" <image-name>
 #
 # 只想验证依赖安装：
-#   docker run --rm tuxedo-cat-package npm ci
+#   docker run --rm <image-name> npm ci
 #
 # 镜像源换回官方（无网络限制的机器）：
-#   docker build -t tuxedo-cat-package \
+#   docker build -t <image-name> \
 #     --build-arg DEBIAN_MIRROR=http://deb.debian.org/debian \
 #     --build-arg DEBIAN_SECURITY_MIRROR=http://deb.debian.org/debian-security \
 #     --build-arg RUSTUP_DIST_SERVER=https://static.rust-lang.org \
