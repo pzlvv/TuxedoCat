@@ -311,22 +311,33 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 ### 3.4 构建指纹
 
 每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：
-产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT`
-环境变量由 `core-rs/build.rs` 烧进二进制（`option_env!("CORE_FINGERPRINT")`，daemon
-以它区分自己的状态 / 日志文件；`cargo test` / `clippy` 等本地工具链没有这个环境变量，
-取固定占位 `manual-build`——发布产物必经 `build-core.mjs`，不会落到占位）。
-指纹只由**源码内容与编译器身份**决定，与构建时间、
-构建路径无关：同一编译器对同一份源码的两次构建得到同一指纹。
+产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT` 环境变量
+由 `core-rs/build.rs` 烧进二进制（`option_env!("CORE_FINGERPRINT")`，daemon 以它区分自己的
+状态 / 日志文件；`cargo test` / `clippy` 等本地工具链没有这个环境变量，取固定占位
+`manual-build`——发布产物必经 `build-core.mjs`，不会落到占位）。指纹只由**源码内容与编译器
+身份**决定，与构建时间、构建路径无关：同一编译器对同一份源码的两次构建得到同一指纹。
 
-- **输入集**：`core-rs/` 工作树全部文件（排除 `target/`，遍历工作树而非
-  `git ls-files`——未提交的新文件也必须改变指纹；`Cargo.lock` 与 `.cargo/config.toml`
-  在目录内自然被覆盖），行尾归一（`\r\n` → `\n`，避免 `autocrlf` 不同的构建机分裂
-  指纹）；`rustc -vV` 的 release / commit-hash / commit-date（**不含 host 行**，Windows
-  与 Linux 构建机上是同一个编译器；asan profile 由 nightly 编译，编译器身份取
-  `rustc +nightly -vV`）；目标三元组与 profile（release / debug / asan；asan 取实际构建
-  三元组，Linux x64 是 gnu，见第 3.3 节）。
-- **不混入** zig / C 工具链版本：指纹是「版本身份」不是「字节一致」，同源码同 rustc
-  下 C 部分的工具链差异不构成版本差异；指纹相同的两个构建产物行为一致。
+- **输入集**：`core-rs/` 工作树里**会被编译进产物**的文件，遍历工作树而非
+  `git ls-files`——未提交的新文件也必须改变指纹（否则两个不同版本共用远端槽位）；
+  `Cargo.lock` 与 `.cargo/config.toml` 在目录内自然被覆盖。判据是 `isProductSourceFile`：
+  `*_tests.rs` / `test_support.rs` / `tests/` / `fixtures/` 与产物目录（`target/`、`target-*`）
+  排除在外——它们不进二进制，算进去只会让「改一个测试」变成「远端重传整份 Core」；产品代码
+  `include_str!` 的目标（如 `layerfs-sqlite/sql/schema_v1.sql`）留在集合内，
+  `assertIncludesAreHashed` 兜住「被 include 却不在集合里」（抛错，不静默少算）。
+  `scripts/verify-core-artifacts.mjs` 的 mtime 闸门复用同一判据，两边不各写一套。
+- **行尾归一**：`\r\n` / 孤立 `\r` → `\n`，字节级（不解码成字符串再编码，二进制文件不会
+  被有损替换），避免 `autocrlf` 不同的构建机分裂指纹。
+- **读取方式不影响指纹值**：路径排序后喂哈希，并发读与按序读得到逐位相同的摘要。构建 /
+  校验入口先 `primeSourceTreeHash()` 以 16 路并发读预热一次（之后每个目标不再读盘），
+  `computeFingerprint` 保持同步；FUSE 这类「每次 open 一次用户态往返」的工作区收益最大。
+  `rustc -vV` 的身份同样按工具链缓存，一次构建只 spawn 一次。
+- **编译器身份**：`rustc -vV` 的 release / commit-hash / commit-date（**不含 host 行**，
+  Windows 与 Linux 构建机上是同一个编译器；asan profile 由 nightly 编译，身份取
+  `rustc +nightly -vV`）。**目标三元组与 profile**（release / debug / asan；asan 取实际
+  构建三元组，Linux x64 是 gnu，见第 3.3 节）同样参与：产物语义随它们变化，不共享槽位。
+- **算法版本**：`FINGERPRINT_ALGO`（当前 `core-fingerprint-v2`）参与哈希输入，输入集或
+  归一规则变化时递增，避免新旧指纹意外同槽。**不混入** zig / C 工具链版本：指纹是
+  「版本身份」不是「字节一致」，同源码同 rustc 下 C 部分的工具链差异不构成版本差异。
 - **用途**：部署按指纹落位槽位目录 `~/.local/share/<core.deployPrefix>/<指纹>/`
   （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把
   不同产品的槽位分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件
