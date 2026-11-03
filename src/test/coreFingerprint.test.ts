@@ -77,14 +77,27 @@ runTests('coreFingerprint', async () => {
   }
 
   // ---------- 2. 实际输入集：收窄后仍在、且不漏 include! 目标 ----------
+  // 最后一条在**真实仓库**上跑一遍接线检查：把每个被收进指纹的文件交给
+  // assertIncludesAreHashed，任何产品侧 include! 目标落在集合外都会抛错。这条不写死
+  // 具体文件名——`include_str!` 的目标随代码演进，写死会变成「加一个 include 就红」。
   const collected = runEsm(
     `const m = await import('./scripts/build-core.mjs');
+     const { readFileSync } = await import('node:fs');
      const files = m.collectCoreSourceFiles();
+     const hashed = new Set(files);
+     const offenders = [];
+     for (const relPath of files) {
+       try {
+         m.assertIncludesAreHashed(relPath, readFileSync('core-rs/' + relPath), hashed);
+       } catch (error) {
+         offenders.push(error instanceof Error ? error.message : String(error));
+       }
+     }
      console.log(JSON.stringify({
        count: files.length,
        sorted: files.every((f, i) => i === 0 || files[i - 1] < f),
        posix: files.every((f) => !f.includes('\\\\')),
-       hasSchema: files.includes('layerfs-sqlite/sql/schema_v1.sql'),
+       offenders,
        tests: files.filter((f) => f.endsWith('_tests.rs') || f.endsWith('/test_support.rs')).length,
        fixtures: files.filter((f) => f.startsWith('fixtures/')).length,
        targetDir: files.filter((f) => f.startsWith('target/')).length,
@@ -96,7 +109,7 @@ runTests('coreFingerprint', async () => {
       count?: number;
       sorted?: boolean;
       posix?: boolean;
-      hasSchema?: boolean;
+      offenders?: string[];
       tests?: number;
       fixtures?: number;
       targetDir?: number;
@@ -104,7 +117,11 @@ runTests('coreFingerprint', async () => {
     check(`输入集非空（${info.count ?? 0} 个文件）`, (info.count ?? 0) > 0);
     check('输入集按 POSIX 相对路径升序（喂哈希的顺序唯一）', info.sorted === true);
     check('输入集里没有反斜杠路径（跨平台一致）', info.posix === true);
-    check('输入集包含 include_str! 目标 schema_v1.sql', info.hasSchema === true);
+    check(
+      '真实仓库的产品侧 include! 目标全部在输入集内',
+      (info.offenders ?? ['parse']).length === 0,
+    );
+    for (const message of info.offenders ?? []) console.log(`     ${message}`);
     check('输入集不含 *_tests.rs / test_support.rs', info.tests === 0);
     check('输入集不含 fixtures/', info.fixtures === 0);
     check('输入集不含 target/', info.targetDir === 0);

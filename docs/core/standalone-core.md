@@ -310,43 +310,33 @@ TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按�
 
 ### 3.4 构建指纹
 
-每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：
-产物同级落一个 `fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT` 环境变量
-由 `core-rs/build.rs` 烧进二进制（`option_env!("CORE_FINGERPRINT")`，daemon 以它区分自己的
-状态 / 日志文件；`cargo test` / `clippy` 等本地工具链没有这个环境变量，取固定占位
-`manual-build`——发布产物必经 `build-core.mjs`，不会落到占位）。指纹只由**源码内容与编译器
-身份**决定，与构建时间、构建路径无关：同一编译器对同一份源码的两次构建得到同一指纹。
+每个产物目录带一份**构建指纹**（`scripts/build-core.mjs` 的 `computeFingerprint`）：产物同级落一个
+`fingerprint` 文件（一行 64 位小写 hex），同时经 `CORE_FINGERPRINT` 环境变量由 `core-rs/build.rs` 烧进
+二进制（`option_env!("CORE_FINGERPRINT")`，daemon 以它区分状态 / 日志文件；`cargo test` / `clippy` 等本地
+工具链没有它，取固定占位 `manual-build`）。指纹只由**源码内容与编译器身份**决定，与构建时间、构建路径
+无关：同一编译器对同一份源码的两次构建得到同一指纹。
 
-- **输入集**：`core-rs/` 工作树里**会被编译进产物**的文件，遍历工作树而非
-  `git ls-files`——未提交的新文件也必须改变指纹（否则两个不同版本共用远端槽位）；
-  `Cargo.lock` 与 `.cargo/config.toml` 在目录内自然被覆盖。判据是 `isProductSourceFile`：
-  `*_tests.rs` / `test_support.rs` / `tests/` / `fixtures/` 与产物目录（`target/`、`target-*`）
-  排除在外——它们不进二进制，算进去只会让「改一个测试」变成「远端重传整份 Core」；产品代码
-  `include_str!` 的目标（如 `layerfs-sqlite/sql/schema_v1.sql`）留在集合内，
-  `assertIncludesAreHashed` 兜住「被 include 却不在集合里」（抛错，不静默少算）。
-  `scripts/verify-core-artifacts.mjs` 的 mtime 闸门复用同一判据，两边不各写一套。
-- **行尾归一**：`\r\n` / 孤立 `\r` → `\n`，字节级（不解码成字符串再编码，二进制文件不会
-  被有损替换），避免 `autocrlf` 不同的构建机分裂指纹。
-- **读取方式不影响指纹值**：路径排序后喂哈希，并发读与按序读得到逐位相同的摘要。构建 /
-  校验入口先 `primeSourceTreeHash()` 以 16 路并发读预热一次（之后每个目标不再读盘），
-  `computeFingerprint` 保持同步；FUSE 这类「每次 open 一次用户态往返」的工作区收益最大。
-  `rustc -vV` 的身份同样按工具链缓存，一次构建只 spawn 一次。
-- **编译器身份**：`rustc -vV` 的 release / commit-hash / commit-date（**不含 host 行**，
-  Windows 与 Linux 构建机上是同一个编译器；asan profile 由 nightly 编译，身份取
-  `rustc +nightly -vV`）。**目标三元组与 profile**（release / debug / asan；asan 取实际
-  构建三元组，Linux x64 是 gnu，见第 3.3 节）同样参与：产物语义随它们变化，不共享槽位。
-- **算法版本**：`FINGERPRINT_ALGO`（当前 `core-fingerprint-v2`）参与哈希输入，输入集或
-  归一规则变化时递增，避免新旧指纹意外同槽。**不混入** zig / C 工具链版本：指纹是
-  「版本身份」不是「字节一致」，同源码同 rustc 下 C 部分的工具链差异不构成版本差异。
+- **输入集**：`core-rs/` 工作树里**会被编译进产物**的文件。遍历工作树而非 `git ls-files`：未提交的
+  新文件也必须改变指纹（否则两个版本共用远端槽位），`Cargo.lock` 与 `.cargo/config.toml` 自然被覆盖。
+  判据是 `isProductSourceFile`：`*_tests.rs` / `test_support.rs` / `tests/` / `fixtures/` 与产物目录
+  （`target/`、`target-*`）不进二进制，排除在外，否则「改一个测试」就变成「远端重传整份 Core」；产品
+  代码 `include!` 的目标留在集合内，`assertIncludesAreHashed` 兜住「被 include 却不在集合里」（抛错，
+  不静默少算）。行尾归一 CRLF / 孤立 CR → LF 按字节做（二进制文件不会被有损替换），避免 `autocrlf`
+  不同的构建机分裂指纹；`scripts/verify-core-artifacts.mjs` 的 mtime 闸门复用同一判据。
+- **读取方式与编译器身份**：路径排序后喂哈希，并发读与按序读得到逐位相同的摘要；构建 / 校验入口先
+  `primeSourceTreeHash()` 并发读预热一次，`computeFingerprint` 保持同步，`rustc -vV` 身份按工具链缓存
+  ——都只是读取路径的优化，FUSE 这类「每次 open 一次用户态往返」收益最大。身份取 release /
+  commit-hash / commit-date（**不含 host 行**，Windows 与 Linux 构建机上是同一个编译器；asan 取
+  `rustc +nightly -vV`），连同目标三元组与 profile（release / debug / asan；asan 取实际三元组，Linux
+  x64 是 gnu，见第 3.3 节）一起参与。`FINGERPRINT_ALGO`（当前 `core-fingerprint-v2`）参与哈希输入，
+  输入集或归一规则变化时递增，避免新旧指纹意外同槽；**不混入** zig / C 工具链版本。
 - **用途**：部署按指纹落位槽位目录 `~/.local/share/<core.deployPrefix>/<指纹>/`
-  （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把
-  不同产品的槽位分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件
-  （`core-daemon-<指纹>.*`，[docs/core/core-remote.md 第 2.3 节](core-remote.md#23-状态文件)）同口径）；自带的
-  `ripgrep/` 提升为产品目录的共享位（见第 3.1 节）。多版本 Core 在同一台
-  机器上各占一个槽位、各跑一个 daemon，互不覆盖、互不换血；部署以「指纹槽位
-  存在即同版本」为准，**不做产物哈希比对**——槽位存在就不再上传，缺失才部署
-  并拉起。Electron / vsix 打包把 `fingerprint` 文件与产物一起携带，宿主运行时经
-  `readCoreFingerprint` 读取（缺失 / 格式非法抛错，不猜）。
+  （`coreDeployDirPath`：产品目录取 `src/config/project.json` 的 `core.deployPrefix` 把不同产品的槽位
+  分开，指纹用完整 64 位，与按指纹命名的 daemon 状态 / 日志文件（`core-daemon-<指纹>.*`，
+  [docs/core/core-remote.md 第 2.3 节](core-remote.md#23-状态文件)）同口径）；`ripgrep/` 提升为产品目录的
+  共享位（见第 3.1 节）。多版本 Core 各占一个槽位、各跑一个 daemon；部署以「指纹槽位存在即同版本」
+  为准，**不做产物哈希比对**。打包把 `fingerprint` 与产物一起携带，宿主运行时经
+  `readCoreFingerprint` 读取（缺失 / 格式非法抛错）。
 
 ---
 
