@@ -1,0 +1,33 @@
+# 构建上下文收敛：只排除「容器里会重新生成」与「宿主机专属」的东西。
+#
+# node_modules 必须排除：容器里已经用它自己的平台跑过 npm ci，宿主的 node_modules
+# 带着别的平台的原生二进制（electron / ssh2 的 cpu-features 等），拷进去会顶掉
+# 刚装好的那份，COPY 之后就等于没跑 npm ci。
+node_modules
+
+# 构建产物与打包输出：容器内重新生成。release/ 里若留着宿主的 .vsix / .exe，
+# 会让「看不清本次构建到底产出了什么」，也是唯一能被误当成产物的目录。
+dist
+dist-electron
+out
+release
+*.vsix
+coverage
+playwright-report
+test-results
+.vscode-test
+
+# Rust 构建产物：平台相关，必须重建（且本机 target/ 有几个 GB，进上下文纯属拖慢）
+core-rs/target
+tui-rs/target
+installer-rs/target
+resources/core
+
+# 本地/机器相关文件
+.git
+.zcode
+e2e/environments.json
+pycharm-plugin/.gradle
+pycharm-plugin/build
+pycharm-plugin/.intellijPlatform
+exp
