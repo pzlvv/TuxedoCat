@@ -594,7 +594,6 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     props.userChoiceInputRef.current = '';
     props.setUserChoiceRequest(null);
     resumeFollowOnChoiceRespond();
-    resumeFollowOnChoiceRespond();
     // 同步清除 session 状态，避免切换对话后再次弹出
     if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
       props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;

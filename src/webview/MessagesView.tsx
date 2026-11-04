@@ -265,7 +265,11 @@ const UserMessage = memo(function UserMessage({
 
   // 从 meta 读取元信息；部分来源（如历史/回放消息）只带顶层 filePath/fileSelectedLines，这里做兼容
   const meta = message.meta;
-  const metaParam = meta?.param as string | undefined;
+  // meta 由 toUiMessage 从磁盘 JSONL 原样透传，字段类型没有任何运行期校验：
+  // 逐字段确认是字符串才取值，非字符串（数字 / 对象）按「没有这个字段」处理。
+  // meta.param 的合法产出方横跨 core 的子代理 From/To 与工具卡片，读取侧不能假定它是字符串
+  // （`as string` 只是断言，这里若漏判，下面的 .startsWith 会抛 TypeError 把整页打崩）。
+  const metaParam = typeof meta?.param === 'string' ? meta.param : undefined;
   const metaFilePath = (meta?.filePath as string | undefined) || message.filePath || undefined;
   const metaFileSelectedLines = (meta?.fileSelectedLines as { start: number; end: number } | undefined) || message.fileSelectedLines || undefined;
 
@@ -279,9 +283,15 @@ const UserMessage = memo(function UserMessage({
   const isToMessage = isAgentMessage && metaType === 'to';
   const isFromMessage = isAgentMessage && metaType === 'from';
 
-  // 子代理回复（From 类型）可点击跳转到对应会话
-  const agentSessionId = isFromMessage ? (metaParam!.startsWith('#') ? metaParam!.substring(1) : metaParam!.split(':').pop()!.trim()) : null;
-  const agentUserMatch = isFromMessage && !metaParam!.startsWith('#') ? metaParam!.match(/\(([^)]+)\)/) : null;
+  // 子代理回复（From 类型）可点击跳转到对应会话。
+  // 显式带上 `&& metaParam` 而不是靠 `isFromMessage` 蕴含它：`isFromMessage` 是普通
+  // 布尔值，TypeScript 不会据此收窄 `metaParam`，此前正是靠 `!` 断言跳过收窄的。
+  const agentSessionId = isFromMessage && metaParam
+    ? (metaParam.startsWith('#') ? metaParam.substring(1) : metaParam.split(':').pop()!.trim())
+    : null;
+  const agentUserMatch = isFromMessage && metaParam && !metaParam.startsWith('#')
+    ? metaParam.match(/\(([^)]+)\)/)
+    : null;
   const agentUserName = agentUserMatch ? agentUserMatch[1] : null;
   const handleAgentClick = useCallback(() => {
     if (agentSessionId) {
@@ -450,7 +460,7 @@ const UserMessage = memo(function UserMessage({
     >
       {displayParam && (
         <>
-          {isFromMessage ? (
+          {isFromMessage && metaParam ? (
             <div
               className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b cursor-pointer"
               style={{ borderColor: colors.border, fontWeight: 500 }}
@@ -461,12 +471,12 @@ const UserMessage = memo(function UserMessage({
               <span style={{ color: colors.harness, textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
                 {metaWorkspaceId
                   ? `${metaWorkspaceId} · ${agentSessionId?.slice(-8)}...`
-                  : metaParam!.startsWith('#')
+                  : metaParam.startsWith('#')
                     ? `#${agentSessionId?.slice(-8)}...`
                     : (() => {
                       // 格式: host:workspace (username):agentId, 展示为 host:workspace (username)
-                      const withoutAgentId = metaParam!.split(':').slice(0, 2).join(':');
-                      return agentUserName ? `${withoutAgentId} (${agentUserName})` : metaParam!;
+                      const withoutAgentId = metaParam.split(':').slice(0, 2).join(':');
+                      return agentUserName ? `${withoutAgentId} (${agentUserName})` : metaParam;
                     })()}
               </span>
             </div>

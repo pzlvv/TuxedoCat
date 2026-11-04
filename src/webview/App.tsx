@@ -1435,6 +1435,12 @@ onClick={handleNewConversation}
         >
           {userChoiceRequest ? (
             <UserChoiceOverlay
+              // 按请求身份重挂载：同一会话的请求被新请求替换时（UserChoiceQueue.enqueue
+              // 会 reject 旧请求）不重建实例的话，QuestionOverlay 的 drafts / index 会留在
+              // 上一个请求上——新问题清单更短或 id 不同就取到 undefined 草稿直接抛错，
+              // 清单相同则停在上次的页码与草稿。规格要求「pending 重新投递时从第一页开始，
+              // 未提交的草稿不保留」（docs/features/ask-user-question.md 的「逐页状态」）。
+              key={userChoiceRequest.choiceId}
               userChoiceRequest={userChoiceRequest}
               onChoiceResponse={handleChoiceResponse}
               onSubmit={handleUserChoiceSubmit}
