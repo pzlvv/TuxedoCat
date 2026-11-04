@@ -32,8 +32,12 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+// 只在单测里用：`TEST_FORCED` 是覆盖槽，生产路径不写
+#[cfg(test)]
+use std::sync::Mutex;
 
 use crate::shell::{self, ShellInfo};
 use crate::util;
@@ -106,7 +110,7 @@ fn current() -> Result<ShellPath, String> {
 
 /// 把解析出的 PATH 注入 shell 子进程（`$SHELL -c` 拉起的工具命令 / 后台任务）。
 pub fn apply(command: &mut Command) -> Result<(), String> {
-    apply_value(command, &current()?.shell);
+    apply_value(command, current()?.shell());
     Ok(())
 }
 
@@ -114,7 +118,7 @@ pub fn apply(command: &mut Command) -> Result<(), String> {
 ///
 /// 原生进程不认 POSIX 列表：Windows 上用逐条派生出来的 Windows 形式。
 pub fn apply_native(command: &mut Command) -> Result<(), String> {
-    apply_value(command, &current()?.native());
+    apply_value(command, current()?.native());
     Ok(())
 }
 

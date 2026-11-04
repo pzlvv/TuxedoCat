@@ -252,6 +252,11 @@ pub fn execute_builtin(invocation: &BuiltinInvocation, context: &CommandContext)
 /// 「匹配 + 就地执行」一把做完的便捷入口：调用方不关心决定与执行分离时用它
 /// （对照表与单测）；引擎要按出队位置区分处置（内置命令留到轮次边界），因此直接
 /// 组合 `builtin_invocation` / `skill_invocation` / `execute_builtin`。
+///
+/// 生产路径因此不经过这里，只剩 `dispatch_matches_the_shared_command_table` 用它按
+/// 共享对照表（`fixtures/commandDispatch.json`）验「解析 + 处置」的组合口径；
+/// 单测外用 `allow(dead_code)` 标出这个用途，不删。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn dispatch(prompt: &str, context: &CommandContext) -> DispatchOutcome {
     // 1. 内置命令（含别名）就地执行
     if let Some(invocation) = builtin_invocation(prompt) {

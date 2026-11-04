@@ -163,11 +163,6 @@ pub fn build_tool_result_maps(
     (map, canceled)
 }
 
-/// 未被取消的工具结果（`buildToolResultMap`）；取消结果见 `build_tool_result_maps`
-pub fn build_tool_result_map(messages: &[Value]) -> Vec<(String, ToolResultInfo)> {
-    build_tool_result_maps(messages).0
-}
-
 /// 持久化格式的历史消息 → UI 显示用的 `MessageData[]`（`buildReplayMessageData`）
 pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
     let (tool_results, canceled_results) = build_tool_result_maps(messages);

@@ -3780,8 +3780,6 @@ fn test_hooks(
     let queued_spawn = std::sync::Arc::clone(&spawn);
     let queued_remote = std::sync::Arc::clone(&spawn_remote);
     SubAgentHooks {
-        spawn,
-        spawn_remote,
         spawn_queued: std::sync::Arc::new(move |request, cancel| {
             let deferred_request = request.clone();
             let deferred_creator = request.creator_session_id.clone();
@@ -3823,7 +3821,7 @@ fn test_hooks(
     }
 }
 
-/// `Agent` 带 `target` 走 `spawn_remote`，不带走 `spawn`；空串是入参错误。
+/// `Agent` 带 `target` 走跨工作区创建路径，不带 `target` 走本机；空串是入参错误。
 #[test]
 fn agent_target_selects_remote_spawn_hook() {
     use std::sync::atomic::{AtomicBool, Ordering};

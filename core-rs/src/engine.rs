@@ -1287,20 +1287,13 @@ impl Core {
 
     /// 子代理工具钩子（注入 `ToolContext`）。
     ///
-    /// `spawn` 对应 `AgentTool.call` 的建会话 + 起后台查询；`deliver` 对应
-    /// `ReplyTool.call` 的 `targetEngine.submitMessage(message, 'agent', subAgentId)`。
+    /// `spawn_queued` 对应 `AgentTool.call` 的建会话 + 起后台查询（按 `target` 分流
+    /// 本机 / 跨工作区）；`deliver` 对应 `ReplyTool.call` 的
+    /// `targetEngine.submitMessage(message, 'agent', subAgentId)`。
     pub fn subagent_hooks(self: &Arc<Self>) -> tools::SubAgentHooks {
-        let spawn_core = Arc::clone(self);
-        let spawn_remote_core = Arc::clone(self);
         let deliver_core = Arc::clone(self);
         let spawn_queued_core = Arc::clone(self);
         tools::SubAgentHooks {
-            spawn: Arc::new(move |request: tools::SubAgentRequest| {
-                spawn_core.create_sub_agent(request)
-            }),
-            spawn_remote: Arc::new(move |request: tools::SubAgentRequest| {
-                spawn_remote_core.spawn_remote_agent(request)
-            }),
             spawn_queued: Arc::new(move |request, cancel| {
                 spawn_queued_core.spawn_sub_agent_queued(request, cancel)
             }),
@@ -2462,6 +2455,9 @@ impl Core {
                 return;
             }
         };
+        // 租约只在 `Drop` 上起作用（短持有随函数返回释放）：下面要读它保证存活到
+        // 写入结束，不读则会被当成未使用。
+        let _ = &lease;
         let messages = state.lock().unwrap().messages.clone();
         if !compact::has_compactable_messages(&messages, COMPACT_MAX_MESSAGES_TO_KEEP) {
             self.log("no compactable messages, ignoring compress request");
