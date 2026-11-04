@@ -30,6 +30,7 @@ import { viewerWindowWebPreferences } from './viewerWindowPrefs.js';
 import { tt } from '../src/host/i18n.js';
 import { imageMimeFor, classifyFileForOpen } from './fileTypes.js';
 import { remoteFileReaderFor, sharedClientFor } from './sidebarFilesRemote.js';
+import { connectionReadyFileInvalidation } from './connectionReadySidebar.js';
 import { localGitRunner } from './sidebarDocView.js';
 import { DocSentinelManager } from './sidebarDocWatch.js';
 import { createLocalFileWatcher } from './localFileWatch.js';
@@ -435,7 +436,10 @@ export class ElectronUIHost implements UIHost {
     this.pushFilesInvalidate(workspaceRefKey(refs[openRoots.indexOf(hit)]), ['tree']);
   }
 
-  /** 侧栏失效信号推送（specs/030）：Write 新建（tree）与 git 哨兵（doc）共用一个出口 */
+  /**
+   * 侧栏失效信号推送（specs/030）：Write 新建（tree）、git 哨兵（doc）与远程 Connection
+   * 就绪（tree，见 `connectionReadySidebar.ts`）共用一个出口。
+   */
   private pushFilesInvalidate(workspaceId: string, reasons: string[]): void {
     const webContents = this.sidebarView?.webContents;
     if (webContents && !webContents.isDestroyed()) {
@@ -714,9 +718,18 @@ export class ElectronUIHost implements UIHost {
     }
   }
 
-  /** Connection 就绪（含 Core 重启 / 快照重推）：重注册当前远程查看器监听 */
+  /**
+   * Connection 就绪（含 Core 重启 / 快照重推）：重注册当前远程查看器监听，并让远程
+   * 工作区的侧栏文件树缓存失效
+   * （specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md）。
+   *
+   * 后者不能省：侧栏的 SSH 连接与 Core 传输层是两条独立连接，首连失败时侧栏那条已被
+   * 移出缓存，Connection 就绪不会让它自己重连——错误态会一直挂到用户手动刷新。
+   */
   onWorkspaceConnectionReady(ref: WorkspaceRef): void {
     this.viewerWatch?.handleConnectionReady(ref);
+    const invalidate = connectionReadyFileInvalidation(ref);
+    if (invalidate) this.pushFilesInvalidate(invalidate.workspaceId, invalidate.reasons);
   }
 
   async openImagePreviewWindow(init: {
