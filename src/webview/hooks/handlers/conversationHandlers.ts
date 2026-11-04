@@ -103,8 +103,13 @@ export function handleConversationConversationsData(
               const next = { ...prev };
               // 建立 sessionId -> conversation 索引，避免祖先链循环内反复 find()
               const convById = new Map(convs.map((c: any) => [c.sessionId, c]));
+              // 环保护：脏数据里的 parentSessionId 可能成环（A→B→A），同一份数据在递归
+              // 渲染侧有 MAX_DEPTH 兜底（ConversationTreeItem），这里是唯一没有保护的遍历点。
+              // 无保护时 updater 会同步死循环，主线程锁死、只能重启。
+              const visited = new Set<string>();
               let id: string | null = convById.get(sid)?.parentSessionId ?? null;
-              while (id && convById.has(id)) {
+              while (id && convById.has(id) && !visited.has(id)) {
+                visited.add(id);
                 next[id] = true;
                 id = convById.get(id)!.parentSessionId;
               }

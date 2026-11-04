@@ -265,6 +265,149 @@ function findHighlightEffects(file: string, sourceFile: ts.SourceFile): Highligh
   return effects;
 }
 
+// ────────────────────────────────────────────────────────────────────
+// untrusted-payload-crashes：不可信载荷与状态不同步导致的运行时崩溃
+// （`specs/defects/webview-untrusted-payload-crashes.md` 的 RT-1 ~ RT-4）
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * RT-1：同一个语句列表里不得出现**相邻且完全相同的两条语句**。
+ *
+ * 这是复制粘贴的语法特征：`resumeFollowOnChoiceRespond();` 连写两遍会让强制回底
+ * 多推一次，且与兄弟 handler「每次应答只复位一次」的口径不一致。只比相邻两条而
+ * 不是「同函数内出现过两次」——后者会把 if / else 两支里的同样语句、switch 各 case
+ * 的 `e.preventDefault()` 全部误判（实测 17 处噪音）。
+ */
+interface DuplicateStatement {
+  file: string;
+  line: number;
+  text: string;
+}
+
+function findAdjacentDuplicateStatements(file: string, sourceFile: ts.SourceFile): DuplicateStatement[] {
+  const hits: DuplicateStatement[] = [];
+  const visit = (node: ts.Node): void => {
+    const statements = ts.isBlock(node) || ts.isSourceFile(node)
+      || ts.isCaseClause(node) || ts.isDefaultClause(node)
+      ? node.statements
+      : undefined;
+    if (statements) {
+      for (let i = 1; i < statements.length; i++) {
+        const previous = statements[i - 1].getText(sourceFile);
+        if (previous.length > 0 && previous === statements[i].getText(sourceFile)) {
+          hits.push({ file, line: lineOf(sourceFile, statements[i]), text: previous });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return hits;
+}
+
+/**
+ * RT-2：`metaParam` 的初值必须是含 `typeof` 判断的条件表达式。
+ *
+ * `meta` 由 `toUiMessage` 从磁盘 JSONL 原样透传（`msg.meta as Record<string, unknown>`），
+ * `as string | undefined` 只是类型断言，运行时不校验：`meta.param` 为数字 / 对象时
+ * `.startsWith` 直接抛 TypeError，没有 error boundary 的整棵树随之卸载。
+ */
+interface MetaParamDeclaration {
+  file: string;
+  line: number;
+  /** 初值文本，便于失败时定位 */
+  initializer: string;
+  /** 初值里含 typeof 判断 */
+  typeChecked: boolean;
+}
+
+function findMetaParamDeclarations(file: string, sourceFile: ts.SourceFile): MetaParamDeclaration[] {
+  const found: MetaParamDeclaration[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.name.text === 'metaParam'
+    ) {
+      const initializer = node.initializer ? node.initializer.getText(sourceFile) : '';
+      found.push({
+        file,
+        line: lineOf(sourceFile, node),
+        initializer,
+        typeChecked: /\btypeof\b/.test(initializer),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
+/**
+ * RT-3：`<UserChoiceOverlay>` 必须带 `key`。
+ *
+ * `QuestionOverlay` 的 `drafts` 由 `useState(初值函数)` 一次性建立，没有任何 effect
+ * 让它跟随 `questions` 变化。同一会话的请求被新请求替换时（`UserChoiceQueue.enqueue`
+ * 会 reject 旧请求），不重挂载就会在新 id 下取到 `undefined` 草稿，`draft.otherSelected`
+ * 抛错。`docs/features/ask-user-question.md` 的「逐页状态」已定义「视图重建从第一页开始」。
+ */
+interface ChoiceOverlayUsage {
+  file: string;
+  line: number;
+  hasKeyAttribute: boolean;
+}
+
+function findChoiceOverlayUsages(file: string, sourceFile: ts.SourceFile): ChoiceOverlayUsage[] {
+  const found: ChoiceOverlayUsage[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      if (node.tagName.getText(sourceFile) === 'UserChoiceOverlay') {
+        found.push({
+          file,
+          line: lineOf(sourceFile, node),
+          hasKeyAttribute: node.attributes.properties.some(
+            (property) => ts.isJsxAttribute(property) && property.name.getText(sourceFile) === 'key',
+          ),
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
+/**
+ * RT-4：沿 `parentSessionId` 上溯的 `while` 必须有环保护。
+ *
+ * 同一份数据在递归渲染侧有 `MAX_DEPTH` 保护（`ConversationTreeItem.tsx`，注释写明
+ * 「circular reference」），说明成环是被承认的脏数据形态；本处无保护时 A→B→A
+ * 会让 `setExpandedSubSessions` 的 updater 同步死循环、锁死主线程。
+ */
+interface AncestorLoop {
+  file: string;
+  line: number;
+  /** 循环体里出现已访问集合或深度上限 */
+  guarded: boolean;
+}
+
+function findAncestorLoops(file: string, sourceFile: ts.SourceFile): AncestorLoop[] {
+  const found: AncestorLoop[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isWhileStatement(node) && node.expression.getText(sourceFile).includes('convById.has')) {
+      const body = node.statement.getText(sourceFile);
+      found.push({
+        file,
+        line: lineOf(sourceFile, node),
+        guarded: /\b(visited|seen)\b|MAX_DEPTH|\bdepth\b/i.test(body),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 /** 子树里是否出现指定标识符（不进入嵌套函数体） */
 function mentionsIdentifier(node: ts.Node, name: string): boolean {
   let found = false;
@@ -313,6 +456,45 @@ runTests('webviewRenderInvariants', () => {
     const where = `${rel(effect.file)}:${effect.line}`;
     check(`${where} 缺 filePath 时不跑高亮`, effect.guarded);
     check(`${where} 依赖数组含 filePath`, effect.dependsOnPath);
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // untrusted-payload-crashes（specs/defects/webview-untrusted-payload-crashes.md）
+  // 本组的 RT 编号属于该缺陷规格，与上面 tool-card-missing-file-path-crash 的
+  // RT-1 ~ RT-3 是两个不同的追溯键，故用前缀区分。
+  // ──────────────────────────────────────────────────────────────────
+
+  // ── RT-1：相邻重复语句 ──
+  const duplicateStatements = parsed.flatMap(({ file, sourceFile }) =>
+    findAdjacentDuplicateStatements(file, sourceFile));
+  check('同一语句列表内无相邻重复语句', duplicateStatements.length === 0);
+  for (const hit of duplicateStatements) {
+    console.log(`     ${rel(hit.file)}:${hit.line} 重复语句：${hit.text}`);
+  }
+
+  // ── RT-2：meta.param 取值前判类型 ──
+  const metaParams = parsed.flatMap(({ file, sourceFile }) => findMetaParamDeclarations(file, sourceFile));
+  check('找到 metaParam 声明', metaParams.length > 0);
+  for (const declaration of metaParams) {
+    const where = `${rel(declaration.file)}:${declaration.line}`;
+    check(`${where} meta.param 取值前判字符串类型`, declaration.typeChecked);
+    if (!declaration.typeChecked) {
+      console.log(`     ${where} 初值：${declaration.initializer}`);
+    }
+  }
+
+  // ── RT-3：选择框按 choiceId 重挂载 ──
+  const overlayUsages = parsed.flatMap(({ file, sourceFile }) => findChoiceOverlayUsages(file, sourceFile));
+  check('找到 UserChoiceOverlay 渲染点', overlayUsages.length > 0);
+  for (const usage of overlayUsages) {
+    check(`${rel(usage.file)}:${usage.line} 选择框按 choiceId 重挂载`, usage.hasKeyAttribute);
+  }
+
+  // ── RT-4：祖先链遍历有环保护 ──
+  const ancestorLoops = parsed.flatMap(({ file, sourceFile }) => findAncestorLoops(file, sourceFile));
+  check('找到祖先链遍历', ancestorLoops.length > 0);
+  for (const loop of ancestorLoops) {
+    check(`${rel(loop.file)}:${loop.line} 祖先链遍历有环保护`, loop.guarded);
   }
 
   finish();

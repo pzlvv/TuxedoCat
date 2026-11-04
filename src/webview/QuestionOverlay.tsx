@@ -15,6 +15,9 @@ interface Draft {
   custom: string;
 }
 
+/** 空草稿：某题尚未登记（或 `questions` 变化后 id 变了）时的取值 */
+const EMPTY_DRAFT: Draft = { selected: [], otherSelected: false, custom: '' };
+
 function createDrafts(questions: UserChoiceQuestion[]): Record<string, Draft> {
   const drafts: Record<string, Draft> = {};
   for (const question of questions) {
@@ -40,7 +43,10 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
   const programmaticFocusRef = useRef(false);
 
   const current = questions[index];
-  const draft = drafts[current.id];
+  // drafts 由 useState 初值函数一次性建立，没有 effect 让它跟随 questions 变化；
+  // 正常路径由外层按 choiceId 重挂载保证两者一致（App.tsx 的 key），这里兜住「将来
+  // 有新的投递路径绕过 key」的情况：取不到草稿就按空草稿渲染，不退化成整页白屏。
+  const draft = drafts[current.id] ?? EMPTY_DRAFT;
   const isLast = index === questions.length - 1;
 
   const answered = useCallback((question: UserChoiceQuestion): boolean => {
