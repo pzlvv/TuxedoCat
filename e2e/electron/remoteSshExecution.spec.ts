@@ -9,7 +9,7 @@ import { launchApp, waitForMessageBox, clickMessageBoxButton, messageBoxText } f
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, RecordedRequest } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
-import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_DEPLOY_PREFIX } from '../../src/config/project';
+import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_DEPLOY_PREFIX, LOG_FILE_NAME } from '../../src/config/project';
 
 /** 远端部署目录 / 状态目录 / 进程匹配模式（产品身份唯一来源 `src/config/project.json`，
  *  用例里不落字面量；pgrep / pkill 模式首字符加 [] 不匹配执行它的远端 shell 自身） */
@@ -555,6 +555,15 @@ test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读�
     },
   };
 
+  /** 读沙箱里的应用日志（诊断用：`[workspace-tab]` / `[sidebar-files]` 行）；宿未起时返回空串 */
+  const appLog = (): string => {
+    try {
+      return fs.readFileSync(path.join(app!.homeDir, CONFIG_DIR_NAME, 'logs', LOG_FILE_NAME), 'utf8');
+    } catch {
+      return '';
+    }
+  };
+
   try {
     // 另开一个本地工作区：`launchApp` 要等一个 webview 聊天视图出现，而活动项落在
     // 不可用的远程工作区时聊天区是占位页（data:text/html），没有聊天视图可等
@@ -570,14 +579,6 @@ test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读�
       // 保留沙箱 home：失败要读它的日志定位（成功路径在 finally 里清）
       keepHomeOnClose: true,
     });
-    /** 读沙箱里的应用日志（诊断用：`[workspace-tab]` / `[sidebar-files]` 行） */
-    const appLog = (): string => {
-      try {
-        return fs.readFileSync(path.join(app!.homeDir, CONFIG_DIR_NAME, 'logs', 'tuxedo-cat.log'), 'utf8');
-      } catch {
-        return '';
-      }
-    };
 
     // 1) 不可用落定：标签页红点 + 占位页「重新连接」
     const titlebar = await app.titlebarPage();
@@ -621,13 +622,7 @@ test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读�
     await fs.promises.rm(localDir, { recursive: true, force: true }).catch(() => undefined);
   } catch (err) {
     // 失败时把诊断行打出来（沙箱 home 保留了日志，另可人工翻）
-    const log = (() => {
-      try {
-        return fs.readFileSync(path.join(app!.homeDir, CONFIG_DIR_NAME, 'logs', 'tuxedo-cat.log'), 'utf8');
-      } catch {
-        return '';
-      }
-    })();
+    const log = appLog();
     console.log('[诊断] workspace-tab 日志：\n' + log.split('\n').filter((l) => l.includes('[workspace-tab]')).slice(-25).join('\n'));
     console.log('[诊断] sidebar-files 日志：\n' + log.split('\n').filter((l) => l.includes('[sidebar-files]')).slice(-15).join('\n'));
     console.log(`[诊断] 沙箱 home（含日志）：${app?.homeDir ?? '<未创建>'}`);
