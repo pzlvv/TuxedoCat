@@ -418,9 +418,12 @@ pub fn acquire_for_core(
 
 /// 变更租约：`Registered` = 会话已在本 Core 装载（锁长持，写完不用管）；
 /// `Acquired` = 未装载的短持有（Drop 即释放），调用方必须让它在写入期间存活。
+///
+/// `Acquired` 的句柄只经 `Drop` 起作用——租约的存在本身就是「写期间持有」这一事实，
+/// 读不到句柄的字段是设计如此（名字前的下划线让 `dead_code` 不把它当成缺陷）。
 pub enum MutationLease {
     Registered,
-    Acquired(SessionLockHandle),
+    Acquired { _handle: SessionLockHandle },
 }
 
 /// 变更入口的守卫（FR-002）：会话被其他实例持有时拒绝；未装载时取短持有租约，
@@ -440,7 +443,9 @@ pub fn begin_mutation(
             ))
         })?;
     let path = lock_path(&project, session_id)?;
-    Ok(MutationLease::Acquired(acquire(&path)?))
+    Ok(MutationLease::Acquired {
+        _handle: acquire(&path)?,
+    })
 }
 
 /// 锁拒绝错误装载入口的统一判别：`ensure_loaded` 等返回 `Err(String)` 的入口用它

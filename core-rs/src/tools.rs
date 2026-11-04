@@ -245,12 +245,9 @@ pub enum SubAgentDispatch {
 ///
 /// 单测不注入时这两个工具报错（「找不到引擎」）。
 pub struct SubAgentHooks {
-    /// 建本机子会话 + 起后台查询，返回子会话 id
-    pub spawn: std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
-    /// 建跨工作区子会话（specs/023）：请求宿主在目标工作区创建并返回子会话 id
-    pub spawn_remote:
-        std::sync::Arc<dyn Fn(SubAgentRequest) -> Result<String, String> + Send + Sync>,
-    /// 槽位感知的派发入口：有空位当场创建（`Created`），已满改为排队派生（`Queued`）
+    /// 槽位感知的派发入口：有空位当场创建（`Created`），已满改为排队派生（`Queued`）。
+    /// 本机 / 跨工作区两条创建路径按 `SubAgentRequest.target` 在这里分流，不再各留一个
+    /// 入口（各自的产物同是子会话 id，分成两个只能让「带了 target 却走本机」变成可能）。
     pub spawn_queued: std::sync::Arc<
         dyn Fn(
                 SubAgentRequest,
@@ -1948,7 +1945,9 @@ fn read_pipe(
             Ok(size) => {
                 collected.extend_from_slice(&buffer[..size]);
                 let chunk = decoder.push(&buffer[..size]);
-                let snapshot = {
+                // 整个块是一段临界区：追加到 `full` 后立刻按同一份快照发进度，
+                // 锁外不再需要这份快照（进度回调是唯一消费者）。
+                {
                     let mut full = full.lock().unwrap();
                     full.full.push_str(&chunk);
                     full.raw.extend_from_slice(&buffer[..size]);
@@ -1986,8 +1985,7 @@ fn read_pipe(
                             });
                         }
                     }
-                    snapshot
-                };
+                }
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }

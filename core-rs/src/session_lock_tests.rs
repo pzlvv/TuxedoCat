@@ -9,9 +9,8 @@ use crate::config;
 use crate::engine::Core;
 use crate::session_lock;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -114,8 +113,6 @@ fn spawn_child(mode: &str, path: &std::path::Path) -> std::process::Child {
         .spawn()
         .expect("spawn child")
 }
-
-static CHILD_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 fn held_by_child(project: &str, session_id: &str) -> (std::path::PathBuf, std::process::Child) {
     let path = lock_file(project, session_id);

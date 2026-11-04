@@ -201,6 +201,10 @@ fn wait_for_grant(creator_session_id: &str, waiter: Arc<SlotWaiter>, cancel: &At
 /// 取一个槽位：有空位且无排队者时立即返回 true（无排队者才直取，保证 FIFO 公平）；
 /// 否则入队等待，直到获得预留（true）或取消标记先到（false）。
 /// 返回 true 的调用方必须以 `release_slot` 配对，否则槽位泄露。
+///
+/// 生产路径走不阻塞的 [`request_slot_or_defer`]（排队派生），这个阻塞版本只剩单测
+/// 用：用例要「占满槽位」或直测 FIFO 桶语义时在这里同步等结果。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn acquire_slot(creator_session_id: &str, cancel: &AtomicBool) -> bool {
     if cancel.load(Ordering::Relaxed) {
         return false;
