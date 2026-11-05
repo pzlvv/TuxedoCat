@@ -753,6 +753,102 @@ fn sub_agent_start_emits_running_runtime_snapshot() {
     }
 }
 
+/// RT-1（`specs/defects/local-subagent-creator-user-in-runtime-snapshot`）：本地子代理在
+/// `sessionRuntimeChanged` 里的 `creator` 是 agent 形态，与 `meta.json` 同源
+/// （specs/025 FR-002 / AC-7）。默认 `SessionState.creator` 是 `user`，创建时漏写会让
+/// 托盘提醒与未读绿灯按「用户会话」处理子代理的完成。
+#[test]
+fn local_sub_agent_runtime_creator_is_agent_form() {
+    let sandbox = Sandbox::new("engine-subagent-creator-form");
+    // 与 RT-1 同一条路径：`submit_tool_use("Agent")`（SpinLoop 的真实入口），父会话按 spin
+    // 主会话处理，Reply 只进上下文不触发父会话再跑一轮。
+    let llm = FakeLlm::start(|_index, body| {
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"子代理已完成任务"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-subagent-creator-form";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+    harness.core.session(creator).lock().unwrap().work_mode = WorkMode::Spin;
+
+    harness
+        .core
+        .submit_tool_use(
+            creator,
+            "Agent",
+            &json!({ "prompt": "任务", "agentRole": "Master", "description": "节点 1" }),
+        )
+        .expect("Agent 工具应当起子代理");
+    let child = crate::subagent::list_for_creator(creator)
+        .last()
+        .cloned()
+        .expect("子代理应当登记");
+
+    // 取第一条包含该子会话的运行时快照：归属事实在创建时就该写定，不等打开对话
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut first_snapshot = None;
+    while std::time::Instant::now() < deadline && first_snapshot.is_none() {
+        first_snapshot = harness
+            .sink
+            .events_of("sessionRuntimeChanged")
+            .into_iter()
+            .find(|event| {
+                event["states"]
+                    .as_array()
+                    .map(|states| states.iter().any(|state| state["sessionId"] == child.as_str()))
+                    .unwrap_or(false)
+            });
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let snapshot = first_snapshot.unwrap_or_else(|| {
+        panic!(
+            "子代理创建后应出现在 sessionRuntimeChanged 里；实际事件: {:?}",
+            harness.sink.event_types()
+        )
+    });
+    let child_entry = snapshot["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == child.as_str())
+        .expect("子会话条目");
+    let expected = json!({ "kind": "agent", "workspaceId": null, "sessionId": creator });
+    assert_eq!(
+        child_entry["creator"], expected,
+        "本地子代理的运行时 creator 应为 agent 形态（specs/025 FR-002）：漏写会退回默认 user，\
+         托盘提醒与未读绿灯据此把它当成用户会话"
+    );
+    // 与 meta.json 同源（AC-7）：磁盘侧本就是这个形态，两侧不得各执一份
+    let metadata = history::load_metadata(&child, &project).expect("子会话 meta.json");
+    assert_eq!(
+        metadata["creator"],
+        json!({ "kind": "agent", "workspaceId": null, "sessionId": creator }),
+        "meta.json 的 creator 应为 agent 形态"
+    );
+    // 树事实不被归属修复改写
+    assert_eq!(child_entry["parentSessionId"], creator, "parentSessionId 仍是父会话 id");
+
+    // 等子代理收尾，避免后台线程跨用例残留
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline
+        && !harness
+            .sink
+            .events_of("queryEnd")
+            .iter()
+            .any(|event| event["sessionId"] == child.as_str())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// spin 语义：同一子代理的 Reply 只响应一次；重复 / 迟到 Reply 不落盘、不入队，
 /// 也不会拉起父对话的 LLM 循环（docs/features/user-message-pipeline.md 第 3.3 节）。
 #[test]
@@ -8103,6 +8199,47 @@ fn reply_to_cross_workspace_subagent_reports_remote_workspace() {
             .iter()
             .all(|event| event["type"] != "crossWorkspaceAgentReplyRequested"),
         "本地无会话时不得发跨工作区回投事件"
+    );
+    crate::subagent::reset_for_test();
+}
+
+/// RT-2（`specs/defects/local-subagent-creator-user-in-runtime-snapshot`）：本地子代理的
+/// creator 也指向父会话，但两者同在**本** Core——父会话真的取不到（已关闭 / 删除）时
+/// 不能当成「在另一个工作区」发回投事件。那条事件经宿主原样灌回本 Core
+/// （`agentReplyReceived` 的 sessionId 就是该父会话），会再次落回同一分支形成自激环。
+/// 判据是 creator 的 `workspaceId`：本地创建为 `null`，跨工作区对话才有值。
+#[test]
+fn local_sub_agent_reply_to_closed_parent_does_not_spin_cross_workspace_loop() {
+    let _serial = crate::test_support::serial();
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    // 父会话没有本地 SessionState：关闭 / 删除后子代理仍在跑的窗口期
+    let sub = harness.core.session("sub_local_orphan");
+    {
+        let mut state = sub.lock().unwrap();
+        state.creator = crate::engine::SessionCreator::Agent {
+            workspace_id: None,
+            session_id: "s-parent-closed".to_string(),
+        };
+        state.parent_session_id = Some("s-parent-closed".to_string());
+    }
+    crate::subagent::register("sub_local_orphan", "s-parent-closed");
+
+    let error = harness
+        .core
+        .deliver_agent_reply("s-parent-closed", "做完了", "sub_local_orphan")
+        .expect_err("本地子代理的父会话不在本进程时属于「目标不存在」");
+    assert!(
+        !error.contains("另一个工作区"),
+        "本地子代理的父会话与它同在本 Core，不能说「在另一个工作区」: {error}"
+    );
+    assert!(
+        harness
+            .sink
+            .events()
+            .iter()
+            .all(|event| event["type"] != "crossWorkspaceAgentReplyRequested"),
+        "本地子代理不得发跨工作区回投事件（会经宿主回灌成自激环）"
     );
     crate::subagent::reset_for_test();
 }
