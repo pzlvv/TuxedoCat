@@ -1496,6 +1496,15 @@ impl Core {
             state.prompt_mode = prompt_mode;
             state.web_search = web_search;
             state.parent_session_id = Some(creator.clone());
+            // 归属根事实与树事实同时写定（specs/025 FR-002）：默认 `creator` 是 user，
+            // 漏写会让运行时快照把子代理当成用户会话，完成提醒 / 未读绿灯的抑制失效
+            // （`specs/defects/local-subagent-creator-user-in-runtime-snapshot`）。取值与
+            // `history::create_sub_agent_metadata` 落盘的一致：本地创建 workspaceId 为 null。
+            // 不靠 `ensure_loaded` 补——那要等用户打开对话，期间快照一直报 user。
+            state.creator = SessionCreator::Agent {
+                workspace_id: None,
+                session_id: creator.clone(),
+            };
             state.sub_agent_role = Some(request.role.clone());
             state.sub_agent_description = Some(request.description.clone());
             // 子代理 system prompt = 主对话同款提示词（按生效预设组装；非 Master 角色
@@ -1743,14 +1752,23 @@ impl Core {
             // specs/023 FR-003：跨工作区子代理的 Reply 目标是发起方会话——它在另一个
             // Core 里。目标等于本会话 creator 指向的会话时交给宿主回投，不当作
             // 「会话不存在」（specs/025 FR-002：归属读 creator）。
-            let creator_target = self.session_if_exists(from_session_id).and_then(|state| {
+            //
+            // 只认 `workspaceId` 有值的 agent 形态：本地子代理的 creator 也指向父会话
+            // （`workspaceId` 为 `null`），但父会话与本会话同在一个 Core——目标取不到即
+            // 父会话真的已关闭 / 删除，不是「在另一个工作区」。放行会发出的回投事件经
+            // 宿主原样回灌本 Core（`agentReplyReceived` 的 sessionId 即该父会话），
+            // 再次落回本分支，形成自激事件环。
+            let remote_creator_target = self.session_if_exists(from_session_id).and_then(|state| {
                 let guard = state.lock().unwrap();
                 match &guard.creator {
-                    SessionCreator::Agent { session_id, .. } => Some(session_id.clone()),
-                    SessionCreator::User => None,
+                    SessionCreator::Agent {
+                        workspace_id: Some(_),
+                        session_id,
+                    } => Some(session_id.clone()),
+                    _ => None,
                 }
             });
-            if creator_target.as_deref() == Some(target_session_id) {
+            if remote_creator_target.as_deref() == Some(target_session_id) {
                 self.emit(json!({
                     "type": "crossWorkspaceAgentReplyRequested",
                     "sessionId": target_session_id,
