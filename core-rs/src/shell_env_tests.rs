@@ -154,27 +154,36 @@ fn apply_and_apply_native_write_their_own_form() {
 
 /// 混合形态归一（Git Bash 启动的进程里，进程环境 PATH 的后半段是塞进一个 token 的
 /// POSIX 列表）：`/c/foo` 提成 `C:\foo`，纯 POSIX 目录丢掉，重复去掉。
+///
+/// 归一化是 Windows 专有逻辑：`native_path_from` 在其它平台恒返回 `None`（原生子进程
+/// 直接用进程环境的 PATH），所以本用例只在 Windows 上跑；非 Windows 的语义由
+/// `native_path_from_returns_none_off_windows` 覆盖。
+#[cfg(windows)]
 #[test]
 fn native_path_from_normalizes_git_bash_hybrid_lists() {
     let raw = "C:\\Windows\\system32;D:\\Program Files\\Git\\usr\\bin;/mingw64/bin:/usr/bin:/c/Users/me/bin;/d/Program Files/nodejs;C:\\Windows\\system32;";
     let normalized = native_path_from(OsStr::new(raw)).expect("应产出非空结果");
     let text = normalized.to_string_lossy().to_string();
-    #[cfg(windows)]
-    {
-        let entries: Vec<&str> = text.split(';').filter(|e| !e.is_empty()).collect();
-        assert_eq!(
-            entries,
-            vec![
-                "C:\\Windows\\system32",
-                "D:\\Program Files\\Git\\usr\\bin",
-                "C:\\Users\\me\\bin",
-                "D:\\Program Files\\nodejs",
-            ],
-            "got {text}"
-        );
-    }
-    #[cfg(not(windows))]
-    assert!(text.is_empty() || !text.contains('/'), "got {text}");
+    let entries: Vec<&str> = text.split(';').filter(|e| !e.is_empty()).collect();
+    assert_eq!(
+        entries,
+        vec![
+            "C:\\Windows\\system32",
+            "D:\\Program Files\\Git\\usr\\bin",
+            "C:\\Users\\me\\bin",
+            "D:\\Program Files\\nodejs",
+        ],
+        "got {text}"
+    );
+}
+
+/// 非 Windows 上不做归一化：原生子进程直接用进程环境里的 PATH（POSIX 分隔符就是它的
+/// 原生形式），因此 `native_path_from` 恒返回 `None`——`apply_native` 据此不覆盖 PATH。
+#[cfg(not(windows))]
+#[test]
+fn native_path_from_returns_none_off_windows() {
+    assert!(native_path_from(OsStr::new("/usr/bin:/bin")).is_none());
+    assert!(native_path_from(OsStr::new("/mingw64/bin:/usr/bin")).is_none());
 }
 
 fn child_path(command: &Command) -> Option<String> {
