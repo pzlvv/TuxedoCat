@@ -1817,6 +1817,7 @@ fn write_creates_parent_directories_and_reports_size() {
 fn write_requires_content_and_overwrites() {
     let sandbox = Sandbox::new("tools-write-empty");
     sandbox.write_file("a.txt", "old");
+    sandbox.seed_read("s-tools", "a.txt");
     let ctx = context(&sandbox);
 
     let missing = execute("Write", &json!({ "file_path": "a.txt" }), &ctx);
@@ -1864,6 +1865,7 @@ fn edit_validates_its_arguments() {
 fn edit_replaces_a_unique_occurrence() {
     let sandbox = Sandbox::new("tools-edit-once");
     sandbox.write_file("a.txt", "alpha beta gamma\n");
+    sandbox.seed_read("s-tools", "a.txt");
     let outcome = execute(
         "Edit",
         &json!({ "file_path": "a.txt", "old_string": "beta", "new_string": "BETA" }),
@@ -1881,6 +1883,7 @@ fn edit_replaces_a_unique_occurrence() {
 fn edit_reports_missing_and_ambiguous_needles() {
     let sandbox = Sandbox::new("tools-edit-ambiguous");
     sandbox.write_file("a.txt", "x\nx\nx\n");
+    sandbox.seed_read("s-tools", "a.txt");
     let ctx = context(&sandbox);
 
     let missing = execute(
@@ -1912,6 +1915,7 @@ fn edit_reports_missing_and_ambiguous_needles() {
 fn edit_replace_all_rewrites_every_occurrence() {
     let sandbox = Sandbox::new("tools-edit-all");
     sandbox.write_file("a.txt", "x\nx\nx\n");
+    sandbox.seed_read("s-tools", "a.txt");
     let outcome = execute(
         "Edit",
         &json!({ "file_path": "a.txt", "old_string": "x", "new_string": "y", "replace_all": true }),
@@ -1928,8 +1932,8 @@ fn edit_replace_all_rewrites_every_occurrence() {
 fn edit_scope_limits_the_search_range() {
     let sandbox = Sandbox::new("tools-edit-scope");
     sandbox.write_file("a.txt", "keep\ntarget\nkeep\n");
+    sandbox.seed_read("s-tools", "a.txt");
     let ctx = context(&sandbox);
-
     // 只搜第 2 行：唯一命中
     let scoped = execute(
         "Edit",
@@ -1967,6 +1971,7 @@ fn edit_carries_diff_fields_for_the_tool_result_block() {
     // beforeContent 原样拷进 tool_result block（UI diff 展示 + 历史恢复重算 diff）
     let sandbox = Sandbox::new("tools-edit-diff-fields");
     sandbox.write_file("a.txt", "one\r\ntwo\r\nthree\r\n");
+    sandbox.seed_read("s-tools", "a.txt");
     let outcome = execute(
         "Edit",
         &json!({ "file_path": "a.txt", "old_string": "two", "new_string": "TWO" }),
@@ -1999,7 +2004,8 @@ fn write_carries_before_content_for_rollback() {
     let extra = created.extra().expect("Write 应携带额外字段");
     assert_eq!(extra["beforeContent"], Value::Null);
 
-    // 覆盖文件：beforeContent 是旧内容
+    // 覆盖文件：beforeContent 是旧内容。这里不插 Read——上一行的 Write 成功即已刷新
+    // 读取记录（specs/038 FR-002：自己的写入不阻塞自己）
     let updated = execute(
         "Write",
         &json!({ "file_path": "new.txt", "content": "world\n" }),
@@ -2948,6 +2954,9 @@ mod edit_result_parity_tests {
             let missing = case.get("missing").and_then(Value::as_bool).unwrap_or(false);
             if !missing {
                 sandbox.write_file(relative, content);
+                // 对照表只锁工具输出，不关心读取前置（specs/038）：先 seed 一次，
+                // 让每个场景从「模型已读过」的状态开始
+                sandbox.seed_read("s-tools", relative);
             }
             let mut input = case.get("args").cloned().unwrap_or(json!({}));
             input["file_path"] = json!(relative);
@@ -3072,6 +3081,13 @@ mod tool_result_parity_tests {
                 }
             }
             let input = case.get("input").cloned().unwrap_or(json!({}));
+            // 对照表只锁工具输出，不关心读取前置（specs/038）：用例显式声明读过哪个
+            // 文件，就按声明 seed；没声明的（新建 / 从未读）保持守卫的真实行为。
+            if let Some(reads) = case.get("seedReads").and_then(Value::as_array) {
+                for relative in reads.iter().filter_map(Value::as_str) {
+                    sandbox.seed_read("s-tools", relative);
+                }
+            }
             let outcome = execute(tool, &input, &context(&sandbox));
             let actual = text(&outcome).to_string();
             let expected = case
@@ -4190,6 +4206,11 @@ fn transfer_success_summary_text() {
                 skipped_symlinks: 2,
                 source_workspace_id: "m1:/ws1".to_string(),
                 dest_workspace_id: "m2:/ws2".to_string(),
+                paths: vec![
+                    "src/a.txt".to_string(),
+                    "src/sub/b.txt".to_string(),
+                    "src/sub/deep/c.txt".to_string(),
+                ],
             })
         })),
         None,
@@ -4206,6 +4227,18 @@ fn transfer_success_summary_text() {
             assert!(text.contains("m1:/ws1"), "文案应含源身份：{text}");
             assert!(text.contains("m2:/ws2"), "文案应含目标身份：{text}");
             assert!(text.contains("skipped 2 symlinks"), "文案应含跳过数：{text}");
+            // 统计行逐字不变（specs/042 非目标）：明细只追加在它之后的行
+            let first_line = text.lines().next().unwrap_or("");
+            assert_eq!(
+                first_line,
+                "✓ Transferred 3 files (4.0 KB) from `m1:/ws1` to `m2:/ws2` (skipped 2 symlinks)",
+                "统计行必须与改动前逐字一致：{text}"
+            );
+            assert_eq!(
+                text.lines().skip(1).collect::<Vec<_>>(),
+                vec!["  - src/a.txt", "  - src/sub/b.txt", "  - src/sub/deep/c.txt"],
+                "明细行格式应为 `  - {{rel}}`：{text}"
+            );
         }
         other => panic!("期望成功，得到 {other:?}"),
     }
@@ -4213,6 +4246,83 @@ fn transfer_success_summary_text() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].source_target, None, "缺省端应为 None");
     assert_eq!(requests[0].dest_target.as_deref(), Some("m2:/ws2"));
+}
+
+/// 清单超过上限：只列前 `TRANSFER_PATH_DETAIL_LIMIT` 条 + 一行「还有 M 个」（specs/042 FR-003）。
+#[test]
+fn transfer_path_detail_caps_and_counts_the_rest() {
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    let total = TRANSFER_PATH_DETAIL_LIMIT + 7;
+    let paths: Vec<String> = (0..total).map(|i| format!("dir/file-{i}.txt")).collect();
+    let ctx = transfer_test_context(
+        Some(std::sync::Arc::new(move |_request, _cancel| {
+            Ok(TransferSummary {
+                files: total as u64,
+                bytes: 1024,
+                skipped_symlinks: 0,
+                source_workspace_id: "m1:/ws1".to_string(),
+                dest_workspace_id: "m2:/ws2".to_string(),
+                paths: paths.clone(),
+            })
+        })),
+        None,
+    );
+    let input = json!({ "sourcePath": "/a", "targetPath": "/b" });
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Success(text) => {
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(
+                lines[0],
+                "✓ Transferred 27 files (1.0 KB) from `m1:/ws1` to `m2:/ws2`",
+                "统计行不带 skipped 段：{text}"
+            );
+            assert_eq!(
+                lines.len(),
+                1 + TRANSFER_PATH_DETAIL_LIMIT + 1,
+                "明细行 + 折叠行：{text}"
+            );
+            assert_eq!(lines[1], "  - dir/file-0.txt");
+            assert_eq!(
+                lines[TRANSFER_PATH_DETAIL_LIMIT],
+                "  - dir/file-19.txt",
+                "最后一条展示的是第 {TRANSFER_PATH_DETAIL_LIMIT} 条"
+            );
+            assert_eq!(lines[lines.len() - 1], "  ... and 7 more files");
+        }
+        other => panic!("期望成功，得到 {other:?}"),
+    }
+}
+
+/// 空清单：统计行之后不带任何明细行（宿主没回 `paths` 的旧版本结果也走这条）。
+#[test]
+fn transfer_path_detail_is_absent_for_empty_paths() {
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    let ctx = transfer_test_context(
+        Some(std::sync::Arc::new(|_request, _cancel| {
+            Ok(TransferSummary {
+                files: 0,
+                bytes: 0,
+                skipped_symlinks: 0,
+                source_workspace_id: "m1:/ws1".to_string(),
+                dest_workspace_id: "m2:/ws2".to_string(),
+                paths: Vec::new(),
+            })
+        })),
+        None,
+    );
+    let input = json!({ "sourcePath": "/a", "targetPath": "/b" });
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Success(text) => {
+            assert_eq!(
+                text,
+                "✓ Transferred 0 files (0 B) from `m1:/ws1` to `m2:/ws2`",
+                "空清单不应追加任何行（也不留尾随换行）：{text:?}"
+            );
+        }
+        other => panic!("期望成功，得到 {other:?}"),
+    }
 }
 
 /// 宿主回取消错误且会话取消标记已置位：按「工具被中止」收尾（FR-007）。
@@ -4376,6 +4486,7 @@ fn write_and_edit_record_modified_md_docs() {
     // Write 新建 md / 覆盖既有 md 都登记
     assert!(!execute("Write", &json!({ "file_path": "a.md", "content": "hello" }), &ctx).is_error());
     sandbox.write_file("b.md", "old");
+    sandbox.seed_read("s-tools", "b.md");
     assert!(!execute("Write", &json!({ "file_path": "b.md", "content": "new" }), &ctx).is_error());
     // Edit 修改 md 也登记
     assert!(
@@ -4567,4 +4678,237 @@ fn bash_gate_applies_before_run_in_background_branch() {
         text(&outcome),
         BASH_DETACH_GATE_MESSAGE.replace("{}", "nohup")
     );
+}
+
+// ==================== 读后失效守卫（specs/038-read-before-edit-guard） ====================
+
+/// 守卫用例的公共前置：清空静态表（用例间不串味），返回沙箱与 ctx。
+///
+/// 与既有用例的区别：这里的用例**刻意不 seed**，走的就是「本会话没读过」的真实
+/// 路径；需要「读过」的场景显式调 `seed_read` 或真的跑一次 Read。
+fn guard_setup(name: &str) -> (Sandbox, ToolContext) {
+    let sandbox = Sandbox::new(name);
+    crate::read_guard::reset_for_test();
+    let ctx = context(&sandbox);
+    (sandbox, ctx)
+}
+
+/// AC-1：Read → 外部改写 → Edit 被拒，磁盘不变（spec FR-001）。
+#[test]
+fn guard_rejects_edit_after_external_change() {
+    let (sandbox, ctx) = guard_setup("guard-edit-stale");
+    sandbox.write_file("a.ts", "hello\n");
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx).is_error());
+
+    // 外部进程改写（不是本会话的写入）
+    sandbox.write_file("a.ts", "hello world\n");
+    let outcome = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "hello", "new_string": "bye" }),
+        &ctx,
+    );
+    assert!(outcome.is_error());
+    let message = text(&outcome);
+    assert!(
+        message.starts_with("File has been modified since it was last read: a.ts"),
+        "got {message}"
+    );
+    assert!(
+        message.contains("Read the file again before editing it."),
+        "got {message}"
+    );
+    // 磁盘保持不变
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.ts")).unwrap(),
+        "hello world\n"
+    );
+}
+
+/// AC-2：同一情形下 Write 覆盖同样被拒，磁盘不变（spec FR-001）。
+#[test]
+fn guard_rejects_write_after_external_change() {
+    let (sandbox, ctx) = guard_setup("guard-write-stale");
+    sandbox.write_file("a.ts", "hello\n");
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx).is_error());
+
+    sandbox.write_file("a.ts", "external\n");
+    let outcome = execute(
+        "Write",
+        &json!({ "file_path": "a.ts", "content": "mine\n" }),
+        &ctx,
+    );
+    assert!(outcome.is_error());
+    assert!(
+        text(&outcome).starts_with("File has been modified since it was last read: a.ts"),
+        "got {}",
+        text(&outcome)
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.ts")).unwrap(),
+        "external\n"
+    );
+}
+
+/// AC-3：重新 Read 之后 Edit / Write 恢复正常（spec FR-002）。
+#[test]
+fn guard_allows_edit_after_reread() {
+    let (sandbox, ctx) = guard_setup("guard-reread");
+    sandbox.write_file("a.ts", "hello\n");
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx).is_error());
+    sandbox.write_file("a.ts", "hello world\n");
+    assert!(execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "hello", "new_string": "bye" }),
+        &ctx
+    )
+    .is_error());
+
+    // 重新读一次：记录刷新成磁盘当前内容
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx).is_error());
+    let outcome = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "hello", "new_string": "bye" }),
+        &ctx,
+    );
+    assert!(!outcome.is_error(), "got {}", text(&outcome));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.ts")).unwrap(),
+        "bye world\n"
+    );
+}
+
+/// AC-4：本会话自己的写入刷新记录，连续两次 Edit 不需要插 Read（spec FR-002）。
+#[test]
+fn guard_allows_consecutive_edits_without_rereading() {
+    let (sandbox, ctx) = guard_setup("guard-consecutive");
+    sandbox.write_file("a.ts", "one\ntwo\n");
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx).is_error());
+
+    let first = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "one", "new_string": "1" }),
+        &ctx,
+    );
+    assert!(!first.is_error(), "got {}", text(&first));
+    // 没有 Read，直接第二次 Edit：自己的写入已刷新记录
+    let second = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "two", "new_string": "2" }),
+        &ctx,
+    );
+    assert!(!second.is_error(), "got {}", text(&second));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.ts")).unwrap(),
+        "1\n2\n"
+    );
+}
+
+/// AC-5：从未 Read 过的已存在文件，Edit 被拒并要求先 Read（spec FR-003）。
+#[test]
+fn guard_rejects_edit_of_never_read_file() {
+    let (sandbox, ctx) = guard_setup("guard-never-read");
+    sandbox.write_file("a.ts", "hello\n");
+    let outcome = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "hello", "new_string": "bye" }),
+        &ctx,
+    );
+    assert!(outcome.is_error());
+    assert!(
+        text(&outcome).starts_with("Please read the file before editing it: a.ts"),
+        "got {}",
+        text(&outcome)
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.ts")).unwrap(),
+        "hello\n"
+    );
+}
+
+/// AC-6：从未 Read 过的文件，Write **新建**照常成功（spec FR-003）。
+#[test]
+fn guard_allows_write_of_never_read_new_file() {
+    let (sandbox, ctx) = guard_setup("guard-create");
+    let outcome = execute(
+        "Write",
+        &json!({ "file_path": "nested/new.ts", "content": "x\n" }),
+        &ctx,
+    );
+    assert!(!outcome.is_error(), "got {}", text(&outcome));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("nested/new.ts")).unwrap(),
+        "x\n"
+    );
+}
+
+/// AC-7：片段 Read 也建立**整份**文件指纹；文件未变时窗口内编辑成功，外部改动后
+/// 即使改动落在窗口外也同样被拒（spec FR-001 / FR-003）。
+#[test]
+fn guard_partial_read_covers_the_whole_file() {
+    let (sandbox, ctx) = guard_setup("guard-partial");
+    let original = (1..=30).map(|n| format!("line {n}\n")).collect::<String>();
+    sandbox.write_file("a.ts", &original);
+
+    // 只读 10–20 行
+    assert!(!execute(
+        "Read",
+        &json!({ "file_path": "a.ts", "offset": 10, "limit": 11 }),
+        &ctx
+    )
+    .is_error());
+
+    // 文件未变：命中窗口内的文本可以编辑
+    let inside = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "line 15", "new_string": "LINE 15" }),
+        &ctx,
+    );
+    assert!(!inside.is_error(), "got {}", text(&inside));
+
+    // 重新读一次（上面那次 Edit 已刷新记录，这里显式读以对照外部改动）
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx).is_error());
+    // 外部改动落在读取窗口之外（第 1 行）：整份指纹仍然发现内容变了
+    let mut changed = std::fs::read_to_string(sandbox.workspace.join("a.ts")).unwrap();
+    changed = changed.replace("line 1\n", "line ONE\n");
+    sandbox.write_file("a.ts", &changed);
+    let outside = execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "line 2", "new_string": "LINE 2" }),
+        &ctx,
+    );
+    assert!(outside.is_error(), "got {}", text(&outside));
+    assert!(
+        text(&outside).starts_with("File has been modified since it was last read: a.ts"),
+        "got {}",
+        text(&outside)
+    );
+}
+
+/// 会话隔离：会话 A 读过，不代表会话 B 读过（spec FR-003 第 1 条）。
+#[test]
+fn guard_is_scoped_per_session() {
+    let (sandbox, ctx_a) = guard_setup("guard-session-scope");
+    sandbox.write_file("a.ts", "hello\n");
+    let mut ctx_b = context(&sandbox);
+    ctx_b.session_id = "s-other".to_string();
+    assert!(!execute("Read", &json!({ "file_path": "a.ts" }), &ctx_a).is_error());
+
+    assert_eq!(
+        text(&execute(
+            "Edit",
+            &json!({ "file_path": "a.ts", "old_string": "hello", "new_string": "bye" }),
+            &ctx_b
+        )),
+        crate::read_guard::missing_message(
+            "a.ts",
+            &sandbox.workspace.join("a.ts").to_string_lossy()
+        )
+    );
+    // 会话 A 自己的记录仍然有效
+    assert!(!execute(
+        "Edit",
+        &json!({ "file_path": "a.ts", "old_string": "hello", "new_string": "bye" }),
+        &ctx_a
+    )
+    .is_error());
 }

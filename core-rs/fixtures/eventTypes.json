@@ -36,7 +36,8 @@
     "workspaceFileChanged",
     "crossWorkspaceAgentReplyRequested",
     "crossWorkspaceAgentAbortRequested",
-    "crossWorkspaceAgentEnded"
+    "crossWorkspaceAgentEnded",
+    "conversationRewoundDone"
   ],
   "coreRequests": [
     "toolPermissionRequested",
@@ -71,7 +72,8 @@
     "sessionWorkspaceAssigned",
     "remoteSubAgentStarted",
     "agentReplyReceived",
-    "crossWorkspaceAgentCompleted"
+    "crossWorkspaceAgentCompleted",
+    "conversationRewound"
   ],
   "uiRequests": [
     "conversationListRequested",

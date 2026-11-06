@@ -8,6 +8,7 @@ export { WebSearch } from './WebSearch';
 export { TodoWrite } from './TodoWrite';
 export { Agent } from './Agent';
 export { ReplyTool } from './Reply';
+export { Transfer } from './Transfer';
 export { Skill } from './Skill';
 export { AskUserQuestion } from './AskUserQuestion';
 export { QueryUserMemory } from './QueryUserMemory';

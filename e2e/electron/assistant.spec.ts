@@ -278,3 +278,166 @@ test('US-14+US-15 Edit 卡片的回滚确认框', async () => {
     { timeout: 15_000 },
   ).toBe('第一行\n第二行\n');
 });
+
+/**
+ * US-74 读后失效的编辑被拒绝并提示重新读取（specs/038 FR-001 / FR-002）。
+ *
+ * 两轮独立对话把「外部改写」放在两次工具调用之间：第一轮 Read，测试进程改写磁盘，
+ * 第二轮 Edit 必须被拒且不写盘；第三轮重新 Read 后同一 Edit 成功。
+ */
+test('US-74 读后失效：外部改写后 Edit 被拒，重新 Read 后成功', async () => {
+  const target = path.join(workspaceDir, 'guard-target.md');
+  fs.writeFileSync(target, '第一行\n第二行\n', 'utf8');
+
+  // 每轮对话内按「是否已收到工具结果」推进；第三轮用显式阶段计数器推进
+  // 「重读 → Edit → 终轮」三步（历史里的 tool 结果条数不能区分阶段）
+  let rereadStage = 0;
+  mockLlm.setHandler((req) => {
+    const userText = lastUserText(req.body.messages);
+    const lastMsg = req.body.messages[req.body.messages.length - 1];
+    const hasToolResult = lastMsg?.role === 'tool';
+    if (userText.startsWith('读文件')) {
+      return hasToolResult
+        ? { kind: 'text', text: '读完了。' }
+        : { kind: 'tool', name: 'Read', args: { file_path: target } };
+    }
+    if (userText.startsWith('改文件')) {
+      if (!hasToolResult) {
+        return {
+          kind: 'tool', name: 'Edit',
+          args: { file_path: target, old_string: '第二行', new_string: '第二行（已修改）' },
+        };
+      }
+      // Edit 的 tool 结果回传：按结果文案决定终轮文本，供断言
+      const result = String((lastMsg as { content?: unknown }).content ?? '');
+      return { kind: 'text', text: result.includes('has been modified since it was last read')
+        ? '文件已变，需要重读。'
+        : '改好了。' };
+    }
+    if (userText.startsWith('重读改文件')) {
+      rereadStage += 1;
+      if (rereadStage === 1) {
+        return { kind: 'tool', name: 'Read', args: { file_path: target } };
+      }
+      if (rereadStage === 2) {
+        return {
+          kind: 'tool', name: 'Edit',
+          args: { file_path: target, old_string: '外部改过的第二行', new_string: '改后第二行' },
+        };
+      }
+      return { kind: 'text', text: '改好了。' };
+    }
+    return { kind: 'text', text: '好的。' };
+  });
+
+  const chatPage = await app.chatPage();
+
+  /** manual 模式下 Edit 先弹确认框（US-18）；点「允许」才进入执行阶段 */
+  async function allowEdit(): Promise<void> {
+    const overlay = chatPage.locator('.user-choice-overlay');
+    await expect(overlay).toBeVisible({ timeout: 30_000 });
+    await overlay.getByRole('button', { name: /允许/ }).first().click();
+  }
+
+  // 第一轮：Read
+  await chatPage.fill('textarea.input-textarea', '读文件 guard-target.md');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('读完了。').first()).toBeVisible({ timeout: 30_000 });
+
+  // 外部改写（模拟别的编辑器）
+  fs.writeFileSync(target, '第一行\n外部改过的第二行\n', 'utf8');
+
+  // 第二轮：Edit 必须被拒，终轮文本反映「文件已变」
+  await chatPage.fill('textarea.input-textarea', '改文件 guard-target.md');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await allowEdit();
+  await expect(chatPage.getByText('文件已变，需要重读。').first()).toBeVisible({ timeout: 30_000 });
+  expect(fs.readFileSync(target, 'utf8'), '被拒的 Edit 不应写盘').toBe(
+    '第一行\n外部改过的第二行\n',
+  );
+
+  // 第三轮：重新 Read 之后 Edit 成功
+  await chatPage.fill('textarea.input-textarea', '重读改文件 guard-target.md');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await allowEdit();
+  await expect(chatPage.getByText('改好了。').first()).toBeVisible({ timeout: 30_000 });
+  await expect.poll(
+    () => fs.readFileSync(target, 'utf8'),
+    { timeout: 15_000 },
+  ).toBe('第一行\n改后第二行\n');
+});
+
+/**
+ * US-75 从时间线节点「从这里继续」回退对话并回滚文件（specs/039 FR-003 / FR-004）。
+ *
+ * 真值来自真实 Core 的 `rewind`：Edit 改文件后右键时间线节点、确认回退，该节点之后的
+ * 消息消失且文件回到改动前；取消路径下消息与文件都不变。
+ */
+test('US-75 时间线「从这里继续」：确认后截断消息并回滚文件，取消时都不变', async () => {
+  const target = path.join(workspaceDir, 'rewind-target.md');
+  fs.writeFileSync(target, '原始内容\n', 'utf8');
+  // 先让基线入库（变更视图之外的普通写入即可）
+  mockLlm.setHandler((req) => {
+    const userText = lastUserText(req.body.messages);
+    const lastMsg = req.body.messages[req.body.messages.length - 1];
+    const hasToolResult = lastMsg?.role === 'tool';
+    if (userText.startsWith('改文件')) {
+      // 第一轮先 Read（specs/038 的读后守卫要求先读过才能 Edit）
+      if (!hasToolResult) {
+        return { kind: 'tool', name: 'Read', args: { file_path: target } };
+      }
+      const toolCount = req.body.messages.filter((m) => m.role === 'tool').length;
+      if (toolCount === 1) {
+        return {
+          kind: 'tool', name: 'Edit',
+          args: { file_path: target, old_string: '原始内容', new_string: '改过的内容' },
+        };
+      }
+      return { kind: 'text', text: '改完了。' };
+    }
+    return { kind: 'text', text: '好的。' };
+  });
+
+  const chatPage = await app.chatPage();
+  await chatPage.fill('textarea.input-textarea', '改文件 rewind-target.md');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+
+  // manual 模式：Edit 先弹确认框
+  const overlay = chatPage.locator('.user-choice-overlay');
+  await expect(overlay).toBeVisible({ timeout: 30_000 });
+  await overlay.getByRole('button', { name: /允许/ }).first().click();
+  await expect(chatPage.getByText('改完了。').first()).toBeVisible({ timeout: 30_000 });
+  // 等本轮查询真正收尾：会话空闲才能回退（spec 039 FR-005 的忙守卫）
+  await expect(chatPage.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
+  expect(fs.readFileSync(target, 'utf8')).toBe('改过的内容\n');
+
+  // 右键**工具卡片**节点（它有 core 认得的节点身份）；纯文本 assistant 节点在实时
+  // 流式渲染期还没有 JSONL uuid，菜单项会置灰（spec FR-001 的已知边界）
+  const timelineRows = chatPage.locator('.msg-timeline-item');
+  await expect(timelineRows.first()).toBeVisible({ timeout: 15_000 });
+  // 选带节点身份的时间线行（工具卡片；纯文本节点在实时流式期还没有 JSONL uuid）
+  const toolRow = chatPage.locator('.msg-timeline-item[data-node-id]:not([data-node-id=""])').first();
+  await expect(toolRow).toBeVisible({ timeout: 15_000 });
+  await toolRow.click({ button: 'right' });
+  const menuItem = chatPage.getByText('从这里继续').first();
+  await expect(menuItem).toBeVisible({ timeout: 10_000 });
+
+  // 取消路径：消息与文件都不变
+  await menuItem.click();
+  await expect(chatPage.getByText('从这里继续？')).toBeVisible({ timeout: 10_000 });
+  await chatPage.getByRole('button', { name: '取消' }).click();
+  await expect(chatPage.getByText('从这里继续？')).toBeHidden({ timeout: 10_000 });
+  expect(fs.readFileSync(target, 'utf8')).toBe('改过的内容\n');
+
+  // 确认路径：该节点之后的消息消失，文件回到改动前
+  await toolRow.click({ button: 'right' });
+  await chatPage.getByText('从这里继续').first().click();
+  await chatPage.getByRole('button', { name: '确认回退' }).click();
+  await expect.poll(() => fs.readFileSync(target, 'utf8'), { timeout: 20_000 }).toBe('原始内容\n');
+  // 回执出现在消息区末尾
+  await expect(chatPage.getByText(/Rewound the conversation from this point/).first())
+    .toBeVisible({ timeout: 20_000 });
+});
+
+
+

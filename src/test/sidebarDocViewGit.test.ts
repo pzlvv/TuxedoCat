@@ -86,14 +86,24 @@ runTests('sidebarDocViewGit', async () => {
     // —— 仓一（续）：文件名需要 git 的 C 风格引号转义（引号 / 制表符）——
     // `core.quotepath=false` 只关掉非 ASCII 的八进制转义；含 `"`、`\`、制表符、换行的
     // 路径仍然被双引号包裹并逐字符转义。未反转义时回查存在性必然失败，条目整条消失。
-    const quotedName = 'quo"te.md';
-    const tabName = 'tab\tname.md';
-    writeLines(path.join(root, quotedName), ['q1', 'q2']);
-    writeLines(path.join(root, tabName), ['t1']);
-    const quotedResult = await collectGitEntries(runner);
-    const quotedListed = quotedResult.ok ? quotedResult.entries.map((e) => `${e.path} +${e.plus}/-${e.minus}`) : [];
-    check('真实仓：含引号 / 制表符的文件名同样列出（C 风格引号被反转义）',
-      quotedListed.includes(`${quotedName} +2/-0`) && quotedListed.includes(`${tabName} +1/-0`));
+    //
+    // 只在文件系统真的允许这些名字的平台上造这种文件：Windows 的 `CreateFile` 不接受
+    // `"` 与控制字符（实测 ENOENT），造不出来就测不到「git 输出的引号被反转义」这一环。
+    // 反转义本身是纯函数，`src/test/sidebarDocView.test.ts` 的 `unquoteGitPath` 用例
+    // 已在所有平台锁定（`"\\303\\274n.md"` / `"ctl\\001x.md"` / 未知转义按字面保留）。
+    const allowsControlCharsInNames = process.platform !== 'win32';
+    if (allowsControlCharsInNames) {
+      const quotedName = 'quo"te.md';
+      const tabName = 'tab\tname.md';
+      writeLines(path.join(root, quotedName), ['q1', 'q2']);
+      writeLines(path.join(root, tabName), ['t1']);
+      const quotedResult = await collectGitEntries(runner);
+      const quotedListed = quotedResult.ok ? quotedResult.entries.map((e) => `${e.path} +${e.plus}/-${e.minus}`) : [];
+      check('真实仓：含引号 / 制表符的文件名同样列出（C 风格引号被反转义）',
+        quotedListed.includes(`${quotedName} +2/-0`) && quotedListed.includes(`${tabName} +1/-0`));
+    } else {
+      markSkipped('当前平台的文件系统不允许文件名含 `"` / 控制字符（Windows），该分支由 unquoteGitPath 纯函数用例覆盖');
+    }
 
     // —— 仓二：无 HEAD 新仓（已暂存按全文计）——
     const unborn = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-docview-unborn-'));

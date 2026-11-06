@@ -63,6 +63,18 @@ import {
   FILE_TEXT_EXTS,
   REMOTE_BINARY_UNSUPPORTED,
 } from '../fileTypes.js';
+// 三态模式与取数范围的纯逻辑（specs/041 FR-001 / FR-002）：模式、localStorage 迁移、
+// 按钮转移与空态文案都在 sidebarFilesMode.ts 一处，本文件只做「读状态 → 调纯函数 → 写回」
+import {
+  emptyTextForMode,
+  NOT_A_GIT_WORKSPACE,
+  parseStoredModes,
+  scopeForMode,
+  toggleFilesMode as toggleFilesModePure,
+  type FilesMode,
+  type StoredModes,
+} from '../sidebarFilesMode.js';
+import type { ChangeScope } from '../sidebarDocView.js';
 
 interface ConversationMeta {
   sessionId: string;
@@ -113,7 +125,7 @@ type FilesListResult = { ok: true; entries: DirectoryEntry[] } | { ok: false; er
 /** 文件操作回执（判别联合）；'cancelled' = 用户在删除确认框点了取消 */
 type FilesOpResult = { ok: true } | { ok: false; error: string };
 
-/** 文档视图渲染行（specs/030 FR-003；主进程铺平：目录在前、深度已算好、全部层级展开） */
+/** 变更清单渲染行（specs/030 FR-003 / specs/041 FR-002；主进程铺平：目录在前、深度已算好、全部层级展开） */
 interface DocViewRow {
   name: string;
   /** 相对路径（'/' 分隔） */
@@ -125,7 +137,10 @@ interface DocViewRow {
   minus: number | null;
 }
 
-/** 文档视图取数回执（判别联合）：失败带 error 文案 */
+/** 变更清单取数回执（判别联合）：失败带 error 文案。
+ *
+ * `mode === 'not-a-git-workspace'` 是「全部变更」视图在非 git 工作区的显式结果
+ * （specs/041 FR-003）：不回落到记录口径，渲染层据此给出提示而不是空列表。 */
 type DocListResult =
   | { ok: true; mode: 'git' | 'record'; rows: DocViewRow[] }
   | { ok: false; error: string };
@@ -168,13 +183,14 @@ interface SidebarAPI {
   filesCopyPaths: (workspaceId: string, relPaths: string[], relative: boolean) => Promise<FilesOpResult>;
   /** 删除（移入回收站）：主进程先弹自绘确认框 */
   filesDelete: (workspaceId: string, relPaths: string[]) => Promise<FilesOpResult>;
-  /** 双击打开（US-42 验收 6）：主进程按类型分流——文本 / 图片进内置窗口，二进制调系统应用 */
-  filesOpen: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
-  /** 文档视图取数（specs/030 FR-003 / FR-004）：git 行数口径或非 git 记录口径，主进程分流 */
-  filesDocList: (workspaceId: string) => Promise<DocListResult>;
-  /** 文档视图开关状态上报：主进程据此挂 / 摘 git 哨兵监听 */
-  filesDocWatch: (workspaceId: string, enabled: boolean) => void;
-  /** 主进程推送的失效信号（specs/030：Write 新建 → 树重读、git 哨兵 → 文档重取） */
+  /** 双击打开（US-42 验收 6）：主进程按类型分流——文本 / 图片进内置窗口，二进制调系统应用。
+   * `source` 是打开来源（specs/040 FR-003）：目录树 / 变更视图 / 工具卡片链接决定初始视图 */
+  filesOpen: (workspaceId: string, relPath: string, source: 'tree' | 'changes') => Promise<FilesOpResult>;
+  /** 变更清单取数（specs/030 FR-003 / FR-004 / specs/041 FR-002）：scope 决定 pathspec */
+  filesDocList: (workspaceId: string, scope: 'doc' | 'all') => Promise<DocListResult>;
+  /** 文件浏览器模式上报（specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵监听 */
+  filesModeWatch: (workspaceId: string, mode: 'tree' | 'doc' | 'changes') => void;
+  /** 主进程推送的失效信号（specs/030 / specs/041：Write 新建 → 树重读、git 哨兵 → 变更清单重取） */
   onFilesInvalidated: (cb: (payload: { workspaceId: string; reasons: string[] }) => void) => void;
   // ── 侧栏宽度（US-44） ──
   /** 拖拽手柄改宽度；width 为 null 恢复默认。final 为 true 时主进程把值落盘 */
@@ -197,6 +213,7 @@ const filesHeaderEl = document.getElementById('filesHeader')!;
 const filesBodyEl = document.getElementById('filesBody')!;
 const filesRefreshBtn = document.getElementById('filesRefresh') as HTMLButtonElement;
 const filesDocToggleBtn = document.getElementById('filesDocToggle') as HTMLButtonElement;
+const filesAllChangesToggleBtn = document.getElementById('filesAllChangesToggle') as HTMLButtonElement;
 const filesTreeEl = document.getElementById('filesTree')!;
 // 侧栏宽度拖拽手柄（US-44，吸附在侧栏右缘）
 const resizeHandleEl = document.getElementById('resizeHandle')!;
@@ -975,10 +992,12 @@ interface WorkspaceFilesState {
    * 为止；用户在期间主动滚动（滚轮 / 按键 / 指针）即放弃回填。
    */
   pendingScrollTop: number | null;
-  /** 文档视图开关（specs/030 FR-003；按工作区记忆，localStorage） */
-  docView: boolean;
-  /** 文档视图数据（rows 由主进程铺平；mode 决定空态文案） */
+  /** 文件浏览器模式（specs/041 FR-001；三态互斥，按工作区记忆） */
+  mode: FilesMode;
+  /** 变更清单数据（rows 由主进程铺平；mode 决定空态文案，scope 由 files.mode 决定） */
   docListing: { state: 'loading' | 'loaded' | 'error'; mode: 'git' | 'record'; rows: DocViewRow[]; error?: string };
+  /** 变更清单的取数范围（与 files.mode 一一对应；`changeScope === null` 表示目录树，不取数） */
+  docScope: ChangeScope | null;
   /** 文档取数代次：作废在途回包（与目录读取的 generation 同一口径） */
   docGeneration: number;
   /** 是否已发起过取数（false = 渲染时才发起首取，避免给从未开过文档视图的工作区预取） */
@@ -987,7 +1006,9 @@ interface WorkspaceFilesState {
 
 /** 折叠状态落 localStorage 的键（值是「工作区 id → 是否展开」的 JSON 表，US-42 验收 1） */
 const FILES_EXPANDED_KEY = 'tuxedo.sidebar.filesExpanded';
-/** 文档视图开关落 localStorage 的键（值是「工作区 id → 是否开启」的 JSON 表，specs/030） */
+/** 文件浏览器模式落 localStorage 的键（值是「工作区 id → 模式」的 JSON 表，specs/041 FR-001） */
+const FILES_MODE_KEY = 'tuxedo.sidebar.filesMode';
+/** 旧版文档视图开关键（值是布尔表，specs/030）：只读不写，兼容升级路径 */
 const FILES_DOCVIEW_KEY = 'tuxedo.sidebar.filesDocView';
 /** 行缩进：基础留白 + 每层目录一格（与 .file-row 的行高共同决定层级观感） */
 const FILE_ROW_BASE_INDENT = 8;
@@ -1035,33 +1056,32 @@ function storeExpandedMap(map: Record<string, boolean>): void {
   } catch { /* 存不了就每次启动按各工作区默认折叠 */ }
 }
 
-/** 文档视图开关的 localStorage 读写（与折叠状态同一份容错口径） */
-function readStoredDocViewMap(): Record<string, boolean> {
+/** 文件浏览器模式的 localStorage 读写（与折叠状态同一份容错口径）。
+ *
+ * 旧键（`FILES_DOCVIEW_KEY` 的布尔表，specs/030）只读不写：升级后第一次启动把布尔值
+ * 迁移成新模式，之后一律写新键；旧键保留着，回退到旧版本时不至于丢状态。 */
+function readStoredModes(): StoredModes {
   try {
-    const raw = window.localStorage.getItem(FILES_DOCVIEW_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const map: Record<string, boolean> = {};
-    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === 'boolean') map[id] = value;
-    }
-    return map;
+    return parseStoredModes(
+      window.localStorage.getItem(FILES_MODE_KEY),
+      window.localStorage.getItem(FILES_DOCVIEW_KEY),
+    );
   } catch {
     return {};
   }
 }
 
-function storeDocViewMap(map: Record<string, boolean>): void {
+function storeModes(map: StoredModes): void {
   try {
-    window.localStorage.setItem(FILES_DOCVIEW_KEY, JSON.stringify(map));
-  } catch { /* 存不了就每次启动默认普通树 */ }
+    window.localStorage.setItem(FILES_MODE_KEY, JSON.stringify(map));
+  } catch { /* 存不了就每次启动默认目录树 */ }
 }
 
 /** 取（或按需创建）某工作区的文件树状态；新状态从 localStorage 读折叠偏好 */
 function filesStateFor(id: string): WorkspaceFilesState {
   let state = filesStateByWorkspace.get(id);
   if (!state) {
+    const mode = readStoredModes()[id] ?? 'tree';
     state = {
       expanded: readStoredExpandedMap()[id] === true,
       generation: 0,
@@ -1070,8 +1090,9 @@ function filesStateFor(id: string): WorkspaceFilesState {
       selected: new Set(),
       anchor: null,
       pendingScrollTop: null,
-      docView: readStoredDocViewMap()[id] === true,
+      mode,
       docListing: { state: 'loading', mode: 'git', rows: [] },
+      docScope: scopeForMode(mode),
       docGeneration: 0,
       docRequested: false,
     };
@@ -1092,11 +1113,11 @@ function persistFilesExpanded(): void {
   storeExpandedMap(map);
 }
 
-/** 把各工作区的文档视图开关写进 localStorage（只在变化时调用） */
-function persistFilesDocView(): void {
-  const map: Record<string, boolean> = {};
-  for (const [id, state] of filesStateByWorkspace) map[id] = state.docView;
-  storeDocViewMap(map);
+/** 把各工作区的文件浏览器模式写进 localStorage（只在变化时调用） */
+function persistFilesModes(): void {
+  const map: StoredModes = {};
+  for (const [id, state] of filesStateByWorkspace) map[id] = state.mode;
+  storeModes(map);
 }
 
 /* ── 图标（lucide，与既有 ICON_* 常量同一来源与描边风格；不用 emoji） ── */
@@ -1194,11 +1215,14 @@ function renderFiles(): void {
     filesTreeEl.innerHTML = '';
     return;
   }
-  filesDocToggleBtn.classList.toggle('active', files.docView);
-  filesDocToggleBtn.setAttribute('aria-pressed', files.docView ? 'true' : 'false');
-  // 文档视图（specs/030 FR-003）：只渲染命中文档的行集；切回普通树时原展开状态
-  // 原样恢复（文档视图从未动过 expandedDirs / tree 缓存）
-  if (files.docView) {
+  // 三个模式按钮的按下态各自独立（互斥由三态状态机保证，不是两个布尔）
+  filesDocToggleBtn.classList.toggle('active', files.mode === 'doc');
+  filesDocToggleBtn.setAttribute('aria-pressed', files.mode === 'doc' ? 'true' : 'false');
+  filesAllChangesToggleBtn.classList.toggle('active', files.mode === 'changes');
+  filesAllChangesToggleBtn.setAttribute('aria-pressed', files.mode === 'changes' ? 'true' : 'false');
+  // 变更视图（specs/030 FR-003 / specs/041 FR-001）：只渲染命中的行集；切回目录树时
+  // 原展开状态原样恢复（变更视图从未动过 expandedDirs / tree 缓存）
+  if (files.mode !== 'tree') {
     renderDocFiles(files, id);
     if (files.pendingScrollTop !== null) {
       filesBodyEl.scrollTop = files.pendingScrollTop;
@@ -1216,7 +1240,7 @@ function renderFiles(): void {
   }
 }
 
-/** 文档视图渲染：loading / error（点击重试）/ 空态提示（口径区分文案）/ 行集 */
+/** 变更视图渲染：loading / error（点击重试）/ 空态提示（文案按模式分叉）/ 行集 */
 function renderDocFiles(files: WorkspaceFilesState, workspaceId: string): void {
   if (!files.docRequested) loadDocList(workspaceId);
   const listing = files.docListing;
@@ -1224,9 +1248,18 @@ function renderDocFiles(files: WorkspaceFilesState, workspaceId: string): void {
   if (listing.state === 'loading') {
     rows.push(fileLoadingRowHtml(0));
   } else if (listing.state === 'error') {
-    rows.push(`<div class="file-row file-hint file-error" data-retry-doc="1" style="padding-left:${FILE_ROW_BASE_INDENT}px" title="${escapeHtml(listing.error || '')}">读取失败，点击重试</div>`);
+    // 非 git 工作区的「全部变更」是提示态而不是空列表（specs/041 FR-003 / AC-7）：
+    // 空列表会被误读成「没有改动」
+    const text = listing.error === NOT_A_GIT_WORKSPACE
+      ? '不在 git 仓库内，无法列出变更'
+      : '读取失败，点击重试';
+    const retry = listing.error === NOT_A_GIT_WORKSPACE ? '' : ' data-retry-doc="1"';
+    rows.push(`<div class="file-row file-hint file-error"${retry} style="padding-left:${FILE_ROW_BASE_INDENT}px" title="${escapeHtml(listing.error || '')}">${escapeHtml(text)}</div>`);
   } else if (listing.rows.length === 0) {
-    rows.push(fileHintRowHtml(listing.mode === 'git' ? '没有变更的 Markdown 文档' : '没有记录的修改文档', 0));
+    rows.push(fileHintRowHtml(
+      listing.mode === 'git' ? emptyTextForMode(files.mode) : '没有记录的修改文档',
+      0,
+    ));
   } else {
     for (const row of listing.rows) rows.push(docRowHtml(files, row));
   }
@@ -1334,9 +1367,9 @@ function setFilesWorkspace(state: WorkspacesState | null): void {
   // 展开且根目录还没读过（新工作区 / 重启后恢复展开）才补一次读取；切回已浏览过的
   // 工作区直接命中缓存，不打断它的树
   if (files.expanded && !files.tree.has('')) loadDir(active.id, '');
-  // 文档视图开启的工作区重挂哨兵（重载 / 重开后渲染层状态从 localStorage 恢复，
-  // 主进程侧的监听需要重新上报；enable 幂等，重复上报无害——specs/030 FR-003）
-  if (files.docView) window.sidebarAPI?.filesDocWatch(active.id, true);
+  // 变更视图开启的工作区重挂哨兵（重载 / 重开后渲染层状态从 localStorage 恢复，
+  // 主进程侧的监听需要重新上报；模式上报幂等，重复上报无害——specs/030 FR-003 / specs/041）
+  if (files.mode !== 'tree') window.sidebarAPI?.filesModeWatch(active.id, files.mode);
   if (changed) {
     closeFilesMenu();
     renderFiles();
@@ -1386,7 +1419,7 @@ function refreshWorkspaceFiles(id: string): void {
   files.tree.clear();
   loadDir(id, '');
   for (const dir of files.expandedDirs) loadDir(id, dir);
-  if (files.docView) loadDocList(id);
+  if (files.mode !== 'tree') loadDocList(id);
   if (id === activeFilesId) renderFiles();
 }
 
@@ -1403,36 +1436,49 @@ function refreshFiles(): void {
 function loadDocList(workspaceId: string): void {
   const files = filesStateByWorkspace.get(workspaceId);
   if (!files) return;
+  const scope = files.docScope;
+  // 目录树不取数（specs/041 FR-001：三态里的 tree 走懒加载目录，不发这次请求）
+  if (scope === null) return;
   files.docGeneration += 1;
   const generation = files.docGeneration;
   files.docRequested = true;
   files.docListing = { state: 'loading', mode: files.docListing.mode, rows: [] };
-  window.sidebarAPI?.filesDocList(workspaceId)
+  window.sidebarAPI?.filesDocList(workspaceId, scope)
     .then((res) => {
       if (filesStateByWorkspace.get(workspaceId) !== files || files.docGeneration !== generation) return;
+      // 回包期间模式可能已切换：范围变了就作废这次结果（同一份 generation 口径）
+      if (files.docScope !== scope) return;
       if (res.ok) files.docListing = { state: 'loaded', mode: res.mode, rows: res.rows };
       else files.docListing = { state: 'error', mode: files.docListing.mode, rows: [], error: res.error || '读取失败' };
       if (workspaceId === activeFilesId) renderFiles();
     })
     .catch((err) => {
       if (filesStateByWorkspace.get(workspaceId) !== files || files.docGeneration !== generation) return;
+      if (files.docScope !== scope) return;
       files.docListing = { state: 'error', mode: files.docListing.mode, rows: [], error: String(err) };
       if (workspaceId === activeFilesId) renderFiles();
     });
 }
 
-/** 文档视图开关（specs/030 FR-003）：按工作区记忆；开启即重取数据，关闭回普通树
- * （普通树的展开状态未被文档视图动过，原样恢复）。开关状态同时上报主进程，
- * 主进程据此挂 / 摘 git 哨兵监听。 */
-function toggleDocView(): void {
+/** 切换文件浏览器模式（specs/041 FR-001）：点当前模式回目录树、点另一模式直接切换。
+ *
+ * 三态的唯一转移点（AC-2）；模式状态只有 `filesStateByWorkspace` 一份，localStorage 是
+ * 它的持久化投影。切到任一变更视图即重取数据，回目录树时既有展开状态原样恢复。 */
+function toggleFilesMode(target: FilesMode): void {
   const id = activeFilesId;
   if (!id) return;
   const files = filesStateFor(id);
-  files.docView = !files.docView;
-  persistFilesDocView();
+  const next = toggleFilesModePure(files.mode, target);
+  if (next === files.mode) return;
+  files.mode = next;
+  files.docScope = scopeForMode(next);
+  // 换范围即作废在途回包，并把「已取过」重置：新模式的首取由 renderDocFiles 触发
+  files.docGeneration += 1;
+  files.docRequested = false;
+  persistFilesModes();
   closeFilesMenu();
-  window.sidebarAPI?.filesDocWatch(id, files.docView);
-  if (files.docView) loadDocList(id);
+  window.sidebarAPI?.filesModeWatch(id, files.mode);
+  if (files.docScope !== null) loadDocList(id);
   renderFiles();
 }
 
@@ -1579,7 +1625,11 @@ function openFileRow(rel: string): void {
   const id = activeFilesId;
   if (!id) return;
   if (filesRemote && classifyFileForOpen(rel) === 'binary') return;
-  window.sidebarAPI?.filesOpen(id, rel)
+  const files = filesStateByWorkspace.get(id);
+  // 打开来源决定初始视图（specs/040 FR-003）：变更视图双击 → 'changes'（非新增文件落
+  // 差异视图）；目录树 / 文档视图双击 → 'tree'
+  const source: 'tree' | 'changes' = files?.mode === 'changes' ? 'changes' : 'tree';
+  window.sidebarAPI?.filesOpen(id, rel, source)
     .then((res) => {
       if (!res.ok && res.error !== REMOTE_BINARY_UNSUPPORTED) {
         console.error('[sidebar] open file failed:', res.error);
@@ -1603,7 +1653,12 @@ function bindFilesEvents(): void {
   filesDocToggleBtn.addEventListener('click', (e) => {
     // 文档视图开关（specs/030 FR-003）：与刷新按钮同一处置，阻止冒泡到分区条
     e.stopPropagation();
-    toggleDocView();
+    toggleFilesMode('doc');
+  });
+  filesAllChangesToggleBtn.addEventListener('click', (e) => {
+    // 全部变更视图开关（specs/041 FR-001）：同一处三态状态机，不另写一份互斥逻辑
+    e.stopPropagation();
+    toggleFilesMode('changes');
   });
 
   filesTreeEl.addEventListener('click', (e) => {
@@ -1632,8 +1687,8 @@ function bindFilesEvents(): void {
     // 双击的第一下已经翻过一次，净效果仍是「展开」。
     if (e.detail >= 2 && row.dataset.kind === 'directory') return;
     // 折叠箭头只切换目录展开，不改选中（与 VS Code 资源管理器一致）；
-    // 文档视图全部层级默认展开，目录行没有折叠语义（specs/030 FR-003）
-    if (!files.docView && row.dataset.kind === 'directory' && (e.target as HTMLElement).closest('.file-chevron')) {
+    // 变更视图全部层级默认展开，目录行没有折叠语义（specs/030 FR-003 / specs/041）
+    if (files.mode === 'tree' && row.dataset.kind === 'directory' && (e.target as HTMLElement).closest('.file-chevron')) {
       toggleDirExpanded(path);
       return;
     }
@@ -1662,7 +1717,7 @@ function bindFilesEvents(): void {
       // 目录单击即展开 / 折叠（US-42：单展开，不要双击）；Ctrl / Shift 多选不触发。
       // 双击的第二下不再翻转（上面已整体 return），目录双击不会来回抖。
       // 文档视图里目录行只选中不折叠（specs/030 FR-003）。
-      if (row.dataset.kind === 'directory' && !files.docView) toggleDirExpanded(path);
+      if (row.dataset.kind === 'directory' && files.mode === 'tree') toggleDirExpanded(path);
     }
     applyFileSelectionClasses();
   });
@@ -1739,9 +1794,12 @@ function bindFilesEvents(): void {
     if (id === null) return;
     const reasons = Array.isArray(payload.reasons) ? payload.reasons : [];
     if (reasons.includes('tree')) refreshWorkspaceFiles(id);
-    if (reasons.includes('doc')) {
-      const files = filesStateByWorkspace.get(id);
-      if (files?.docView) loadDocList(id);
+    // 失效推送（specs/030 / specs/041 FR-004）：哨兵本来就在听 .git，两种变更视图
+    // 共用同一次推送——`doc` / `changes` 各自只刷新自己那一态
+    const files = filesStateByWorkspace.get(id);
+    if (files && ((reasons.includes('doc') && files.mode === 'doc')
+      || (reasons.includes('changes') && files.mode === 'changes'))) {
+      loadDocList(id);
     }
   });
 }

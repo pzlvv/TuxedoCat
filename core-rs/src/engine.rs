@@ -580,6 +580,21 @@ impl Core {
 
     /// 会话当前是否空闲（未登记视为空闲）。
     /// 运行中的会话不伪造「会话中断」的取消结果。
+    /// 会话是否正在跑查询或压缩（回退守卫用，specs/039 FR-005）。
+    ///
+    /// 比 `session_is_idle` 窄：排队中的用户消息（`pending_user_message`）与后台任务
+    /// 都不阻止回退——回退只截断**已有**历史，与「还没轮到的那条消息」无关。
+    /// 会话不存在视为不忙（由调用方另行判存在性）。
+    pub fn session_is_rewind_blocked(&self, session_id: &str) -> bool {
+        match self.session_if_exists(session_id) {
+            None => false,
+            Some(state) => {
+                let state = state.lock().unwrap();
+                state.running || state.compacting
+            }
+        }
+    }
+
     pub fn session_is_idle(&self, session_id: &str) -> bool {
         match self.session_if_exists(session_id) {
             None => true,
@@ -598,6 +613,9 @@ impl Core {
         // 存活的子孙会话仍靠登记保持递归中止可达，见
         // specs/defects/subagent-registry-outlives-dropped-sessions 的不变量）
         crate::subagent::unregister(session_id);
+        // 读后失效守卫的记录按会话存放（specs/038 FR-003）：所有释放路径都经过
+        // 这里，跟着一起清，避免全局表无界增长
+        crate::read_guard::clear_session(session_id);
         self.sessions.lock().unwrap().remove(session_id);
         self.session_order.lock().unwrap().retain(|id| id != session_id);
     }
@@ -1280,6 +1298,18 @@ impl Core {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string(),
+                    // 文件清单的事实源是宿主搬运结果（specs/042 FR-001）；缺字段即空清单
+                    paths: result
+                        .get("paths")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
             },
         )
@@ -1879,16 +1909,18 @@ impl Core {
             "uuid": format!("assistant_{}", util::now_millis()),
             "timestamp": util::now_millis(),
         });
-        persist_message(self, session_id, &project, &state, &assistant_message)?;
+        let tool_call_uuid = persist_message(self, session_id, &project, &state, &assistant_message)?;
         // 每条落盘消息各发一次 `conversationListChanged`（对齐 `Conversation.appendMessage`）
         announce_message_appended(self, session_id, &project, false);
 
-        // 授权前先发一次 `toolCall`（UI 上架 running 卡片）
+        // 授权前先发一次 `toolCall`（UI 上架 running 卡片）。
+        // `messageUuid` 让卡片的节点身份与 JSONL 行对齐（specs/039 FR-001：右键回退靠它定位）
         self.emit(json!({
             "type": "toolCall",
             "sessionId": session_id,
             "toolUseId": tool_use_id,
             "toolName": tool_name,
+            "messageUuid": tool_call_uuid,
         }));
         let agent_mode = state.lock().unwrap().agent_mode.clone();
         match self.resolve_permission(session_id, &tool_use_id, tool_name, input, &agent_mode, &project)
@@ -1900,6 +1932,7 @@ impl Core {
                     "sessionId": session_id,
                     "toolUseId": tool_use_id,
                     "toolName": tool_name,
+                    "messageUuid": tool_call_uuid,
                 }));
             }
             PermissionOutcome::Denied { message, .. } => {
@@ -4128,6 +4161,19 @@ fn persist_unpersisted_messages(
 /// 追加一条消息到内存与磁盘（不发事件、不刷 `meta.json`）。
 ///
 /// 写入前先补写内存里尚未落盘的消息，保证磁盘顺序：恢复消息在前、新消息在后。
+/// 落盘一条消息（`main.rs` 的回退回执等宿主侧收尾走这里）。
+///
+/// 与内部 `persist_message` 同一实现：一份写入点，不复制第二份追加逻辑。
+pub fn persist_public_message(
+    core: &Arc<Core>,
+    session_id: &str,
+    project: &str,
+    state: &Arc<Mutex<SessionState>>,
+    message: &Value,
+) -> Result<String, String> {
+    persist_message(core, session_id, project, state, message)
+}
+
 fn persist_message(
     core: &Arc<Core>,
     session_id: &str,

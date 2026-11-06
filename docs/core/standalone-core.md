@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-06
 ---
 
 # 规格：Standalone Core（Rust）
@@ -38,10 +38,9 @@ last_reviewed: 2026-10-20
 4. **平台范围**：产出 Windows x64 / arm64 与 Linux x64 / arm64 四个目标，全部属于默认打包
    集合（`PACKAGE_DIRS`）；单独重建用 `--target` / `npm run build:core:win32-arm64`。
 5. **一条帧通道**：UI 与 Core 之间只有一条双向帧通道；UI 为客户端，Core 为服务端。
-6. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程；一个 Core 进程只服务
-   它的 Connection（[docs/core/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
-7. **生命周期归 daemon**：Core 进程由 daemon 启动、终止与重启；daemon 见
-   `docs/core/core-daemon.md`。
+6. **一个工作区一个 Core 进程**：每个打开的工作区对应一个 Core 进程，只服务它的 Connection
+   （[docs/core/client-connection.md 第 5 节](client-connection.md#5-connection-生命周期)）。
+7. **生命周期归 daemon**：Core 进程由 daemon 启动、终止与重启（[docs/core/core-daemon.md](core-daemon.md)）。
 8. **崩溃可恢复**：Core 进程意外退出后由 daemon 重启并恢复接线；单个 Connection 的 Core
    崩溃不影响其它 Connection。
 
@@ -159,13 +158,9 @@ Core 定位自带 ripgrep 时**以自己的可执行文件为基准**（`tools.r
 `asarUnpack` 解包后 rg 与 Core 在同一层，而 Rust 的 `Path::exists` 看不进 asar 内的
 `dist/resources/core/<平台>/ripgrep/`），以及槽位上一级产品目录里的 `ripgrep/`（远端部署
 的共享位）。本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供
-`extensionPath`。
-
-**ripgrep 的归属**：Grep / Glob 用的 rg 只有 Core 自带的一份
-（`resources/core/<dir>/ripgrep/`，Core 以自己的可执行文件为基准定位）。
-`resources/ripgrep/<dir>/` 是构建源目录（`build-core.mjs::copyBundledRipgrep` 拿它
-复制成 Core 自带 rg），不随分发包走：`scripts/copy-assets.mjs` 把 `resources/`
-复制进 `dist/` 后会清掉 `dist/resources/ripgrep/`（无读取方，约 18M）。
+`extensionPath`。`resources/ripgrep/<dir>/` 是构建源目录（`build-core.mjs::copyBundledRipgrep`
+拿它复制成 Core 自带 rg），不随分发包走：`scripts/copy-assets.mjs` 把 `resources/` 复制进
+`dist/` 后会清掉 `dist/resources/ripgrep/`（无读取方，约 18M）。
 
 **产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
 （`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
@@ -223,12 +218,12 @@ macOS 从 launchd 启动时只有最小 PATH，远端 daemon 经 SSH exec 拉起
 | 上限与缓存 | 单次探测 10s 上限；结果（含失败）在进程内缓存，不重试 |
 | 失败口径 | 直接报错，不退回继承环境：`Bash` 工具把错误作为工具结果返回，后台任务与 MCP server 启动失败，系统提示的环境段让整轮查询失败 |
 | pty | 不分配：`-c` 不进入交互循环，探测与工具命令都走管道 |
-| 注入目标 | shell 子进程（`Bash` 前台工具、后台任务）用 shell 自己的形式；原生子进程（`rg`、`git`、`where`、`cmd`、MCP stdio server）用原生形式——Windows 上的 `cmd /c` 与原生 exe 不认 POSIX 列表，那份就是进程环境里的 Windows PATH |
+| 注入目标 | shell 子进程（`Bash` 前台工具、后台任务）用 shell 自己的形式；原生子进程（`rg`、`git`、`where`、`cmd`、MCP stdio server）用原生形式——Windows 上的 `cmd /c` 与原生 exe 不认 POSIX 列表 |
+| 原生形式归一 | Windows：进程环境 PATH 可能是 Git Bash / MSYS2 的混合形态（后半段整段塞着一个 `/mingw64/bin:...` POSIX 列表），`shell_env::native_path_from` 把 `/c/foo` 提成 `C:\foo`、丢弃纯 POSIX 目录、去重后注入；只有 shell 形式需要 bash 把 Windows PATH 换算成 POSIX 列表，不经过 `cygpath` |
 
 需要 tty 的命令（要 sudo 密码提示、vim 这类全屏编辑器、依赖终端判断才有颜色的工具）不在本机制范围内：工具命令的 stdin 接空设备，stdout / stderr 是管道。
 
-Windows 上原生形式直接取进程环境里的 PATH，不经过 `cygpath`；只有 shell 形式需要 bash 把
-Windows PATH 换算成 POSIX 列表，所以探测要求 shell 是 Git Bash / MSYS2 / Cygwin 这一类。
+归一细节与复现见 `specs/defects/shell-env-native-path-git-bash-hybrid.md`。
 
 ### 3.3 构建与目标平台
 
@@ -280,33 +275,31 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 
 1. **Rust 目标与链接器**（`rustup target add <triple>`；asan 变体装在 nightly 上：
    `rustup target add --toolchain nightly <triple>`，缺工具链时构建脚本直接给出安装命令）：
-   - Linux musl：链接器用 rustup 自带的 `rust-lld` + self-contained 的 musl crt / libc
-     （配在 `core-rs/.cargo/config.toml`），不需要系统上的交叉链接器；
-   - Linux gnu（ASAN 变体）：没有自包含的 crt / libc，链接交给 zig 的 cc 驱动（见下）；
-   - Windows arm64：MSVC 目标的链接器由 rustc 经 Visual Studio 定位，需要装好 VS 的
-     「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
+   Linux musl 用 rustup 自带的 `rust-lld` + self-contained 的 musl crt / libc
+   （配在 `core-rs/.cargo/config.toml`）；Linux gnu（ASAN 变体）没有自包含 crt / libc，链接交给
+   zig 的 cc 驱动；Windows arm64 由 rustc 经 Visual Studio 定位 MSVC 链接器，需要装好 VS 的
+   「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
 2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）与 mimalloc（Linux musl 产物的分配器）
    都有 C 源码，cc-rs 需要一个能产出该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：
    它自带 clang 与头文件 / libc，一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处
    用环境变量 `ZIG` 指定）；构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默
-   降级。两个用场：
-   - Linux musl / gnu：交叉编译的 C 编译器（`zig cc`，cc-rs 按空白切成命令 + 参数），静态库
-     打包用 `zig ar`；gnu 的链接也经 `zig cc`（`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；
-   - Windows arm64：ring 的 build.rs 对该目标**硬性要求 clang**（MSVC 的 cl.exe 不被
-     接受），由 zig cc 充当；静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
+   降级。Linux musl / gnu 用 `zig cc` 交叉编译、`zig ar` 打包静态库，gnu 的链接也经 `zig cc`
+   （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；Windows arm64 上 ring 的 build.rs 对该目标
+   **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe
+   （cc-rs 自行定位，不注入 AR）。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：
 产物缺失、比 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。
 平台列表取自 `PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份；
-`build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
+`build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust
+源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
 
 预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep 官方发布物
 （15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256` 逐份校验。
 `build-core.mjs::copyBundledRipgrep` 把它复制成 Core 自带 rg（`resources/core/<dir>/ripgrep/`）。
-
-**Windows arm64**：目标与产物目录已登记（矩阵一致性由 `src/test/corePlatformMatrix.test.ts`
-锁定），属于默认打包集合 `PACKAGE_DIRS`，单独重建用 `npm run build:core:win32-arm64`。
-TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标仍按需补建 Core，兜住单目标场景。
+Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACKAGE_DIRS`，单独重建用
+`npm run build:core:win32-arm64`；TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标
+仍按需补建 Core，兜住单目标场景。
 
 ### 3.4 构建指纹
 
@@ -497,3 +490,4 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；stderr 仅诊断 |
 | 界面表现（diff / Mermaid / 外链 / 另存为） | UI | 不进 Core |
 | i18n（翻译表与语言选择） | UI | Core 不感知语言，面向用户的文本以键 + 参数表达 |
+

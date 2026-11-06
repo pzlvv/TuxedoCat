@@ -5,6 +5,7 @@ import { classifyFileForOpen } from '../../electron/fileTypes';
 import {
   openLocalWorkspaceFile,
   openRemoteWorkspaceFile,
+  resolveInitialView,
   REMOTE_BINARY_UNSUPPORTED,
   type FileOpenBridge,
   type RemoteFileReader,
@@ -74,7 +75,7 @@ runTests('fileOpen + markdown 预览', async () => {
     fs.writeFileSync(path.join(tmp, 'note.txt'), 'plain');
     fs.writeFileSync(path.join(tmp, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     const localCalls: { method: string; init: unknown }[] = [];
-    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'doc.md');
+    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'doc.md', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
     check('本地 md → Markdown 预览出口', localCalls.length === 1 && localCalls[0].method === 'markdown');
     check(
       '本地 md 预览带文件名与内容',
@@ -90,7 +91,7 @@ runTests('fileOpen + markdown 预览', async () => {
     );
 
     localCalls.length = 0;
-    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'logo.png');
+    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'logo.png', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
     check(
       '本地图片带本地监听目标',
       localCalls.length === 1
@@ -100,17 +101,48 @@ runTests('fileOpen + markdown 预览', async () => {
     );
 
     localCalls.length = 0;
-    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'note.txt');
-    check('本地 txt 仍走本地文件出口（Monaco）', localCalls.length === 1 && localCalls[0].method === 'local');
+    await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, 'note.txt', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
+    check('本地 txt 走文本查看器出口（带初始视图）', localCalls.length === 1 && localCalls[0].method === 'text'
+      && (localCalls[0].init as { initialView: string }).initialView === 'full');
 
     localCalls.length = 0;
     let escaped = false;
     try {
-      await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, '../doc.md');
+      await openLocalWorkspaceFile(recordingBridge(localCalls), tmp, '../doc.md', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
     } catch {
       escaped = true;
     }
     check('越界路径仍拒绝', escaped && localCalls.length === 0);
+
+  // 接线：hasHeadVersion 的返回值真的影响初始视图（判定只在主进程做一次）
+  const diffCalls: { method: string; init: unknown }[] = [];
+  // hasHeadVersion 的返回值是「文件有 HEAD 版本」（true = 非新增）
+  await openLocalWorkspaceFile(
+    recordingBridge(diffCalls), tmp, 'doc.md', 'changes',
+    async () => ({ inGit: true, hasHeadVersion: true }),
+  );
+  check('changes 来源 + 有 HEAD 版本 → 初始落变更视图',
+    diffCalls.length === 1
+      && (diffCalls[0].init as { initialView: string }).initialView === 'changes');
+  diffCalls.length = 0;
+  await openLocalWorkspaceFile(
+    recordingBridge(diffCalls), tmp, 'doc.md', 'changes',
+    async () => ({ inGit: true, hasHeadVersion: false }),
+  );
+  check('changes 来源 + 新增文件 → 初始落全文',
+    diffCalls.length === 1
+      && (diffCalls[0].init as { initialView: string }).initialView === 'full');
+
+  diffCalls.length = 0;
+  await openLocalWorkspaceFile(
+    recordingBridge(diffCalls), tmp, 'doc.md', 'changes',
+    async () => ({ inGit: false, hasHeadVersion: false }),
+  );
+  check('非 git 工作区：不传 diffSource（变更按钮置灰，AC-9）',
+    diffCalls.length === 1
+      && (diffCalls[0].init as { diffSource: unknown }).diffSource === null
+      && (diffCalls[0].init as { initialView: string }).initialView === 'full');
+
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -127,7 +159,7 @@ runTests('fileOpen + markdown 预览', async () => {
   const bridge = recordingBridge(remoteCalls);
   const reader = fakeReader(remoteFiles);
 
-  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'doc.md');
+  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'doc.md', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
   check('远程 md → Markdown 预览出口', remoteCalls.length === 1 && remoteCalls[0].method === 'markdown');
   check(
     '远程 md 预览内容来自 SFTP 读出',
@@ -141,11 +173,11 @@ runTests('fileOpen + markdown 预览', async () => {
   );
 
   remoteCalls.length = 0;
-  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'note.txt');
+  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'note.txt', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
   check('远程 txt 仍走文本查看器出口', remoteCalls.length === 1 && remoteCalls[0].method === 'text');
 
   remoteCalls.length = 0;
-  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'logo.png');
+  await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'logo.png', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
   check(
     '远程图片带远端监听目标',
     remoteCalls.length === 1
@@ -156,11 +188,19 @@ runTests('fileOpen + markdown 预览', async () => {
 
   let remoteBinaryRejected = false;
   try {
-    await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'pack.zip');
+    await openRemoteWorkspaceFile(bridge, reader, endpoint, '/srv/remote', 'pack.zip', 'tree', async () => ({ inGit: false, hasHeadVersion: false }));
   } catch (err) {
     remoteBinaryRejected = err instanceof Error && err.message === REMOTE_BINARY_UNSUPPORTED;
   }
   check('远程已知二进制仍拒绝', remoteBinaryRejected);
+
+  // ── 打开时的初始视图（specs/040 FR-003 的映射表） ──
+  check('tree + 新增 → full', resolveInitialView('tree', true) === 'full');
+  check('tree + 非新增 → full（AC-7）', resolveInitialView('tree', false) === 'full');
+  check('changes + 新增 → full（AC-5）', resolveInitialView('changes', true) === 'full');
+  check('changes + 非新增 → changes（AC-6）', resolveInitialView('changes', false) === 'changes');
+  check('toolLink + 新增 → full', resolveInitialView('toolLink', true) === 'full');
+  check('toolLink + 非新增 → changes', resolveInitialView('toolLink', false) === 'changes');
 
   // ── Markdown 预览正文 ──
   const html = await getMarkdownPreviewBodyHtml(

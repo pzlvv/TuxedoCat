@@ -39,6 +39,29 @@ export async function bytesLookBinary(bytes: Buffer): Promise<boolean> {
 
 // ── 打开编排 ──
 
+/**
+ * 打开来源（specs/040 FR-003）：决定查看器先落在全文还是变更视图。
+ *
+ * - `tree`：目录树 / 文档视图双击（用户在看文件清单，想看内容）；
+ * - `changes`：「全部变更」视图双击（用户本就在看变更，想看差异）；
+ * - `toolLink`：工具卡片里的文件链接（同理，来意是看这次改动）。
+ */
+export type OpenSource = 'tree' | 'changes' | 'toolLink';
+
+/** 打开后的初始视图（specs/040 FR-003 的映射表） */
+export type InitialView = 'full' | 'changes';
+
+/**
+ * 来源 + 文件是否新增 → 初始视图（specs/040 FR-003）。
+ *
+ * 判定「新增」的判据由调用方按 git 口径给出（未跟踪 / 无 HEAD 版本）：新增文件没有
+ * 可对比的旧版本，任何来源都落全文。纯函数，单测直接驱动。
+ */
+export function resolveInitialView(source: OpenSource, isNewFile: boolean): InitialView {
+  if (source === 'tree') return 'full';
+  return isNewFile ? 'full' : 'changes';
+}
+
 /** 宿主能力注入口：窗口打开与系统调用都由 main.ts 提供（本模块不 import electron） */
 export interface FileOpenBridge {
   /** 内置 Markdown 预览窗口（渲染后的只读 HTML，`src/host/markdownHtml.ts` 生成） */
@@ -46,6 +69,10 @@ export interface FileOpenBridge {
     title: string;
     content: string;
     watchTarget: ViewerWatchTarget | null;
+    /** 初始视图（specs/040 FR-003 / AC-8）：`full` 落渲染，`changes` 落变更视图 */
+    initialView: InitialView;
+    /** 变更视图的取数来源（`changes` 时用）：工作区根 + 相对路径 */
+    diffSource: DiffSource | null;
   }): void | Promise<void>;
   /** 内置图片查看器（滚轮缩放；US-38 图片预览窗口） */
   openImageViewer(init: {
@@ -53,17 +80,30 @@ export interface FileOpenBridge {
     dataUrl: string;
     watchTarget: ViewerWatchTarget | null;
   }): void | Promise<void>;
-  /** 内置文本查看器（Monaco view 模式；filePath 只用于语言推断，不读盘） */
+  /** 内置文本查看器（Monaco；filePath 只用于语言推断，不读盘） */
   openTextViewer(init: {
     title: string;
-    content: string;
+    content?: string;
     filePath?: string;
     watchTarget: ViewerWatchTarget | null;
+    /** 初始视图（specs/040 FR-003 / AC-1 / AC-5 ～ AC-7） */
+    initialView: InitialView;
+    /** 变更视图的取数来源（`changes` 时用） */
+    diffSource: DiffSource | null;
   }): void | Promise<void>;
   /** 本地文件走既有 openFile 路径（Monaco 主进程读盘，与「Edit 预览」完全同一入口） */
   openLocalFile(filePath: string): void | Promise<void>;
   /** 调系统默认应用打开本地文件；失败时 reject（错误消息来自 shell.openPath 回串） */
   openWithSystemApp(filePath: string): Promise<void>;
+}
+
+/**
+ * 变更视图的取数来源（specs/040 FR-001）：主进程按 root + rel 跑 `git show HEAD:<rel>`
+ * 与读盘，页面只渲染两侧原文。`null` = 没有 git 上下文（虚拟文档 / 非 git 工作区）。
+ */
+export interface DiffSource {
+  root: string;
+  rel: string;
 }
 
 /** 远端文件读取原语（`electron/sidebarFilesRemote.ts` 提供，SFTP 实现） */
@@ -73,16 +113,35 @@ export interface RemoteFileReader {
   readText(absPath: string): Promise<string>;
 }
 
-/** 本地工作区双击打开：rel 是 '/' 分隔相对路径（约定格式，见 sidebarFiles.ts） */
+/**
+ * 打开前的 git 上下文（specs/040 FR-003 / FR-004）：判定「是否新增」与「能否显示变更」。
+ *
+ * `inGit` 为假（非 git 工作区）时下游不给 `diffSource`，查看器的变更按钮置灰（AC-9）；
+ * `hasHeadVersion` 只在 `inGit` 为真时有意义——非 git 里没有 HEAD 这个概念。
+ * 调用方（`main.ts`）按本地 / 远程各用一份 `FileContentRunner` 提供，判定只做一次。
+ */
+export type GitFileContext = (rel: string) => Promise<{ inGit: boolean; hasHeadVersion: boolean }>;
+
+/** 本地工作区双击打开：rel 是 '/' 分隔相对路径（约定格式，见 sidebarFiles.ts）。
+ *
+ * `source` 决定初始视图（specs/040 FR-003）：需要 `changes` 时先查 `hasHeadVersion`，
+ * 新增文件落全文（没有可对比的旧版本）。 */
 export async function openLocalWorkspaceFile(
   bridge: FileOpenBridge,
   root: string,
   rel: string,
+  source: OpenSource,
+  gitContext: GitFileContext,
 ): Promise<void> {
   // 越界（.. 上跳 / 绝对路径）拒绝：与列目录 / 删除同一份校验实现
   const abs = resolveWithinRoot(root, rel);
   if (!abs) throw new Error(`path escapes the workspace root: ${rel}`);
   const kind = classifyFileForOpen(path.posix.basename(rel));
+  const textual = kind === 'text' || kind === 'markdown' || kind === 'sniff';
+  const git = textual ? await gitContext(rel) : { inGit: false, hasHeadVersion: false };
+  const initialView = resolveInitialView(source, textual ? !git.hasHeadVersion : false);
+  // 非 git 工作区没有可对比的 HEAD（AC-9）：不传 diffSource，按钮在页面里置灰
+  const diffSource: DiffSource | null = git.inGit ? { root, rel } : null;
   if (kind === 'image') {
     const bytes = await fs.promises.readFile(abs);
     await bridge.openImageViewer({
@@ -97,11 +156,19 @@ export async function openLocalWorkspaceFile(
       title: path.posix.basename(rel),
       content: await fs.promises.readFile(abs, 'utf-8'),
       watchTarget: { kind: 'local', filePath: abs },
+      initialView,
+      diffSource,
     });
     return;
   }
   if (kind === 'text') {
-    await bridge.openLocalFile(abs);
+    await bridge.openTextViewer({
+      filePath: abs,
+      title: path.posix.basename(rel),
+      watchTarget: { kind: 'local', filePath: abs },
+      initialView,
+      diffSource,
+    });
     return;
   }
   // 未知扩展名：嗅探前 8KB，判成文本才进内置查看器；二进制（压缩包 / 可执行等）调系统应用
@@ -110,7 +177,13 @@ export async function openLocalWorkspaceFile(
     await bridge.openWithSystemApp(abs);
     return;
   }
-  await bridge.openLocalFile(abs);
+  await bridge.openTextViewer({
+    filePath: abs,
+    title: path.posix.basename(rel),
+    watchTarget: { kind: 'local', filePath: abs },
+    initialView,
+    diffSource,
+  });
 }
 
 /** 远程（SSH）工作区双击打开：文本 / Markdown / 图片经 SFTP 读出进内置窗口；二进制不支持打开 */
@@ -120,6 +193,8 @@ export async function openRemoteWorkspaceFile(
   endpoint: WorkspaceEndpoint,
   root: string,
   rel: string,
+  source: OpenSource,
+  gitContext: GitFileContext,
 ): Promise<void> {
   const abs = resolveWithinRoot(root, rel, { posix: true });
   if (!abs) throw new Error(`path escapes the workspace root: ${rel}`);
@@ -134,6 +209,12 @@ export async function openRemoteWorkspaceFile(
   if (kind === 'binary') {
     throw new Error(REMOTE_BINARY_UNSUPPORTED);
   }
+  // 变更视图同样支持远程（specs/040 FR-004 最后一句）：diffSource 只带 root + rel，
+  // 主进程按 endpoint 选 SSH exec 的 runner，页面拿到的仍是两侧原文
+  const textual = kind === 'text' || kind === 'markdown' || kind === 'sniff';
+  const git = textual ? await gitContext(rel) : { inGit: false, hasHeadVersion: false };
+  const initialView = resolveInitialView(source, textual ? !git.hasHeadVersion : false);
+  const diffSource: DiffSource | null = git.inGit ? { root, rel } : null;
   if (kind === 'image') {
     const bytes = await reader.readBytes(abs);
     await bridge.openImageViewer({
@@ -148,6 +229,8 @@ export async function openRemoteWorkspaceFile(
       title: name,
       content: await reader.readText(abs),
       watchTarget,
+      initialView,
+      diffSource: diffSource,
     });
     return;
   }
@@ -157,6 +240,8 @@ export async function openRemoteWorkspaceFile(
       content: await reader.readText(abs),
       filePath: name,
       watchTarget,
+      initialView,
+      diffSource: diffSource,
     });
     return;
   }
@@ -170,6 +255,8 @@ export async function openRemoteWorkspaceFile(
     content: await reader.readText(abs),
     filePath: name,
     watchTarget,
+    initialView,
+    diffSource: diffSource,
   });
 }
 

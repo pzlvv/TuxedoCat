@@ -175,6 +175,10 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
             continue;
         }
         let origin = message_origin(message);
+        // 节点身份（specs/039 FR-001）：时间线右键「从这里继续」要一个 core 认得的 id。
+        // 直接透传 JSONL 行的 `uuid`，不新增落盘字段；缺失时留 `null`（老数据 / once 通知），
+        // webview 对 `null` 的节点整体禁用回退。
+        let message_uuid = message.get("uuid").cloned().unwrap_or(Value::Null);
 
         match message.get("type").and_then(Value::as_str) {
             Some("system") => {
@@ -184,6 +188,7 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                 out.push(json!({
                     "role": "system",
                     "content": message.get("content").cloned().unwrap_or(Value::Null),
+                    "messageUuid": message_uuid,
                 }));
             }
             Some("user") => {
@@ -237,6 +242,7 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                 let mut data = Map::new();
                 data.insert("role".to_string(), json!("user"));
                 data.insert("content".to_string(), json!(text));
+                data.insert("messageUuid".to_string(), message_uuid.clone());
                 if !images.is_empty() {
                     data.insert("images".to_string(), Value::Array(images));
                 }
@@ -281,12 +287,14 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                                     .get("thinking")
                                     .and_then(Value::as_str)
                                     .unwrap_or(""),
+                                "messageUuid": message_uuid,
                             }));
                         }
                         Some("text") => {
                             out.push(json!({
                                 "role": "assistant",
                                 "content": object.get("text").and_then(Value::as_str).unwrap_or(""),
+                                "messageUuid": message_uuid,
                             }));
                         }
                         Some("tool_use") => {
@@ -376,6 +384,7 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                                 "toolArgs": Value::Object(tool_args),
                                 "toolCallId": tool_use_id,
                                 "status": status,
+                                "messageUuid": message_uuid,
                             }));
                         }
                         _ => {}

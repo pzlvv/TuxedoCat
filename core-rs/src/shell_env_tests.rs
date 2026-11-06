@@ -1,6 +1,6 @@
 //! `shell_env` 的单测：探测参数、输出解析、超时与注入点。
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -129,8 +129,8 @@ fn parse_shell_form_rejects_output_that_is_not_a_path() {
 #[test]
 fn apply_and_apply_native_write_their_own_form() {
     // 沙箱把 PATH 钉成「<root>/bin + 继承 PATH」且两种形式同一份（Sandbox::new），
-    // 钉定随沙箱存亡（drop 即清除，恢复探测语义）——这里断言两个注入点写出的一致、
-    // 都以沙箱 bin 目录开头。
+    // 钉定随沙箱存亡（drop 即清除，恢复探测语义）——这里断言两个注入点都以沙箱 bin
+    // 目录开头，且原生形式是原生进程认的 Windows 形式（混合 POSIX 段被归一）。
     let sandbox = crate::test_support::Sandbox::new("shell-env-forms");
     let mut shell_command = Command::new("noop");
     apply(&mut shell_command).expect("PATH 已由 Sandbox 钉死");
@@ -138,9 +138,43 @@ fn apply_and_apply_native_write_their_own_form() {
     apply_native(&mut native_command).expect("PATH 已由 Sandbox 钉死");
     let shell_path = child_path(&shell_command).expect("apply 应写入 PATH");
     let native_path = child_path(&native_command).expect("apply_native 应写入 PATH");
-    assert_eq!(shell_path, native_path, "钉定是同一份，两个注入点应写出一致");
     let bin_prefix = sandbox.root.join("bin").to_string_lossy().to_string();
     assert!(shell_path.starts_with(&bin_prefix), "got {shell_path}");
+    assert!(native_path.starts_with(&bin_prefix), "got {native_path}");
+    // Windows 上原生形式不能再含 POSIX 形态的目录（`/c/Users/...`、`/usr/bin`）：
+    // 那种条目 cmd / 原生 exe 一律找不到（specs/defects/ 之外，见 native_path_from 注释）
+    #[cfg(windows)]
+    {
+        assert!(
+            !native_path.contains("/"),
+            "原生 PATH 必须是纯 Windows 形式：{native_path}"
+        );
+    }
+}
+
+/// 混合形态归一（Git Bash 启动的进程里，进程环境 PATH 的后半段是塞进一个 token 的
+/// POSIX 列表）：`/c/foo` 提成 `C:\foo`，纯 POSIX 目录丢掉，重复去掉。
+#[test]
+fn native_path_from_normalizes_git_bash_hybrid_lists() {
+    let raw = "C:\\Windows\\system32;D:\\Program Files\\Git\\usr\\bin;/mingw64/bin:/usr/bin:/c/Users/me/bin;/d/Program Files/nodejs;C:\\Windows\\system32;";
+    let normalized = native_path_from(OsStr::new(raw)).expect("应产出非空结果");
+    let text = normalized.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        let entries: Vec<&str> = text.split(';').filter(|e| !e.is_empty()).collect();
+        assert_eq!(
+            entries,
+            vec![
+                "C:\\Windows\\system32",
+                "D:\\Program Files\\Git\\usr\\bin",
+                "C:\\Users\\me\\bin",
+                "D:\\Program Files\\nodejs",
+            ],
+            "got {text}"
+        );
+    }
+    #[cfg(not(windows))]
+    assert!(text.is_empty() || !text.contains('/'), "got {text}");
 }
 
 fn child_path(command: &Command) -> Option<String> {

@@ -212,8 +212,28 @@ export function countLines(text: string): number {
 
 const GIT_COMMON_ARGS = ['-c', 'core.quotepath=false'];
 
+/**
+ * 变更清单的取数范围（specs/041 FR-002）：`doc` 只看 Markdown（文档视图的既有口径），
+ * `all` 不限定类型（「全部变更」视图）。两者的差别只有 pathspec，解析与过滤完全同一份。
+ */
+export type ChangeScope = 'doc' | 'all';
+
+/**
+ * pathspec 的**唯一定义处**（specs/041 FR-002「不复制第二份解析」）。
+ *
+ * git 的 `--` 之后为空表示「全匹配」，因此 `all` 返回空数组而不是省略 `--`——
+ * 三个调用点都保留 `--`，把「限定范围」这件事收在这一个函数里。
+ */
+export function pathspecFor(scope: ChangeScope): string[] {
+  return scope === 'doc' ? ['*.md', '*.markdown'] : [];
+}
+
 /** git 口径取数：与 HEAD 比较（含已暂存与未暂存）+ 未跟踪全文计行，过滤已删除文件 */
-export async function collectGitEntries(runner: GitCommandRunner): Promise<DocListResult> {
+export async function collectGitEntries(
+  runner: GitCommandRunner,
+  scope: ChangeScope = 'doc',
+): Promise<DocListResult> {
+  const pathspec = pathspecFor(scope);
   // 无 HEAD 的新仓：索引里的全部按新增计全文行数（相对空树）
   let hasHead: boolean;
   try {
@@ -226,14 +246,14 @@ export async function collectGitEntries(runner: GitCommandRunner): Promise<DocLi
   const map = new Map<string, DocEntry>();
   if (hasHead) {
     const numstat = await runner.run([
-      ...GIT_COMMON_ARGS, 'diff', '--numstat', '-M', 'HEAD', '--', '*.md', '*.markdown',
+      ...GIT_COMMON_ARGS, 'diff', '--numstat', '-M', 'HEAD', '--', ...pathspec,
     ]);
     if (numstat.code !== 0) {
       return { ok: false, error: `git diff 失败: ${numstat.stderr.trim()}` };
     }
     for (const entry of parseNumstat(numstat.stdout)) map.set(entry.path, entry);
   } else {
-    const staged = await runner.run([...GIT_COMMON_ARGS, 'ls-files', '--', '*.md', '*.markdown']);
+    const staged = await runner.run([...GIT_COMMON_ARGS, 'ls-files', '--', ...pathspec]);
     if (staged.code !== 0) {
       return { ok: false, error: `git ls-files 失败: ${staged.stderr.trim()}` };
     }
@@ -245,7 +265,7 @@ export async function collectGitEntries(runner: GitCommandRunner): Promise<DocLi
   }
 
   const untracked = await runner.run([
-    ...GIT_COMMON_ARGS, 'ls-files', '--others', '--exclude-standard', '--', '*.md', '*.markdown',
+    ...GIT_COMMON_ARGS, 'ls-files', '--others', '--exclude-standard', '--', ...pathspec,
   ]);
   if (untracked.code !== 0) {
     return { ok: false, error: `git ls-files --others 失败: ${untracked.stderr.trim()}` };
@@ -265,8 +285,7 @@ export async function collectGitEntries(runner: GitCommandRunner): Promise<DocLi
   return { ok: true, mode: 'git', entries };
 }
 
-/** 记录口径取数：`modifiedDocs` 里的现存文件（不显示行数），已删除的过滤 */
-export async function collectRecordEntries(
+/** 记录口径取数：`modifiedDocs` 里的现存文件（不显示行数），已删除的过滤 */export async function collectRecordEntries(
   paths: readonly string[],
   exists: (rel: string) => Promise<boolean>,
 ): Promise<DocEntry[]> {

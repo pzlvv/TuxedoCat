@@ -152,5 +152,94 @@ runTests('sidebarDocView', async () => {
 
   check('buildDocRows：空条目给空行集', buildDocRows([]).length === 0);
 
+  // ---------- 取数范围参数化（specs/041 FR-002 / FR-003） ----------
+  // 三处 git 调用的 args 逐字断言：pathspec 只由 `pathspecFor` 定义，`all` 时 `--` 之后为空。
+  {
+    const calls: string[][] = [];
+    const recordingRunner = (scripts: Array<{ match: string[]; stdout?: string }>): GitCommandRunner => {
+      const base = fakeRunner(scripts.map((s) => ({ ...s, code: 0 })));
+      return {
+        ...base,
+        run: async (args) => {
+          calls.push(args);
+          return base.run(args);
+        },
+      };
+    };
+    calls.length = 0;
+    const allScope = await collectGitEntries(recordingRunner([
+      { match: ['rev-parse'], stdout: 'abc\n' },
+      { match: ['diff'], stdout: '1\t1\tsrc/app.ts\n' },
+      { match: ['ls-files', '--others'], stdout: 'new.ts\n' },
+    ]), 'all');
+    const diffCall = calls.find((args) => args.includes('diff')) ?? [];
+    const untrackedCall = calls.find((args) => args.includes('--others')) ?? [];
+    check('scope=all：diff 不带 pathspec（`--` 后为空）',
+      allScope.ok === true
+      && JSON.stringify(diffCall.slice(diffCall.indexOf('--'))) === JSON.stringify(['--']));
+    check('scope=all：ls-files --others 不带 pathspec',
+      JSON.stringify(untrackedCall.slice(untrackedCall.indexOf('--'))) === JSON.stringify(['--']));
+    check('scope=all：非 Markdown 文件进清单',
+      allScope.ok && allScope.entries.some((e) => e.path === 'src/app.ts'));
+
+    // 同一脚本换 scope=doc：args 与既有口径逐字一致
+    calls.length = 0;
+    await collectGitEntries(recordingRunner([
+      { match: ['rev-parse'], stdout: 'abc\n' },
+      { match: ['diff'], stdout: '' },
+      { match: ['ls-files', '--others'], stdout: '' },
+    ]), 'doc');
+    const docDiffCall = calls.find((args) => args.includes('diff')) ?? [];
+    const docUntrackedCall = calls.find((args) => args.includes('--others')) ?? [];
+    check('scope=doc：diff 的 pathspec 是 Markdown 两份',
+      JSON.stringify(docDiffCall.slice(docDiffCall.indexOf('--')))
+        === JSON.stringify(['--', '*.md', '*.markdown']));
+    check('scope=doc：ls-files --others 的 pathspec 是 Markdown 两份',
+      JSON.stringify(docUntrackedCall.slice(docUntrackedCall.indexOf('--')))
+        === JSON.stringify(['--', '*.md', '*.markdown']));
+  }
+  {
+    // 无 HEAD 分支的 pathspec 也按 scope 走
+    const calls: string[][] = [];
+    const recorder = async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+      calls.push(args);
+      if (args.includes('rev-parse')) return { code: 1, stdout: '', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    await collectGitEntries({
+      run: recorder,
+      readFile: async () => '',
+      exists: async () => true,
+    }, 'all');
+    const lsFilesCall = calls.find((args) => args.includes('ls-files') && !args.includes('--others')) ?? [];
+    check('无 HEAD + scope=all：ls-files 不带 pathspec',
+      JSON.stringify(lsFilesCall.slice(lsFilesCall.indexOf('--'))) === JSON.stringify(['--']));
+  }
+  {
+    // `all` 下纯重命名（numstat 0/0）与已删除文件仍被剔除（AC-6）
+    const allWithRenames = await collectGitEntries({
+      // 这套脚本要断言「已删除文件被存在性过滤」，所以 exists 只对 gone.ts 返回 false
+      run: async (args: string[]) => {
+        const stripped = args[0] === '-c' ? args.slice(2) : args;
+        if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
+        if (stripped[0] === 'diff') {
+          return {
+            code: 0,
+            stdout: '0\t0\told.ts => new.ts\n2\t2\tgone.ts\n1\t0\tkept.ts\n',
+            stderr: '',
+          };
+        }
+        if (stripped[0] === 'ls-files') return { code: 0, stdout: '', stderr: '' };
+        throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
+      },
+      readFile: async () => '',
+      exists: async (rel) => rel !== 'gone.ts',
+    }, 'all');
+    check('scope=all：纯重命名与已删除文件仍被剔除',
+      allWithRenames.ok === true
+      && allWithRenames.entries.length === 1
+      && allWithRenames.entries[0].path === 'kept.ts');
+  }
+
   finish();
 });

@@ -91,17 +91,18 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   filesDelete: (workspaceId: string, relPaths: string[]): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-delete', { workspaceId, paths: relPaths });
   },
-  /** 双击打开（US-42 验收 6）：主进程按类型分流（内置文本 / 图片窗口或系统应用） */
-  filesOpen: (workspaceId: string, relPath: string): Promise<unknown> => {
-    return ipcRenderer.invoke('sidebar:files-open', { workspaceId, path: relPath });
+  /** 双击打开（US-42 验收 6）：主进程按类型分流（内置文本 / 图片窗口或系统应用）。
+   * `source` 是打开来源（specs/040 FR-003）：目录树 / 变更视图决定初始视图 */
+  filesOpen: (workspaceId: string, relPath: string, source: 'tree' | 'changes'): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-open', { workspaceId, path: relPath, source });
   },
-  /** 文档视图取数（specs/030）：git 行数口径或非 git 记录口径，主进程分流 */
-  filesDocList: (workspaceId: string): Promise<unknown> => {
-    return ipcRenderer.invoke('sidebar:files-doc-list', { workspaceId });
+  /** 变更清单取数（specs/030 / specs/041）：`scope` 决定 pathspec（doc = Markdown，all = 全部类型） */
+  filesDocList: (workspaceId: string, scope: 'doc' | 'all'): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-doc-list', { workspaceId, scope });
   },
-  /** 文档视图开关状态上报：主进程据此挂 / 摘 git 哨兵监听 */
-  filesDocWatch: (workspaceId: string, enabled: boolean): void => {
-    ipcRenderer.send('sidebar:files-doc-watch', { workspaceId, enabled });
+  /** 文件浏览器模式上报（specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵监听 */
+  filesModeWatch: (workspaceId: string, mode: 'tree' | 'doc' | 'changes'): void => {
+    ipcRenderer.send('sidebar:files-mode-watch', { workspaceId, mode });
   },
   /** 主进程推送的失效信号（Write 新建 → 树重读、git 哨兵 → 文档重取） */
   onFilesInvalidated: (callback: (payload: unknown) => void): void => {

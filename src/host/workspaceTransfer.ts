@@ -51,6 +51,12 @@ export interface TransferCounts {
   files: number;
   bytes: number;
   skippedSymlinks: number;
+  /**
+   * 已搬运文件的展示路径（POSIX 分隔符）：相对被传输子树的根——目录传输是
+   * `a.txt` / `sub/b.txt`，单文件传输是目标文件名。事实源是执行器本身，
+   * 卡片只渲染，不自己去读目录（specs/042 FR-001 / FR-005）。
+   */
+  paths: string[];
 }
 
 /** 逐文件落盘的暂存名后缀：完成搬运后 rename 到目标，中止 / 失败不残留半写文件 */
@@ -127,7 +133,7 @@ export async function runTransfer(options: {
   signal: AbortSignal;
 }): Promise<TransferCounts> {
   const { source, sourcePath, dest, destPath, signal } = options;
-  const counts: TransferCounts = { files: 0, bytes: 0, skippedSymlinks: 0 };
+  const counts: TransferCounts = { files: 0, bytes: 0, skippedSymlinks: 0, paths: [] };
 
   const sourceStat = await source.stat(sourcePath);
   if (sourceStat === null) {
@@ -135,7 +141,7 @@ export async function runTransfer(options: {
   }
   if (sourceStat.symlink) {
     // 根就是符号链接：不跟随、不复制，如实计入跳过数（FR-003）
-    return { files: 0, bytes: 0, skippedSymlinks: 1 };
+    return { files: 0, bytes: 0, skippedSymlinks: 1, paths: [] };
   }
 
   const destStat = await dest.stat(destPath);
@@ -146,15 +152,21 @@ export async function runTransfer(options: {
     if (destStat === null) {
       await dest.mkdirp(dest.dirname(destPath));
     }
-    await copyFile(source, sourcePath, dest, destPath, signal, counts);
+    await copyFile(source, sourcePath, dest, destPath, signal, counts, baseName(destPath));
     return counts;
   }
 
   if (destStat?.kind === 'file') {
     throw new TransferTypeConflictError(sourcePath, destPath, 'directory', 'file');
   }
-  await copyDirectory(source, sourcePath, dest, destPath, signal, counts);
+  await copyDirectory(source, sourcePath, dest, destPath, signal, counts, '');
   return counts;
+}
+
+/** 去掉目录部分后的文件名（端点抽象没有 basename，本地 / 远程两种分隔符都要认） */
+function baseName(p: string): string {
+  const parts = p.split(/[\\/]/).filter((part) => part !== '');
+  return parts[parts.length - 1] ?? '';
 }
 
 /** 逐文件流式搬运 + 暂存改名；字节数按实际流过量计（跨端 stat 尺寸不可靠） */
@@ -165,6 +177,8 @@ async function copyFile(
   destPath: string,
   signal: AbortSignal,
   counts: TransferCounts,
+  /** 相对**被传输子树的根**的展示路径（POSIX 分隔符，跨端一致） */
+  relPath: string,
 ): Promise<void> {
   signal.throwIfAborted();
   const tempPath = `${destPath}${TEMP_SUFFIX}`;
@@ -185,6 +199,7 @@ async function copyFile(
   }
   counts.files += 1;
   counts.bytes += bytes;
+  counts.paths.push(relPath);
 }
 
 /** 目录递归：同名目录合并、同名文件覆盖、符号链接跳过、多余项不删除 */
@@ -195,6 +210,8 @@ async function copyDirectory(
   destPath: string,
   signal: AbortSignal,
   counts: TransferCounts,
+  /** 当前目录相对**传输子树根**的展示路径（空串 = 子树根本身） */
+  relPrefix: string,
 ): Promise<void> {
   signal.throwIfAborted();
   await dest.mkdirp(destPath);
@@ -205,19 +222,20 @@ async function copyDirectory(
     }
     const childSource = source.join(sourcePath, entry.name);
     const childDest = dest.join(destPath, entry.name);
+    const childRel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
     if (entry.kind === 'file') {
       const childDestStat = await dest.stat(childDest);
       if (childDestStat?.kind === 'directory') {
         throw new TransferTypeConflictError(childSource, childDest, 'file', 'directory');
       }
-      await copyFile(source, childSource, dest, childDest, signal, counts);
+      await copyFile(source, childSource, dest, childDest, signal, counts, childRel);
       continue;
     }
     const childDestStat = await dest.stat(childDest);
     if (childDestStat?.kind === 'file') {
       throw new TransferTypeConflictError(childSource, childDest, 'directory', 'file');
     }
-    await copyDirectory(source, childSource, dest, childDest, signal, counts);
+    await copyDirectory(source, childSource, dest, childDest, signal, counts, childRel);
   }
 }
 

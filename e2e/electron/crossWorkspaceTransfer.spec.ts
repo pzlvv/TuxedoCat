@@ -22,6 +22,8 @@ let mockLlm: MockLlm;
 let app: AppHandle | null = null;
 let workspaceA: string;
 let workspaceB: string;
+/** 跨重启用例（FR-005 重放）留下的沙箱 home：afterEach 负责清理 */
+let retainedHome: string | null = null;
 
 function machineName(): string {
   const fromEnv = process.platform === 'win32' ? process.env.COMPUTERNAME : process.env.HOSTNAME;
@@ -53,6 +55,10 @@ test.afterEach(async () => {
   mockLlm.close();
   await fs.promises.rm(workspaceA, { recursive: true, force: true }).catch(() => undefined);
   await fs.promises.rm(workspaceB, { recursive: true, force: true }).catch(() => undefined);
+  if (retainedHome) {
+    await fs.promises.rm(retainedHome, { recursive: true, force: true }).catch(() => undefined);
+    retainedHome = null;
+  }
 });
 
 test('US-60 本地↔本地：Transfer 把目录递归搬到目标工作区（specs/028 FR-003）', async () => {
@@ -64,6 +70,8 @@ test('US-60 本地↔本地：Transfer 把目录递归搬到目标工作区（sp
     openWorkspaces: [workspaceA, workspaceB],
     activeWorkspace: workspaceA,
     agentMode: 'auto',
+    // 卡片重放断言要重开同一沙箱（FR-005），home 归用例所有
+    keepHomeOnClose: true,
   });
 
   mockLlm.setHandler((req): ScriptDecision => {
@@ -117,6 +125,42 @@ test('US-60 本地↔本地：Transfer 把目录递归搬到目标工作区（sp
   };
   await walk(path.join(workspaceB, 'incoming'));
   expect(leftovers).toEqual([]);
+
+  // 工具卡片（specs/042 FR-008）：两端身份（完整值在 title，正文按中点截断）、
+  // 统计与逐条文件清单（相对**被传输子树根**的路径）
+  const card = chatA.locator('.msg-timeline-item').filter({ hasText: 'Transfer' }).first();
+  await expect(card.getByTitle(agentId(workspaceA))).toBeVisible({ timeout: 10_000 });
+  await expect(card.getByTitle(agentId(workspaceB))).toBeVisible();
+  await expect(card.getByText(/2 个文件 · 23 B/)).toBeVisible();
+  await expect(card.getByTitle('deep/b.md')).toBeVisible();
+  await expect(card.getByTitle('.dotfile')).toBeVisible();
+
+  // 重放一致（specs/042 FR-005）：重开同一沙箱后，卡片信息全部来自 toolArgs 与
+  // 结果文本，两端身份与统计与传输当时相同
+  const homeDir = app.homeDir;
+  retainedHome = homeDir;
+  await app.close();
+  // 沙箱要留给第二段重开：home 归用例所有，由 afterEach 统一清理
+  app = await launchApp({
+    repoRoot,
+    mockLlm,
+    workspaceDir: workspaceA,
+    openWorkspaces: [workspaceA, workspaceB],
+    activeWorkspace: workspaceA,
+    agentMode: 'auto',
+    reuseHomeDir: homeDir,
+  });
+  const sidebar = await app.sidebarPage();
+  const row = sidebar.locator('#list .item[data-session-id]').first();
+  await expect(row).toHaveCount(1, { timeout: 30_000 });
+  const sid = await row.getAttribute('data-session-id');
+  await row.click();
+  const replayChat = await app.chatPage({ sessionIncludes: sid ?? '' });
+  const replayCard = replayChat.locator('.msg-timeline-item').filter({ hasText: 'Transfer' }).first();
+  await expect(replayCard.getByTitle(agentId(workspaceA))).toBeVisible({ timeout: 30_000 });
+  await expect(replayCard.getByTitle(agentId(workspaceB))).toBeVisible();
+  await expect(replayCard.getByText(/2 个文件 · 23 B/)).toBeVisible();
+  await expect(replayCard.getByTitle('deep/b.md')).toBeVisible();
 });
 
 test('US-60 守卫：两端都是当前工作区 → 提示用 Bash、零写入（specs/028 FR-002）', async () => {

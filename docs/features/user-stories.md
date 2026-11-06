@@ -19,10 +19,10 @@ last_reviewed: 2026-10-20
 
 | 分册 | Epic | 收录 |
 | --- | --- | --- |
-| [对话与输入](user-stories/dialog-core.md) | EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 | US-1～11、US-46～49、US-51～52、US-73 |
+| [对话与输入](user-stories/dialog-core.md) | EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 | US-1～11、US-46～49、US-51～52、US-73、US-75 |
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
-| [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50 |
+| [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50、US-67、US-74 |
 | [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～65 |
 | [PyCharm 宿主](user-stories/pycharm-plugin.md) | EP-15 PyCharm 插件宿主 | US-68～72 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
@@ -47,7 +47,7 @@ last_reviewed: 2026-10-20
 | `e2e/webview/sendModes.spec.ts` | US-46 | webview UI |
 | `e2e/webview/jumpToBottom.spec.ts` | US-47 | webview UI |
 | `e2e/webview/bashOutputCollapse.spec.ts` | US-14（Bash 输出折叠） | webview UI |
-| `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28 | Electron 整应用 |
+| `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28、US-74（读后失效的编辑被拒 → 重读 → 成功）、US-75（时间线「从这里继续」回退对话并回滚文件） | Electron 整应用 |
 | `e2e/electron/smartNaming.spec.ts` | US-21 | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |

@@ -321,6 +321,8 @@ export class WebviewMessageHandler {
       entry('respondUserChoice', (msg) => this.handleRespondUserChoice(msg)),
       entry('expandCompact', (msg) => this.handleExpandCompact(msg)),
       entry('rollbackEdit', (msg) => this.emitUiEvent({ type: 'editRolledBack', sessionId: msg.sessionId, toolUseId: msg.toolUseId, direction: msg.direction, filePath: msg.filePath })),
+      // 对话级回退（specs/039）：截断与文件恢复都在 core，宿主只转目标节点 id
+      entry('rewindConversation', (msg) => this.emitUiEvent({ type: 'conversationRewound', sessionId: msg.sessionId, targetUuid: msg.targetUuid })),
 
       // ===== 消息 / 压缩 / 中止（UiEvent 翻译）=====
       entry('requestCompress', (msg) => this.emitUiEvent({ type: 'compactRequested', sessionId: msg.sessionId })),

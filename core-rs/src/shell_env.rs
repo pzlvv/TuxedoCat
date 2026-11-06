@@ -116,14 +116,88 @@ pub fn apply(command: &mut Command) -> Result<(), String> {
 
 /// 把解析出的 PATH 注入原生子进程（`rg` / `git` / `where` / `cmd` / MCP server）。
 ///
-/// 原生进程不认 POSIX 列表：Windows 上用逐条派生出来的 Windows 形式。
+/// 原生进程不认 POSIX 列表：Windows 上用逐条派生出来的 Windows 形式；进程环境的 PATH
+/// 本身可能是 Git Bash 的混合形态（见 [`native_path_from`]），这里统一归一一次。
 pub fn apply_native(command: &mut Command) -> Result<(), String> {
-    apply_value(command, current()?.native());
+    let native = current()?.native().to_os_string();
+    let normalized = native_path_from(&native).unwrap_or(native);
+    apply_value(command, &normalized);
     Ok(())
 }
 
 fn apply_value(command: &mut Command, path: &OsStr) {
     command.env("PATH", path);
+}
+
+/// 把一份「可能是 Git Bash / MSYS2 混合形态」的 PATH 归一成原生进程认的 Windows 形式。
+///
+/// 为什么需要：进程环境的 PATH 在从 Git Bash 启动的进程里是**混合**的——前半段是
+/// 分号分隔的 Windows 目录，后半段整段塞进一个 `token`，里面又是 `/c/Users/...` 形态
+/// 的 POSIX 列表，甚至带着 `%DevEco Studio%` 这种未展开的引用。`cmd /c` 与原生 exe
+/// 只认分号分隔的 Windows 目录，混进去的 POSIX 段会让它找不到 `node` / `where`
+/// （本机实测：沙箱钉同一份时 `cargo test mcp::tests` 全部红）。
+///
+/// 规则：分号切段；不含盘符前缀却含 `:` 的段按 POSIX 列表再切一层；
+/// `/c/foo/bar` → `C:\foo\bar`；纯 POSIX 目录（`/usr/bin`）丢掉——原生进程本来就不认它。
+/// 结果去重（大小写不敏感），保持首次出现顺序。非 Windows 恒返回 `None`（无混合形态）。
+#[cfg(windows)]
+pub fn native_path_from(raw: &OsStr) -> Option<OsString> {
+    let raw = raw.to_string_lossy();
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push = |entry: String| {
+        if entry.is_empty() {
+            return;
+        }
+        let key = entry.to_lowercase();
+        if seen.insert(key) {
+            out.push(entry);
+        }
+    };
+    for token in raw.split(';') {
+        // `C:\...` 自带盘符的是单个 Windows 目录；其余含 `:` 的是被塞进一个 token 的
+        // POSIX 列表（`/mingw64/bin:/usr/bin:/c/Users/...`）。
+        let is_drive_prefixed = token.len() >= 2
+            && token.as_bytes()[1] == b':'
+            && token.as_bytes()[0].is_ascii_alphabetic();
+        let parts: Vec<&str> = if !is_drive_prefixed && token.contains(':') {
+            token.split(':').collect()
+        } else {
+            vec![token]
+        };
+        for part in parts {
+            if part.is_empty() {
+                continue;
+            }
+            let bytes = part.as_bytes();
+            let drive_form = part.starts_with('/')
+                && bytes.len() >= 2
+                && bytes[1].is_ascii_alphabetic()
+                && (bytes.len() == 2 || bytes[2] == b'/');
+            if drive_form {
+                let drive = (bytes[1] as char).to_ascii_uppercase();
+                let rest = part[2..].replace('/', "\\");
+                push(format!("{drive}:{rest}"));
+                continue;
+            }
+            if part.starts_with('/') {
+                // 纯 POSIX 目录（`/usr/bin`、`/mingw64/bin`）：Windows 原生进程不认
+                continue;
+            }
+            push(part.replace('/', "\\"));
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(OsString::from(out.join(";")))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn native_path_from(raw: &OsStr) -> Option<OsString> {
+    let _ = raw;
+    None
 }
 
 /// 测试专用：把解析结果钉死，用例不去跑真实的用户 shell。

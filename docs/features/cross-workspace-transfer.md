@@ -1,6 +1,6 @@
 ---
 owner: pzlvz
-last_reviewed: 2026-10-25
+last_reviewed: 2026-11-06
 ---
 
 # 规格：跨工作区文件传输（`Transfer` 工具）
@@ -34,6 +34,12 @@ SSH 接入（SFTP 同源的凭证与链路）见
 - **AC-7**（FR-005）：GIVEN VS Code 宿主 WHEN 调 `Transfer` THEN 返回「当前宿主不支持」；三宿主的工具定义与提示词段逐字节一致。
   - **AC-6**（FR-006）：GIVEN 跨工作区子代理会话 WHEN 组装提示词 THEN `### Transfer` 段为详细形态并点名发起方身份；普通会话为简述且不含参数表。
 - **AC-8**（FR-007）：GIVEN 传输进行中 WHEN 发起会话被中止 THEN 传输取消、按「工具被中止」收尾，已完成文件保留且无半写文件。
+- 场景 4：工具卡片
+  - **AC-9**（FR-008）：GIVEN 一次成功的跨工作区传输 WHEN 看消息区的工具卡片 THEN 显示两端身份、文件数与总字节数，并逐条列出文件相对路径（不超过 20 条）。
+  - **AC-10**（FR-008）：GIVEN 传输结果有跳过的符号链接 WHEN 看卡片 THEN 显示「跳过 N 个符号链接」；为 0 时整段不渲染。
+  - **AC-11**（FR-008）：GIVEN 文件数超过 20 WHEN 看卡片 THEN 只列前 20 条并追加「还有 M 个文件」。
+  - **AC-12**（FR-008）：GIVEN 传输失败 WHEN 看卡片 THEN 失败态显示工具返回的错误原文，不渲染统计与清单。
+  - **AC-13**（FR-008）：GIVEN 历史会话重新打开 WHEN 看 Transfer 卡片 THEN 两端身份与统计与传输当时一致（卡片信息全部来自工具入参与结果文本）。
 
 ## 功能需求
 
@@ -87,6 +93,20 @@ SSH 接入（SFTP 同源的凭证与链路）见
 - abort 的 UiEvent 必经宿主中转：转发前取消该会话进行中的传输，执行器以
   「transfer canceled」收尾，Core 侧按「工具被中止」收敛；零新增事件。
 
+### FR-008：工具卡片
+
+- `Transfer` 在消息区有一张只读卡片：两端身份、文件数与字节数、跳过的符号链接数、
+  文件清单。事实只来自工具入参与结果文本——卡片不依赖会话内额外状态，历史会话重开后
+  与传输当时一致。入参缺省端显示「当前工作区」；两端都是长路径时按中点截断，完整值进
+  `title`。
+- 结果文本的统计行（`✓ Transferred …`）形态不变；其后追加路径明细行（最多 20 条，
+  超出时末尾一行「还有 M 个文件」）。卡片按同一上限展示，超出的部分是展示决策，
+  不改工具结果的生成口径。
+- 跳过的符号链接数为 0 时整段不渲染；工具失败时卡片是失败态并显示错误原文，
+  不猜测统计与清单。
+- 结果文本被 4K 上限裁剪成 `<persisted-output>` 信封时，卡片展示信封里的预览，
+  不额外请求完整输出。
+
 ## 行为规格
 
 ### 2.1 术语与事实来源
@@ -111,7 +131,8 @@ SSH 接入（SFTP 同源的凭证与链路）见
 
 - `CoreRequest.crossWorkspaceTransferRequested`（发起方 Core → 宿主，等待期间切片
   轮询取消标记）→ `{ files, bytes, skippedSymlinks, sourceWorkspaceId,
-  destWorkspaceId } / { error }`；
+  destWorkspaceId, paths } / { error }`（`paths` = 已搬运文件相对被传输子树根的路径，
+  按搬运顺序、POSIX 分隔符，供工具卡片展示清单）；
 - `hostEnvironmentProvided.crossWorkspaceTransfer`（能力位）。
 - 中止零新增事件：abort 的 UiEvent 必经宿主中转（`WebviewMessageHandler` 在转发
   `abortRequested` 前调 `cancelTransfersForSession`），执行器以「transfer canceled」
@@ -159,7 +180,7 @@ Moves files or directories between open workspaces, only after a cross-workspace
 - VS Code 宿主与 TUI 的跨工作区传输。
 - 断点续传、差量同步、镜像删除（`--delete` 语义）、排除规则、权限位 / 修改时间
   保留、符号链接本身的复制。
-- 传输进度的流式上报与专用工具卡片。
+- 传输进度的流式上报。
 - 会话中途动态注入 / 移除工具（实测击穿前缀缓存，specs/028 调研结论）。
 
 ## 6. 对需求基线的影响
@@ -179,3 +200,4 @@ Moves files or directories between open workspaces, only after a cross-workspace
 | FR-005 | `src/shared/AssistantEventBus.ts`、三宿主发送点、`core-rs/src/config.rs` | `src/test/bootstrapWiring.test.ts`、`core-rs/src/tools_tests.rs` | 自动 |
 | FR-006 | `core-rs/src/prompt.rs` 的 `transfer_usage_lines` / `TRANSFER_BRIEF_DETAILS` / `transfer_reminder`；`core-rs/src/engine.rs` 的 `transfer_counterpart` | `core-rs/src/prompt_tests.rs`、`core-rs/src/tools_tests.rs` | 自动 |
 | FR-007 | `src/host/ui/webviewMessageHandler.ts` 的 abort 中转取消；`core-rs/src/engine.rs` 的 `cancellable_request` | `src/test/workspaceTransfer.test.ts`、`core-rs/src/engine_tests.rs` | 自动 |
+| FR-008 | `src/webview/transferCard.ts` 的 `buildTransferCardModel`；`src/webview/tools/Transfer.tsx`；`core-rs/src/tools.rs` 的 `format_transfer_paths` | `src/test/transferCard.test.ts`、`core-rs/src/tools_tests.rs`、`e2e/electron/crossWorkspaceTransfer.spec.ts` | 自动 |

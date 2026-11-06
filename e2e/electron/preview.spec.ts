@@ -104,7 +104,8 @@ test('US-38 md 文件链接打开 Markdown 预览窗口（默认渲染视图，�
   // 标题栏带「渲染 / 文本」切换按钮
   const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
   await expect(previewPage.locator('article.markdown-body h1')).toHaveText('工作区', { timeout: 20_000 });
-  await expect(previewPage.locator('#markdown-titlebar .view-toggle')).toHaveText(/文本|Text/, { timeout: 10_000 });
+  // 控制行最右的「渲染 / 文本」切换按钮（specs/040 在它左侧加了两组「全文 / 变更」）
+  await expect(previewPage.locator('#markdown-titlebar .view-toggle').last()).toHaveText(/文本|Text/, { timeout: 10_000 });
 });
 
 test('US-38 md 链接带行号定位默认文本视图', async () => {
@@ -147,16 +148,18 @@ test('Markdown 预览自绘标题栏：渲染/文本切换按钮在最小化左�
   const previewPage = await app.waitForPage('monaco/markdown.html', 20_000);
   await expect(previewPage.locator('article.markdown-body h1')).toHaveText('工作区', { timeout: 20_000 });
 
-  // 初始为渲染视图；切换按钮的标签是切换目标（当前渲染 → 显示「文本」）
-  const toggle = previewPage.locator('#markdown-titlebar .view-toggle');
+  // 初始为渲染视图；控制行最右的「渲染 / 文本」切换按钮标签是切换目标
+  // （specs/040 FR-002 在它左侧加了两组「全文 / 变更」，因此取最后一个 .view-toggle）
+  const toggle = previewPage.locator('#markdown-titlebar .view-toggle').last();
   await expect(toggle).toBeVisible({ timeout: 10_000 });
   await expect(toggle).toHaveText(/文本|Text/);
 
   // 几何断言：切换按钮整体位于最小化按钮左侧（同一控制行内）
   const ordering = await previewPage.evaluate(() => {
     const buttons = [...document.querySelectorAll('#markdown-titlebar .controls button')];
-    const toggleRect = buttons[0].getBoundingClientRect();
-    const minimizeRect = buttons[1].getBoundingClientRect();
+    // 控制行顺序：[全文][变更][渲染/文本][最小化][最大化][关闭]
+    const toggleRect = buttons[buttons.length - 4].getBoundingClientRect();
+    const minimizeRect = buttons[buttons.length - 3].getBoundingClientRect();
     return {
       sameRow: Math.abs(toggleRect.top - minimizeRect.top) < 1,
       toggleRight: toggleRect.right,
@@ -356,3 +359,109 @@ test('US-38 查看器窗口位置记忆：移动后关闭，再开沿用上次�
   // 的互相矛盾），拆开采样会让断言采到两个不同的窗口
   await expect.poll(async () => rectNear((await viewerWindow())?.bounds, target), { timeout: 20_000 }).toBe(true);
 });
+
+// ==================== 变更视图（specs/040） ====================
+
+/** 把当前 e2e 工作区初始化成 git 仓并提交基线（变更视图的相对 HEAD 对比需要它） */
+async function initGitRepoForPreview(): Promise<void> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const exec = promisify(execFile);
+  const run = (...args: string[]): Promise<unknown> => exec('git', ['-C', workspaceDir, ...args], { windowsHide: true });
+  await run('init', '-q');
+  await run('config', 'user.email', 'e2e@t');
+  await run('config', 'user.name', 'e2e');
+  await run('add', '-A');
+  await run('commit', '-q', '-m', 'base');
+}
+
+test('US-38 specs/040 AC-1/FR-001 文本文件变更视图：文件树打开落全文，点变更为左右对比', async () => {
+  await initGitRepoForPreview();
+  // 让 notes.py 相对 HEAD 有改动（基线已入库原内容）
+  await fs.promises.writeFile(path.join(workspaceDir, 'notes.py'), 'def main():\n    print("changed")\n');
+
+  await openFromSidebar('notes.py');
+  const page = await app.waitForPage('monaco/index.html', 20_000);
+  // 文件树来源恒落全文视图：切换按钮标签是切换目标（当前全文 → 显示「变更」）
+  const toggle = page.locator('#source-toggle');
+  await expect(toggle).toHaveText(/变更|Changes/, { timeout: 15_000 });
+  await expect(page.locator('#container')).toBeVisible();
+
+  // 点「变更」→ 主进程取两侧原文，页面建 DiffEditor
+  await toggle.click();
+  await expect(page.locator('.monaco-diff-editor')).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('#container')).toBeVisible();
+  // 切回全文
+  await expect(toggle).toHaveText(/全文|Full/);
+  await toggle.click();
+  await expect(page.locator('.monaco-diff-editor')).toHaveCount(0, { timeout: 15_000 });
+});
+
+test('US-38 specs/040 AC-2/FR-001 没有改动的文件点变更显示空态（不是空白编辑器）', async () => {
+  await initGitRepoForPreview();
+  // README.md 未改动（基线就是工作区当前内容）
+  await openFromSidebar('README.md');
+  const page = await app.waitForPage('monaco/markdown.html', 20_000);
+  const fullToggle = page.locator('.source-toggle').first();
+  const changesToggle = page.locator('.source-toggle').last();
+  await expect(changesToggle).toBeVisible({ timeout: 15_000 });
+  await changesToggle.click();
+  // Markdown 的变更档：正文区换 diff，没有改动时给「没有改动」
+  await expect(page.locator('#markdown-source-view')).toContainText('没有改动', { timeout: 20_000 });
+  // 「全文」是源文侧开关，只在文本档生效：点它回到源文全文，不停留在变更档
+  await fullToggle.click();
+  await expect(page.locator('#markdown-source-view')).not.toContainText('没有改动', { timeout: 20_000 });
+  await expect(page.locator('#markdown-source-view .view-lines')).toContainText('# 工作区', { timeout: 20_000 });
+});
+
+test('US-38 specs/040 AC-3/AC-4/FR-002 Markdown 两组开关正交：全文/变更在渲染/文本左侧，渲染态忽略变更取值', async () => {
+  await initGitRepoForPreview();
+  // 制造真实改动：干净文件在变更档会走空态，看不到 DiffEditor
+  await fs.promises.writeFile(path.join(workspaceDir, 'README.md'), '# 工作区\n\n改过的内容。\n');
+  await openFromSidebar('README.md');
+  const page = await app.waitForPage('monaco/markdown.html', 20_000);
+  await expect(page.locator('article.markdown-body h1')).toBeVisible({ timeout: 20_000 });
+
+  // 顺序（AC-3）：全文、变更、渲染/文本 三个按钮从左到右
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll('#markdown-titlebar .controls button')].slice(0, 3).map((b) => b.textContent ?? ''));
+  expect(order[0]).toMatch(/全文|Full/);
+  expect(order[1]).toMatch(/变更|Changes/);
+  expect(order[2]).toMatch(/文本|Text/);
+
+  // 进文本 + 变更档，再切渲染：渲染态不显示 diff（AC-4）
+  await page.locator('#markdown-titlebar .view-toggle').last().click(); // 渲染 → 文本
+  await page.locator('.source-toggle').last().click();                   // 全文 → 变更
+  await expect(page.locator('#markdown-source-view .monaco-diff-editor')).toBeVisible({ timeout: 20_000 });
+  await page.locator('#markdown-titlebar .view-toggle').last().click(); // 文本 → 渲染
+  await expect(page.locator('article.markdown-body h1')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('#markdown-source-view')).toBeHidden();
+  // 再切回文本：变更取值仍保留（diff 直接出现，不需要再点变更）
+  await page.locator('#markdown-titlebar .view-toggle').last().click();
+  await expect(page.locator('#markdown-source-view .monaco-diff-editor')).toBeVisible({ timeout: 20_000 });
+});
+
+test('US-38 specs/040 AC-5/AC-7/FR-003 打开来源决定初始视图：文件树落全文，新增文件亦全文', async () => {
+  await initGitRepoForPreview();
+  // 新增（未跟踪）文件：从文件树打开恒全文，且变更档按钮仍可用（会展示空→全文）
+  await fs.promises.writeFile(path.join(workspaceDir, 'brand-new.py'), 'print(1)\n');
+  await openFromSidebar('brand-new.py');
+  const page = await app.waitForPage('monaco/index.html', 20_000);
+  const toggle = page.locator('#source-toggle');
+  await expect(toggle).toHaveText(/变更|Changes/, { timeout: 15_000 });
+  // 全文视图已渲染（没有直接进 diff）
+  await expect(page.locator('.monaco-diff-editor')).toHaveCount(0);
+  await expect(page.locator('#container')).toBeVisible();
+});
+
+test('US-38 specs/040 AC-9/FR-004 非 git 工作区：变更切换按钮置灰并给出原因', async () => {
+  // beforeEach 的工作区不是 git 仓
+  await openFromSidebar('notes.py');
+  const page = await app.waitForPage('monaco/index.html', 20_000);
+  const toggle = page.locator('#source-toggle');
+  await expect(toggle).toBeVisible({ timeout: 15_000 });
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute('title', /不在 git 仓库内/);
+});
+
+

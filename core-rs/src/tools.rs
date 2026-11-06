@@ -281,6 +281,9 @@ pub struct TransferSummary {
     pub skipped_symlinks: u64,
     pub source_workspace_id: String,
     pub dest_workspace_id: String,
+    /// 本次搬运的文件相对路径（宿主搬运顺序）。结果文本只列前
+    /// `TRANSFER_PATH_DETAIL_LIMIT` 条，卡片按同一上限展示（specs/042 FR-003）。
+    pub paths: Vec<String>,
 }
 
 /// `Transfer` 的引擎钩子：发 `crossWorkspaceTransferRequested` 给宿主并阻塞等待；
@@ -2199,6 +2202,29 @@ fn reply_failure(error: &str) -> ToolOutcome {
 
 // ==================== Transfer（specs/028）====================
 
+/// 结果文本里的路径明细行上限（specs/042 FR-003）：超过即只列前 N 条 +
+/// 「还有 M 个文件」一行。卡片按同一上限展示，工具侧只做防爆
+/// （specs/042-transfer-tool-card/plan.md 的「先补齐卡片需要的事实」）。
+pub const TRANSFER_PATH_DETAIL_LIMIT: usize = 20;
+
+/// 路径明细行（specs/042 FR-001 / FR-003）：统计行的**下一行**起，
+/// 每行 `  - {rel}`；超出 `TRANSFER_PATH_DETAIL_LIMIT` 的尾部折叠成
+/// `  ... and {M} more files`。统计行本身逐字不变（specs/042 非目标）。
+fn format_transfer_paths(paths: &[String]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let shown = paths.len().min(TRANSFER_PATH_DETAIL_LIMIT);
+    let mut text = String::new();
+    for path in &paths[..shown] {
+        text.push_str(&format!("\n  - {path}"));
+    }
+    if paths.len() > shown {
+        text.push_str(&format!("\n  ... and {} more files", paths.len() - shown));
+    }
+    text
+}
+
 /// `Transfer` 工具：跨工作区文件传输。
 ///
 /// Core 只做入参校验、能力位检查与结果文本组装；两端解析守卫与搬运都在宿主
@@ -2266,13 +2292,16 @@ fn run_transfer(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             } else {
                 String::new()
             };
-            ToolOutcome::Success(format!(
+            // 统计行逐字不变（specs/042 非目标）：路径明细只能追加在它之后的独立行
+            let mut text = format!(
                 "✓ Transferred {} files ({}) from `{}` to `{}`{skipped}",
                 summary.files,
                 format_byte_size(summary.bytes),
                 summary.source_workspace_id,
                 summary.dest_workspace_id,
-            ))
+            );
+            text.push_str(&format_transfer_paths(&summary.paths));
+            ToolOutcome::Success(text)
         }
         Err(error) => {
             // 宿主按 abort 中转取消后回 `{ error: "transfer canceled" }`；
@@ -3194,6 +3223,12 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         &[]
     };
 
+    // 文本分支成功即登记「模型读过这份内容」（specs/038 FR-001）：指纹按**整份**
+    // 文件原始字节算，与 offset / limit 无关——片段 Read 也是拿整份内容做判定，
+    // 否则窗口内的编辑无法与窗口外的外部改动区分。图片 / xlsx / 二进制 / 超限
+    // 分支在上面已返回，不建立记录（它们不能被 Edit / Write 按文本编辑）。
+    crate::read_guard::record_read(&ctx.session_id, &ctx.cwd, &path, &bytes);
+
     let (content, line_count, truncated_by_bytes) = build_bounded_window(selected);
     ToolOutcome::Success(format_read_output(
         &content,
@@ -3244,6 +3279,19 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 写入前的原始内容（文件不存在时为 null），用于 UI 的 diff 展示与回滚
     // 。
     let before_content = std::fs::read_to_string(&path).ok();
+    // 读后失效守卫（specs/038 FR-001）：文件存在时必须「本会话读过且内容未变」。
+    // 读原始字节而不是 `before_content`：后者在非法 UTF-8 上是 `None`，会被误判成
+    // 「文件不存在」而放行覆盖。`before_content` 本身是给 UI 的 diff 用的。
+    let before_bytes = std::fs::read(&path).ok();
+    if let Some(message) = crate::read_guard::verify(
+        &ctx.session_id,
+        &ctx.cwd,
+        &path,
+        &file_path,
+        before_bytes.as_deref(),
+    ) {
+        return ToolOutcome::Error(message);
+    }
     if let Some(parent) = path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
             return ToolOutcome::Error(format!("Write: mkdir failed: {err}"));
@@ -3253,6 +3301,12 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         Ok(()) => {
             // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
             config::record_md_modification(&ctx.cwd, &path);
+            // 写成功后刷新读取记录（specs/038 FR-002）：读回磁盘字节，而不是直接用
+            // `content.as_bytes()`——记录必须与磁盘真实内容一致，否则下一次 Edit 会
+            // 被自己误拒。
+            if let Ok(written) = std::fs::read(&path) {
+                crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
+            }
             let line_count = content.split('\n').count();
             let bytes_written = content.len();
             let verb = if action == "create" { "Created" } else { "Updated" };
@@ -3745,6 +3799,17 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         }
         Err(err) => return ToolOutcome::Error(format!("Edit: read failed: {err}")),
     };
+    // 读后失效判定放在 `read_to_string` 成功之后（specs/038 FR-001）：文件不存在时
+    // 要先返回既有 `ENOENT` 文案，不叠加本守卫。这里的 `current` 必然是 `Some`。
+    if let Some(message) = crate::read_guard::verify(
+        &ctx.session_id,
+        &ctx.cwd,
+        &path,
+        &file_path,
+        Some(content.as_bytes()),
+    ) {
+        return ToolOutcome::Error(message);
+    }
 
     // 统一为 LF 后再匹配/替换（CRLF 文件与模型给出的 LF old_string 才能对上），
     // 写盘前还原原始换行风格。
@@ -3872,6 +3937,11 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         Ok(()) => {
             // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
             config::record_md_modification(&ctx.cwd, &path);
+            // 写成功后刷新读取记录（specs/038 FR-002）：同一会话里连续的多次 Edit
+            // 不需要插一次 Read；记录用读回的磁盘字节，保证与真实落盘一致。
+            if let Ok(written) = std::fs::read(&path) {
+                crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
+            }
             let replacement = if replacements_made == 1 { "replacement" } else { "replacements" };
             let line_note = if start_line == end_line {
                 format!("Edited line {start_line}")

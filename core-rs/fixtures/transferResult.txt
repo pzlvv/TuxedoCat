@@ -1,0 +1,4 @@
+✓ Transferred 3 files (4.0 KB) from `m1:/ws1` to `m2:/ws2` (skipped 2 symlinks)
+  - src/a.txt
+  - src/sub/b.txt
+  - src/sub/deep/c.txt

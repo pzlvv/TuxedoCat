@@ -1,5 +1,5 @@
 ---
-status: 起草
+status: 已收敛
 ---
 
 # 改动规格：Edit / Write 的读后失效守卫
@@ -15,8 +15,8 @@ Edit / Write 在「文件在当前会话最后一次 Read 之后被改过」时�
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
 | `docs/architecture/events.md` | 2.1 CoreEvent 汇总表 | 修改 | `toolResult` 的触发点列补「读后失效拒绝」这一条来源；不改载荷 |
-| `docs/core/standalone-core.md` | 7. 工具 | 新增 | 新增一节「Read 与 Edit / Write 的时效契约」：什么算「读过」、什么算「已失效」、拒绝文案与解除方式 |
-| `docs/features/user-stories/tools.md` | EP-7 工具与技能 | 修改 | 新增 US（读后失效的编辑被拒绝并提示重新读取） |
+| `docs/core/tool-read-guard.md` | 全篇（新增） | 新增 | Read 与 Edit / Write 的时效契约：什么算「读过」、什么算「已失效」、拒绝文案与解除方式 |
+| `docs/features/user-stories/tools.md` | US-74 | 新增 | 读后失效的编辑被拒绝并提示重新读取 |
 
 ## 用户场景与验收标准
 
@@ -80,7 +80,7 @@ Edit 成功后的文件内容成为该文件的新记录（等价于「刚读过
 - 不引入修改时间戳比较、不引入文件系统监视（`docs/features/` 的查看器刷新另有链路）。
 - 不改 Edit / Write 的工具入参 schema（不新增「强制覆盖」开关；要覆盖就先 Read）。
 - 不对 Bash 命令造成的改动做「谁改的」归因——只要内容变了就要求重新 Read。
-- 不做 `MultiEdit` 之类的批量编辑工具。
+- 不做 MultiEdit 之类的批量编辑工具。
 
 ## 对需求基线的影响
 
@@ -92,9 +92,9 @@ Edit 被拒 → 重新 Read → Edit 成功）。
 
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
-| FR-001 | `core-rs/src/tools.rs` 的 `run_edit` / `run_write`（读后失效守卫）；`core-rs/src/tools.rs` 的读取记录表 | `core-rs/src/tools_tests.rs`（外部改写后 Edit / Write 被拒、磁盘不变） | 自动 |
-| FR-002 | 同上（Edit / Write 成功后刷新记录） | `core-rs/src/tools_tests.rs`（连续两次 Edit 不插 Read 仍成功） | 自动 |
-| FR-003 | `core-rs/src/tools.rs` 的记录表生命周期；`core-rs/src/engine.rs` 的会话关闭清理 | `core-rs/src/tools_tests.rs`（未 Read 新建 Write 放行、会话隔离、片段 Read 建立记录） | 自动 |
+| FR-001 | `core-rs/src/tools.rs` 的 `run_edit` / `run_write`（读后失效守卫）；`core-rs/src/read_guard.rs` 的判定矩阵 | `core-rs/src/tools_tests.rs`（外部改写后 Edit / Write 被拒、磁盘不变）；`core-rs/src/read_guard_tests.rs`（判定矩阵四行） | 自动 |
+| FR-002 | `core-rs/src/read_guard.rs` 的 `record_write`；`run_edit` / `run_write` 写成功后读回磁盘字节 | `core-rs/src/tools_tests.rs`（连续两次 Edit 不插 Read 仍成功） | 自动 |
+| FR-003 | `core-rs/src/read_guard.rs` 的记录表生命周期；`core-rs/src/engine.rs` 的 `drop_session` 清理 | `core-rs/src/tools_tests.rs`（未 Read 新建 Write 放行、会话隔离、片段 Read 建立记录）；`core-rs/src/engine_tests.rs`（会话释放清理） | 自动 |
 
 ## 待澄清
 
@@ -102,4 +102,26 @@ Edit 被拒 → 重新 Read → Edit 成功）。
 
 ## 收敛记录
 
-（待 /converge 填写）
+### 已满足
+
+| 验收标准 | 证据落点 |
+| --- | --- |
+| AC-1（FR-001）外部改写后 Edit 被拒且磁盘不变 | `read_guard.rs::verify` 的指纹不等分支；`tools_tests.rs::guard_rejects_edit_after_external_change`；e2e US-74 |
+| AC-2（FR-001）同一情形 Write 覆盖同样被拒 | `run_write` 的 `verify` 接入；`guard_rejects_write_after_external_change` |
+| AC-3（FR-002）重新 Read 后 Edit / Write 恢复正常 | `guard_allows_edit_after_reread` |
+| AC-4（FR-002）本会话自己的写入刷新记录、连续 Edit 不需插 Read | `run_edit` / `run_write` 成功后 `record_write`；`guard_allows_consecutive_edits_without_rereading` |
+| AC-5（FR-003）从未读过的已存在文件 Edit 被拒 | `verify` 的 `(None, Some(_))` 分支；`guard_rejects_edit_of_never_read_file` |
+| AC-6（FR-003）从未读过的 Write 新建放行 | `verify` 的 `(None, None)` 分支；`guard_allows_write_of_never_read_new_file` |
+| AC-7（FR-003）片段 Read 建立整份指纹 | `run_read` 用 `bytes` 整份登记；`guard_partial_read_covers_the_whole_file`（窗口外改动同样被拒） |
+| FR-003 会话隔离 / 关闭即清 | `read_guard_tests.rs` 的 `sessions_are_isolated` / `clear_session_drops_only_that_session`；`engine_tests.rs` 的 `drop_session_clears_the_read_guard_records_of_that_session` |
+
+### 偏差（已就地修正或补进 spec）
+
+1. **守卫模块独立成文档**。plan 原写「在 standalone-core 的「事实归属」节后新增一节」，但该文件已顶到 500 行上限；按 `docs/README.md` 的「超过上限即按 surface 拆篇」落成 `docs/core/tool-read-guard.md`，并在影响基线表里回写。
+2. **`verify` 签名多了 `cwd` 与 `file_path`**。前者给 `normalize` 的失败分支用（`expand_path` 需要工作目录），后者让错误文案点名模型传入的原文路径而不只是绝对路径。spec FR-001 已写明「点名路径」。
+3. **`run_write` 读 `before_bytes` 原始字节而不是 `before_content`**。后者在非法 UTF-8 上是 `None`，会被误判成「文件不存在」而放行覆盖；`before_content` 只留给 UI 的 diff。
+
+### 未做
+
+无。T001 ～ T007 全部完成；`read_guard_tests.rs`（9）、`tools_tests.rs` 守卫专项（8）、`engine_tests.rs`（1）与 e2e US-74 全绿。
+

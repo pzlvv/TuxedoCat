@@ -695,3 +695,89 @@ test('US-63 specs/030 AC-11 文档视图开关按工作区记忆（切走再切�
   await openWorkspaceByPath(sb, workspaceDir);
   await expect(sb.locator('#filesDocToggle.active')).toHaveCount(1);
 });
+
+// ==================== 全部变更视图（specs/041） ====================
+
+test('US-63 specs/041 AC-1/FR-002 全部变更：非 Markdown 的 .ts 改动也出现在列表且带行数徽标', async () => {
+  await initGitRepo();
+  // 改一个 .ts（文档视图看不到的类型）：src/index.ts 从 1 行变 3 行
+  await fs.promises.writeFile(path.join(workspaceDir, 'src', 'index.ts'), 'l1\nl2\nl3\n');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesAllChangesToggle').click();
+  const row = sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`);
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  const counts = await row.locator('.doc-count').innerText();
+  expect(counts).toContain('+3');
+  expect(counts).toContain('-1');
+  // 同一改动在文档视图里看不到（它只看 Markdown）
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toHaveCount(0, { timeout: 15_000 });
+});
+
+test('US-63 specs/041 AC-2/FR-001 三个模式互斥往返：点当前模式回到目录树', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  // 目录树 → 文档视图 → 全部变更 → 目录树（点当前模式即退出）
+  await sb.locator('#filesDocToggle').click();
+  await expect(sb.locator('#filesDocToggle')).toHaveAttribute('aria-pressed', 'true');
+  await expect(sb.locator('#filesAllChangesToggle')).toHaveAttribute('aria-pressed', 'false');
+
+  await sb.locator('#filesAllChangesToggle').click();
+  await expect(sb.locator('#filesAllChangesToggle')).toHaveAttribute('aria-pressed', 'true');
+  await expect(sb.locator('#filesDocToggle')).toHaveAttribute('aria-pressed', 'false');
+
+  await sb.locator('#filesAllChangesToggle').click();
+  await expect(sb.locator('#filesAllChangesToggle')).toHaveAttribute('aria-pressed', 'false');
+  await expect(sb.locator('#filesDocToggle')).toHaveAttribute('aria-pressed', 'false');
+  // 回到目录树：根目录条目重新可见
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src"]`)).toBeVisible({ timeout: 15_000 });
+});
+
+test('US-63 specs/041 AC-3/FR-001 模式按工作区记忆：切走再切回仍是全部变更', async () => {
+  const secondDir = await makeWorkspace({ 'other.ts': 'export {};' });
+  const sb = await sidebar();
+  await expandFiles(sb);
+
+  await sb.locator('#filesAllChangesToggle').click();
+  await expect(sb.locator('#filesAllChangesToggle.active')).toHaveCount(1);
+
+  await sb.evaluate((p) => {
+    (window as unknown as { sidebarAPI?: { addWorkspaces: (paths?: string[]) => void } })
+      .sidebarAPI?.addWorkspaces([p as string]);
+  }, secondDir);
+  await openWorkspaceByPath(sb, secondDir);
+  await sb.locator('#filesHeader').click();
+  // W2 是普通树（按工作区独立记忆）
+  await expect(sb.locator('#filesAllChangesToggle.active')).toHaveCount(0);
+
+  await openWorkspaceByPath(sb, workspaceDir);
+  await expect(sb.locator('#filesAllChangesToggle.active')).toHaveCount(1);
+});
+
+test('US-63 specs/041 AC-7/FR-003 非 git 工作区的全部变更给出提示而不是空列表', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesAllChangesToggle').click();
+  // 提示态（不是「没有变更的文件」空态）
+  await expect(sb.getByText('不在 git 仓库内，无法列出变更')).toBeVisible({ timeout: 15_000 });
+  await expect(sb.getByText('没有变更的文件')).toHaveCount(0);
+});
+
+test('US-63 specs/041 AC-9/FR-004 提交后全部变更视图自动刷新（与文档视图共用哨兵）', async () => {
+  await initGitRepo();
+  await fs.promises.writeFile(path.join(workspaceDir, 'src', 'index.ts'), 'l1\nl2\n');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesAllChangesToggle').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible({ timeout: 15_000 });
+
+  // 测试进程直接 commit（等价产品外终端）：哨兵推送 → 全部变更视图自动清空
+  await gitExec(workspaceDir, 'add', '-A');
+  await gitExec(workspaceDir, 'commit', '-q', '-m', 'commit all');
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toHaveCount(0, { timeout: 15_000 });
+  await expect(sb.getByText('没有变更的文件')).toBeVisible({ timeout: 15_000 });
+});
