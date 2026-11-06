@@ -66,9 +66,10 @@ core-rs/（Core，Rust 独立进程）只经 AssistantEventBus 帧通道与 TS �
 6. 不同来源、不同频率的数据走不同的事件流，不用附加标记合并。
 7. `host/` 可 import core 的**只读**函数与类型；改状态的请求一律翻译成 `UiEvent`。
 8. 硬约束：`VSCode*Host.ts` / `VSCodeSpinDesign.ts` / `VSCodeConversationManager.ts` 不放 `src/host/`。
-9. **落盘格式双侧一致**：会话落盘格式（meta.json / 对话 JSONL）由 core-rs 写入、
-   `src/shared/history/` 是同一格式的宿主侧读写库（删除闭包、工具 diff 元数据等宿主
-   直接读写场景）；改格式必须两侧同步，Rust 侧对照表测试锁定。
+9. **会话落盘只有 Core 写**：meta.json / 对话 JSONL / 压缩归档 / 项目清单由 core-rs
+   独占写入（含工具 diff 的 `_meta`）；宿主侧 `src/shared/history/` 只剩元数据类型与
+   删除闭包等只读视图，改状态一律经 `UiEvent`、读取一律经 `UiRequest`。改格式必须
+   Rust 侧对照表测试锁定（`core-rs/src/history_tests.rs`）。
 10. **分层边界由 lint 强制**：第 1–2 条由 eslint 的 `no-restricted-imports` 拦截（`import type`
     同样算耦合，一并拦截），进 `npm run lint`。
 

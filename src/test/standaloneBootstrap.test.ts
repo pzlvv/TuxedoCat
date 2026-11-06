@@ -13,7 +13,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrapCore, bootstrapSnapshot, shutdownCore } from '../host/bootstrapCore';
 import { requireEventBus } from '../shared/AssistantEventBus';
-import { hasExtensionPath } from '../shared/history/Config';
 import { ConversationManager } from '../host/ConversationManager';
 import type { SpinDesign } from '../host/SpinDesign';
 import type { ConversationMetadata } from '../shared/history/Conversation';
@@ -114,9 +113,8 @@ async function run(): Promise<void> {
     await waitFor(() => logs.some((line) => line.includes('Standalone Core ready'))),
   );
 
-  // Standalone 下 core 侧状态在 Core 进程内：进程内不注册 core 侧订阅，
-  // 也不建会话队列（这些是 Core 进程的职责）。
-  check('进程内不注册 core 侧扩展路径', !hasExtensionPath());
+  // Standalone 下 core 侧状态在 Core 进程内：宿主进程不持有会话落盘相关的任何
+  // 进程内注册表（这些是 Core 进程的职责）。
 
   // 连接模型（docs/core/client-connection.md）：打开的工作区对应一个 Connection
   check('启动快照报告 Connection 数', snapshot.connectionCount === 1);

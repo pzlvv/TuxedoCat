@@ -1,6 +1,5 @@
 package pycharm.host.ui
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -118,7 +117,6 @@ class HostUi(
         postToWebview = ::postToWebview,
         userChoiceManager = userChoiceManager,
         diffService = diffService,
-        writeToolMeta = { sessionId, toolUseId, meta -> writeToolUseMeta(sessionId, toolUseId, meta) },
         log = log,
     )
 
@@ -858,50 +856,6 @@ class HostUi(
                 })
             } catch (e: Exception) {
                 log("[WebviewMessageHandler] Error loading tool meta: ${e.message}")
-            }
-        }
-    }
-
-    /** tool_use 顶层 _meta 追加写（append-only；对齐 updateToolUseMeta 的宿主侧写路径） */
-    private fun writeToolUseMeta(sessionId: String, toolUseId: String, meta: JsonObject) {
-        busScope.launch {
-            try {
-                val workspace = SessionHistory.getSessionWorkspace(sessionId) ?: workspacePath ?: return@launch
-                val jsonl = SessionHistory.sessionJsonl(homeDir, configDirName, workspace, sessionId)
-                if (!java.nio.file.Files.exists(jsonl)) {
-                    // 会话首个工具调用时 jsonl 可能尚未落盘：等待下一轮落盘后重试无意义，
-                    // tool_result 块兜底会在读取路径补齐（handleRequestToolMeta 的 fallback）
-                    log("[meta] jsonl not found yet for session $sessionId, skip meta append")
-                    return@launch
-                }
-                // 读-改-写：找到含该 tool_use 的 assistant 行，合并 _meta 后整行替换
-                val lines = java.nio.file.Files.readAllLines(jsonl)
-                var changed = false
-                val out = lines.map { line ->
-                    if (changed || line.isBlank()) return@map line
-                    val obj = try { Json.parseToJsonElement(line) as? JsonObject } catch (_: Exception) { null } ?: return@map line
-                    if ((obj["type"] as? JsonPrimitive)?.content != "assistant") return@map line
-                    val content = (obj["message"]?.jsonObject?.get("content")) as? JsonArray ?: return@map line
-                    val newContent = JsonArray(content.map { block ->
-                        val b = block as? JsonObject ?: return@map block
-                        if ((b["type"] as? JsonPrimitive)?.content == "tool_use" &&
-                            (b["id"] as? JsonPrimitive)?.content == toolUseId
-                        ) {
-                            changed = true
-                            val merged = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(b)
-                            val existingMeta = b["_meta"] as? JsonObject
-                            merged["_meta"] = JsonObject((existingMeta ?: JsonObject(emptyMap())) + meta)
-                            JsonObject(merged)
-                        } else b
-                    })
-                    val newMsg = JsonObject(obj + ("message" to JsonObject((obj["message"]!!.jsonObject) + ("content" to newContent))))
-                    Json.encodeToString(JsonObject.serializer(), newMsg)
-                }
-                if (changed) {
-                    java.nio.file.Files.write(jsonl, out, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING, java.nio.file.StandardOpenOption.WRITE)
-                }
-            } catch (e: Exception) {
-                log("[meta] updateToolUseMeta error: ${e.message}")
             }
         }
     }

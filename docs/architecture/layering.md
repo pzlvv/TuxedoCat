@@ -42,9 +42,10 @@ Core 在独立进程内实现 core 侧契约，帧通道把它映射为宿主进
    （高频）各自拥有独立的事件与分发方法；`loaded` 这类宿主界面状态由其 owner 单独推送。
    判据：若两个字段的变化频率相差一个数量级，或其 owner 不同，则不应出现在同一条流中。
 9. `host/` 与宿主实现可以 **import `src/shared/` 的只读函数与类型**（如
-   `loadConversationList`、`ConversationMetadata`），这属于「宿主消费 core 侧事实的
-   读取库」。但 host 侧**不得绕过总线改 Core 拥有的状态**；改状态的请求一律翻译为
-   `UiEvent` 走总线。
+   `ConversationMetadata`、`collectConversationClosure`），这属于「宿主消费 core 侧
+   事实的读取库」。但 host 侧**不得绕过总线改 Core 拥有的状态**，也**不得直接写会话
+   落盘文件**（meta.json / JSONL / 压缩归档 / 项目清单的写入点只有 Core）；改状态的
+   请求一律翻译为 `UiEvent` 走总线、读取一律走 `UiRequest`。
   全局配置文件 `~/<CONFIG_DIR_NAME>/settings.json` 是宿主资源：**读与写都在宿主**，
   core 不感知它的路径，只消费经 `UiEvent.hostEnvironmentProvided` 下发的配置快照
   （[docs/architecture/core-ui-separation.md 第 4 节](core-ui-separation.md#4-配置归-ui)）。写入口唯一：`SettingsStore.updateSettings`；
@@ -64,12 +65,14 @@ Core 在独立进程内实现 core 侧契约，帧通道把它映射为宿主进
 | 受控事实入口 | 一律走 `UiRequest`（事实在 Core 进程内） | `src/host/coreFacts.ts`（对话列表 / 智能命名 / 余额 / 归档展开 / MCP 列表 / 对话空间 / 会话加载 / 技能列表 / 挂起持久化） |
 | UI 侧共享队列 | 状态归 UI，不属于 core 事实 | `src/shared/UserChoiceQueue.ts`（宿主侧待答队列） |
 
-仍保留的直接读取（与本机 Core 共用同一份磁盘，远程工作区需要迁到
-`UiRequest`，见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的例外表）：
+仍保留的宿主进程内自持（不属于 core 事实，见
+[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的例外表）：
 
 - 会话工作目录索引：宿主侧另存一份 `sessionId → workspacePath`
   （`history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`）。Standalone 的
   权威表在 Core 进程内、由 `sessionWorkspaceAssigned` 同步；宿主侧这份只用于
-  「发事件前取会话自己的目录」，不参与 core 的目录解析；
-- 工具 `_meta` 的 before/after：`ToolHandler` 在权限确认时经 `updateToolUseMeta`
-  追加写入会话 JSONL（与 Core 的写入共用同一份磁盘，本机成立）。
+  「发事件前取会话自己的目录」，不参与 core 的目录解析。
+
+会话数据本身没有宿主写入方：meta.json / JSONL / 压缩归档 / 项目清单都由 Core 写
+（工具 `_meta` 的 before/after 也在 Core 的权限判定后落盘），宿主只经 `UiEvent` 提请求、
+经 `UiRequest` 读事实。

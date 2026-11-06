@@ -43,8 +43,7 @@ export interface ProviderModels {
   models: string[];
 }
 
-/** 对话空间统计信息（唯一定义在 `history/ConversationSpace.ts`，此处只转出） */
-/** 单个对话空间的统计信息（统计本身由 Core 计算，见 history/ConversationSpace.ts） */
+/** 单个对话空间的统计信息（统计由 Core 计算，经 `UiRequest.conversationSpacesRequested` 应答下发） */
 export interface ConversationSpaceInfo {
   /** 对话空间标识 */
   dirName: string;

@@ -13,7 +13,6 @@ import type { WebviewPoster } from './ports.js';
 import type { UIHost } from '../UIHost.js';
 import { logger } from '../../shared/Logger.js';
 
-import { updateToolUseMeta } from '../../shared/history/index.js';
 import type { AgentMode } from '../../shared/types.js';
 import type { PermissionResult } from '../../shared/tools/Tool.js';
 import type { UserChoiceManager } from './userChoice.js';
@@ -106,22 +105,8 @@ export class ToolHandler {
       : 0;
     this.log(`[ToolHandler] addMessage: ${toolName} file=${(displayArgs as any).file_path || '-'} diffLines=${diffLineCount} beforeLen=${(displayArgs as any).beforeContent?.length || 0} afterLen=${(displayArgs as any).afterContent?.length || 0}`);
 
-    // 异步追加写入 block 顶层 _meta（append-only，避免整文件读改写）。
-    // 不设置 updatedInput，避免 RunTools 再触发一次无意义的 updateToolUseInput。
-    if (permResult && typeof permResult === 'object' && !('updatedInput' in permResult)) {
-      if (hasPermDiff) {
-        updateToolUseMeta(sessionID, toolUseId, {
-          beforeContent: this.userChoiceManager.currentBeforeContent !== undefined ? this.userChoiceManager.currentBeforeContent : '',
-          afterContent: this.userChoiceManager.currentAfterContent || '',
-          contextBefore: this.userChoiceManager.currentContextBefore || [],
-          contextAfter: this.userChoiceManager.currentContextAfter || [],
-          startLine: this.userChoiceManager.currentStartLine,
-          endLine: this.userChoiceManager.currentEndLine,
-        }).catch((e: unknown) =>
-          this.log(`[ToolHandler] updateToolUseMeta error: ${e}`)
-        );
-      }
-    }
+    // `_meta` 的 before/after 由 Core 在权限判定后自己落盘（会话 JSONL 的唯一写入点
+    // 是 Core，specs/defects/host-appends-session-jsonl.md）；宿主这里只做展示。
 
     // ask：不在这里弹确认框。RunTools 在拿到 'ask' 结果后会走
     // Integration.requestUserChoice（UserChoiceQueue：会话 open 即投递到该会话自己的视图，

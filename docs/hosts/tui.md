@@ -340,9 +340,10 @@ pending 的事实都在 store，覆盖层只持导航类局部状态。
    + `--verbose` 时的 stderr，库的 stdout 泄漏会打花界面。
 4. **渲染上限**：消息流只渲染最近 150 条（整帧重绘的帧率约束），更早的历史经
    会话加载仍在 store，翻页查看留给后续。
-5. **Edit/Write 的 `_meta` 落盘**：TS 宿主在权限通过前把 before/after 追加写进
-   会话 `_meta`（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)的宿主例外）；Rust TUI 不直接写
-   core 的会话文件，回滚依赖 core 侧 `tool_result` 备份（`rollback.rs` 的兜底路径）。
+5. **Edit/Write 的 `_meta` 落盘**：由 Core 在权限判定后写进会话 `_meta`（宿主不碰
+   会话文件，[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）；
+   Rust TUI 与其他宿主一样只发 `UiEvent`、经 `UiRequest` 读，回滚读 Core 侧
+   `_meta` / `tool_result` 备份（`rollback.rs` 的兜底路径）。
 
 ### 11.2 待定项
 

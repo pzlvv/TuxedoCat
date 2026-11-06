@@ -117,7 +117,7 @@ export interface ToolUseContext {
  *
  * 所有工具（含 Bash）的 `maxResultSizeChars` 一律取此值，工具内部不再另设阈值：
  * 超过 4K 时由 RunTools 统一把完整结果持久化到磁盘，进入上下文 / UI 的内容
- * 替换为「前 2K + 后 2K」预览（见 toolResultStorage.generateHeadTailPreview）。
+ * 替换为「前 2K + 后 2K」预览（`core-rs/src/tools.rs` 的 `build_large_tool_result_message`）。
  */
 export const MAX_RESULT_SIZE_CHARS = 4 * 1024; // 4K
 

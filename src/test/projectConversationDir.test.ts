@@ -1,24 +1,24 @@
 /**
- * 单测：宿主侧会话落盘库的项目清单 `workspace.meta.json` 行为
- * （`src/shared/history/Config.ts`）。
+ * 单测：宿主侧项目对话目录的路径解析（`src/shared/history/Config.ts`）。
  *
- * `ensureProjectConversationDir` 在首次确保某个项目对话目录时写入
- * `<projectDir>/workspace.meta.json`（记录完整 workspacePath）；
- * `ensureConfigDirs` 还会为已存在的目录补写一次。
- * Core 侧同一格式由 `core-rs/src/config.rs` 的 `ensure_project_conversation_dir` /
- * `ensure_config_dirs` 实现（用例 `core-rs/src/config_tests.rs`）。
+ * 会话数据（含 `workspace.meta.json`）由 Core 独占写入，宿主只解析路径做只读访问：
+ * 本用例锁「解码后的目录落在 conversations 根下」与「分隔符两种写法解析到同一份数据」。
+ * Core 侧的编码与清单写入由 `core-rs/src/config_tests.rs` 锁定。
  *
- * 运行方式：npm run test:all -- project-conversation-dir
+ * 运行方式：npm run test:unit -- project-conversation-dir
  */
 
 import * as fs from 'fs';
 import { join } from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import { makeTempDir } from './helpers/fixtures';
-import {
-  ensureProjectConversationDir,
-  getProjectConversationDir,
-} from '../shared/history/Config';
+import { getConversationDir, getProjectConversationDir, projectDirCandidates } from '../shared/history/Config';
+
+// 家目录指到临时目录：路径解析落在隔离的 conversations 根下，不碰真实用户数据。
+// （`resolveConfigDir` 是调用期读环境变量的，因此模块顶部设置即生效）
+const home = makeTempDir('project-dir-home');
+process.env.USERPROFILE = home;
+process.env.HOME = home;
 
 async function run(): Promise<void> {
   const { check, finish } = createChecker();
@@ -26,18 +26,14 @@ async function run(): Promise<void> {
   checkSeparatorVariants();
 
   try {
-    const dir = await ensureProjectConversationDir(root);
-    await ensureProjectConversationDir(root);
-
-    const metaPath = join(dir, 'workspace.meta.json');
-    check('目录已创建', fs.existsSync(dir));
-    check('projectDir 落在 conversations 根下', dir === getProjectConversationDir(root));
-    check('Core 自己写了项目清单', fs.existsSync(metaPath));
+    const dir = getProjectConversationDir(root);
+    // 编码目录名 = 绝对路径的 encodeURIComponent（与 core-rs/src/config.rs 同一口径）
     check(
-      '清单记录了 workspacePath',
-      JSON.parse(fs.readFileSync(metaPath, 'utf8')).workspacePath === root,
+      'projectDir 落在 conversations 根下',
+      dir === join(getConversationDir(), projectDirCandidates(root)[0] ?? ''),
     );
-    check('不再有宿主写的 settings.json', !fs.existsSync(join(dir, 'settings.json')));
+    check('解析不创建目录（写入归 Core）', !fs.existsSync(dir));
+    check('宿主不再写项目清单', !fs.existsSync(join(dir, 'workspace.meta.json')));
   } finally {
     finish();
   }

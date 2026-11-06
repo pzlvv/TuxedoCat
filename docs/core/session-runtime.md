@@ -34,7 +34,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 
 `waiting` 只表示**真的在等用户**：`waiting_request`（`request_user_choice`）的入队与
 `userChoicePendingChanged`（webview 弹出 / 应答）。`CoreRequest.toolPermissionRequested`
-（上架工具卡片、写 Edit / Write 的 `_meta`）**不算**——它是展示同步，core 发后不等，
+（上架工具卡片、manual 模式下的宿主 diff）**不算**——它是展示同步，core 发后不等，
 执行 / 拒绝 / 弹框按本地 PermissionPolicy 的结果决定，宿主应答迟到 / 缺失都不影响
 （[specs/defects/orphan-stalls-on-permission-roundtrip](../../specs/defects/orphan-stalls-on-permission-roundtrip.md)；
 真确认框随后由 `userChoice` 弹，那段时间才算在等用户）。只有 `waiting_request` 走标记
