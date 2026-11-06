@@ -32,6 +32,9 @@ import { imageMimeFor, classifyFileForOpen } from './fileTypes.js';
 import { remoteFileReaderFor, sharedClientFor } from './sidebarFilesRemote.js';
 import { connectionReadyFileInvalidation } from './connectionReadySidebar.js';
 import { localGitRunner } from './sidebarDocView.js';
+import { localFileContentRunner } from './gitFileContent.js';
+import { buildDiffResult } from './monacoDiff.js';
+import { resolveInitialView, type DiffSource, type InitialView } from './fileOpen.js';
 import { DocSentinelManager } from './sidebarDocWatch.js';
 import { createLocalFileWatcher } from './localFileWatch.js';
 import {
@@ -71,6 +74,20 @@ async function readImageAsDataUrl(filePath: string, log: (line: string) => void)
     // 读不出内容时回一个 1x1 透明像素，窗口仍可打开并显示缩放角标（不静默吞错）
     return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   }
+}
+
+/**
+ * 窗口 init 的 `initialView` → 页面的两组开关初值（specs/040 FR-002 / AC-8）。
+ *
+ * Markdown 在其上再叠一层：`full` 落渲染视图、`changes` 落变更视图；`selectedLines`
+ * 存在时仍按既有口径落文本视图定位（聊天链接的行号定位优先于初始视图）。
+ */
+function resolveInitialViewSource(init: {
+  initialView: InitialView;
+  selectedLines?: { start: number; end: number };
+}): 'rendered' | 'text' {
+  if (init.selectedLines) return 'text';
+  return init.initialView === 'changes' ? 'text' : 'rendered';
 }
 
 export class ElectronUIHost implements UIHost {
@@ -250,6 +267,37 @@ export class ElectronUIHost implements UIHost {
     return this.workspaceSource?.subscribe(listener) ?? (() => undefined);
   }
 
+  /**
+   * 本地绝对路径 → 变更视图的取数上下文（specs/040 FR-003 / FR-004）。
+   *
+   * `dir` + `base` 组成调用方已知的路径片段；工作区根取打开集合里能覆盖该路径的那一个
+   * （`rel` 在工作区内的相对路径），非 git 工作区 / 不在任何打开工作区里返回 `null`
+   * ——调用方据此把变更按钮置灰（AC-9）。
+   */
+  private async localGitFile(
+    dir: string,
+    base: string,
+  ): Promise<{ root: string; rel: string; hasHead: boolean } | null> {
+    const abs = path.join(dir, base);
+    const ref = this.getOpenWorkspaceRefs().find((candidate) => {
+      if (candidate.endpoint !== null) return false;
+      const rel = path.relative(candidate.path, abs);
+      return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
+    if (!ref) return null;
+    const rel = path.relative(ref.path, abs).split(path.sep).join('/');
+    const runner = localGitRunner(ref.path);
+    try {
+      const probe = await runner.run(['rev-parse', '--is-inside-work-tree']);
+      if (probe.code !== 0 || probe.stdout.trim() !== 'true') return null;
+      const content = localFileContentRunner(runner);
+      return { root: ref.path, rel, hasHead: await content.hasHeadVersion(rel) };
+    } catch (err) {
+      this.log(`git file context failed (${abs}):`, err);
+      return null;
+    }
+  }
+
   isDarkTheme(): boolean {
     return nativeTheme.shouldUseDarkColors;
   }
@@ -296,21 +344,30 @@ export class ElectronUIHost implements UIHost {
         // 读不到也保持「点击有响应」：与 Monaco 的 ENOENT 开空窗口对齐
         this.log(`Failed to open markdown file ${filePath}: ${err}`);
       }
+      // 工具卡片链接：来源是 toolLink，非新增文件落变更视图（specs/040 FR-003）
+      const gitFile = await this.localGitFile(path.dirname(filePath), path.basename(filePath));
       await this.openMarkdownPreviewWindow({
         title: path.basename(filePath),
         content,
         watchTarget: { kind: 'local', filePath },
         selectedLines: target ?? undefined,
+        initialView: gitFile ? resolveInitialView('toolLink', !gitFile.hasHead) : 'full',
+        diffSource: gitFile ? { root: gitFile.root, rel: gitFile.rel } : null,
+        canDiff: gitFile !== null,
       });
       return;
     }
-    // Monaco 编辑器窗口打开文件并定位到行
+    // Monaco 编辑器窗口打开文件并定位到行（工具卡片链接 → toolLink，同 md 一侧）
+    const gitFile = await this.localGitFile(path.dirname(filePath), path.basename(filePath));
     await this.openMonacoWindow({
       mode: 'view',
       filePath,
       selectedLines: target ?? undefined,
       title: path.basename(filePath),
       watchTarget: { kind: 'local', filePath },
+      initialView: gitFile ? resolveInitialView('toolLink', !gitFile.hasHead) : 'full',
+      diffSource: gitFile ? { root: gitFile.root, rel: gitFile.rel } : null,
+      canDiff: gitFile !== null,
     });
   }
 
@@ -359,6 +416,9 @@ export class ElectronUIHost implements UIHost {
           content: await reader.readText(abs),
           watchTarget,
           selectedLines: target ?? undefined,
+          initialView: 'full',
+          diffSource: null,
+          canDiff: false,
         });
         return;
       }
@@ -371,6 +431,9 @@ export class ElectronUIHost implements UIHost {
         title: name,
         filePath: name,
         watchTarget,
+        initialView: 'full',
+        diffSource: null,
+        canDiff: false,
       });
     } catch (err) {
       // 读不到（断链 / 权限 / 已删除）也保持「点击有响应」：与本地 ENOENT 开空窗口
@@ -381,6 +444,9 @@ export class ElectronUIHost implements UIHost {
         title: name,
         content: `// 无法读取远程文件: ${err instanceof Error ? err.message : String(err)}`,
         watchTarget: null,
+        initialView: 'full',
+        diffSource: null,
+        canDiff: false,
       });
     }
   }
@@ -391,6 +457,9 @@ export class ElectronUIHost implements UIHost {
       content,
       title,
       watchTarget: null,
+      initialView: 'full',
+      diffSource: null,
+      canDiff: false,
     });
   }
 
@@ -437,8 +506,9 @@ export class ElectronUIHost implements UIHost {
   }
 
   /**
-   * 侧栏失效信号推送（specs/030）：Write 新建（tree）、git 哨兵（doc）与远程 Connection
-   * 就绪（tree，见 `connectionReadySidebar.ts`）共用一个出口。
+   * 侧栏失效信号推送（specs/030 / specs/041）：Write 新建（tree）、git 哨兵
+   * （doc / changes）与远程 Connection 就绪（tree，见 `connectionReadySidebar.ts`）
+   * 共用一个出口。
    */
   private pushFilesInvalidate(workspaceId: string, reasons: string[]): void {
     const webContents = this.sidebarView?.webContents;
@@ -480,7 +550,9 @@ export class ElectronUIHost implements UIHost {
         }),
       watchRemote: (request) => watchWorkspaceFile(request),
       unwatchRemote: (request) => unwatchWorkspaceFile(request),
-      onInvalidate: (workspaceId) => this.pushFilesInvalidate(workspaceId, ['doc']),
+      // 哨兵是「git 变了」这一事实的唯一来源，两种变更视图共用它（specs/041 FR-004）：
+      // 一次推送同时带两个 reason，渲染层按自己当前的模式各取所需
+      onInvalidate: (workspaceId) => this.pushFilesInvalidate(workspaceId, ['doc', 'changes']),
       log: (...args) => this.writeLog(...args),
     });
     return this.docSentinels;
@@ -783,6 +855,12 @@ export class ElectronUIHost implements UIHost {
     content: string;
     watchTarget: ViewerWatchTarget | null;
     selectedLines?: { start: number; end: number };
+    /** 初始视图（specs/040 FR-003 / AC-8）：`changes` 且非新增时先落变更视图 */
+    initialView: InitialView;
+    /** 变更视图的取数来源；`null` = 没有 git 上下文（虚拟文档 / 非 git 工作区） */
+    diffSource: DiffSource | null;
+    /** 是否可切换变更视图（非 git 工作区为 false，按钮置灰；AC-9） */
+    canDiff: boolean;
   }): Promise<void> {
     // 页面产物缺失时不占名额（不顶替已有查看器窗口），与 Monaco 窗口同一约定
     const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'markdown.html');
@@ -826,6 +904,10 @@ export class ElectronUIHost implements UIHost {
       bodyHtml: await getMarkdownPreviewBodyHtml(init.content),
       text: init.content,
       selectedLines: init.selectedLines ?? null,
+      // 两组开关（specs/040 FR-002）：渲染初值由 initialView 决定；`canDiff` 为假时
+      // 变更按钮置灰（非 git 工作区，AC-9）
+      initialSourceMode: resolveInitialViewSource(init),
+      canDiff: init.canDiff,
       windowControls: !isMac,
       labels: {
         rendered: tt('渲染', 'Rendered'),
@@ -835,6 +917,8 @@ export class ElectronUIHost implements UIHost {
         close: tt('关闭', 'Close'),
       },
     });
+    // 变更视图的按需应答（specs/040 FR-001）：与 Monaco 窗口同一份 responder
+    if (init.diffSource) this.registerDiffResponder(previewSender, init.diffSource);
     this.startViewerWatch(init.watchTarget, 'markdown', title, {
       kind: 'text',
       text: init.content,
@@ -866,6 +950,40 @@ export class ElectronUIHost implements UIHost {
    * view 模式：给了 content 直接用（远程文件经 SFTP 读出）；给了 filePath 由主进程读盘；
    * content 模式直接传入内容
    */
+  /**
+   * 变更视图的按需应答（specs/040 FR-001 / 边界第 1 条）。
+   *
+   * 页面经 `monaco-request-diff` 索取两侧原文；主进程跑 `git show HEAD:<rel>` 与读盘。
+   * 发送方必须是本查看器窗口（`event.sender === webContents`），失败回 error 而不是
+   * 静默空态。窗口关闭时注销监听，避免短命窗口堆积 handler。
+   */
+  private registerDiffResponder(webContents: WebContents, source: DiffSource): void {
+    const handler = async (event: { sender: WebContents }, payload: unknown): Promise<void> => {
+      if (event.sender !== webContents) return;
+      const requestId = (payload as { requestId?: unknown } | null)?.requestId;
+      const result = await (async () => {
+        try {
+          const runner = localFileContentRunner(localGitRunner(source.root));
+          const [head, current] = await Promise.all([
+            runner.showAtHead(source.rel),
+            fs.promises.readFile(path.join(source.root, source.rel), 'utf-8'),
+          ]);
+          return buildDiffResult(head, current);
+        } catch (err) {
+          return { kind: 'error' as const, message: err instanceof Error ? err.message : String(err) };
+        }
+      })();
+      if (!webContents.isDestroyed()) {
+        webContents.send('monaco-diff', {
+          requestId: typeof requestId === 'string' ? requestId : null,
+          ...result,
+        });
+      }
+    };
+    ipcMain.on('monaco-request-diff', handler);
+    webContents.once('destroyed', () => ipcMain.removeListener('monaco-request-diff', handler));
+  }
+
   async openMonacoWindow(init: {
     mode: 'view' | 'content';
     filePath?: string;
@@ -873,6 +991,12 @@ export class ElectronUIHost implements UIHost {
     content?: string;
     title?: string;
     watchTarget: ViewerWatchTarget | null;
+    /** 初始视图（specs/040 FR-003）：`changes` 且非新增时打开即落变更视图 */
+    initialView: InitialView;
+    /** 变更视图的取数来源；`null` = 没有 git 上下文（虚拟文档 / 远程读失败兜底） */
+    diffSource: DiffSource | null;
+    /** 是否可切换变更视图（非 git 工作区为 false，按钮置灰；AC-9） */
+    canDiff: boolean;
   }): Promise<void> {
     // 页面产物缺失时不占名额（不顶替已有查看器窗口），维持「log + 不开窗」的现状
     const indexPath = path.join(APP_ROOT, 'dist', 'monaco', 'index.html');
@@ -898,8 +1022,16 @@ export class ElectronUIHost implements UIHost {
     this.trackViewerWindow(win);
 
     // 读取文件内容（view 模式；调用方已给 content 时直接用——远程文件不走本地盘）
-    const { watchTarget, ...monacoInit } = init;
-    const data: Record<string, unknown> = { ...monacoInit };
+    const { watchTarget, diffSource, ...monacoInit } = init;
+    const data: Record<string, unknown> = {
+      ...monacoInit,
+      // 变更视图（specs/040 FR-001）：页面按 initialView 决定先落哪一档；canDiff 为假
+      // 时切换按钮不渲染（虚拟文档 / 非 git 工作区）
+      initialView: init.initialView,
+      canDiff: init.canDiff,
+    };
+    // 页面切到「变更」时按需索取两侧原文（不在 open 时预取：多数会话不点变更）
+    if (diffSource) this.registerDiffResponder(win.webContents, diffSource);
     if (init.mode === 'view' && init.filePath && init.content === undefined) {
       try {
         data.content = await fs.promises.readFile(init.filePath, 'utf-8');

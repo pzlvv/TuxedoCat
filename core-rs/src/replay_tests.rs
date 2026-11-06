@@ -209,3 +209,31 @@ fn empty_content_user_message_is_skipped() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0]["content"], "hi");
 }
+
+/// 节点身份载体（specs/039 FR-001）：三类展示消息都透传 JSONL 的 `uuid`；
+/// 没有 `uuid` 的老数据落 `null`（webview 据此禁用回退）。
+#[test]
+fn replay_messages_carry_message_uuid() {
+    let messages = vec![
+        json!({"type": "system", "content": "note", "uuid": "s-1"}),
+        json!({"type": "assistant", "uuid": "a-1", "message": {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "想"}, {"type": "text", "text": "说"},
+                        {"type": "tool_use", "id": "t-1", "name": "Read", "input": {}}]
+        }}),
+        json!({"type": "user", "uuid": "u-1", "message": {"role": "user", "content": "问"}}),
+    ];
+    let out = build_replay_message_data(&messages);
+    assert_eq!(out.len(), 5, "system + thinking + text + toolcall + user");
+    for item in &out {
+        let uuid = item.get("messageUuid").expect("展示消息必须带 messageUuid");
+        assert!(uuid.is_string(), "有 uuid 的源消息必须透传");
+    }
+    let roles: Vec<&str> = out.iter().filter_map(|m| m["role"].as_str()).collect();
+    assert_eq!(roles, vec!["system", "thinking", "assistant", "toolcall", "user"]);
+
+    // 缺 uuid 的源消息：字段仍在，值为 null（不是缺键）
+    let legacy = build_replay_message_data(&[json!({"type": "system", "content": "old"})]);
+    assert!(legacy[0].get("messageUuid").is_some());
+    assert!(legacy[0]["messageUuid"].is_null());
+}

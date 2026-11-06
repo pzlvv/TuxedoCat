@@ -207,6 +207,12 @@ export type HostToWebviewMessage = {
   type: 'updateToolStatus';
   sessionId: string;
   toolCallId: string;
+  /**
+   * 该卡片所属 JSONL 行的 uuid（specs/039 FR-001 的节点身份）：core 的 `toolCall`
+   * 事件带来，webview 存到消息上供时间线回退定位。`null` = 这一路没有 uuid
+   * （历史恢复 / 虚拟卡片）。
+   */
+  messageUuid: string | null;
   output?: string;
   status?: 'normal' | 'success' | 'running' | 'fail';
   startLine?: number;
@@ -408,6 +414,17 @@ export type HostToWebviewMessage = {
   sessionId: string;
   /** 整批替换后的消息（压缩后重建 / 展开归档共用；顺序即显示顺序） */
   messages: MessageData[];
+} | {
+  /** 对话级回退完成（specs/039 FR-006）：截断消息已由 `messagesReplaced` 下发，这里是结果摘要 */
+  type: 'conversationRewoundDone';
+  sessionId: string;
+  targetUuid: string;
+  removed: number;
+  files: Array<{ path: string; ok: boolean; error: string | null }>;
+  skipped: string[];
+  hadBash: boolean;
+  /** 整次回退被拒时的文案（此时消息与文件都没有变化）；成功为 null */
+  error: string | null;
 } | {
   type: 'queuedMessage';
   sessionId: string;
@@ -857,6 +874,12 @@ export type WebviewToHostMessage = {
   filePath: string;
   /** 回滚方向：'before' = 回滚到此修改前，'after' = 回滚到此修改后 */
   direction: 'before' | 'after';
+} | {
+  /** 从时间线某个节点「从这里继续」（specs/039）：core 截断消息并回滚区间内的文件 */
+  type: 'rewindConversation';
+  sessionId: string;
+  /** 目标节点的 JSONL uuid（展示消息的 `messageUuid`） */
+  targetUuid: string;
 } | {
   type: 'expandCompact';
   sessionId: string;

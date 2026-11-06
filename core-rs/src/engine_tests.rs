@@ -500,6 +500,34 @@ fn sessions_are_created_on_demand_and_can_be_dropped() {
 }
 
 #[test]
+fn drop_session_clears_the_read_guard_records_of_that_session() {
+    // specs/038 FR-003：会话释放时清掉读取记录，其余会话不受影响。
+    let sandbox = Sandbox::new("engine-read-guard-drop");
+    sandbox.write_settings(json!({ "defaultAgentMode": "manual" }));
+    let harness = EngineHarness::allow_all();
+    crate::read_guard::reset_for_test();
+
+    let path = sandbox.write_file("a.ts", "hello\n");
+    let cwd = sandbox.workspace.to_string_lossy().to_string();
+    crate::read_guard::record_read("s1", &cwd, &path, b"hello\n");
+    crate::read_guard::record_read("s2", &cwd, &path, b"hello\n");
+    assert_eq!(
+        crate::read_guard::verify("s1", &cwd, &path, "a.ts", Some(b"hello\n")),
+        None
+    );
+
+    harness.core.drop_session("s1");
+
+    // s1 的记录已清空：再次 Edit 会被要求先 Read；s2 的记录还在。
+    assert!(crate::read_guard::verify("s1", &cwd, &path, "a.ts", Some(b"hello\n")).is_some());
+    assert_eq!(
+        crate::read_guard::verify("s2", &cwd, &path, "a.ts", Some(b"hello\n")),
+        None
+    );
+    crate::read_guard::reset_for_test();
+}
+
+#[test]
 fn project_of_prefers_session_then_metadata_then_active_workspace() {
     let sandbox = Sandbox::new("engine-project");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
@@ -4129,6 +4157,8 @@ fn allowed_tool_still_emits_the_permission_request() {
 fn edit_permission_request_carries_the_diff_preview() {
     let sandbox = Sandbox::new("engine-edit-permission-preview");
     std::fs::write(sandbox.workspace.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    // 权限阶段只看 Edit 的 diff 预览；执行阶段的读后失效守卫（specs/038）要求先读过
+    sandbox.seed_read("s1", "a.txt");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             openai_tool_sse(
@@ -4181,6 +4211,8 @@ fn edit_permission_request_carries_the_diff_preview() {
 fn auto_mode_edit_keeps_the_diff_in_the_allowed_permission_result() {
     let sandbox = Sandbox::new("engine-edit-auto-diff");
     std::fs::write(sandbox.workspace.join("a.txt"), "alpha\nbeta\n").unwrap();
+    // 执行阶段过读后失效守卫（specs/038）：先登记一次读取
+    sandbox.seed_read("s1", "a.txt");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             openai_tool_sse(
@@ -8698,7 +8730,8 @@ fn transfer_hook_roundtrip_and_cancel() {
     let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
         Some("crossWorkspaceTransferRequested") => Some(json!({
             "files": 2, "bytes": 128, "skippedSymlinks": 1,
-            "sourceWorkspaceId": "m1:/a", "destWorkspaceId": "m2:/b"
+            "sourceWorkspaceId": "m1:/a", "destWorkspaceId": "m2:/b",
+            "paths": ["a.txt", "sub/b.txt"]
         })),
         Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
         Some("userChoice") => Some(json!({ "index": 0 })),
@@ -8722,6 +8755,8 @@ fn transfer_hook_roundtrip_and_cancel() {
     assert_eq!(summary.skipped_symlinks, 1);
     assert_eq!(summary.source_workspace_id, "m1:/a");
     assert_eq!(summary.dest_workspace_id, "m2:/b");
+    // 文件清单从宿主应答透传（specs/042 FR-001）：缺字段时是空清单，不是默认猜测
+    assert_eq!(summary.paths, vec!["a.txt".to_string(), "sub/b.txt".to_string()]);
     // 契约成员必选：缺省端以 null 下发
     let request = harness
         .sink

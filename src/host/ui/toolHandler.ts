@@ -139,12 +139,13 @@ export class ToolHandler {
   /**
    * core 层调用：通知工具调用开始
    */
-  onToolCall(sessionID: string, toolUseId: string, toolName: string): void {
+  onToolCall(sessionID: string, toolUseId: string, toolName: string, messageUuid: string): void {
     const toolCallId = toolUseId;
     logger.info('ToolHandler', `Tool call start: ${toolName} (toolCallId: ${toolCallId})`);
     this.postToWebview(sessionID, {
       type: 'updateToolStatus',
       toolCallId,
+      messageUuid: messageUuid === '' ? null : messageUuid,
       status: 'running',
     });
   }

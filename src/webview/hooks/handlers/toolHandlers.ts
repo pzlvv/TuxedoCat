@@ -248,6 +248,9 @@ export function handleToolUpdateToolStatus(
                     ...m,
                     content: update.output || m.content,
                     status: update.status as any,
+                    // 节点身份（specs/039 FR-001）：core 在 toolCall 里带来的 JSONL uuid，
+                    // 卡片据此可右键「从这里继续」
+                    messageUuid: update.messageUuid ?? m.messageUuid,
                     isStreaming: update.status === 'success' || update.status === 'fail' ? false : m.isStreaming,
                   };
 

@@ -48,9 +48,33 @@ export type CoreEvent =
    */
   | { type: 'coreReady' }
   | { type: 'message'; sessionId: string; data: MessageData }
+  /**
+   * 对话级回退完成（specs/039 FR-006）：`conversationRewound` 的处理结果。
+   *
+   * 截断后的消息序列经既有 `messagesReplaced` 整批下发，这条事件只带结果摘要
+   * （删了多少条、哪些文件恢复了 / 跳过 / 失败），UI 据此提示。`error` 非空表示
+   * 整次回退被拒（目标不存在 / 末节点 / 会话忙），此时消息与文件都没有变化。
+   */
+  | {
+      type: 'conversationRewoundDone';
+      sessionId: string;
+      targetUuid: string;
+      removed: number;
+      files: Array<{ path: string; ok: boolean; error: string | null }>;
+      skipped: string[];
+      hadBash: boolean;
+      error: string | null;
+    }
   | { type: 'streamMessage'; sessionId: string; data: StreamMessageData }
   | { type: 'streamEnd'; sessionId: string; data: StreamEndData }
-  | { type: 'toolCall'; sessionId: string; toolUseId: string; toolName: string }
+  | {
+      type: 'toolCall';
+      sessionId: string;
+      toolUseId: string;
+      toolName: string;
+      /** 该卡片所属 JSONL 行的 uuid（specs/039 FR-001）：时间线回退的节点身份 */
+      messageUuid: string;
+    }
   | {
       type: 'toolResult';
       sessionId: string;
@@ -322,7 +346,8 @@ export type CoreRequestResultMap = {
   crossWorkspaceAgentRequested: { sessionId: string } | { local: true } | { error: string };
   /**
    * 成功带传输统计与宿主解析后的两端身份（结果文本用）；失败带原因，
-   * 两端零写入（specs/028 FR-002 / FR-003）。
+   * 两端零写入（specs/028 FR-002 / FR-003）。`paths` 是已搬运文件的相对路径
+   * （相对被传输的子树根，POSIX 分隔符），供工具卡片展示清单（specs/042 FR-001）。
    */
   crossWorkspaceTransferRequested:
     | {
@@ -331,6 +356,7 @@ export type CoreRequestResultMap = {
         skippedSymlinks: number;
         sourceWorkspaceId: string;
         destWorkspaceId: string;
+        paths: string[];
       }
     | { error: string };
 };
@@ -496,6 +522,13 @@ export type UiEvent =
    * core 取不到 `file_path`，此时用 UI 侧归一化后的 args.file_path 兜底。
    */
   | { type: 'editRolledBack'; sessionId: string; toolUseId: string; direction: string; filePath?: string }
+  /**
+   * 从时间线某个节点「从这里继续」（specs/039）：截断该节点之后的消息并回滚区间内的文件。
+   *
+   * `targetUuid` 是会话 JSONL 行的 `uuid`（webview 从展示消息的 `messageUuid` 取）。
+   * 截断与文件恢复都在 core 里做——UI 不自己算新消息序列（一份事实一个写入点）。
+   */
+  | { type: 'conversationRewound'; sessionId: string; targetUuid: string }
 
   // ===== 宿主环境与配置 =====
   /**

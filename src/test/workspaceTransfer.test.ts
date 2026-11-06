@@ -77,6 +77,11 @@ async function run(): Promise<void> {
     check('递归：字节数统计', counts.bytes === 'a dot b c'.replace(/ /g, '').length);
     check('递归：目标树逐项一致', JSON.stringify(await tree(dest)) === JSON.stringify(await tree(source)));
     check('递归：目标端无暂存残留', !(await tree(dest)).some((name) => name.includes('tuxedo-transfer-tmp')));
+    // 文件清单是卡片的事实源（specs/042 FR-001）：相对被传输子树的根、POSIX 分隔符
+    check(
+      '递归：清单逐项列出相对路径（POSIX 分隔符）',
+      JSON.stringify(counts.paths) === JSON.stringify(['.dotfile', 'a.txt', 'sub/b.txt', 'sub/deep/c.txt']),
+    );
     await fs.rm(root, { recursive: true, force: true });
   }
 

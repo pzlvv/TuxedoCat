@@ -309,6 +309,25 @@ export const enDict: Record<string, string> = {
   /* ── tools/Agent.tsx ──────────────────────────────────────── */
   'tool.agent.navigateTitle': 'Click to jump to the sub-agent conversation',
 
+  /* ── tools/Transfer.tsx（specs/042）───────────────────────── */
+  'tool.transfer.files': '{count} files · {size}',
+  'tool.transfer.skipped': 'Skipped {count} symlinks',
+  'tool.transfer.more': '{count} more files',
+  'tool.transfer.currentWorkspace': 'current workspace',
+  'tool.transfer.failed': 'Transfer failed',
+
+  /* ── specs/039 timeline rewind ───────────────────────────── */
+  'rewindMenu.continueFromHere': 'Continue from here',
+  'rewindDisabled.lastNode': 'This is the last node; there is nothing after it to remove',
+  'rewindDisabled.busy': 'Cannot rewind while the conversation is busy',
+  'rewindDisabled.compactSummary': 'A compaction summary node cannot be rewound',
+  'rewindDisabled.noNodeId': 'This node is not a conversation node and cannot be rewound',
+  'rewindDialog.title': 'Continue from here?',
+  'rewindDialog.body': 'This removes {removed} message(s) after this node and rolls back {files} changed file(s) in that range. It cannot be undone.',
+  'rewindDialog.cancel': 'Cancel',
+  'rewindDialog.confirm': 'Rewind',
+  'rewind.failed': 'Rewind failed: {message}',
+
   /* ── tools/AskUserQuestion.tsx ───────────────────────────── */
   'tool.askUser.response': 'Answers: {output}',
   'tool.askUser.noAnswer': 'No answer',

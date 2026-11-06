@@ -111,8 +111,13 @@ import {
   collectRecordEntries,
   localGitRunner,
   probeGitWorkspace,
+  type ChangeScope,
   type GitCommandRunner,
 } from './sidebarDocView.js';
+import { localFileContentRunner } from './gitFileContent.js';
+// 非 git 工作区里「全部变更」视图的判别值（specs/041 FR-003 / AC-7）：渲染层据此显示
+// 提示而不是空列表。常量放在 sidebarFilesMode 之外——它是 IPC 回包的取值，不是模式逻辑
+import { needsGitSentinel, NOT_A_GIT_WORKSPACE } from './sidebarFilesMode.js';
 import { readModifiedDocs, readRemoteModifiedDocs, type RemoteMetaAccess } from '../src/shared/workspaceMeta.js';
 import { CONFIG_DIR_NAME } from '../src/config/project.js';
 import type { SshClient } from '../src/host/standalone/sshClient.js';
@@ -131,6 +136,7 @@ import {
   openRemoteWorkspaceFile,
   REMOTE_BINARY_UNSUPPORTED,
   type FileOpenBridge,
+  type OpenSource,
 } from './fileOpen.js';
 import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
 import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
@@ -5341,7 +5347,10 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:files-doc-list', async (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-doc-list');
-    const p = (payload ?? {}) as { workspaceId?: unknown };
+    // `scope` 决定 pathspec（specs/041 FR-002）：'doc' = 只看 Markdown（文档视图的既有口径），
+    // 'all' = 全部类型（「全部变更」视图）。缺省按 'doc'——旧 preload 不传该字段时行为不变。
+    const p = (payload ?? {}) as { workspaceId?: unknown; scope?: unknown };
+    const scope: ChangeScope = p.scope === 'all' ? 'all' : 'doc';
     const ref = resolveFilesRef(p.workspaceId);
     if (!ref) return { ok: false, error: 'workspace-unavailable' };
     try {
@@ -5350,12 +5359,16 @@ function setupIpc(): void {
         const runner = remoteGitRunner(client, ref.path);
         const probe = await probeGitWorkspace(runner);
         if (probe === 'yes') {
-          const result = await collectGitEntries(runner);
+          const result = await collectGitEntries(runner, scope);
           return result.ok
             ? { ok: true, mode: result.mode, rows: buildDocRows(result.entries) }
             : result;
         }
         if (probe === 'no') {
+          // 非 git 工作区：文档视图回落到记录口径（specs/030 的既有语义，spec 非目标
+          // 最后一条），「全部变更」不回退——记录口径只覆盖 Markdown，拿它冒充全部变更
+          // 会让用户以为 .ts 没改（specs/041 FR-003 / AC-7）
+          if (scope === 'all') return { ok: false, error: NOT_A_GIT_WORKSPACE };
           const paths = await readRemoteModifiedDocs(remoteMetaAccess(client), CONFIG_DIR_NAME, ref.path);
           const entries = await collectRecordEntries(paths, runner.exists);
           return { ok: true, mode: 'record', rows: buildDocRows(entries) };
@@ -5365,12 +5378,13 @@ function setupIpc(): void {
       const runner = localGitRunner(ref.path);
       const probe = await probeGitWorkspace(runner);
       if (probe === 'yes') {
-        const result = await collectGitEntries(runner);
+        const result = await collectGitEntries(runner, scope);
         return result.ok
           ? { ok: true, mode: result.mode, rows: buildDocRows(result.entries) }
           : result;
       }
       if (probe === 'no') {
+        if (scope === 'all') return { ok: false, error: NOT_A_GIT_WORKSPACE };
         const paths = await readModifiedDocs(ref.path);
         const entries = await collectRecordEntries(paths, runner.exists);
         return { ok: true, mode: 'record', rows: buildDocRows(entries) };
@@ -5383,20 +5397,23 @@ function setupIpc(): void {
     }
   });
 
-  // 文档视图开关上报（specs/030 FR-003）：主进程据此挂 / 摘 git 哨兵监听；
+  // 文件浏览器模式上报（specs/030 FR-003 / specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵。
+  // 两种变更视图（doc / changes）共用同一个哨兵——哨兵听的是 .git 与 .git/refs/heads，
+  // 与「看哪些文件」无关（specs/041 FR-004「共用同一个监听」）。'tree' 摘、其余挂。
   // host 在 initCore 创建，侧栏 handler 注册先于它——经模块级回填引用解耦时序
-  ipcMain.on('sidebar:files-doc-watch', (event, payload: unknown) => {
+  ipcMain.on('sidebar:files-mode-watch', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) return;
-    const p = (payload ?? {}) as { workspaceId?: unknown; enabled?: unknown };
-    if (typeof p.workspaceId !== 'string' || typeof p.enabled !== 'boolean') return;
-    void electronHost?.setDocSentinel(p.workspaceId, p.enabled);
+    const p = (payload ?? {}) as { workspaceId?: unknown; mode?: unknown };
+    if (typeof p.workspaceId !== 'string') return;
+    if (p.mode !== 'tree' && p.mode !== 'doc' && p.mode !== 'changes') return;
+    void electronHost?.setDocSentinel(p.workspaceId, p.mode !== 'tree');
   });
 
   ipcMain.handle('sidebar:files-reveal', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-reveal');
     // 单项语义用单项契约：preload 发 `{ workspaceId, path }`（此前借复数 paths 数组
     // 再 slice(0,1) 静默丢多余项）
-    const p = (payload ?? {}) as { workspaceId?: unknown; path?: unknown };
+    const p = (payload ?? {}) as { workspaceId?: unknown; path?: unknown; source?: unknown };
     const ref = resolveFilesRef(p.workspaceId);
     if (!ref) return { ok: false, error: 'workspace-unavailable' };
     if (typeof p.path !== 'string' || p.path.length === 0) return { ok: false, error: 'invalid-arguments' };
@@ -5514,7 +5531,8 @@ function setupIpc(): void {
   const fileOpenBridge: FileOpenBridge = {
     openMarkdownViewer: (init) => {
       if (!uiHost) throw new Error('ui host unavailable');
-      return uiHost.openMarkdownPreviewWindow(init);
+      // diffSource 有值即可切换变更视图（非 git 工作区在 fileOpen 侧已是 null，AC-9）
+      return uiHost.openMarkdownPreviewWindow({ ...init, canDiff: init.diffSource !== null });
     },
     openImageViewer: (init) => {
       if (!uiHost) throw new Error('ui host unavailable');
@@ -5523,9 +5541,8 @@ function setupIpc(): void {
     openTextViewer: (init) => {
       if (!uiHost) throw new Error('ui host unavailable');
       // filePath 传文件名：Monaco 只用它做语法推断，不读盘（内容已在 content 里）
-      return uiHost.openMonacoWindow({ mode: 'view', ...init });
-    },
-    openLocalFile: (filePath) => {
+      return uiHost.openMonacoWindow({ mode: 'view', ...init, canDiff: init.diffSource !== null });
+    },    openLocalFile: (filePath) => {
       if (!uiHost) throw new Error('ui host unavailable');
       // 侧栏双击的是本地工作区文件，没有来源对话视图：不参与远程机器归属解析
       return uiHost.openFile(filePath, null, null);
@@ -5539,22 +5556,46 @@ function setupIpc(): void {
 
   ipcMain.handle('sidebar:files-open', async (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-open');
-    const p = (payload ?? {}) as { workspaceId?: unknown; path?: unknown };
+    const p = (payload ?? {}) as { workspaceId?: unknown; path?: unknown; source?: unknown };
     const ref = resolveFilesRef(p.workspaceId);
     if (!ref) return { ok: false, error: 'workspace-unavailable' };
     if (typeof p.path !== 'string' || p.path.length === 0) return { ok: false, error: 'invalid-arguments' };
     if (!uiHost) return { ok: false, error: 'no-host' };
     try {
+      // 打开来源（specs/040 FR-003）：目录树 / 变更视图双击决定初始视图；
+      // 侧栏目前只发这两种（工具卡片链接走 WebViewUI 的另一条通路）
+      const source: OpenSource = p.source === 'changes' ? 'changes' : 'tree';
       if (ref.endpoint) {
+        const client = await sharedClientFor(ref.endpoint, fileOpLog);
         await openRemoteWorkspaceFile(
           fileOpenBridge,
           remoteFileReaderFor(ref.endpoint, fileOpLog),
           ref.endpoint,
           ref.path,
           p.path,
+          source,
+          (rel) => (async () => {
+            const runner = remoteGitRunner(client, ref.path);
+            const content = localFileContentRunner(runner);
+            const probe = await runner.run(['rev-parse', '--is-inside-work-tree']);
+            const inGit = probe.code === 0 && probe.stdout.trim() === 'true';
+            return { inGit, hasHeadVersion: inGit ? await content.hasHeadVersion(rel) : false };
+          })(),
         );
       } else {
-        await openLocalWorkspaceFile(fileOpenBridge, ref.path, p.path);
+        await openLocalWorkspaceFile(
+          fileOpenBridge,
+          ref.path,
+          p.path,
+          source,
+          (rel) => (async () => {
+            const runner = localGitRunner(ref.path);
+            const content = localFileContentRunner(runner);
+            const probe = await runner.run(['rev-parse', '--is-inside-work-tree']);
+            const inGit = probe.code === 0 && probe.stdout.trim() === 'true';
+            return { inGit, hasHeadVersion: inGit ? await content.hasHeadVersion(rel) : false };
+          })(),
+        );
       }
       return { ok: true };
     } catch (err) {

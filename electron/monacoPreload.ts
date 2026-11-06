@@ -40,6 +40,17 @@ ipcRenderer.on('markdown-refresh', (_event, data) => {
 ipcRenderer.on('viewer-title', (_event, data) => {
   window.postMessage({ type: 'title', ...(data as object) }, '*');
 });
+// 变更视图的两侧原文（specs/040 FR-001）：页面切到「变更」时按需向主进程要
+// （打开动作不预取——多数会话不点变更）；主进程应答时校验发送方是当前查看器窗口
+ipcRenderer.on('monaco-diff', (_event, data) => {
+  window.postMessage({ type: 'diff', ...(data as object) }, '*');
+});
+// 页面请求 diff：带上请求 id 便于主进程回同一条（同一窗口可能连点切换）
+contextBridge.exposeInMainWorld('monacoDiffBridge', {
+  request: (requestId: string): void => {
+    ipcRenderer.send('monaco-request-diff', { requestId });
+  },
+});
 
 // Markdown 预览页标题栏的窗口控制（minimize / toggle-maximize / close）→ 主进程；
 // 主进程按 webContents 校验发送方（registerMarkdownWindowControls）

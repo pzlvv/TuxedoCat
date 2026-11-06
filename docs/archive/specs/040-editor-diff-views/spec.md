@@ -1,5 +1,5 @@
 ---
-status: 起草
+status: 已收敛
 ---
 
 # 改动规格：内置文本编辑器与 Markdown 预览的「变更」视图
@@ -57,7 +57,8 @@ Markdown 预览窗口（`dist/monaco/markdown.html`）的标题栏放两组独�
 
 「渲染」态不显示 diff（渲染视图是 HTML，没有行概念）；从「渲染」切到「文本」时沿用
 「全文 / 变更」的当前取值。变更视图里的编辑器与文本视图共用同一个只读 Monaco 实例，
-`viewState` 按视图分别保存（切来切去不丢滚动位置）。
+`viewState` 按视图分别保存（切来切去不丢滚动位置）。点「变更」时若当前在渲染视图，
+先自动切到文本视图——diff 只渲染在文本档，留在渲染态会让用户以为「点了没反应」。
 
 ### FR-003：打开时的初始视图
 
@@ -116,4 +117,29 @@ Markdown 在其上再叠一层：初始视图为「全文」时落在**渲染**�
 
 ## 收敛记录
 
-（待 /converge 填写）
+### 已满足
+
+| 验收标准 | 证据落点 |
+| --- | --- |
+| AC-1（FR-001）文本编辑器点「变更」显示相对 HEAD 的左右对比、可切回「全文」 | `monaco/main.ts` 的 `toggleSourceView` / `initDiff`；e2e `specs/040 AC-1/FR-001`（`.monaco-diff-editor` 可见 → 切回后消失） |
+| AC-2（FR-001）无改动时显示「没有改动」空态 | `monacoDiff.ts::buildDiffResult` 返回 `empty`；`monacoDiff.test.ts` 的空态用例；e2e `AC-2/FR-001` |
+| AC-3（FR-002）「全文 / 变更」在「渲染 / 文本」左侧、两组互不干扰 | `markdownMain.ts` 的 `buildTitlebar` 顺序；e2e `AC-3/AC-4/FR-002` 逐字断言前三个按钮文案 |
+| AC-4（FR-002）渲染态忽略变更开关，切回文本时取值保留 | `applyMode` 只在 `textMode` 下走 `showChangesView`；e2e 渲染 → 文本往返后 diff 直接出现 |
+| AC-5（FR-003）新增文件优先全文 | `resolveInitialView(source, isNew)` 返回 `full`；`fileOpen.test.ts` 六组合 + 接线用例 |
+| AC-6（FR-003）变更视图 / 工具链接打开非新增文件落变更 | 同上；`localGitFile` 判 `hasHeadVersion` |
+| AC-7（FR-003）文件树打开非新增文件落全文 | `tree` → 恒 `full`；e2e `AC-5/AC-7/FR-003` |
+| AC-8（FR-003）Markdown 非新增 + 变更入口先落变更视图 | `resolveInitialViewSource` 返回 `text` + `initialSourceMode: 'changes'` |
+| AC-9（FR-004）非 git 工作区按钮置灰并提示 | `gitContext` 的 `inGit` 为假 → `diffSource: null` → `canDiff: false`；`fileOpen.test.ts` 的「不传 diffSource」用例；e2e `AC-9/FR-004` |
+
+### 偏差（已就地修正或补进 spec）
+
+1. **`FileContentRunner` 在 `electron/gitFileContent.ts`、由 `GitCommandRunner` 装配**，而不是 plan 里写的「三个方法直接挂在 `localFileContentRunner(root)` 上」——实际签名改为接收 runner，本地与远程共用同一实现（远程由 `main.ts` 传 `remoteGitRunner`）。与 plan 的「不新写 git 调用层」一致，签名差异已在 spec 的 FR-004 末句体现（复用同一 `GitCommandRunner`）。
+2. **`canDiff` 的判据是 `diffSource !== null`**，而 `diffSource` 在 `fileOpen.ts` 里由 `gitContext` 的 `inGit` 决定。plan 写「`probeGitWorkspace` 结果塞进 `canDiff`」，实际等价：非 git → `inGit: false` → `diffSource: null`。spec FR-004 已写明这个链路。
+3. **Markdown 的变更档强制切到文本视图**。plan 未写；点「变更」时若仍在渲染态，diff 容器会被 `article.hidden` 藏起来（用户看到「点了没反应」）。`showChangesView` 里补 `state.mode = 'text'`，spec FR-002 补一句。
+4. **`monaco-request-diff` 的应答注册在两类窗口都做**。plan 只写 Monaco 窗口；Markdown 预览窗口同样需要（它的变更档也在页内渲染 diff），漏注册时表现为「点变更没反应」。spec FR-002 已写明「与 Monaco 窗口同一套 responder」。
+5. **`updateToolStatus` 加了必选 `messageUuid: string | null`**（specs/039 的节点身份需要），属跨 spec 的契约增量，已在事件表登记。
+
+### 未做
+
+无。T001 ～ T008 全部完成；`monacoDiff.test.ts`（14）、`gitFileContent.test.ts`（13）、`fileOpen.test.ts`（35）与 e2e 5 条全绿。
+

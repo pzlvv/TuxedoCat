@@ -2813,6 +2813,7 @@
       "result": [
         {
           "role": "user",
+          "messageUuid": "u-1",
           "content": "看看这个文件",
           "filePath": "/tmp/a.ts",
           "fileSelectedLines": {
@@ -2841,6 +2842,7 @@
       "result": [
         {
           "role": "user",
+          "messageUuid": "u-2",
           "content": "隐藏文件信息",
           "isCompactSummary": false
         }
@@ -2870,6 +2872,7 @@
       "result": [
         {
           "role": "user",
+          "messageUuid": "u-3",
           "content": "meta 文件信息",
           "filePath": "/tmp/b.ts",
           "fileSelectedLines": {
@@ -2917,6 +2920,7 @@
       "result": [
         {
           "role": "user",
+          "messageUuid": "u-4",
           "content": "看这张图",
           "images": [
             {
@@ -2966,6 +2970,7 @@
       "result": [
         {
           "role": "system",
+          "messageUuid": "s-2",
           "content": "system note"
         }
       ]
@@ -3037,14 +3042,17 @@
       "result": [
         {
           "role": "thinking",
+          "messageUuid": "a-1",
           "content": "想想"
         },
         {
           "role": "assistant",
+          "messageUuid": "a-1",
           "content": "好的"
         },
         {
           "role": "toolcall",
+          "messageUuid": "a-1",
           "content": "file list",
           "param": "⚙️ Bash",
           "toolName": "Bash",
@@ -3056,6 +3064,7 @@
         },
         {
           "role": "toolcall",
+          "messageUuid": "a-1",
           "content": "edited",
           "param": "⚙️ Write",
           "toolName": "Write",
@@ -3108,6 +3117,7 @@
       "result": [
         {
           "role": "toolcall",
+          "messageUuid": "a-9",
           "content": "canceled",
           "param": "⚙️ Bash",
           "toolName": "Bash",
@@ -3157,6 +3167,7 @@
       "result": [
         {
           "role": "user",
+          "messageUuid": "u-7",
           "content": "子代理回复",
           "isCompactSummary": false,
           "origin": "agent",
@@ -3166,12 +3177,14 @@
         },
         {
           "role": "user",
+          "messageUuid": "u-8",
           "content": "后台完成",
           "isCompactSummary": false,
           "origin": "bash"
         },
         {
           "role": "user",
+          "messageUuid": "u-9",
           "content": "旧字段子代理",
           "isCompactSummary": false,
           "origin": "agent"
@@ -3195,6 +3208,7 @@
       "result": [
         {
           "role": "user",
+          "messageUuid": "u-10",
           "content": "以下是之前对话的摘要：",
           "isCompactSummary": true
         }
@@ -3250,6 +3264,7 @@
       "result": [
         {
           "role": "toolcall",
+          "messageUuid": "a-img",
           "content": "[Image]",
           "param": "⚙️ Read",
           "toolName": "Read",

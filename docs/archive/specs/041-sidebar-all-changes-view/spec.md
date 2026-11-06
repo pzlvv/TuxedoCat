@@ -1,5 +1,5 @@
 ---
-status: 起草
+status: 已收敛
 ---
 
 # 改动规格：文件资源管理器的「全部变更」视图
@@ -102,4 +102,27 @@ e2e：`e2e/electron/fileExplorer.spec.ts` 补用例（`.ts` 改动出现在全�
 
 ## 收敛记录
 
-（待 /converge 填写）
+### 已满足
+
+| 验收标准 | 证据落点 |
+| --- | --- |
+| AC-1（FR-001）列表只显示相对 HEAD 有改动的全部类型文件，每行带 `+N/-M` | `fileExplorer.spec.ts` 的 `specs/041 AC-1/FR-002`：改一个 `.ts` 后出现在列表，`.doc-count` 含 `+3` / `-1` |
+| AC-2（FR-001）三态互斥、再点当前模式回目录树 | `sidebarFilesMode.test.ts` 的 `toggleFilesMode` 六种转移；e2e `AC-2/FR-001` 断言 `aria-pressed` 往返与目录树恢复 |
+| AC-3（FR-001）按工作区记忆 | `parseStoredModes` 的旧布尔迁移 + `toggleFilesMode` 用例；e2e `AC-3/FR-001` 切走再切回仍是全部变更 |
+| AC-4（FR-002）numstat + ls-files 同一套解析 | `sidebarDocView.test.ts` 的 scope 断言：`all` 时三条命令 `args` 逐字（`--` 后为空）；解析/归一/剔除一行未改 |
+| AC-5（FR-002）目录在前、全部层级默认展开 | 复用 `buildDocRows`（`sidebarDocView.test.ts` 的层级铺平用例） |
+| AC-6（FR-002）纯重命名 / 已删除不显示 | `sidebarDocView.test.ts` 的 `scope=all：纯重命名与已删除文件仍被剔除` |
+| AC-7（FR-003）非 git 工作区提示而不是空列表 | `renderDocFiles` 的 `NOT_A_GIT_WORKSPACE` 分支；e2e `AC-7/FR-003` 断言提示文案且空态不出现 |
+| AC-8（FR-004）双击非新增文件落变更视图 | `resolveInitialView('changes', false)`；`fileExplorer` 的 `openFileRow` 按 mode 传 `source` |
+| AC-9（FR-004）提交后自动刷新、与文档视图共用哨兵 | `ElectronUIHost` 的 `onInvalidate` 同时推 `doc` + `changes`；e2e `AC-9/FR-004` 提交后列表清空 |
+
+### 偏差（已就地修正或补进 spec）
+
+1. **Tab 的三态没有走 antd Dropdown**。plan 写「沿用 webview 既有的 antd Dropdown 主题」，但侧栏是独立 vite 页（无 antd），实际用同款视觉的自绘菜单/按钮类。已在 spec 的 FR-001 改写成「复用 `.files-doc-toggle` 视觉」，不再承诺 antd。
+2. **`pathspecFor` 放在渲染层可测模块里，而非主进程**。plan 把 pathspec 写进 `sidebarDocView.ts`（主进程侧），实际落在该文件的导出函数由两侧共享——主进程 `main.ts` 也 import 它，因此「唯一定义处」成立。与 plan 一致，无偏差。
+3. **`not-a-git-workspace` 的判定在主进程而非渲染层**。FR-003 只写「显示提示」，实际是主进程返回该 error 值、渲染层映射成提示行。已在 FR-003 写明判别值。
+
+### 未做
+
+无。T001 ～ T007 全部完成；`test:unit` 的 `sidebarFilesMode`（29 项）、`sidebarDocView`（21 项）与 e2e 5 条全绿。
+

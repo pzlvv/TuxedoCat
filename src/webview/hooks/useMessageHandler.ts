@@ -8,7 +8,7 @@ import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
-import { handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
+import { handleConversationRewoundDone, handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -63,6 +63,10 @@ export interface UseMessageHandlerProps {
   /** MCP 服务器列表（含启用状态），由 extension 读取 mcp.json + settings.json 后下发 */
   setMcpServers: (v: McpServerInfo[]) => void;
   setConversationDropdownOpen: (v: boolean) => void;
+  /** 收起「从这里继续」确认框（specs/039：回退完成 / 被拒都要收） */
+  setRewindDialogOpen: (v: boolean) => void;
+  /** 回退被拒时的原因（会话忙 / 目标不存在等），交给通知通道呈现 */
+  onRewindFailed: (message: string) => void;
   setCurrentSessionId: (v: string | null) => void;
   setParentSessionId: (v: string | null) => void;
   /** 会话创建者（specs/025 FR-002）：返回按钮按它跨工作区跳发起方或跳本地父会话 */
@@ -158,6 +162,7 @@ export interface UseMessageHandlerProps {
   pendingStreamRef: React.MutableRefObject<Map<string, { role: string; accumulated: string; streamId?: string }>>;
   pendingToolStatusRef: React.MutableRefObject<Map<string, {
     toolCallId: string;
+    messageUuid: string | null;
     status: string;
     output?: string;
     startLine?: number;
@@ -167,6 +172,7 @@ export interface UseMessageHandlerProps {
   }>>;
   bufferedToolStatusRef: React.MutableRefObject<Map<string, {
     toolCallId: string;
+    messageUuid: string | null;
     status: string;
     output?: string;
     startLine?: number;
@@ -335,6 +341,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'requestUserChoice':
           handleToolRequestUserChoice(msg, ctx);
+          break;
+        case 'conversationRewoundDone':
+          // 对话级回退完成（specs/039 FR-006）：消息序列已由 messagesReplaced 整批替换，
+          // 这里只收起确认框并（失败时）把原因交给通知通道
+          handleConversationRewoundDone(msg, ctx);
           break;
         case 'toolMetaData':
           handleToolToolMetaData(msg, ctx);

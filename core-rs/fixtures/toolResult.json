@@ -263,6 +263,7 @@
       "files": {
         "out.txt": "old"
       },
+      "seedReads": ["out.txt"],
       "input": {
         "file_path": "out.txt",
         "content": "new"
@@ -288,6 +289,7 @@
       "files": {
         "a.txt": "alpha\n"
       },
+      "seedReads": ["a.txt"],
       "input": {
         "file_path": "a.txt",
         "old_string": "alpha",

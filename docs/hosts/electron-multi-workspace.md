@@ -255,11 +255,21 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   列表要等 core 连接就绪才能读到，等待态不猜空值。
 - 活动工作目录变化时，对话列表随之切换。
 - 新对话按钮在活动工作目录下创建对话。
-- 底部文件浏览器分区（US-42 / US-43）：条目悬停显示修改时间、文档视图开关与
-  Write 新建自动刷新（US-61 / US-62 / US-63，specs/030）——数据走 Electron 私有 IPC
-  （`sidebar:files-list` / `sidebar:files-doc-list` / `sidebar:files-doc-watch` /
-  `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与文档记录读取
-  复用 §14.5 的共享连接池。远程工作区的 Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层独立，首连失败后不会自连，不推就停在「读取失败，点击重试」（`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
+- 底部文件浏览器分区（US-42 / US-43）：条目悬停显示修改时间、三种互斥的浏览模式与
+  Write 新建自动刷新（US-61 / US-62 / US-63，specs/030 / specs/041）。模式是
+  `'tree' | 'doc' | 'changes'` 判别联合（不写成两个布尔），按工作区记忆在
+  `localStorage` 的 `filesMode` 键里（旧 `filesDocView` 布尔表只读兼容、不再写入）：
+  - 目录树（默认）：懒加载全量目录，展开状态独立保存；
+  - 文档视图：`git diff --numstat -M HEAD -- '*.md' '*.markdown'` + 未跟踪，行数徽标；
+  - 全部变更：同一套取数与解析，pathspec 置空（`--` 之后不含过滤器）以覆盖全部类型；
+    非 git 工作区返回 `not-a-git-workspace` 提示而不是空列表。
+  两个变更视图共用同一个 git 哨兵（听 `.git` 与 `.git/refs/heads`），失效推送的
+  `reasons` 同时带 `doc` / `changes`，渲染层按当前模式各取所需。数据走 Electron 私有
+  IPC（`sidebar:files-list` / `sidebar:files-doc-list`（带 `scope`）/ `sidebar:files-mode-watch` /
+  `sidebar:files-open`（带 `source`）/ `sidebar:files-invalidate` 推送），不经总线；远程
+  工作区的 git 探测与记录读取复用 §14.5 的共享连接池。远程工作区的 Connection 就绪时
+  另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层独立，首连失败后不会自连，不推就
+  停在「读取失败，点击重试」（`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
 
 ### 9.1 空态
 
@@ -399,8 +409,8 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 窗口尺寸变化实时同步远端 PTY（`setWindow`）：通道建立以发起时刻的窗口尺寸为 PTY 初值，
   就绪前的 resize 先记账、就绪后补齐。滚动回看缓冲不少于 1000 行。
 - 剪贴板：选中即复制（PuTTY 惯例）——拖选 / 双击选词产生的非空选区即时写入剪贴板，取消
-  选中不写、保留最近一次选区内容；快捷键复制 / 粘贴照旧：Windows / Linux `Ctrl+Shift+C` /
-  `Ctrl+Shift+V`，macOS 沿 `Cmd+C` / `Cmd+V`（有选区才拦复制）；读写走主进程 `clipboard` 模块（渲染端剪贴板权限不可依赖）。
+  选中不写、保留最近一次选区内容；快捷键复制 / 粘贴照旧：Windows / Linux `Ctrl+Shift+C` / `Ctrl+Shift+V`，
+  macOS 沿 `Cmd+C` / `Cmd+V`（有选区才拦复制）；读写走主进程 `clipboard`（渲染端剪贴板权限不可依赖）。
 - 标签切换快捷键：「下一标签 / 上一标签」（与工作区标签页同一组合与改键偏好，见第 5 节）
   在终端窗口内切相邻终端标签，环绕规则同一份纯函数（`selectAdjacentId`）；不足 2 个标签
   或活动标签不在表里时不动作。终端窗口是独立窗口、无菜单栏，组合键由主进程
@@ -413,8 +423,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - shell 通道开在与侧栏文件浏览器（含文档视图的 git 探测与记录读取，specs/030）同一
   endpoint 连接池上（`sharedClientFor`，按
   `sshTargetKey` 缓存）：同一条 SSH 连接多路复用，口令鉴权与主机密钥 TOFU 不重复发生。
-- 终端窗口打开期间对该连接登记一份租约（`retainRemoteFilesClient`），与工作区租约独立
-  计数，全部归零才真正断开。
+- 终端窗口打开期间对该连接登记一份租约（`retainRemoteFilesClient`），与工作区租约独立计数，全部归零才真正断开。
 - 终端是该 endpoint 首个使用者且主机密钥与 known-hosts 记录不一致时，走与远程接入同一套
   的告警确认（`confirmHostKeyChange`）；确认后 `recordKnownHostFingerprint` 重建信任并
   重试一次，拒绝则失败原样呈现。
@@ -422,23 +431,14 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 ### 14.6 断开语义
 
 - 通道结束按两个事件判别：`exit` 先行（远端 shell 正常退出）→ 标签自动关闭（14.3）；
-  无 `exit` 先行的 `close`（SSH 连接断开 / 通道层错误）→ 标签转「已断开」态，标签页内
-  以覆盖层呈现原因（通道 error 优先，缺省给固定文案）与「重新连接」按钮。
-- 建链中（connecting，含新标签与重连）的覆盖层以对话加载同款的 logo 动画呈现
-  （波纹 + logo + 弹跳圆点，形态对齐聊天侧 `ConversationLoading`）——连接中不是错误，
-  红色警示图标只属于断开态。
-- 重连只作用于单个标签、以当下窗口尺寸重建一条 shell，不自动重连、不批量复活其它标签。
-  断开态与建链中（connecting）的键入直接丢弃（界面上该标签不在可输入态，设计允许的
-  瞬时 no-op）；连接失败（认证失败 / 不可达）同样进断开态，不清除已存凭证、不新增
-  口令输入框（重新走「打开远程工作区」接入即可更新凭证）。
+  无 `exit` 先行的 `close`（SSH 连接断开 / 通道层错误）→ 标签转「已断开」态，覆盖层呈现原因与「重新连接」按钮。
+- 建链中（connecting，含新标签与重连）的覆盖层以对话加载同款的 logo 动画呈现（波纹 + logo + 弹跳圆点，对齐聊天侧 `ConversationLoading`）——连接中不是错误，红色警示图标只属于断开态。
+- 重连只作用于单个标签、以当下窗口尺寸重建一条 shell，不自动重连、不批量复活其它标签。断开态与建链中的键入直接丢弃（设计允许的瞬时 no-op）；连接失败同样进断开态，不清除已存凭证、不新增口令输入框。
 
 ### 14.7 生命周期
 
-- 关闭工作区（`teardownWorkspace`）时其终端窗口一并关闭；应用退出（`will-quit`）时全部
-  终端窗口关闭并同步销毁通道，先于 SSH 连接池的统一释放。
-- 远端不留孤儿进程：shell 生命周期就是 SSH 通道生命周期，连接断开后 PTY 内进程由 sshd
-  回收，宿主不做额外的进程清理协议。关标签先尽力发 SIGHUP（远端 Windows sshd 不支持
-  信号则忽略）再发 EOF。
+- 关闭工作区（`teardownWorkspace`）时其终端窗口一并关闭；应用退出（`will-quit`）时全部终端窗口关闭并同步销毁通道，先于 SSH 连接池的统一释放。
+- 远端不留孤儿进程：shell 生命周期就是 SSH 通道生命周期，连接断开后 PTY 内进程由 sshd 回收，宿主不做额外的进程清理协议；关标签先尽力发 SIGHUP 再发 EOF。
 
 ### 14.8 数据面与外观
 

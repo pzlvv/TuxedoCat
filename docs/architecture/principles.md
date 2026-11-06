@@ -95,6 +95,7 @@ MCP 这条踩过坑：acquire 挂在「webview 打开」上时，引用生命周
 | mermaid 代码块 | 宿主原生窗口（webview 只发 `openMermaidPreview`）：VS Code 复用单个 `WebviewPanel`，Electron 复用单个 `BrowserWindow` | webview 不做页内渲染浮层 |
 | 图片 | 宿主：VS Code `vscode.open` 内置图片预览，Electron `openImagePreviewWindow`（`dist/imageViewer`，滚轮缩放 / 拖动平移） | — |
 | 完整文本 / 虚拟文档 | 宿主：VS Code `DocumentManager` 虚拟文档标签，Electron Monaco 窗口（`mode: 'content'`） | — |
+| 文件的变更视图（相对 HEAD 的对比） | 查看器窗口内的 Monaco `DiffEditor`（`electron/monaco/main.ts` 与 `markdownMain.ts` 共用同一套 diff 配置，specs/040） | `ElectronUIHost.showDiff` 仍是空实现——工具卡片的 diff 归 webview，不因查看器有了变更视图就下沉 |
 
 VS Code 在 manual 模式下额外用 `host.showDiff` 开原生 before/after diff 标签（[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)），
 作为工具卡片之外的完整视图；Electron 不跟进（`showDiff` 空实现）。

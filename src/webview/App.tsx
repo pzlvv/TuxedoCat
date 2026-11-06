@@ -11,6 +11,7 @@ import { createSessionState, SessionStatesStore } from './sessionState';
 
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
+import { RewindConfirmDialog } from './components/RewindConfirmDialog';
 import { postMessage, getHasWorkspace, getInjectedSessionId, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { DecorativeLogo } from './DecorativeLogo';
@@ -110,6 +111,10 @@ const App = () => {
   } = useConversationLoading(initialSessionId);
   // 子对话展开状态（sessionId -> boolean）
   const [conversationDropdownOpen, setConversationDropdownOpen] = useState(false);
+  /** 「从这里继续」的目标节点（specs/039）：null = 确认框未打开 */
+  const [rewindTargetUuid, setRewindTargetUuid] = useState<string | null>(null);
+  /** 确认框上要显示的两项规模（打开时按当前消息算出，避免确认框里再遍历一次） */
+  const [rewindPreview, setRewindPreview] = useState<{ removed: number; files: number }>({ removed: 0, files: 0 });
   const [conversationTitle, setConversationTitle] = useState<string>(t('app.untitled'));
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   // 当前对话的父会话 ID（本地子对话时有效；跨工作区对话无父会话，specs/025 FR-002）
@@ -288,22 +293,26 @@ const App = () => {
   const toolStatusRafRef = useRef<number | null>(null);
   const pendingToolStatusRef = useRef<Map<string, {
     toolCallId: string;
+    messageUuid: string | null;
     status: string;
     output?: string;
     startLine?: number;
     endLine?: number;
     toolStartTimestamp?: number;
+    toolResultTimestamp?: number;
   }>>(new Map());
   /** 跨会话工具状态缓冲：存储因 sessionId 不匹配而被过滤的 updateToolStatus，
    *  在 conversationLoaded 加载新会话后，扫描此缓冲并应用匹配的更新。
    *  解决子代理工具在会话切换期间发送的 updateToolStatus 丢失的问题。 */
   const bufferedToolStatusRef = useRef<Map<string, {
     toolCallId: string;
+    messageUuid: string | null;
     status: string;
     output?: string;
     startLine?: number;
     endLine?: number;
     toolStartTimestamp?: number;
+    toolResultTimestamp?: number;
   }>>(new Map());
   /** 工具流式输出批量更新：rAF throttle 合并高频 toolProgress 消息 */
   const toolProgressRafRef = useRef<number | null>(null);
@@ -355,6 +364,28 @@ const App = () => {
    */
   const [notices, setNotices] = useState<NoticeItem[]>([]);
   const noticeIdRef = useRef(0);
+  /**
+   * 时间线节点「从这里继续」（specs/039）：打开确认框前先算好规模（删多少条 / 回滚几个文件），
+   * 让确认框直接显示，不在弹框时才遍历消息。
+   */
+  const handleRewindRequest = useCallback((targetUuid: string) => {
+    // 工具卡片的节点身份是 toolCallId（实时流式期还没有 JSONL uuid），
+    // 两种 key 都要认——与 core 的 `truncate_index` 同一口径
+    const index = messages.findIndex(
+      (message) => message.messageUuid === targetUuid || message.toolCallId === targetUuid,
+    );
+    if (index < 0) return;
+    const removed = messages.length - index - 1;
+    let files = 0;
+    for (const message of messages.slice(index + 1)) {
+      if (message.role !== 'toolcall') continue;
+      if (message.toolName !== 'Edit' && message.toolName !== 'Write') continue;
+      files += 1;
+    }
+    setRewindPreview({ removed, files });
+    setRewindTargetUuid(targetUuid);
+  }, [messages]);
+
   const pushNotice = useCallback(
     (key: string, params: Record<string, string | number>, level: NoticeItem['level']) => {
       const id = ++noticeIdRef.current;
@@ -449,6 +480,16 @@ const App = () => {
   // 未记录的会话视为 idle（不显示流水灯）。
   const getSessionIdleState = useCallback((sid: string): boolean => {
     return sessionRuntimeStatesRef.current.get(sid)?.idle ?? true;
+  }, []);
+  /**
+   * 回退的 UI 侧忙判定（spec 039 FR-005）：只挡「正在压缩」。
+   *
+   * 查询态不在这里挡：core 的 `session_is_rewind_blocked` 是权威判据，UI 侧的运行标志
+   * 可能比 core 晚一步复位，用它置灰会把合法回退误挡在门外。core 拒绝时经
+   * `conversationRewoundDone.error` 回执提示。
+   */
+  const getSessionRewindBusy = useCallback((sid: string): boolean => {
+    return sessionRuntimeStatesRef.current.get(sid)?.compacting ?? false;
   }, []);
   const getSessionWaitingState = useCallback((sid: string): boolean => {
     return sessionRuntimeStatesRef.current.get(sid)?.waiting ?? false;
@@ -571,7 +612,9 @@ const App = () => {
     promptMode, setPromptMode, webSearch,
     setSubAgentRole,
     currentFile, selectedLines,
-  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, webSearch, currentFile, selectedLines, messages]);
+    setRewindDialogOpen: (open: boolean) => { if (!open) setRewindTargetUuid(null); },
+    onRewindFailed: (message: string) => { setRewindTargetUuid(null); pushNotice('rewind.failed', { message }, 'error'); },
+  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, webSearch, currentFile, selectedLines, messages, pushNotice]);
   useMessageHandler(handlerProps);
 
     const appHandlerProps = useMemo(() => ({
@@ -1421,7 +1464,29 @@ onClick={handleNewConversation}
           onExpandCompact={handleExpandCompact}
           onNavigate={navigateToSession}
           onRetryQuery={handleRetryQuery}
+          onRewindRequest={handleRewindRequest}
+          // 忙判定（spec 039 FR-005）：webview 侧只挡「正在压缩」这种一定不能截断的状态；
+          // 查询态由 core 的 `session_is_rewind_blocked` 最终裁决——UI 侧的查询标志可能
+          // 滞后于 core（终轮文本落地后 running 仍在收尾），拿它置灰会误挡合法回退。
+          sessionBusy={getSessionRewindBusy(currentSessionId ?? '')}
         />
+
+        {/* 「从这里继续」确认框（specs/039 FR-002）：不可逆操作，默认焦点在取消 */}
+        {rewindTargetUuid ? (
+          <RewindConfirmDialog
+            colors={colors}
+            removedCount={rewindPreview.removed}
+            fileCount={rewindPreview.files}
+            onCancel={() => setRewindTargetUuid(null)}
+            onConfirm={() => {
+              const sessionId = currentSessionId;
+              const targetUuid = rewindTargetUuid;
+              setRewindTargetUuid(null);
+              if (!sessionId || !targetUuid) return;
+              postMessage({ type: 'rewindConversation', sessionId, targetUuid });
+            }}
+          />
+        ) : null}
 
         {/* Input Area — 条件渲染 UserChoiceOverlay / InputArea，保持相同位置 */}
         <div

@@ -309,6 +309,25 @@ export const zhDict: Record<string, string> = {
   /* ── tools/Agent.tsx ──────────────────────────────────────── */
   'tool.agent.navigateTitle': '点击跳转到子代理对话',
 
+  /* ── tools/Transfer.tsx（specs/042）───────────────────────── */
+  'tool.transfer.files': '{count} 个文件 · {size}',
+  'tool.transfer.skipped': '跳过 {count} 个符号链接',
+  'tool.transfer.more': '还有 {count} 个文件',
+  'tool.transfer.currentWorkspace': '当前工作区',
+  'tool.transfer.failed': '传输失败',
+
+  /* ── specs/039 时间线「从这里继续」 ─────────────────────── */
+  'rewindMenu.continueFromHere': '从这里继续',
+  'rewindDisabled.lastNode': '这是最后一个节点，其后没有可删除的内容',
+  'rewindDisabled.busy': '会话忙时不能回退',
+  'rewindDisabled.compactSummary': '压缩摘要节点不可回退（归档前的内容无法恢复）',
+  'rewindDisabled.noNodeId': '该节点不是对话节点，不可回退',
+  'rewindDialog.title': '从这里继续？',
+  'rewindDialog.body': '将删除该节点之后的 {removed} 条消息，并回滚区间内改过的 {files} 个文件。此操作不可恢复。',
+  'rewindDialog.cancel': '取消',
+  'rewindDialog.confirm': '确认回退',
+  'rewind.failed': '回退失败：{message}',
+
   /* ── tools/AskUserQuestion.tsx ───────────────────────────── */
   'tool.askUser.response': '回答：{output}',
   'tool.askUser.noAnswer': '未作答',

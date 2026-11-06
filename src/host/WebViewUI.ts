@@ -340,7 +340,7 @@ export class WebViewUI implements WebViewUiPort {
       message: (e) => this.onMessage(e.sessionId, e.data),
       streamMessage: (e) => this.onStreamMessage(e.sessionId, e.data),
       streamEnd: (e) => this.onStreamEnd(e.sessionId, e.data),
-      toolCall: (e) => this.onToolCall(e.sessionId, e.toolUseId, e.toolName),
+      toolCall: (e) => this.onToolCall(e.sessionId, e.toolUseId, e.toolName, e.messageUuid),
       toolResult: (e) => {
         this.onToolResult(e.sessionId, e.toolUseId, e.toolName, e.output, e.status);
         // 宿主旁路观察（specs/030 FR-001）：webview 渲染照常，Electron 侧解析
@@ -352,6 +352,17 @@ export class WebViewUI implements WebViewUiPort {
       aiBegin: (e) => this.onAIBegin(e.sessionId),
       aiEnd: (e) => this.onAIEnd(e.sessionId),
       messagesReplaced: (e) => this.onMessagesReplaced(e.sessionId, e.messages),
+      // 对话级回退完成（specs/039 FR-006）：截断后的消息序列已由 `messagesReplaced`
+      // 整批下发，这里只把结果摘要交给 webview（提示删了多少条 / 哪些文件没恢复成）
+      conversationRewoundDone: (e) => this.postToWebview(e.sessionId, {
+        type: 'conversationRewoundDone',
+        targetUuid: e.targetUuid,
+        removed: e.removed,
+        files: e.files,
+        skipped: e.skipped,
+        hadBash: e.hadBash,
+        error: e.error,
+      }),
 
       // ===== 控制面 =====
       queryBegin: (e) => this.onQueryBegin(e.sessionId),
@@ -541,7 +552,14 @@ export class WebViewUI implements WebViewUiPort {
   private async requestCrossWorkspaceTransfer(
     request: Extract<import('../shared/AssistantEventBus.js').CoreRequest, { type: 'crossWorkspaceTransferRequested' }>,
   ): Promise<
-    | { files: number; bytes: number; skippedSymlinks: number; sourceWorkspaceId: string; destWorkspaceId: string }
+    | {
+        files: number;
+        bytes: number;
+        skippedSymlinks: number;
+        sourceWorkspaceId: string;
+        destWorkspaceId: string;
+        paths: string[];
+      }
     | { error: string }
   > {
     let origin: CrossWorkspaceRoute;
@@ -616,6 +634,7 @@ export class WebViewUI implements WebViewUiPort {
           files: counts.files,
           bytes: counts.bytes,
           skippedSymlinks: counts.skippedSymlinks,
+          paths: counts.paths,
           sourceWorkspaceId: workspaceAgentId(sourceRef, machineName),
           destWorkspaceId: workspaceAgentId(destRef, machineName),
         };
@@ -674,9 +693,9 @@ export class WebViewUI implements WebViewUiPort {
     this.postToWebview(sessionId, { type: 'showThinkingAnimation', show });
   }
 
-  onToolCall(sessionId: string, toolUseId: string, toolName: string): void {
+  onToolCall(sessionId: string, toolUseId: string, toolName: string, messageUuid: string): void {
     this.sessionUi.markToolPhase(sessionId);
-    this.toolHandler.onToolCall(sessionId, toolUseId, toolName);
+    this.toolHandler.onToolCall(sessionId, toolUseId, toolName, messageUuid);
   }
 
   onToolResult(sessionId: string, toolUseId: string, toolName: string, output: string, status: 'success' | 'error'): void {

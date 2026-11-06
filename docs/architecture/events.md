@@ -88,16 +88,15 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 77 个事件：
+四组词汇表，共 79 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 32 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 单向事实通知 | 33 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 27 | Core 进程的 `dispatch_ui_event` 分派 |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 28 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 14 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
-`UiRequest` 的成员与宿主侧统一入口（`coreFacts`）见 [docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)。
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
 
 **两条独立的流**（[layering.md](layering.md) 规则 8）：
@@ -115,7 +114,7 @@ export type CoreRequestHandlers = {
 全量让消费者不必自己维护状态表，也不会因为丢一条增量而永久错位。
 
 `CoreRequest` 的结果类型由 `CoreRequestResultMap` 约束（`toolPermissionRequested → PermissionResult`、
-`userChoice → UserChoiceResult`（`kind: 'permission'` 带 `index` / `reply`，`kind: 'question'` 带 `answers`）、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`、`crossWorkspaceTransferRequested → { files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
+`userChoice → UserChoiceResult`（`kind: 'permission'` 带 `index` / `reply`，`kind: 'question'` 带 `answers`）、`crossWorkspaceAgentRequested → { sessionId } / { local: true } / { error }`、`crossWorkspaceTransferRequested → { files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId, paths } / { error }`）；`request<T>()` 的泛型签名据此把请求类型与结果类型一一对应，
 调用点不需要手动收窄。
 
 `SessionRuntimeState` 只放 core 能提供的**根事实**（`sessionId` / `idle` / `waiting` /
@@ -136,13 +135,13 @@ export type CoreRequestHandlers = {
 | 1 | `message` | `sessionId`, `data: MessageData`（`once: true` 即一次性通知——core 记进 `meta.json` 的 `onceMessage`（一个对话至多一条，重开对话时恢复到时间线末位）、不写 `<sid>.jsonl` 与 LLM 上下文、新节点追加前移除，渲染规则见 [docs/hosts/webview-ui.md 第 11 节](../hosts/webview-ui.md#11-消息区视图行为)；LLM 失败回显 / `*User Interrupted*` 带此标记（压缩排队走运行时快照的 `pendingCompact`，不发 once），宿主失联提示只当次显示不记 meta；`noticeKind: 'llmError'` 是 LLM 失败通知的类别标记（specs/036），随通知写入 `onceMessage`，UI 据此渲染重试按钮，其余通知不带） | `engine.rs`（用户消息进上下文 / 轮次回执 / LLM 失败回显 / 中断通知）、`commands.rs`（命令输出）、`main.rs`（回滚结果的 system 消息）、`spin.rs` / `spin_host.rs`（spin 消息落盘）；宿主失联提示在 `bootstrapCore.ts`（`markConnectionSessionsFailed`） | `onMessage` | `addMessage` |
 | 2 | `streamMessage` | `sessionId`, `data: StreamMessageData` | `engine.rs` | `onStreamMessage` | `streamMessage` |
 | 3 | `streamEnd` | `sessionId`, `data: StreamEndData` | `engine.rs` | `onStreamEnd` | `streamEnd` |
-| 4 | `toolCall` | `sessionId`, `toolUseId`, `toolName` | `engine.rs` | `onToolCall` | `updateToolStatus`（`running`） |
-| 5 | `toolResult` | `sessionId`, `toolUseId`, `toolName`, `output`, `status` | `engine.rs`（`emit_tool_outcome`） | `onToolResult`（webview 渲染 + 宿主旁路转发 `UIHost.onToolResult`，specs/030 FR-001） | `updateToolStatus`（Edit 失败时追加 `updateToolArgs`） |
+| 4 | `toolCall` | `sessionId`, `toolUseId`, `toolName`, `messageUuid`（所属 JSONL 行，specs/039 的节点身份） | `engine.rs` | `onToolCall` | `updateToolStatus`（`running`） |
+| 5 | `toolResult` | `sessionId`, `toolUseId`, `toolName`, `output`, `status` | `engine.rs`（`emit_tool_outcome`）；读后失效拒绝（[docs/core/tool-read-guard.md 第 3 节](../core/tool-read-guard.md#3-错误文案)）也经这条产出，载荷不变 | `onToolResult`（webview 渲染 + 宿主旁路转发 `UIHost.onToolResult`，specs/030 FR-001） | `updateToolStatus`（Edit 失败时追加 `updateToolArgs`） |
 | 6 | `toolArgsUpdated` | `sessionId`, `toolUseId`, `args` | `engine.rs`（流式 tool input 累积） | `onToolArgsUpdated` | `updateToolArgs` |
 | 7 | `toolProgress` | `sessionId`, `toolUseId`, `progress: ToolProgressData` | `engine.rs` | `onToolProgress` | `toolProgress` |
 | 8 | `aiBegin` | `sessionId` | `engine.rs`（每轮 LLM 调用开始） | `onAIBegin` | `aiBegin` + `showThinkingAnimation` |
 | 9 | `aiEnd` | `sessionId` | `engine.rs`（每轮 LLM 调用结束） | `onAIEnd` | `aiEnd` + `showThinkingAnimation` + `balance_update` |
-| 10 | `messagesReplaced` | `sessionId`, `messages: readonly MessageData[]` | `replay.rs`（压缩后重建） | `onMessagesReplaced` | `messagesReplaced`（整批替换消息列表；宿主 `expandCompact` 也投递同一条 wire message） |
+| 10 | `messagesReplaced` | `sessionId`, `messages: readonly MessageData[]` | `replay.rs`（压缩后重建）、`main.rs`（对话级回退截断后重发） | `onMessagesReplaced` | `messagesReplaced`（整批替换消息列表；宿主 `expandCompact` 也投递同一条 wire message） |
 | 11 | `queryBegin` | `sessionId` | `engine.rs`（主查询与子代理轮次） | `onQueryBegin` | `queryBegin` + `showThinkingAnimation` |
 | 12 | `queryEnd` | `sessionId` | 同上 | `onQueryEnd` | `queryEnd` + `showThinkingAnimation` |
 | 13 | `titleChanged` | `sessionId`, `title` | `engine.rs`（`update_conversation_title`：重命名与 spin 改名）；新会话以空标题建档，不发本事件 | `onTitleChanged` | `setTitle` |
@@ -164,11 +163,11 @@ export type CoreRequestHandlers = {
 | 29 | `crossWorkspaceAgentAbortRequested` | `sessionId`（远程子代理会话 id） | `engine.rs`（`abort_session_scope`：对登记为远程的子代理发中止请求） | `onCrossWorkspaceAgentAbortRequested`（按 link 表找到目标 Connection 下发 `UiEvent.abortRequested`） | 无（跨 Core 转发） |
 | 30 | `crossWorkspaceAgentEnded` | `sessionId`（发起方会话）, `subSessionId` | `engine.rs`（`run_sub_agent` 收尾：跨工作区子代理结束 / 中止 / 失败） | `onCrossWorkspaceAgentEnded`（转成 `UiEvent.crossWorkspaceAgentCompleted`） | 无（跨 Core 转发） |
 | 31 | `todosChanged` | `sessionId`, `todos: readonly TodoEntry[]` | `engine.rs`（`emit_tool_outcome`：TodoWrite 成功后推送全量清单） | `onTodosChanged` | `sessionTodos`（空数组即该会话没有 Todo，按钮不渲染） |
+| 32 | `conversationRewoundDone` | `sessionId`, `targetUuid`, `removed`, `files`（`{path, ok, error}` 数组）, `skipped`, `hadBash`, `error` | `main.rs`（`conversationRewound` 的处理：截断后重发 `messagesReplaced`，再发本事件带结果摘要；`error` 非空 = 整次被拒） | `conversationRewoundDone`（处理器同名） | `conversationRewoundDone`（webview 收确认框并提示失败原因；成功态由回执 system 消息呈现） |
 
-> 第 1–10 项是渲染类 handler，第 11–31 项是控制面与事实通知 handler——这条界线只是 `WebViewUI` 内部的分区，不是事件类型的分组。
+第 1–10 项是渲染类 handler，第 11–32 项是控制面与事实通知 handler（`WebViewUI` 内部的分区，不是事件类型的分组）。
 >
-> 各表的 `#` 列是**表内序号**（2.1 自 0 起，2.2 / 2.3 自 1 起）；跨表指名一律用事件名，不用行号。
-> 父子会话的展示事实读 `conversationsData` / `sessionRuntimeStates` 的 `parentSessionId`（[docs/core/session-runtime.md](../core/session-runtime.md)）。
+> 各表的 `#` 列是**表内序号**（2.1 自 0 起，2.2 / 2.3 自 1 起）；跨表指名一律用事件名，不用行号。父子会话展示事实读 `conversationsData` / `sessionRuntimeStates` 的 `parentSessionId`（[docs/core/session-runtime.md](../core/session-runtime.md)）。
 
 ### 2.2 CoreRequest（core → UI，请求-响应）
 
@@ -180,7 +179,7 @@ export type CoreRequestHandlers = {
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完；工具不存在与**授权前被中断**两条失败路径同样发一次，`permResult` 恒 `allow`，只为让 UI 上架卡片） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
 | 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `questions`） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
 | 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链；提示词模式不携带——跨工作区会话恒 normal，specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
-| 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → 本地 fs / 传输专用 SshClient 执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId }` / `{ error }` |
+| 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → 本地 fs / 传输专用 SshClient 执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId, paths }` / `{ error }`（`paths` = 已搬运文件相对被传输子树根的路径，工具卡片展示清单用） |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 6 节。
@@ -224,6 +223,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 20 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `Core::on_user_choice_pending` → 会话运行时状态的 `waiting` 来源（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | 21 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `config.rs` 的 `set_session_workspace`（`null` / 空串清除登记） |
 | 22 | `queuedMessageDiscarded` | `sessionId`, `uuid` | `discardQueuedMessage`（webview 排队项的「编辑 / 删除」，[docs/features/user-message-pipeline.md FR-003](../features/user-message-pipeline.md#fr-003排队状态与消息归属一致)） | `Core::on_queued_message_discarded`——按 `uuid` 丢弃引擎里尚未消费的同一消息，不置 abort 标记（不打断正在运行的查询） |
+| 23 | `conversationRewound` | `sessionId`, `targetUuid` | `rewindConversation`（时间线节点右键「从这里继续」，specs/039） | `rewind.rs` 的 `rewind`（截断 + 文件回滚，守卫见该规格 FR-005） |
 | 23 | `bashBackgroundRequested` | `sessionId`, `toolUseId` | `backgroundBashTool`（Bash 卡片「转后台」按钮，[docs/features/background-bash.md](../features/background-bash.md)） | `Core::on_bash_background_requested`——按 `toolUseId` 触发该次前台执行转入后台，结果照常进上下文但暂停下一轮 LLM 请求；没有匹配的前台执行时幂等忽略 |
 | 24 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `originWorkspaceId`, `originSessionId`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，目标 Core 全量应用不按角色裁剪，specs/024 FR-004 / specs/025 FR-005；提示词模式不携带——目标会话恒 normal，specs/025 FR-005） | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建顶层普通会话 + 写 `creator` meta + 组装 SystemPrompt + 起后台消费循环，specs/025 FR-001/FR-002/FR-006） |
 | 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径） |

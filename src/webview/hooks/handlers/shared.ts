@@ -469,6 +469,8 @@ export function missingPanelFields(payload: LlmConfigPanelPayload): string[] {
 /** updateToolStatus 缓冲条目的形状（pendingToolStatusRef / bufferedToolStatusRef 共用） */
 export interface ToolStatusEntry {
   toolCallId: string;
+  /** 该卡片所属 JSONL 行的 uuid（specs/039 FR-001）；`null` = 没有节点身份 */
+  messageUuid: string | null;
   status: string;
   output?: string;
   startLine?: number;
@@ -484,6 +486,7 @@ export interface ToolStatusEntry {
  */
 export function toToolStatusEntry(msg: {
   toolCallId: string;
+  messageUuid: string | null;
   status?: 'normal' | 'success' | 'running' | 'fail';
   output?: string;
   startLine?: number;
@@ -491,6 +494,7 @@ export function toToolStatusEntry(msg: {
 }): ToolStatusEntry {
   return {
     toolCallId: msg.toolCallId,
+    messageUuid: msg.messageUuid,
     status: msg.status || 'running',
     output: msg.output,
     startLine: msg.startLine,

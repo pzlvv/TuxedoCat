@@ -214,6 +214,23 @@ impl Sandbox {
         std::fs::write(&path, content).expect("write file");
         path
     }
+
+    /// 模拟「模型已经 Read 过这个文件」（specs/038 的读后失效守卫）。
+    ///
+    /// 语义与真实 Read 一致：读一次盘、按**整份原始字节**登记该会话的指纹。只造场景
+    /// 的 `write_file` 不登记——需要 Edit / Write 放行的用例显式调本函数，让「读过」
+    /// 这个事实在用例里看得见。
+    pub fn seed_read(&self, session_id: &str, relative: &str) -> PathBuf {
+        let path = self.workspace.join(relative);
+        let bytes = std::fs::read(&path).expect("read for seed");
+        crate::read_guard::record_read(
+            session_id,
+            &self.workspace.to_string_lossy(),
+            &path,
+            &bytes,
+        );
+        path
+    }
 }
 
 impl Drop for Sandbox {

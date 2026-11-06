@@ -180,23 +180,8 @@ fn rollback_inner(
 
     let mut restored = 0usize;
     for (file_path, content) in files {
-        let full_path = tools::expand_path(&project, &file_path);
-        match content {
-            // beforeContent 为 null 表示文件原本不存在，删除它
-            None => match std::fs::remove_file(&full_path) {
-                Ok(()) => restored += 1,
-                // 已经不存在也算恢复完成
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => restored += 1,
-                Err(_) => {}
-            },
-            Some(text) => {
-                if let Some(parent) = full_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::write(&full_path, text).is_ok() {
-                    restored += 1;
-                }
-            }
+        if restore_before(&project, &file_path, content.as_deref()).is_ok() {
+            restored += 1;
         }
     }
 
@@ -207,6 +192,28 @@ fn rollback_inner(
     };
     let label = if direction == "before" { "before" } else { "after" };
     Ok(format!("Rolled back to {label} the target edit: {detail}"))
+}
+
+/// 把工作区相对路径恢复到给定内容（`None` = 文件原本不存在，删除它）。
+///
+/// 单次 Edit / Write 回滚与对话级回退（specs/039 FR-004）共用的**唯一**写盘实现：
+/// 两者只是「选哪一份 beforeContent」不同，恢复动作本身不复制第二份。
+/// 父目录缺失时先建；「已经不存在」的删除也算成功（幂等）。
+pub(crate) fn restore_before(project: &str, file_path: &str, before: Option<&str>) -> Result<(), String> {
+    let full_path = tools::expand_path(project, file_path);
+    match before {
+        None => match std::fs::remove_file(&full_path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!("remove failed: {err}")),
+        },
+        Some(text) => {
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|err| format!("mkdir failed: {err}"))?;
+            }
+            std::fs::write(&full_path, text).map_err(|err| format!("write failed: {err}"))
+        }
+    }
 }
 
 #[cfg(test)]

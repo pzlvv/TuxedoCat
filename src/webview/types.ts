@@ -132,6 +132,11 @@ export interface Message {
   toolName?: string;
   toolArgs?: Record<string, any>;
   toolCallId?: string;
+  /**
+   * 会话 JSONL 行的 uuid（specs/039 FR-001）：时间线右键「从这里继续」的目标 id。
+   * 缺失（老数据 / once 通知）的节点不可回退，菜单项整体禁用。
+   */
+  messageUuid?: string;
   isCompactSummary?: boolean;
   isCompactCollapsed?: boolean;
   hasBorder?: boolean;

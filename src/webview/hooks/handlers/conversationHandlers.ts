@@ -582,3 +582,20 @@ export function handleConversationExpandCompactDone(
           props.setHasCompactArchive(false);
           props.setIsCompactExpanded(true);
 }
+
+/**
+ * 对话级回退完成（specs/039 FR-006）。
+ *
+ * 截断后的消息序列已由 `messagesReplaced` 整批替换（core 是唯一写入点），这里只做
+ * 两件事：收起确认框、把失败原因交给通知通道（成功时由回执系统消息呈现）。
+ */
+export function handleConversationRewoundDone(
+  msg: Extract<HostToWebviewWire, { type: 'conversationRewoundDone' }>,
+  ctx: HandlerContext,
+): void {
+  if (msg.sessionId !== ctx.sessionId) return;
+  ctx.props.setRewindDialogOpen(false);
+  if (msg.error !== null) {
+    ctx.props.onRewindFailed(msg.error);
+  }
+}

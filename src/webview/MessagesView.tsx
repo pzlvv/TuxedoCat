@@ -18,6 +18,7 @@ import { getPlaceholderLogoUri } from './placeholderLogo';
 import { DecorativeLogo } from './DecorativeLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
+import { rewindAvailability } from './rewindTimeline';
 import { StreamStatsLabel } from './StreamStatsLabel';
 import { uiFontSizePx } from './fontSize';
 import { isAutoMessageOrigin as isAutoOrigin } from '../shared/utils/messageOrigin';
@@ -41,6 +42,7 @@ const TOOL_COMPONENT_MAP: Record<string, React.ComponentType<any>> = {
   'TodoWrite': ToolComponents.TodoWrite,
   'Agent': ToolComponents.Agent,
   'Reply': ToolComponents.ReplyTool,
+  'Transfer': ToolComponents.Transfer,
   'Skill': ToolComponents.Skill,
   'AskUserQuestion': ToolComponents.AskUserQuestion,
   'QueryUserMemory': ToolComponents.QueryUserMemory,
@@ -1539,6 +1541,13 @@ interface MessagesViewProps {
    * once 节点 + 上报 `retryQuery` wire。只在 LLM 失败通知上渲染按钮。
    */
   onRetryQuery?: () => void;
+  /**
+   * 时间线节点的右键「从这里继续」（specs/039 FR-001）：App 侧打开确认框。
+   * 只在节点可回退时被调用——禁用判定在 `rewindAvailability` 里做。
+   */
+  onRewindRequest?: (targetUuid: string) => void;
+  /** 会话是否忙（运行 / 压缩中）：忙时菜单项置灰（spec FR-005） */
+  sessionBusy?: boolean;
 }
 
 /**
@@ -1559,10 +1568,19 @@ const SegmentTimeline = memo(function SegmentTimeline({
   onThinkingToggle,
   onExpandToggle,
   onBeforePreviewRender,
+  onRewindRequest,
+  sessionBusy,
+  lastNodeId,
 }: {
   segmentIndex: number;
   isLastSegment: boolean;
   nonUserMsgs: Message[];
+  /** 整条时间线最后一个节点的 id（spec 039 AC-6：末节点不可回退，跨 segment 判定） */
+  lastNodeId?: string;
+  /** 节点右键「从这里继续」（specs/039）：只有可回退的节点才回调 */
+  onRewindRequest?: (targetUuid: string) => void;
+  /** 会话忙（运行 / 压缩中）：忙时菜单项置灰 */
+  sessionBusy?: boolean;
   showThinkingAnimation: boolean;
   animationMode: 'thinking' | 'compacting';
   colors: Colors;
@@ -1648,7 +1666,15 @@ const SegmentTimeline = memo(function SegmentTimeline({
             : colors.timelineStatusNormal;
 
       return {
-        key: message.toolCallId || `msg-${segmentIndex}-${msgIndex}`,
+        // 节点身份（specs/039 FR-001）：优先用 JSONL 的 uuid（core 认得的回退目标），
+        // 其次工具调用 id，最后才是渲染期下标（仅作 React key，不可回退）
+        key: message.messageUuid || message.toolCallId || `msg-${segmentIndex}-${msgIndex}`,
+        // 工具卡片一律用 toolCallId 作节点身份：实时流式期还没有 JSONL uuid（core 先发
+        // toolCall 后落盘），而 `toolUseId` 与 JSONL 里的 `tool_use.id` 是同一个值，
+        // core 的 `truncate_index` 两种目标都认
+        nodeId: message.role === 'toolcall' ? message.toolCallId : message.messageUuid,
+        // 压缩摘要节点不可回退（spec 039 FR-005）：它是整体替换的产物，之前没有可恢复记录
+        isCompactSummary: message.isCompactSummary === true,
         color: statusColor,
         // 状态点类型：普通圆点与运行中风扇由 CSS 伪元素绘制（不占 DOM 节点），
         // 只有 thinking 涟漪动画需要真实 DOM（见 buildThinkingItem）。
@@ -1679,6 +1705,44 @@ const SegmentTimeline = memo(function SegmentTimeline({
   }
   const allItems = allItemsRef.current;
 
+  // ── 时间线节点右键菜单（specs/039 FR-001）──
+  // 菜单的归属是 webview 自己的状态（UI 决定表现）；这里只记「点在哪个节点上」，
+  // 位置用 fixed 坐标跟随鼠标，关闭靠任意点击 / Esc。
+  const [rewindMenu, setRewindMenu] = React.useState<{
+    x: number; y: number; nodeId: string; isLast: boolean; isCompactSummary: boolean;
+  } | null>(null);
+  const closeRewindMenu = React.useCallback(() => setRewindMenu(null), []);
+  React.useEffect(() => {
+    if (!rewindMenu) return undefined;
+    const onDown = (): void => setRewindMenu(null);
+    const onKey = (event: KeyboardEvent): void => { if (event.key === 'Escape') setRewindMenu(null); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [rewindMenu]);
+
+  /** 右键某个节点：算出可回退性，弹出菜单（禁用项也要弹，理由在 title 里） */
+  const onNodeContextMenu = React.useCallback((
+    event: React.MouseEvent<HTMLLIElement>,
+    item: { nodeId?: string; isCompactSummary?: boolean },
+  ): void => {
+    if (!onRewindRequest) return;
+    const nodeId = item.nodeId;
+    const isLast = nodeId !== undefined && nodeId === lastNodeId;
+    // 不可回退的节点也弹菜单：禁用项列出原因（spec 039 AC-6 / AC-7 要求「置灰并说明」）
+    event.preventDefault();
+    setRewindMenu({
+      x: event.clientX,
+      y: event.clientY,
+      nodeId: nodeId ?? '',
+      isLast,
+      isCompactSummary: item.isCompactSummary === true,
+    });
+  }, [onRewindRequest, sessionBusy, lastNodeId]);
+
   const hasThinkingItem = isLastSegment;
 
   const wrapperClassName = [
@@ -1702,6 +1766,8 @@ const SegmentTimeline = memo(function SegmentTimeline({
         {(allItems ?? []).map((item: any) => (
           <li
             key={item.key}
+            data-node-id={item.nodeId ?? ''}
+            onContextMenu={onRewindRequest ? (event) => onNodeContextMenu(event, item) : undefined}
             className={item.dotKind ? `msg-timeline-item msg-timeline-dot-${item.dotKind}` : 'msg-timeline-item'}
             style={{
               '--msg-timeline-dot-color': item.color,
@@ -1719,6 +1785,56 @@ const SegmentTimeline = memo(function SegmentTimeline({
           </li>
         ))}
       </ol>
+      {rewindMenu ? (
+        <div
+          className="rewind-node-menu"
+          style={{
+            position: 'fixed',
+            left: rewindMenu.x,
+            top: rewindMenu.y,
+            zIndex: 10000,
+            minWidth: 160,
+            padding: '4px 0',
+            borderRadius: 6,
+            fontSize: 12,
+            backgroundColor: colors.bgSecondary,
+            color: colors.textPrimary,
+            border: `1px solid ${colors.border}`,
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)',
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {(() => {
+            const availability = rewindAvailability(
+              rewindMenu.nodeId, rewindMenu.isLast, sessionBusy === true, rewindMenu.isCompactSummary,
+            );
+            return (
+              <button
+                type="button"
+                disabled={!availability.enabled}
+                title={availability.reason ? t(`rewindDisabled.${availability.reason}`) : undefined}
+                onClick={() => {
+                  closeRewindMenu();
+                  if (availability.enabled && rewindMenu.nodeId) onRewindRequest?.(rewindMenu.nodeId);
+                }}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  padding: '6px 12px',
+                  textAlign: 'left',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'inherit',
+                  cursor: availability.enabled ? 'pointer' : 'default',
+                  opacity: availability.enabled ? 1 : 0.5,
+                }}
+              >
+                {t('rewindMenu.continueFromHere')}
+              </button>
+            );
+          })()}
+        </div>
+      ) : null}
     </div>
   );
 }, areSegmentTimelineEqual);
@@ -1739,7 +1855,18 @@ const MessagesView = memo(({
   onExpandCompact,
   onNavigate,
   onRetryQuery,
+  onRewindRequest,
+  sessionBusy,
 }: MessagesViewProps) => {
+/** 整条时间线最后一个可回退节点的 id（spec 039 AC-6：其后没有可删内容时置灰） */
+  const lastTimelineNodeId = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      const id = message.role === 'toolcall' ? message.toolCallId : message.messageUuid;
+      if (id) return id;
+    }
+    return undefined;
+  }, [messages]);
   const fallbackContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? fallbackContainerRef;
 
@@ -2580,6 +2707,9 @@ const MessagesView = memo(({
                           onThinkingToggle={handleContentToggle}
                           onExpandToggle={handleContentToggle}
                           onBeforePreviewRender={handleBeforePreviewRender}
+                          onRewindRequest={onRewindRequest}
+                          sessionBusy={sessionBusy}
+                          lastNodeId={lastTimelineNodeId}
                         />
                       )}
                     </div>

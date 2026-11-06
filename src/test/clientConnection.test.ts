@@ -154,6 +154,7 @@ function createClientHarness(): ClientHarness {
   // 模拟 WebViewUI：先登记 UI 处理器，再打开工作区
   client.onCoreEvents({
     coreReady: () => undefined,
+    conversationRewoundDone: () => undefined,
     message: () => undefined,
     streamMessage: () => undefined,
     streamEnd: () => undefined,

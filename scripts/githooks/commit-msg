@@ -79,6 +79,11 @@ case "$flow" in
       fail 'Flow: L3 需要一行 Spec: <NNN> 指向改动规格编号（三位）。'
     fi
     specDir=$(ls -d "specs/$num"-*/ 2>/dev/null | head -1)
+    # 已收敛的规格整目录归档到 docs/archive/specs/：归档与代码同一提交时 specs/ 下
+    # 已经没有了，回退到归档位置找三件套（否则「收敛 + 提交」永远过不了闸门）
+    if [ -z "$specDir" ]; then
+      specDir=$(ls -d "docs/archive/specs/$num"-*/ 2>/dev/null | head -1)
+    fi
     if [ -z "$specDir" ]; then
       fail "specs/$num-*/ 不存在——L3 的产物是改动规格目录，先按 /spec 起草。"
     fi

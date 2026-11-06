@@ -40,7 +40,9 @@ mod parent_watchdog;
 mod permission;
 mod power;
 mod prompt;
+mod read_guard;
 mod remote;
+mod rewind;
 mod replay;
 mod responses;
 mod rollback;
@@ -1034,10 +1036,104 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 }),
             );
         }
+        "conversationRewound" => {
+            // 时间线节点「从这里继续」（specs/039）：截断该节点之后的消息、回滚区间内
+            // 被 Edit / Write 改过的文件，结果经 `conversationRewoundDone` 回报；
+            // 截断后的消息序列由既有 `messagesReplaced` 整批下发（core 是唯一写入点）。
+            let target_uuid = event
+                .get("targetUuid")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            handle_conversation_rewind(core, &session_id, target_uuid);
+        }
         other => {
             eprintln!("[core] uiEvent: {other}");
         }
     }
+}
+
+/// `UiEvent.conversationRewound` 的处理（specs/039 FR-003 ～ FR-006）。
+///
+/// 会话必须已登记（未打开 → 丢弃并记日志：多视图竞态下的兜底，spec FR-005）。
+fn handle_conversation_rewind(core: &Arc<Core>, session_id: &str, target_uuid: &str) {
+    let Some(state) = core.session_if_exists(session_id) else {
+        eprintln!("[core] rewind skipped: session {session_id} is not open");
+        return;
+    };
+    // 忙守卫（spec FR-005）：运行 / 压缩中的会话拒绝回退，回执说明而不是静默忽略
+    if core.session_is_rewind_blocked(session_id) {
+        emit_rewind_done(core, session_id, target_uuid, Err("conversation is busy; retry when it is idle".to_string()));
+        return;
+    }
+    let outcome = rewind::rewind(session_id, target_uuid, &state);
+    match outcome {
+        Ok(outcome) => {
+            // 截断后的消息整批替换（复用压缩 / 展开归档的同一条通道）
+            let project = match config::project_root(session_id) {
+                Ok(project) => project,
+                Err(error) => {
+                    emit_rewind_done(core, session_id, target_uuid, Err(error));
+                    return;
+                }
+            };
+            // 回执先落盘（作为一条 system 消息，不进 LLM 上下文，spec FR-006）：
+            // 它必须出现在随后的整批替换里，否则用户看不到这次回退的结果
+            let receipt = rewind::receipt_message(&outcome);
+            if let Err(error) = persist_message_for_receipt(core, session_id, &project, &receipt) {
+                eprintln!("[core] rewind receipt not persisted: {error}");
+            }
+            let messages = history::load_messages(session_id, &project);
+            emit(core, json!({
+                "type": "messagesReplaced",
+                "sessionId": session_id,
+                "messages": replay::build_replay_message_data(&messages),
+            }));
+            emit(core, json!({
+                "type": "conversationRewoundDone",
+                "sessionId": session_id,
+                "targetUuid": target_uuid,
+                "removed": outcome.removed,
+                "files": outcome.files.iter().map(|file| json!({
+                    "path": file.path, "ok": file.ok, "error": file.error,
+                })).collect::<Vec<_>>(),
+                "skipped": outcome.skipped,
+                "hadBash": outcome.had_bash,
+                "error": Value::Null,
+            }));
+        }
+        Err(error) => emit_rewind_done(core, session_id, target_uuid, Err(error)),
+    }
+}
+
+/// 回退被拒 / 失败时的统一回报（消息与文件都没有变化）
+fn emit_rewind_done(
+    core: &Arc<Core>,
+    session_id: &str,
+    target_uuid: &str,
+    outcome: Result<(), String>,
+) {
+    let error = outcome.err().unwrap_or_default();
+    emit(core, json!({
+        "type": "conversationRewoundDone",
+        "sessionId": session_id,
+        "targetUuid": target_uuid,
+        "removed": 0,
+        "files": [],
+        "skipped": [],
+        "hadBash": false,
+        "error": error,
+    }));
+}
+
+/// 回退回执落盘：走与普通消息相同的追加路径（`_meta.excludeFromContext` 让它不进上下文）。
+fn persist_message_for_receipt(
+    core: &Arc<Core>,
+    session_id: &str,
+    project: &str,
+    message: &Value,
+) -> Result<(), String> {
+    let state = core.session(session_id);
+    engine::persist_public_message(core, session_id, project, &state, message).map(|_| ())
 }
 
 fn emit(core: &Arc<Core>, event: Value) {

@@ -20,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import projectConfig from '../config/project.json';
+import { isLocalOnlyPath } from './helpers/docPathExistence';
 import { createChecker, runTests } from './helpers/harness';
 
 /** 仓库根：编译产物在 `out/src/test/`，往上三层 */
@@ -97,14 +98,35 @@ function brandVariants(...names: readonly string[]): string[] {
   return [...variants];
 }
 
+/**
+ * 仓库顶层里「按设计不入库」的目录名（判据只看 `.gitignore`，不另维护白名单）。
+ *
+ * 只在**顶层**判定一次：递归再判定会让每个子目录都起一个 `git check-ignore` 进程
+ * （本机实测 7s+）；顶层已豁免的目录整棵不进扫描，子目录必然也在忽略范围内。
+ * 文件级不豁免——被忽略的单文件（如 `e2e/environments.json`）照常扫，宁可多报。
+ */
+function localOnlyTopLevelDirs(): Set<string> {
+  const dirs = fs
+    .readdirSync(REPO_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  return new Set(dirs.filter((name) => isLocalOnlyPath(name)));
+}
+
 /** 收集仓库里的全部文本文件（相对 POSIX 路径 + 绝对路径） */
-function collectTextFiles(dir: string, out: Array<{ rel: string; abs: string }>): void {
+function collectTextFiles(
+  dir: string,
+  out: Array<{ rel: string; abs: string }>,
+  localOnlyDirs: Set<string>,
+): void {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const abs = path.join(dir, entry.name);
     const rel = path.relative(REPO_ROOT, abs).split(path.sep).join('/');
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      collectTextFiles(abs, out);
+      // 本机草稿目录（`exp/` 之类）不在仓库里，扫它只会让「本机有没有草稿」决定用例红绿
+      if (path.dirname(rel) === '.' && localOnlyDirs.has(entry.name)) continue;
+      collectTextFiles(abs, out, localOnlyDirs);
       continue;
     }
     if (!entry.isFile()) continue;
@@ -160,7 +182,7 @@ function run(): void {
   check('品牌变体非空', variants.length > 0);
 
   const files: Array<{ rel: string; abs: string }> = [];
-  collectTextFiles(REPO_ROOT, files);
+  collectTextFiles(REPO_ROOT, files, localOnlyTopLevelDirs());
   check('扫到了源文件（目录遍历正常）', files.length > 100);
 
   const hits: string[] = [];
