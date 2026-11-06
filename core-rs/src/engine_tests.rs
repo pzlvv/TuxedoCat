@@ -4263,6 +4263,110 @@ fn write_permission_request_carries_the_preview_fields() {
     );
 }
 
+/// Edit 的 diff `_meta` 由 **Core** 落盘（会话 JSONL 的唯一写入点是 Core）：
+/// 假宿主不做任何磁盘写入，回放出来的 tool_use block 仍要带
+/// `beforeContent` / `afterContent` / `startLine`，回滚据此能还原文件。
+#[test]
+fn edit_diff_meta_is_persisted_by_core() {
+    let sandbox = Sandbox::new("engine-edit-diff-meta");
+    std::fs::write(sandbox.workspace.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "Edit",
+                r#"{"file_path":"a.txt","old_string":"beta","new_string":"BETA"}"#,
+            )
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
+        "toolPermissionRequested" => Some(request["permResult"].clone()),
+        _ => Some(json!({})),
+    });
+    submit(&harness, "s1", "改一下", "u-1");
+    assert!(harness.wait_query_end());
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let messages = crate::history::load_messages("s1", &project);
+    let block = messages
+        .iter()
+        .flat_map(|message| {
+            message
+                .get("message")
+                .and_then(|inner| inner.get("content"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .expect("assistant tool_use block");
+    let meta = block.get("_meta").expect("tool_use._meta");
+    assert_eq!(meta["beforeContent"], "alpha\nbeta\ngamma\n");
+    assert_eq!(meta["afterContent"], "alpha\nBETA\ngamma\n");
+    assert_eq!(meta["startLine"], 2);
+    assert_eq!(meta["endLine"], 2);
+
+    // 回滚依赖这份备份：改回原文
+    let message = crate::rollback::rollback_edit("s1", "call_1", "before", None);
+    assert!(message.contains("restored 1 file"), "回滚应成功：{message}");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
+        "alpha\nbeta\ngamma\n"
+    );
+}
+
+/// Write 新建文件时 `beforeContent` 落成 JSON `null`：回滚据此**删除**文件
+/// （空串表示「原有内容为空串」，语义不同）。
+#[test]
+fn write_new_file_diff_meta_records_null_before() {
+    let sandbox = Sandbox::new("engine-write-diff-meta");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "Write",
+                r#"{"file_path":"new.txt","content":"hello\n"}"#,
+            )
+        } else {
+            openai_text_sse(&["好的"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+
+    let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
+        "toolPermissionRequested" => Some(request["permResult"].clone()),
+        _ => Some(json!({})),
+    });
+    submit(&harness, "s1", "写个文件", "u-1");
+    assert!(harness.wait_query_end());
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let messages = crate::history::load_messages("s1", &project);
+    let block = messages
+        .iter()
+        .flat_map(|message| {
+            message
+                .get("message")
+                .and_then(|inner| inner.get("content"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .expect("assistant tool_use block");
+    let meta = block.get("_meta").expect("tool_use._meta");
+    assert!(
+        meta.get("beforeContent").is_some(),
+        "beforeContent 必须落盘（null 也要写）：{meta:?}"
+    );
+    assert!(meta["beforeContent"].is_null(), "新建文件记 null");
+    assert_eq!(meta["afterContent"], "hello\n");
+}
+
 /// 默认 checkPermissions 回传的 `updatedInput`
 /// 是 zod 规范化产物；与当前内存入参不同（如 `offset: "2"` 被 coerce 成 `2`）时，
 /// 追加一条 `tool_use_update`，保证历史恢复后拿到规范化入参。

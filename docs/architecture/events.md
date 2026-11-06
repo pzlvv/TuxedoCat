@@ -230,7 +230,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 26 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
 | 27 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
 
-**`changes` 数组而不是可选字段**：`history.updateConversationContext` 是**部分合并**语义
+**`changes` 数组而不是可选字段**：Core 的 `history.update_context` 是**部分合并**语义
 （未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
 （如 `currentFile` + `selectedLines`）和「不用 `?`」。
 
@@ -400,7 +400,7 @@ core 侧没有对应的直接注入入口；宿主 locale 只在宿主进程内�
 **请求超时约定**：`request()` 本身不实现超时（总线保持纯路由）；core 阻塞等待应答的只有 `userChoice` 与 `crossWorkspaceAgentRequested`（后者无应答按派发报错收敛）：
 
 - `toolPermissionRequested`：**发后不等**——执行 / 拒绝 / 弹框按 core 本地 PermissionPolicy 的结果决定，宿主应答只承载
-  展示同步（卡片上架、`_meta`、manual 宿主 diff），迟到 / 缺失不影响执行
+  展示同步（卡片上架、manual 宿主 diff；Edit / Write 的 diff `_meta` 由 Core 在权限判定后自己落盘），迟到 / 缺失不影响执行
   （[specs/defects/orphan-stalls-on-permission-roundtrip](../../specs/defects/orphan-stalls-on-permission-roundtrip.md)）；
   这是「后台运行」（[specs/031](../archive/specs/031-remote-detached-tasks/spec.md)）能持续推进的前提。
 - `userChoice`：core 阻塞等待应答，不额外加超时；靠 `UserChoiceQueue` 的 pending 补偿（webview 重建后重新弹出）；

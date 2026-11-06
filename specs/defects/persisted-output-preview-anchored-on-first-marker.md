@@ -55,7 +55,7 @@ status: 已修
   ```
 
   正文里出现结尾标签时更严重（`node /tmp/probe_persisted3.cjs`，预览内容取自
-  `src/shared/tools/toolResultStorage.ts` 的两行常量声明）：
+  `src/webview/persistedOutputParse.ts` 的两行常量声明）：
 
   ```
   preview in: "...CLOSING_TAG = '</persisted-output>';...TAG = '<persisted-output>';"
@@ -63,7 +63,7 @@ status: 已修
   match: false
   ```
 
-  第三组输入就是本仓库自己的源码：`cat src/shared/tools/toolResultStorage.ts`（里面有两个
+  第三组输入就是本仓库自己的源码：`cat src/webview/persistedOutputParse.ts`（里面有两个
   标签字面量常量）超过 4K 后落盘、卡片里只显示到第一个 `'` 为止。
 
 - 影响面：`Bash` 卡片（`src/webview/tools/Bash.tsx`）与 assistant 长文本
@@ -77,15 +77,13 @@ status: 已修
 2. **尾部标签取最后一个**：正文里出现 `</persisted-output>` 字面量时，结尾仍应是消息
    真正的收尾标签。
 3. **路径与正文原样保留**：路径里含 `Preview`、正文里含两个标签字面量时，解析结果
-   与写入方（`buildLargeToolResultMessage` / Rust 的 `build_large_tool_result_message`）
-   写进去的内容逐字一致。
+   与写入方（Core 的 `build_large_tool_result_message`）写进去的内容逐字一致。
 4. **格式不变**：`<persisted-output>` 消息的生成侧不动（TS 与 Rust 两侧都不改）。
 
 ## 不变量
 
-- 消息格式与生成侧不变：`src/shared/tools/toolResultStorage.ts` 的
-  `buildLargeToolResultMessage` 与 `core-rs/src/tools.rs` 的
-  `build_large_tool_result_message` 一个字都不改。
+- 消息格式与生成侧不变：`core-rs/src/tools.rs` 的
+  `build_large_tool_result_message` 一个字都不改（会话落盘的写入方只有 Core）。
 - `parsePersistedOutput` 的返回形状不变（`isPersisted` / `originalSize` / `filePath` / `preview`）。
 - 正常输入（路径与正文都不含保留字）的解析结果逐字不变。
 - `isPersistedOutput` 的判定口径不变；不含完整标签对的内容仍返回 `null`。

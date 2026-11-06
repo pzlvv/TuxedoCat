@@ -13,13 +13,12 @@ import kotlinx.serialization.json.put
 /**
  * 工具处理（对齐 src/host/ui/toolHandler.ts 的「展示」职责，权限加工全在 core 的
  * PermissionPolicy）：上架卡片、Edit/Write 的 diff 快照暂存、manual 模式的 IDE diff、
- * 运行/失败状态更新、`_meta` 追加写（append-only 落盘）。
+ * 运行/失败状态更新。会话落盘（含 `_meta`）由 Core 独占，宿主不写会话文件。
  */
 class ToolHandler(
     private val postToWebview: (sessionId: String, message: JsonObject) -> Unit,
     private val userChoiceManager: UserChoiceManager,
     private val diffService: pycharm.host.ide.DiffService,
-    private val writeToolMeta: (sessionId: String, toolUseId: String, meta: JsonObject) -> Unit,
     private val log: (String) -> Unit,
 ) {
 
@@ -72,18 +71,8 @@ class ToolHandler(
             )
         }
 
-        // 异步追加写入 block 顶层 _meta（append-only；只服务 UI 的 diff 展示与回滚）
-        if (hasPermDiff) {
-            val meta = buildJsonObject {
-                put("beforeContent", userChoiceManager.currentBeforeContent)
-                put("afterContent", userChoiceManager.currentAfterContent)
-                put("contextBefore", JsonArray(userChoiceManager.currentContextBefore.map { JsonPrimitive(it) }))
-                put("contextAfter", JsonArray(userChoiceManager.currentContextAfter.map { JsonPrimitive(it) }))
-                userChoiceManager.currentStartLine?.let { put("startLine", it) }
-                userChoiceManager.currentEndLine?.let { put("endLine", it) }
-            }
-            writeToolMeta(sessionId, toolUseId, meta)
-        }
+        // `_meta` 的 before/after 由 Core 在权限判定后自己落盘（会话 JSONL 的唯一写入点
+        // 是 Core，specs/defects/host-appends-session-jsonl.md）；宿主这里只做展示。
         return permResult
     }
 

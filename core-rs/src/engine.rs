@@ -2651,8 +2651,8 @@ impl Core {
         cwd: &str,
     ) -> PermissionOutcome {
         // 无论 allow / deny / ask，都先发一次
-        // `toolPermissionRequested`（UI 借此上架工具卡片、写 Edit / Write 的 `_meta`、
-        // 在 manual 模式下打开宿主 diff）；执行 / 拒绝 / 弹框按**本地** behavior 决定，
+        // `toolPermissionRequested`（UI 借此上架工具卡片、在 manual 模式下打开宿主 diff）；
+        // 执行 / 拒绝 / 弹框按**本地** behavior 决定，
         // 不等宿主回包——回包历来是纯回显（决策全部由 PermissionPolicy 本地算出），
         // 阻塞等它只会让孤儿（后台运行，specs/031）期间的会话冻结在权限往返上
         // （specs/defects/orphan-stalls-on-permission-roundtrip.md）。
@@ -2668,6 +2668,7 @@ impl Core {
             agent_mode,
             perm_result.get("behavior").and_then(Value::as_str).unwrap_or("?")
         ));
+        record_tool_diff_meta(session_id, cwd, tool_use_id, tool_name, &perm_result);
         self.request_tool_permission(
             session_id,
             tool_use_id,
@@ -2706,8 +2707,8 @@ impl Core {
 
     /// `CoreRequest.toolPermissionRequested`：UI 上架工具卡片——**发后不等**
     ///
-    /// 这段请求只承载展示同步（上架卡片、写 Edit / Write 的 `_meta`、manual 下打开宿主
-    /// diff），core 不以宿主应答为执行前置：回包历来是纯回显（`ToolHandler` 原样返回
+    /// 这段请求只承载展示同步（上架卡片、manual 下打开宿主 diff），core 不以宿主应答
+    /// 为执行前置：回包历来是纯回显（`ToolHandler` 原样返回
     /// permResult，决策全部由 PermissionPolicy 本地算出），阻塞等它只会让孤儿
     /// （后台运行，specs/031）期间的会话冻结在权限往返上
     /// （specs/defects/orphan-stalls-on-permission-roundtrip.md）。
@@ -2825,7 +2826,7 @@ impl Core {
     /// 发一次「宿主只是展示」的请求，**发后不等**
     ///
     /// 只接受 `HostRenderRequest`：给「core 不取应答」的请求用
-    /// （`toolPermissionRequested`：上架工具卡片、写 Edit / Write 的 `_meta`、manual 下
+    /// （`toolPermissionRequested`：上架工具卡片、manual 下
     /// 打开宿主 diff）——宿主的应答回来时总线查不到 pending 条目，静默丢弃。
     /// 这段请求不算「等用户」、不改变会话的 `waiting`：
     /// `docs/core/session-runtime.md` 第 1 节。
@@ -6211,6 +6212,69 @@ fn build_assistant_message(
         "uuid": util::unique_id("assistant"),
         "timestamp": now,
     })
+}
+
+/// Edit / Write 的 diff 备份落进 tool_use 的 `_meta`（会话 JSONL 的唯一写入点是 Core）。
+///
+/// 权限判定拿到的 `permResult` 里带 `beforeContent` / `afterContent` 等展示字段
+/// （`permission::resolve_tool_permission` 在 ask 与自动放行两条路径上都保留），
+/// 这里把它们追加成一条 `tool_use_update` 记录：回滚（`rollback.rs`）与历史恢复
+/// 都按同一份记录取值，宿主不再碰会话文件（specs/defects/host-appends-session-jsonl.md）。
+///
+/// `beforeContent` 为 `null` 表示「文件原本不存在」（Write 新建），必须原样落成
+/// JSON `null`——空串是「原有内容为空串」，两者回滚语义不同。
+fn record_tool_diff_meta(
+    session_id: &str,
+    project: &str,
+    tool_use_id: &str,
+    tool_name: &str,
+    perm_result: &Value,
+) {
+    if tool_name != "Edit" && tool_name != "Write" {
+        return;
+    }
+    let Some(diff) = perm_result.get("beforeContent") else {
+        return;
+    };
+    let mut meta = Map::new();
+    meta.insert("beforeContent".to_string(), diff.clone());
+    meta.insert(
+        "afterContent".to_string(),
+        perm_result
+            .get("afterContent")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .unwrap_or_else(|| json!("")),
+    );
+    meta.insert(
+        "contextBefore".to_string(),
+        perm_result
+            .get("contextBefore")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    );
+    meta.insert(
+        "contextAfter".to_string(),
+        perm_result
+            .get("contextAfter")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    );
+    for key in ["startLine", "endLine"] {
+        if let Some(value) = perm_result.get(key).filter(|value| !value.is_null()) {
+            meta.insert(key.to_string(), value.clone());
+        }
+    }
+    // 落盘是同步 I/O：失败只记日志，不影响权限判定与工具执行（铁律 1 的
+    // 「设计允许的瞬时状态」——会话文件写不进去时工具本身照样跑）。
+    if let Err(err) = history::append_tool_use_update(
+        session_id,
+        project,
+        tool_use_id,
+        &json!({ "meta": Value::Object(meta) }),
+    ) {
+        eprintln!("[engine] record tool diff meta failed: {err}");
+    }
 }
 
 fn message_text(message: &Value) -> String {

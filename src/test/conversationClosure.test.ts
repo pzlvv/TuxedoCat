@@ -1,8 +1,9 @@
 /**
  * collectConversationClosure 单测（docs/hosts/host-matrix.md）：
  * 「受影响闭包」= 自身 + 所有层级的子孙对话（沿 parentSessionId 传递闭包）。
- * core 的 deleteConversation 与宿主关视图用同一条规则。
- * 运行方式：npm run test:all -- conversation-closure
+ * Core 的 conversationDeleted 删盘与宿主关视图用同一条规则
+ * （`docs/architecture/principles.md` 第 7 节的 owner 表）。
+ * 运行方式：npm run test:unit -- conversation-closure
  */
 
 import * as assert from 'assert';

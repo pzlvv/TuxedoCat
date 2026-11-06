@@ -4696,9 +4696,10 @@ async function closeConversationWithConfirm(sessionId: string): Promise<void> {
  * 宿主只负责「关视图」：对受影响闭包里**已打开**的视图逐个调 WebViewUI.closeConversation
  * （卸内存 + 销毁视图，5.5 节约定顺序）——没打开的会话没有视图可关，也不该发
  * conversationClosed（按会话路由不到归属，多 Connection 下抛错会中断删除）。
- * 闭包由 core 的 collectConversationClosure 算出——与 deleteConversation 同一条规则，
- * 不再在宿主里重写一遍；删盘与列表广播由 core 的 conversationDeleted 订阅
- * （deleteConversation → conversationListChanged）承担。
+ * 闭包用共享纯函数 `collectConversationClosure` 算（与 Core 的删除规则同一条，
+ * 不再在宿主里重写一遍），列表本身经 `UiRequest.conversationListRequested` 向 Core 取——
+ * 宿主不直接读 Core 的磁盘数据；删盘与列表广播由 Core 的 `conversationDeleted` 订阅
+ * （`deleteConversation` → `conversationListChanged`）承担。
  * 删掉的是当前视图时，关视图后的善后（另开一个新对话视图）由
  * ChatViewManager.switchAwayFromClosedSession 完成。
  */
@@ -4710,12 +4711,14 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
   // 必须在下面删除索引条目之前取，否则 root 自身的映射已被移除。
   const deleteWs = sessionWorkspaces.get(sessionId);
   if (deleteWs) void registerCoreSessionWorkspace(sessionId, deleteWs);
-  const { loadConversationList, collectConversationClosure } = await import('../src/shared/history/index.js');
-  // 按该会话自己的工作目录读列表：删除的对话可能不在当前活动工作目录
-  const affected = collectConversationClosure(
-    sessionId,
-    await loadConversationList(sessionWorkspaces.get(sessionId)),
-  );
+  const { collectConversationClosure } = await import('../src/shared/history/index.js');
+  // 按该会话自己的工作目录向 Core 取列表（宿主不直接读 core 的磁盘数据），
+  // 再用同一份纯函数算闭包：删除的对话可能不在当前活动工作目录。
+  const list = await requireEventBus().requestCore({
+    type: 'conversationListRequested',
+    workspacePath: sessionWorkspaces.get(sessionId),
+  });
+  const affected = collectConversationClosure(sessionId, list);
   for (const sid of affected) {
     // 只有打开着的视图需要关：闭包里的子会话可能从未在本进程打开过，没有可卸资源，
     // 关它会发一条按会话路由不到的 conversationClosed（多 Connection 下 Client 查不到
@@ -4727,7 +4730,6 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
     sessionWorkspaces.delete(sid);
   }
   // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
-  const { requireEventBus } = await import('../src/shared/AssistantEventBus.js');
   requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
 }
 

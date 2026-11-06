@@ -97,8 +97,9 @@ last_reviewed: 2026-10-31
 `userChoicePendingChanged`；每会话至多一个等待确认，新请求顶替旧请求（旧 Promise 以
 「被顶替」错误结束）；会话未 open 保留 pending、open / 会话加载时重投；会话关闭按补偿
 语义拒答（core 不悬挂）。应答形状 `{kind:'permission'; index; reply}` /
-`{kind:'question'; answers}`。工具卡片与 `_meta` 追加写（会话 jsonl 的宿主侧读取 /
-写入按 `src/shared/history/` 格式，fixture 测试锁定）。
+`{kind:'question'; answers}`。工具卡片由宿主上架；Edit / Write 的 diff `_meta` 由 Core
+落盘，宿主只读（`requestToolMeta` 的数据面按 `src/shared/history/` 的格式解析，
+fixture 测试锁定）。
 
 ## 5. 分发包与 e2e 车道
 

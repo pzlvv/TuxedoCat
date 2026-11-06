@@ -483,8 +483,8 @@ pub fn reset_session_overrides() {
 }
 
 fn persist_session_mcp(session_id: &str, enabled: &[String]) {
-    // `updateConversationContext` 内部用 `getProjectRoot(sessionId)`，拿不到就抛错；
-    // `persistSessionMcp` 把该异常吞掉并记一条 info 日志。
+    // 会话没有工作目录时解析不出对话目录：记一条诊断并跳过（配置先于工作目录登记的
+    // 瞬时状态，铁律 1 允许的 no-op）。
     let Ok(project) = config::project_root(session_id) else {
         eprintln!("[core] mcp: 会话 {session_id} 的 MCP 设置暂未写入 meta.json: 无工作目录");
         return;

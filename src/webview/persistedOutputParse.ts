@@ -41,7 +41,7 @@ const PREVIEW_HEADER = /^Preview \(first \d+K \+ last \d+K\):$/;
  *
  * 定位必须按**行**而不是「第一个命中的子串」：路径与正文都来自工具输出，
  * 完全可能包含 `Preview` 这个词或两个标签的字面量（例如 `cat` 本仓库的
- * `toolResultStorage.ts`），按子串定位会从错误位置切开预览
+ * `persistedOutputParse.ts`），按子串定位会从错误位置切开预览
  * （specs/defects/persisted-output-preview-anchored-on-first-marker.md）。
  */
 export function parsePersistedOutput(output: string): ParsedPersistedOutput | null {

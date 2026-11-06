@@ -58,14 +58,17 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 远程工作区文件监听注销 | `UiRequest.unwatchWorkspaceFileRequested`（`watchId` + `workspacePath`；未知 id 幂等） |
 | 远程工作区文件变化 | `CoreEvent.workspaceFileChanged`（只带 `watchId` / `path` / `kind` / `mtimeMs` / `size` / `error`，不带文件内容；宿主经 SFTP 读内容） |
 
-例外（与本机 Core 共用同一份磁盘，远程工作区落地时需要迁到 `UiRequest`）。Spin 设计器
-曾直接读宿主本地磁盘，已迁到 `spinDesignRequested` / `spinDesignSaveRequested`；例外表
-只剩以下两项：
+例外（宿主进程内自持、不属于 core 事实，也不触碰会话落盘）。会话数据（meta.json /
+JSONL / 压缩归档 / 项目清单）的写入只有 Core 一个写入点；宿主侧剩下的越过总线的访问
+只有下面一项：
 
-| 事实 | 宿主侧读取 | 说明 |
+| 事实 | 宿主侧访问 | 说明 |
 | --- | --- | --- |
 | 会话工作目录索引 | `src/shared/history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace` | 宿主侧另存一份 `sessionId → workspacePath`，只用于「发事件前取会话自己的目录」；权威表在 Core 进程内，由 `sessionWorkspaceAssigned` 同步 |
-| 工具 `_meta` 的 before/after | `ToolHandler` → `updateToolUseMeta` | 权限确认时追加写入会话 JSONL；与 Core 的写入共用同一份磁盘 |
+
+工具 `_meta` 的 before/after 由 Core 在权限判定后写进会话 JSONL（`record_tool_diff_meta`）：
+`toolPermissionRequested` 仍携带 `permResult` 的 diff 字段供 webview 渲染与 manual 模式
+下的宿主 diff，但宿主不再落盘。
 
 以下事实不属于「core 事实」，归 UI 自己：
 
@@ -138,8 +141,8 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 2. UI 进程不加载 core 的引擎、工具与历史实现（core 侧职责全部在 Core 进程内）。
 3. 帧载荷字段与 `src/shared/AssistantEventBus.ts` 的类型逐项一致。
 4. 用户消息 → 流式回复 → 工具执行的完整回路可用。
-5. 会话数据落盘格式与宿主侧 `src/shared/history/` 读写库一致（同一份格式两个读写方，
-   由 Rust 测试对照表锁定）。
+5. 会话数据（含工具 `_meta`）的写入只在 Core 侧发生：宿主侧不再有会话文件的写 API，
+   落盘格式由 Rust 测试对照表锁定，宿主侧 `src/shared/history/` 只剩元数据类型与删除闭包。
 6. 全局配置与 MCP 配置的写入只在 UI 侧发生；Core 侧不存在这两个文件的路径与读写。
 7. 项目清单 `workspace.meta.json` 的写入只在 Core 侧发生。
 8. Core 处理完 `hostEnvironmentProvided`（含配置快照）前收到 `UiEvent` 记 log 拒绝；

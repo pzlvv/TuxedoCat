@@ -3,7 +3,7 @@
  *
  * 守护的是「大输出落盘后，卡片里的预览与写入方写进去的内容逐字一致」：
  * 路径与正文都来自工具输出，完全可能含有 `Preview` 这个词或两个标签的字面量
- * （`cat` 本仓库的 `toolResultStorage.ts` 就是实例）。解析器若按「第一个命中的
+ * （`cat` 本仓库的 `persistedOutputParse.ts` 就是实例）。解析器若按「第一个命中的
  * 子串」定位，预览会从错误位置切开——框里少一截正文、多一行表头，
  * 而没有任何错误提示（specs/defects/persisted-output-preview-anchored-on-first-marker.md）。
  *
@@ -15,10 +15,10 @@ import { isPersistedOutput, parsePersistedOutput } from '../webview/persistedOut
 import { createChecker, runTests } from './helpers/harness';
 
 /**
- * 按生成侧（`buildLargeToolResultMessage`）的格式拼一条持久化输出消息。
+ * 按生成侧（`build_large_tool_result_message`）的格式拼一条持久化输出消息。
  *
- * 逐字对齐 `src/shared/tools/toolResultStorage.ts` 的写入形态与
- * `core-rs/src/tools.rs` 的 `build_large_tool_result_message`。
+ * 逐字对齐 `core-rs/src/tools.rs` 的 `build_large_tool_result_message`
+ * （会话落盘的写入方只有 Core，TS 侧不再有生成实现）。
  */
 function buildPersistedOutput(
   filePath: string,

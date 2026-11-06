@@ -86,7 +86,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 是 UI 自己的状态。
 
 对话列表缓存按工作目录分桶：每个工作目录各有一份磁盘列表缓存，切换活动项不互相清空。
-读取列表的入口接收显式工作目录参数（`loadConversationList(workspacePath)`）。
+读取列表的入口接收显式工作目录参数（`loadConversationListForHost(workspacePath)`）。
 
 ### 4.3 宿主会话工作目录索引（Electron 主进程）
 
@@ -484,7 +484,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 | 终端 SSH shell 通道 | `src/host/standalone/sshClient.ts` 的 `openShell`；连接复用 `electron/sidebarFilesRemote.ts` 的 `sharedClientFor` |
 | 终端页面 | `electron/terminal/`（vite 入口 `vite.terminal.config.ts` → `dist/terminal`）；preload `electron/terminalPreload.ts` |
 | 终端 e2e | `e2e/terminal/terminalUi.spec.ts`（假通道驱动真实页面，project `terminal-ui`） |
-| 对话列表加载 | `src/host/coreFacts.ts` 的 `loadConversationListForHost`（`UiRequest.conversationListRequested`；落盘读取库 `src/shared/history/Conversation.ts` 服务宿主侧例外） |
+| 对话列表加载 | `src/host/coreFacts.ts` 的 `loadConversationListForHost`（`UiRequest.conversationListRequested`；宿主不直接读 Core 的磁盘数据） |
 | 对话元数据 | `src/shared/history/Conversation.ts` 的 `ConversationMetadata.project` |
 | 项目根解析 | 宿主侧索引 `src/shared/history/Config.ts` 的 `getSessionWorkspace` / `setSessionWorkspace`（权威表在 Core 进程内：目录是对话的属性） |
 | 宿主工作目录传递 | `src/host/ui/webviewMessageHandler.ts` 的 `ensureSessionWorkspace`：新建 / 加载对话时按来源视图登记会话工作目录；`src/host/UIHost.ts` 的 `WorkspaceProvider.getWorkspacePath` 提供宿主当前目录（对话列表、Spin 设计器消费） |
