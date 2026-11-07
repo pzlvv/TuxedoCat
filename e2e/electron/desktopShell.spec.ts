@@ -375,6 +375,67 @@ test('US-37 最近工作区列表过滤失效目录，关闭后可从最近重�
   await fs.promises.rm(named, { recursive: true, force: true }).catch(() => undefined);
 });
 
+test('桌面端主菜单「关闭所有空闲对话」跨全部打开工作区关闭空闲对话、标签保留', async () => {
+  // 两个工作区各跑一轮（都回到空闲），再从活动工作区 A 的主菜单点「关闭所有空闲对话」：
+  // 两个工作区里已打开的对话视图都被关掉，工作区标签保留（范围是打开集合，不是活动
+  // 工作区）。判定与逐会话确认复用标签页右键的同名动作（见 docs/hosts/workspace-close-menus.md）。
+  await app.close();
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const aDir = await makeWorkspace({ 'a.md': 'A' }, 'e2e-menu-idle-a');
+  const bDir = await makeWorkspace({ 'b.md': 'B' }, 'e2e-menu-idle-b');
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: aDir,
+    openWorkspaces: [aDir, bDir], activeWorkspace: aDir,
+  });
+  try {
+    const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+    await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+    // 各工作区发一轮：先 A（初始活动项），切到 B 再发一轮，最后切回 A
+    const sendTurn = async (ws: string): Promise<void> => {
+      const chat = await app.chatPage({ workspaceIncludes: ws });
+      await expect(chat.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+      await chat.fill('textarea.input-textarea', `在 ${ws} 里跑一轮`);
+      await chat.press('textarea.input-textarea', 'Enter');
+      await expect(chat.getByText(/收到：/).first()).toBeVisible({ timeout: 60_000 });
+    };
+    const sidebar = await app.sidebarPage();
+    const loadedDots = sidebar.locator('#list .item[data-session-id] .loaded-dot');
+
+    await sendTurn('e2e-menu-idle-a');
+    await expect(loadedDots.first()).toBeVisible({ timeout: 30_000 });
+
+    await tabs.filter({ hasText: 'e2e-menu-idle-b' }).click();
+    await expect(tabs.filter({ hasText: 'e2e-menu-idle-b' })).toHaveAttribute('aria-selected', 'true');
+    await sendTurn('e2e-menu-idle-b');
+    await expect(loadedDots.first()).toBeVisible({ timeout: 30_000 });
+
+    await tabs.filter({ hasText: 'e2e-menu-idle-a' }).click();
+    await expect(tabs.filter({ hasText: 'e2e-menu-idle-a' })).toHaveAttribute('aria-selected', 'true');
+
+    // 主菜单条目存在且不是置灰态（主菜单页按建菜单时快照生成，忙闲变化不重建）
+    const menu = await openMenuAndGetPage();
+    const idleItem = menu.locator('.item[data-id="main.closeAllIdleConversations"]');
+    await expect(idleItem).toContainText('关闭所有空闲对话', { timeout: 5_000 });
+    await expect(idleItem).not.toHaveClass(/disabled/);
+
+    // 点它：A 的已打开对话被关掉（loaded 集合清空，活动视图换到新对话）
+    await idleItem.click();
+    await expect(loadedDots).toHaveCount(0, { timeout: 30_000 });
+    await expect(tabs).toHaveCount(2);
+
+    // B 的已打开对话同样被关掉（跨工作区生效），工作区标签保留
+    await tabs.filter({ hasText: 'e2e-menu-idle-b' }).click();
+    await expect(loadedDots).toHaveCount(0, { timeout: 30_000 });
+    await expect(tabs).toHaveCount(2);
+    // 关掉的是对话视图，不是工作区：聊天区仍可用
+    await expect((await app.chatPage()).locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+  } finally {
+    await fs.promises.rm(aDir, { recursive: true, force: true }).catch(() => undefined);
+    await fs.promises.rm(bDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test('US-39+US-27 Spin 设计器：命令与菜单两入口打开；内置命令不进 LLM', async () => {
   const chatPage = await app.chatPage();
 

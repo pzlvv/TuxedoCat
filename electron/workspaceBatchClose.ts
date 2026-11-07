@@ -47,6 +47,29 @@ export function selectClosableIdleSessions(sessions: readonly WorkspaceSessionFa
   return sessions.filter((session) => !session.busy).map((session) => session.sessionId);
 }
 
+/** 主菜单「关闭所有空闲对话」的候选事实：已打开会话视图 + 所属工作区 + 忙闲 */
+export interface OpenWorkspaceSessionFacts extends LoadedSessionFacts {
+  /** 判定时刻该会话是否忙碌（口径同 `WorkspaceSessionFacts.busy`） */
+  busy: boolean;
+}
+
+/**
+ * 主菜单「关闭所有空闲对话」的可关清单：范围是**整个打开集合**——只收打开集合里
+ * 工作区的已打开会话视图（视图可能属于刚被关闭、尚未清理的工作区），忙碌不动。
+ * 返回空数组表示点击是 no-op：主菜单条目恒可用（菜单页按建菜单时刻缓存，运行时
+ * 状态变化不重建；按快照置灰会留下「已空闲但仍灰着」的陈旧态，见
+ * docs/hosts/workspace-close-menus.md）。
+ */
+export function selectClosableIdleSessionsAcrossWorkspaces(
+  sessions: readonly OpenWorkspaceSessionFacts[],
+  openWorkspaceIds: readonly string[],
+): string[] {
+  const open = new Set(openWorkspaceIds);
+  return sessions
+    .filter((session) => open.has(session.workspaceId) && !session.busy)
+    .map((session) => session.sessionId);
+}
+
 /** 其余工作区的事实项 */
 export interface OtherWorkspaceFacts {
   id: string;

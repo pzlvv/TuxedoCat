@@ -6,6 +6,7 @@
  *   只出现在磁盘对话列表、没打开过的会话不进候选（没有可卸资源，关它只会发一条
  *   路由不到的 conversationClosed）；
  * - 候选内忙碌不动、**当前选中的对话空闲也包含在内**；
+ * - 主菜单「关闭所有空闲对话」跨**全部打开工作区**，只收这些工作区里已打开的会话；
  * - 「关闭其它所有工作区」＝任一他区忙碌需**一次**汇总确认、取消则全部不动；
  * - 置灰判据＝无可关会话 / 无其它工作区时清单为空（菜单项 enabled: false）。
  *
@@ -14,6 +15,7 @@
 
 import {
   selectClosableIdleSessions,
+  selectClosableIdleSessionsAcrossWorkspaces,
   selectWorkspaceLoadedSessions,
   summarizeOtherWorkspaces,
 } from '../../electron/workspaceBatchClose';
@@ -57,6 +59,32 @@ runTests('workspaceBatchClose', () => {
   // 全部忙碌（含等待用户）时无可关会话：清单为空 → 菜单项置灰
   check('全部忙碌时清单为空', selectClosableIdleSessions([facts('a', true), facts('b', true)]).length === 0);
   check('无会话时清单为空', selectClosableIdleSessions([]).length === 0);
+
+  // ---------- selectClosableIdleSessionsAcrossWorkspaces ----------
+  // 主菜单「关闭所有空闲对话」跨打开集合：每个打开工作区的空闲会话都入选，忙碌不动
+  const across = selectClosableIdleSessionsAcrossWorkspaces([
+    { sessionId: 'a-idle', workspaceId: 'ws-a', busy: false },
+    { sessionId: 'a-busy', workspaceId: 'ws-a', busy: true },
+    { sessionId: 'b-idle', workspaceId: 'ws-b', busy: false },
+  ], ['ws-a', 'ws-b']);
+  check('跨工作区收全部打开工作区的空闲会话', across.length === 2 && across[0] === 'a-idle' && across[1] === 'b-idle');
+  check('跨工作区不收忙碌会话', !across.includes('a-busy'));
+
+  // 只收打开集合里的工作区：已关闭工作区残留的视图不算（视图清理由关闭链负责）
+  const staleView = selectClosableIdleSessionsAcrossWorkspaces([
+    { sessionId: 'gone', workspaceId: 'ws-gone', busy: false },
+  ], ['ws-a']);
+  check('已关闭工作区的残留视图不进候选', staleView.length === 0);
+
+  // 全部忙碌 / 没有可关会话 → 清单为空 → 点击是 no-op（主菜单条目恒可用）
+  check(
+    '跨工作区全部忙碌时清单为空',
+    selectClosableIdleSessionsAcrossWorkspaces(
+      [{ sessionId: 'a', workspaceId: 'ws-a', busy: true }],
+      ['ws-a'],
+    ).length === 0,
+  );
+  check('打开集合为空时清单为空', selectClosableIdleSessionsAcrossWorkspaces([], []).length === 0);
 
   // ---------- summarizeOtherWorkspaces ----------
   // 任一他区忙碌 → 需要一次汇总确认；目标清单含全部他区（含忙碌的——确认语义是整批关闭）
