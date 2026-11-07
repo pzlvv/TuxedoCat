@@ -1,15 +1,16 @@
 import {
-  parseCreatedFilePath,
+  parseToolMutation,
   resolveToolWorkspace,
 } from '../../electron/toolResultSideEffects';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
- * Write 工具结果的宿主侧旁路观察（`electron/toolResultSideEffects.ts`，纯函数）。
+ * Edit / Write 工具结果的宿主侧旁路观察（`electron/toolResultSideEffects.ts`，纯函数）。
  *
- * 覆盖点（specs/030 FR-001）：
- * - `parseCreatedFilePath`：只认 Write + success + 首行 `Created file: ` 前缀
- *   （前缀契约由 `core-rs/src/tools_tests.rs` 锁定）；
+ * 覆盖点（specs/030 FR-001 / FR-003，US-61）：
+ * - `parseToolMutation`：Edit / Write + success 的三类首行前缀（`Created` / `Updated` /
+ *   `Edited file:`，契约由 `core-rs/src/tools_tests.rs` 锁定），create 与 modify 的
+ *   判别（create 才连树刷新）；失败结果与非工具输出返回 null；
  * - `resolveToolWorkspace`：相对路径按会话根展开、绝对路径包含判定、
  *   本地根大小写不敏感 / 远端根敏感、集合外与无会话根的相对路径返回 null。
  *
@@ -19,13 +20,25 @@ import { createChecker, runTests } from './helpers/harness';
 runTests('toolResultSideEffects', () => {
   const { check, finish } = createChecker();
 
-  check('只认 Write + success + Created 首行前缀',
-    parseCreatedFilePath('Write', 'success', 'Created file: a.ts\nLines: 1\nBytes: 5') === 'a.ts'
-    && parseCreatedFilePath('Write', 'success', 'Updated file: a.ts\nLines: 1\nBytes: 0') === null
-    && parseCreatedFilePath('Edit', 'success', 'Edited file: a.md\nMade 1 replacement') === null
-    && parseCreatedFilePath('Write', 'error', 'Write failed: boom') === null
-    && parseCreatedFilePath('Bash', 'success', 'Created file: fake') === null
-    && parseCreatedFilePath('Write', 'success', 'note: Created file: not-first-line') === null);
+  check('Write 新建 → create',
+    parseToolMutation('Write', 'success', 'Created file: a.ts\nLines: 1\nBytes: 5')
+      ?.path === 'a.ts' && parseToolMutation('Write', 'success', 'Created file: a.ts\nLines: 1\nBytes: 5')?.kind === 'create');
+
+  check('Write 覆盖 → modify（树结构没变）',
+    parseToolMutation('Write', 'success', 'Updated file: a.ts\nLines: 1\nBytes: 0')
+      ?.path === 'a.ts' && parseToolMutation('Write', 'success', 'Updated file: a.ts\nLines: 1\nBytes: 0')?.kind === 'modify');
+
+  check('Edit → modify',
+    parseToolMutation('Edit', 'success', 'Edited file: a.md\nMade 1 replacement\nEdited line 1\nLines: 2 (+1, -1)')
+      ?.path === 'a.md' && parseToolMutation('Edit', 'success', 'Edited file: a.md\nMade 1 replacement\nEdited line 1\nLines: 2 (+1, -1)')?.kind === 'modify');
+
+  check('失败结果 / 其它工具 / 非首行前缀 / 未知形态返回 null',
+    parseToolMutation('Write', 'error', 'Write failed: boom') === null
+    && parseToolMutation('Edit', 'error', 'Edit: write failed: boom') === null
+    && parseToolMutation('Bash', 'success', 'Created file: fake') === null
+    && parseToolMutation('Read', 'success', 'Edited file: fake') === null
+    && parseToolMutation('Write', 'success', 'note: Created file: not-first-line') === null
+    && parseToolMutation('Write', 'success', 'Lines: 1') === null);
 
   const local = { root: 'D:\\git\\demo', remote: false };
   const remote = { root: '/srv/app', remote: true };
