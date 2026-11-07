@@ -17,7 +17,7 @@ import type { CoreEvent } from '../src/shared/AssistantEventBus.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
 import { workspaceRefKey, type WorkspaceRef } from '../src/host/workspaceRef.js';
 import { resolveRemoteFileWorkspace } from '../src/host/remoteFileResolve.js';
-import { parseCreatedFilePath, resolveToolWorkspace } from './toolResultSideEffects.js';
+import { parseToolMutation, resolveToolWorkspace } from './toolResultSideEffects.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { getMarkdownPreviewBodyHtml } from '../src/host/markdownHtml.js';
@@ -487,22 +487,27 @@ export class ElectronUIHost implements UIHost {
   }
 
   /**
-   * Core 上报工具执行结果（specs/030 FR-001）。
-   * 只观察「Write 成功新建文件」这一个形态：解析输出首行路径（相对路径按会话工作区
-   * 根展开），落在某个打开工作区内时向侧栏推 `sidebar:files-invalidate` 刷新该工作区
-   * 的文件树。文档视图的自动刷新不经此链（git 哨兵监听承担，
-   * `electron/sidebarDocWatch.ts`）。解析不到归属（集合外 / 索引查不到的相对路径）
-   * 是设计允许的 no-op。
+   * Core 上报工具执行结果（specs/030 FR-001 / US-61）。
+   * 只观察 Edit / Write 成功改动了工作区内文件这一个形态：解析输出首行路径（相对路径
+   * 按会话工作区根展开），落在某个打开工作区内时向侧栏推 `sidebar:files-invalidate`。
+   * Write 新建（create）连文件树一起失效；Write 覆盖 / Edit（modify）树结构没变，
+   * 只失效变更视图（doc / changes），文档视图的 git 哨兵照常并行监听。
+   * 解析不到归属（集合外 / 索引查不到的相对路径）是设计允许的 no-op。
    */
   onToolResult(event: Extract<CoreEvent, { type: 'toolResult' }>): void {
-    const pathText = parseCreatedFilePath(event.toolName, event.status, event.output);
-    if (pathText === null) return;
+    const mutation = parseToolMutation(event.toolName, event.status, event.output);
+    if (mutation === null) return;
     const refs = this.getOpenWorkspaceRefs();
     const openRoots = refs.map((ref) => ({ root: ref.path, remote: ref.endpoint !== null }));
     const sessionRoot = this.sessionWorkspaceLookup?.(event.sessionId) ?? null;
-    const hit = resolveToolWorkspace(pathText, sessionRoot, openRoots);
+    const hit = resolveToolWorkspace(mutation.path, sessionRoot, openRoots);
     if (!hit) return;
-    this.pushFilesInvalidate(workspaceRefKey(refs[openRoots.indexOf(hit)]), ['tree']);
+    const index = openRoots.indexOf(hit);
+    if (mutation.kind === 'create') {
+      this.pushFilesInvalidate(workspaceRefKey(refs[index]), ['tree', 'doc', 'changes']);
+      return;
+    }
+    this.pushFilesInvalidate(workspaceRefKey(refs[index]), ['doc', 'changes']);
   }
 
   /**

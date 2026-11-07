@@ -255,20 +255,22 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 活动工作目录变化时，对话列表随之切换。
 - 新对话按钮在活动工作目录下创建对话。
 - 底部文件浏览器分区（US-42 / US-43）：条目悬停显示修改时间、三种互斥的浏览模式与
-  Write 新建自动刷新（US-61 / US-62 / US-63，specs/030 / specs/041）。模式是
-  `'tree' | 'doc' | 'changes'` 判别联合（不写成两个布尔），按工作区记忆在
-  `localStorage` 的 `filesMode` 键里（旧 `filesDocView` 布尔表只读兼容、不再写入）：
+  工具改动自动刷新（US-61 / US-62 / US-63）。模式是 `'tree' | 'doc' | 'changes'` 判别
+  联合（不写成两个布尔），按工作区记忆在 `localStorage` 的 `filesMode` 键里
+  （旧 `filesDocView` 布尔表只读兼容、不再写入）：
   - 目录树（默认）：懒加载全量目录，展开状态独立保存；
   - 文档视图：`git diff --numstat -M HEAD -- '*.md' '*.markdown'` + 未跟踪，行数徽标；
   - 全部变更：同一套取数与解析，pathspec 置空（`--` 之后不含过滤器）以覆盖全部类型；
     非 git 工作区返回 `not-a-git-workspace` 提示而不是空列表。
-  两个变更视图共用同一个 git 哨兵（听 `.git` 与 `.git/refs/heads`），失效推送的
-  `reasons` 同时带 `doc` / `changes`，渲染层按当前模式各取所需。数据走 Electron 私有
-  IPC（`sidebar:files-list` / `sidebar:files-doc-list`（带 `scope`）/ `sidebar:files-mode-watch` /
-  `sidebar:files-open`（带 `source`）/ `sidebar:files-invalidate` 推送），不经总线；远程
-  工作区的 git 探测与记录读取复用 §14.5 的共享连接池。远程工作区的 Connection 就绪时
-  另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层独立，首连失败后不会自连，不推就
-  停在「读取失败，点击重试」（`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
+  两个变更视图共用同一套失效推送（reasons 同时带 `doc` / `changes`，渲染层按当前模式各取
+  所需），触发源是 git 哨兵与工具旁路两条（口径见
+  [US-61](../features/user-stories/desktop.md#us-61-工具改动自动刷新文件树与变更视图)）。
+  数据走 Electron 私有 IPC（`sidebar:files-list` / `sidebar:files-doc-list`（带 `scope`）/
+  `sidebar:files-mode-watch` / `sidebar:files-open`（带 `source`）/
+  `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与记录读取复用 §14.5
+  的共享连接池。Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层
+  独立，首连失败后不会自连，不推就停在「读取失败，点击重试」
+  （`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
 
 ### 9.1 空态
 
@@ -283,10 +285,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 
 ## 10. 浮窗模式
 
-- 切换到浮窗模式时，以当前活动工作目录（即活动对话的工作目录）为窗口上下文。
-- 浮窗隐藏侧栏与标签页，只呈现活动对话。
+- 切换到浮窗模式时，以当前活动工作目录（即活动对话的工作目录）为窗口上下文；浮窗隐藏
+  侧栏与标签页，只呈现活动对话；标题栏品牌位显示活动工作目录名（远程形态见第 5 节）。
 - 打开集合为空时不允许切换到浮窗模式。
-- 浮窗标题栏品牌位显示活动工作目录名（远程形态见第 5 节）。
 - 浮窗最小化隐藏到系统托盘，不在任务栏保留最小化按钮；唤醒入口为托盘图标与全局快捷键。
 
 ---
