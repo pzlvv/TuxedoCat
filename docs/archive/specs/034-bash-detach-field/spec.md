@@ -1,5 +1,5 @@
 ---
-status: 实施中
+status: 已收敛
 ---
 
 # 改动规格：Bash 工具 detach 字段——后台化构造闸门与脱离管理授权
@@ -15,12 +15,12 @@ Bash 工具新增 `detach` 字段（默认 `false`）。缺省时，命令中出
 
 | 基线文档 | 章节 | 变更 | 说明 |
 | --- | --- | --- | --- |
-| `<docs/features/bash-detach.md>` | — | 新增 | detach 字段的行为规格（闸门 / 豁免语义 / 授权 / 双面文案）。Bash 工具执行面契约，[background-bash.md](../../docs/features/background-bash.md) 的后台任务范围装不下 |
-| `<docs/adr/0014-bash-detach-escape-hatch.md>` | — | 新增 | 「豁免开关而非执行模式」「auto 模式同破坏性命令待遇且零模态可见」的决策背景与被否方案 |
-| [docs/core/standalone-core.md](../../docs/core/standalone-core.md) | [第 4 节](../../docs/core/standalone-core.md#4-契约) | 修改 | `risk` 模式的「危险操作」判据扩入：Bash 携带 `detach: true` 且命令命中后台化构造 |
-| [docs/features/background-bash.md](../../docs/features/background-bash.md) | [第 4 节](../../docs/features/background-bash.md#4-边界与错误路径) | 修改 | 补交叉引用：`detach: true` 的进程不属于后台任务事实（只留链接，不复述） |
-| [docs/features/user-stories/tools.md](../../docs/features/user-stories/tools.md) | [EP-7](../../docs/features/user-stories/tools.md#ep-7-工具与技能) | 修改 | 新增 US-67 |
-| [docs/features/user-stories.md](../../docs/features/user-stories.md) | 附录 | 修改 | US-67 的 e2e 映射（豁免登记） |
+| [docs/features/bash-detach.md](../../../../docs/features/bash-detach.md) | — | 新增 | detach 字段的行为规格（闸门 / 豁免语义 / 授权 / 双面文案）。Bash 工具执行面契约，[background-bash.md](../../../../docs/features/background-bash.md) 的后台任务范围装不下 |
+| [docs/adr/0014-bash-detach-escape-hatch.md](../../../../docs/adr/0014-bash-detach-escape-hatch.md) | — | 新增 | 「豁免开关而非执行模式」「auto 模式同破坏性命令待遇且零模态可见」的决策背景与被否方案 |
+| [docs/core/standalone-core.md](../../../../docs/core/standalone-core.md) | [第 4 节](../../../../docs/core/standalone-core.md#4-契约) | 修改 | `risk` 模式的「危险操作」判据扩入：Bash 携带 `detach: true` 且命令命中后台化构造 |
+| [docs/features/background-bash.md](../../../../docs/features/background-bash.md) | [第 4 节](../../../../docs/features/background-bash.md#4-边界与错误路径) | 修改 | 补交叉引用：`detach: true` 的进程不属于后台任务事实（只留链接，不复述） |
+| [docs/features/user-stories/tools.md](../../../../docs/features/user-stories/tools.md) | [EP-7](../../../../docs/features/user-stories/tools.md#ep-7-工具与技能) | 修改 | 新增 US-67 |
+| [docs/features/user-stories.md](../../../../docs/features/user-stories.md) | 附录 | 修改 | US-67 的 e2e 映射（豁免登记） |
 
 ## 用户场景与验收标准
 
@@ -96,7 +96,7 @@ Bash 调用携带 `detach: true` 且命令命中后台化构造时，按危险�
 ## 非目标
 
 - **不追踪 detach 进程**：进程脱离 shell 后工具没有 owned 句柄，扫进程表按命令行
-  反推归属违反[架构原则第 7 节](../../docs/architecture/principles.md#7-一份事实只有一个写入点)——
+  反推归属违反[架构原则第 7 节](../../../../docs/architecture/principles.md#7-一份事实只有一个写入点)——
   设计结论，不做。
 - **不做工具级 detach 执行模式**（由工具代为 detached spawn 并持句柄）：被否决的
   替代方案，决策与理由见 ADR-0014。
@@ -129,8 +129,32 @@ Bash 调用携带 `detach: true` 且命令命中后台化构造时，按危险�
 
 ## 收敛记录
 
-收敛时由 /converge 填写，结论只分三类。
+（2026-11-06 /converge，逐 AC 核对 + 实现反向对照；`tasks.md` 9/9 已勾。）
 
-- 已满足：<FR / AC → 证据（实现与测试落点）>
-- 偏差：<与 spec 的差异；改代码或改 spec 并留痕>
-- 未做：<回写 tasks.md 的未完成项>
+### 已满足
+
+- **FR-001 / AC-1 ～ AC-3 / AC-5** → `tools::tests::bash_gate_rejects_backgrounding_constructs_with_routing_message`（`nohup` / `setsid` / `start /b` / `Start-Process` / 未加引号 URL 的 `&` 逐条命中，文案点名构造并给出「前台 / `run_in_background: true` / `detach: true`」三条出路）；构造判定层另由 `find_detach_construct_names_the_matched_construct` 覆盖（含段首词优先于 `&`、`start /bin/sh` 不命中）。
+- **FR-001 / AC-4** → `tools::tests::bash_gate_allows_quoted_ampersand_and_logical_and`（`&&`、引号内 `&`、`&>` 均放行）+ `find_detach_construct_ignores_non_backgrounding_ampersand`（`>&` / `&>>` / `$()` 内部 / 换行不算分隔符）。
+- **FR-001（闸门位置）** → `bash_gate_applies_before_run_in_background_branch`：`run_in_background: true` 的 `nohup server` 同样被拦，且文案与 `BASH_DETACH_GATE_MESSAGE` 逐字一致。
+- **FR-002 / AC-6 / AC-7** → `bash_detach_true_bypasses_the_gate_and_is_inert_without_constructs`（同一命令缺省被拦、`detach: true` 放行；无构造时字段惰性）。
+- **FR-002 / AC-8** → `bash_detach_true_foreground_still_auto_backgrounds_on_timeout`（`nohup sleep 5` + `detach: true` 超时后仍走 `bg-auto-` 自动转后台路径，`bash_task::running_count_for_session` 在册，abort 后归零）。
+- **FR-003 / AC-9 ～ AC-11** → `permission::tests::detach_escape_asks_in_risk_and_manual_but_not_auto`（risk / manual 询问、auto 放行）+ `detach_escape_ask_message_and_choices`（`⚠️ 请求脱离管理执行：…` 文案与「允许执行」选项；普通命令保持 `请求执行：…`）。auto 零可见是明示决策，代码侧无徽标 / 回显分支，反向对照确认。
+- **FR-003 / AC-12** → `detach_true_without_construct_is_not_risky`；补 `detach_default_command_is_not_permission_business`（缺省 `detach` 的 `nohup` 在权限层放行，拦截面只在工具闸门——risk 模式「教学 → 重试 → 询问」的时序由此成立）。
+- **FR-004 / AC-13** → 单源是结构性的：`permission::is_detach_escape` 直接调 `crate::tools::find_detach_construct`，仓库内无第二份检测实现；权限对照表与闸门用例跑的是同一个纯函数。schema 口径由 `bash_schema_exposes_detach_with_minimal_description` 锁定（boolean + 描述含「脱离工具管理」且不含案例）。
+
+### 偏差
+
+- 无。失败文案里的「三条出路」实现为两条列表项（前台与 `run_in_background` 合写在一行）、确认文案与 spec 措辞逐字对等；`AC-5` 的「未加引号 URL 的 `&`」在 as-built 文档中被并入 AC-2，spec 的 AC 编号拆分不影响实现。
+
+### 未做
+
+- 无（`tasks.md` 9 项全部勾选，`npm run test:core` 的 detach 相关用例全绿）。
+
+### 基线并档
+
+delta 已在实施提交 `eddcf23` 中并入 `docs/features/bash-detach.md`（新增，含七节骨架）、
+`docs/adr/0014-bash-detach-escape-hatch.md`（新增）、
+[docs/core/standalone-core.md 第 4 节](../../../../docs/core/standalone-core.md#4-契约)（危险判据扩入 detach 逃生）、
+[docs/features/background-bash.md 第 4 节](../../../../docs/features/background-bash.md#4-边界与错误路径)（交叉引用）、
+`docs/features/user-stories/tools.md`（US-67）与 `docs/features/user-stories.md` 附录（e2e 豁免）。
+本次归档只改链接深度（`../../docs/` → `../../../../docs/`）与 frontmatter status。

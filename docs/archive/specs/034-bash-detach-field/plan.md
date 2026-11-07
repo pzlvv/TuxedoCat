@@ -90,18 +90,18 @@ Bash: command uses `{construct}`.
 
 ## 宪章检查
 
-- [x] 分层与依赖（[AGENTS.md 第 1 节](../../AGENTS.md#1-分层与依赖评审必查)）：改动全部在 core-rs 内；`permission.rs →
+- [x] 分层与依赖（[AGENTS.md 第 1 节](../../../../AGENTS.md#1-分层与依赖评审必查)）：改动全部在 core-rs 内；`permission.rs →
       tools.rs` 依赖方向与既有 `SUB_AGENT_ROLES` 引用一致；无 TS / host / webview
       改动，不触 `no-restricted-imports` 约束面。
-- [x] 架构铁律（[AGENTS.md 第 4 节](../../AGENTS.md#4-架构铁律docsarchitectureprinciplesmddocsarchitectureprinciplesmd)）：不过度 fallback——闸门显式拒绝 + 教学，无静默
+- [x] 架构铁律（[AGENTS.md 第 4 节](../../../../AGENTS.md#4-架构铁律docsarchitectureprinciplesmddocsarchitectureprinciplesmd)）：不过度 fallback——闸门显式拒绝 + 教学，无静默
       降级；铁律 2 约束的是总线契约成员，工具入参的省略语义与 `run_in_background`
       同口径；检测一份实现、闸门与权限两处消费（原则 7：一份事实只有一个写入点）；
       `detach` 缺省 `false` 的读取口径唯一（`js_coerce_bool`），无第二处默认值定义。
-- [x] Core 行为与落盘格式同步义务（[AGENTS.md 第 5 节](../../AGENTS.md#5-工作流)）：Core 行为改动与测试同步落在
+- [x] Core 行为与落盘格式同步义务（[AGENTS.md 第 5 节](../../../../AGENTS.md#5-工作流)）：Core 行为改动与测试同步落在
       `core-rs/`（tools_tests / permission_tests）；不触 `src/shared/history/` 共享
       落盘格式——两套 Core parity 不涉及（remote 与 standalone 是同一二进制的传输
       形态，无第二套实现需同步）。
-- [x] 文档同步义务（[AGENTS.md 第 0 节](../../AGENTS.md#0-文档要求)）：第 6 节清单与代码同一提交收敛；
+- [x] 文档同步义务（[AGENTS.md 第 0 节](../../../../AGENTS.md#0-文档要求)）：第 6 节清单与代码同一提交收敛；
       `npm run test:unit -- docs-lint` 为闸门（spec 阶段已验证链接锚点与结构检查覆盖
       specs/ 文件）。
 
@@ -109,7 +109,7 @@ Bash: command uses `{construct}`.
 
 1. **工具级 detach 执行模式**（由工具代为 detached spawn 并持句柄登记）：用户决策
    为「管辖豁免开关」——豁免即声明脱离管理，工具不假装追踪；→ ADR-0014。
-2. **进程表扫描追踪 detach 进程**（按命令行反推归属）：违反[架构原则第 7 节](../../docs/architecture/principles.md#7-一份事实只有一个写入点)（一份
+2. **进程表扫描追踪 detach 进程**（按命令行反推归属）：违反[架构原则第 7 节](../../../../docs/architecture/principles.md#7-一份事实只有一个写入点)（一份
    事实只有一个写入点，禁止从投影反推事实），不做。
 3. **闸门只覆盖前台路径**：否——`run_in_background` 分支里写 `nohup x &` 的孙进程
    同样逃出任务追踪，闸门必须在分支之前（技术方案第 3 节）。
