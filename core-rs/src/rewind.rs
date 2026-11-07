@@ -41,9 +41,15 @@ pub struct RewindFile {
 /// 截断点（specs/039 FR-003）：返回保留到哪个下标（不含）。
 ///
 /// - 目标是 `user` 消息：**保留**该条（用户想从这条重来），截断点 = 下标 + 1；
-/// - 目标是 `assistant` / `toolcall`（`tool_use` 来自 assistant 行）：保留到该 assistant
-///   行（含），紧随其后的 `tool_result` 属于同一次调用，一并删除；
+/// - 目标是 `assistant`（含 `tool_use` 的工具卡片节点）：**不保留**该行，截断点 = 下标；
+///   该行的 `tool_use` 与紧随其后的 `tool_result` 一起删除（见下方不变量）；
 /// - 目标是 `system` / `thinking`：它们是产出物，不是「从这里继续」的起点，截断点 = 下标。
+///
+/// 不变量：保留区**不含孤立的 `tool_use`**。`tool_use` 与 `tool_result` 分属相邻两行，
+/// 截断点落在两者之间时保留区末尾会剩一个没有结果的 `tool_use`——回放按「没有结果 =
+/// running」渲染（`replay.rs`），回退后工具卡片（尤其 Bash）会停在跑动的状态，且下一轮
+/// 请求因缺 `tool_result` 被 API 拒绝。因此只要保留区末尾是带 `tool_use` 的 assistant 行，
+/// 截断点就整体前移到该行之前（工具调用是原子单位，不能回退到它中间）。
 ///
 /// 找不到目标返回 `None`（调用方转错误回执，不动任何文件）。
 pub fn truncate_index(messages: &[Value], target_uuid: &str) -> Option<usize> {
@@ -69,15 +75,37 @@ pub fn truncate_index(messages: &[Value], target_uuid: &str) -> Option<usize> {
         })?,
     };
     let kind = messages[index].get("type").and_then(Value::as_str).unwrap_or("");
-    Some(match kind {
+    let mut cut = match kind {
         // 用户消息保留自身：重来时这条输入仍在输入框的语义位
         "user" => index + 1,
-        // assistant 行承载 tool_use：保留该行，其后的 tool_result 一并删除
-        "assistant" => index + 1,
+        // assistant 行是产出物：截断到它之前（含工具调用时更不能保留半行）
+        "assistant" => index,
         // system / thinking 是产出物：从它之前继续
         _ => index,
-    })
+    };
+    // 保留区末尾不能是带 `tool_use` 的 assistant 行（其 `tool_result` 在删除区里）。
+    // 逐个前移：目标若是 system 之类夹在 assistant 与 tool_result 之间的行，前移一步
+    // 就回到该 assistant 行之前，循环因此收敛。
+    while cut > 0 && has_tool_use(&messages[cut - 1]) {
+        cut -= 1;
+    }
+    Some(cut)
 }
+
+/// 该行是否是带 `tool_use` 块的 assistant 消息（回退的原子单位边界）。
+fn has_tool_use(message: &Value) -> bool {
+    message.get("type").and_then(Value::as_str) == Some("assistant")
+        && message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            })
+}
+
 
 /// 区间 `[cut, ..)` 内出现过的 Edit / Write 调用：按路径取**最早**那次修改前的备份。
 ///
@@ -221,7 +249,8 @@ pub fn receipt_text(outcome: &RewindOutcome) -> String {
 
 /// 执行回退：截断 + 文件恢复。`state` 为会话内存状态（`None` = 会话不存在）。
 ///
-/// 守卫（spec FR-005）：会话非空闲 → `Err`；目标 id 找不到 → `Err`（不动文件）。
+/// 调用方必须先按「会话空闲」放行（spec FR-005，`Core::is_session_idle`）；本函数自己
+/// 只校验目标存在且其后有可删内容，返回 `Err` 时不动任何文件。
 pub fn rewind(
     session_id: &str,
     target_uuid: &str,

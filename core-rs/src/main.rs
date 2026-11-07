@@ -1060,8 +1060,10 @@ fn handle_conversation_rewind(core: &Arc<Core>, session_id: &str, target_uuid: &
         eprintln!("[core] rewind skipped: session {session_id} is not open");
         return;
     };
-    // 忙守卫（spec FR-005）：运行 / 压缩中的会话拒绝回退，回执说明而不是静默忽略
-    if core.session_is_rewind_blocked(session_id) {
+    // 忙守卫（spec FR-005）：只有空闲会话能回退，回执说明而不是静默忽略。
+    // 判据与运行时快照的 `idle` 同源（`Core::is_session_idle`：自身与全部子代理都空闲），
+    // 因此 UI 侧置灰与这里的裁决口径一致，不会出现「UI 说可以、core 拒绝」。
+    if !core.is_session_idle(session_id) {
         emit_rewind_done(core, session_id, target_uuid, Err("conversation is busy; retry when it is idle".to_string()));
         return;
     }

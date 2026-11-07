@@ -18,7 +18,7 @@ import { getPlaceholderLogoUri } from './placeholderLogo';
 import { DecorativeLogo } from './DecorativeLogo';
 import { profileLog } from './debug';
 import { t } from './i18n';
-import { rewindAvailability } from './rewindTimeline';
+import { isTimelineDotHit, rewindAvailability } from './rewindTimeline';
 import { StreamStatsLabel } from './StreamStatsLabel';
 import { uiFontSizePx } from './fontSize';
 import { isAutoMessageOrigin as isAutoOrigin } from '../shared/utils/messageOrigin';
@@ -142,6 +142,10 @@ function areSegmentTimelineEqual(prevProps: any, nextProps: any): boolean {
   if (prevProps.animationMode !== nextProps.animationMode) return false;
   if (prevProps.colors !== nextProps.colors) return false;
   if (prevProps.isDark !== nextProps.isDark) return false;
+  // 会话空闲事实与消息数组无关：菜单开着时会话转忙（或转空闲）也要重算菜单项可用性
+  // （spec 039 FR-005）。不比较它，菜单会停在弹出那一刻的判定上。
+  if (prevProps.sessionIdle !== nextProps.sessionIdle) return false;
+  if (prevProps.lastNodeId !== nextProps.lastNodeId) return false;
   const prevMsgs = prevProps.nonUserMsgs;
   const nextMsgs = nextProps.nonUserMsgs;
   if (prevMsgs === nextMsgs) return true;
@@ -1543,11 +1547,14 @@ interface MessagesViewProps {
   onRetryQuery?: () => void;
   /**
    * 时间线节点的右键「从这里继续」（specs/039 FR-001）：App 侧打开确认框。
-   * 只在节点可回退时被调用——禁用判定在 `rewindAvailability` 里做。
+   * 只在命中状态点且节点可回退时被调用——命中与禁用判定在 `rewindTimeline.ts` 里做。
    */
   onRewindRequest?: (targetUuid: string) => void;
-  /** 会话是否忙（运行 / 压缩中）：忙时菜单项置灰（spec FR-005） */
-  sessionBusy?: boolean;
+  /**
+   * 会话是否空闲（运行时快照的 `idle`，`SessionRuntimeState.idle`）。
+   * 非空闲时菜单项置灰（spec FR-005）：回退与 core 的忙守卫同口径。
+   */
+  sessionIdle?: boolean;
 }
 
 /**
@@ -1569,7 +1576,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
   onExpandToggle,
   onBeforePreviewRender,
   onRewindRequest,
-  sessionBusy,
+  sessionIdle,
   lastNodeId,
 }: {
   segmentIndex: number;
@@ -1577,10 +1584,10 @@ const SegmentTimeline = memo(function SegmentTimeline({
   nonUserMsgs: Message[];
   /** 整条时间线最后一个节点的 id（spec 039 AC-6：末节点不可回退，跨 segment 判定） */
   lastNodeId?: string;
-  /** 节点右键「从这里继续」（specs/039）：只有可回退的节点才回调 */
+  /** 节点右键「从这里继续」（specs/039）：只有命中状态点且可回退的节点才回调 */
   onRewindRequest?: (targetUuid: string) => void;
-  /** 会话忙（运行 / 压缩中）：忙时菜单项置灰 */
-  sessionBusy?: boolean;
+  /** 会话是否空闲（运行时快照的 `idle`）：非空闲时菜单项置灰 */
+  sessionIdle?: boolean;
   showThinkingAnimation: boolean;
   animationMode: 'thinking' | 'compacting';
   colors: Colors;
@@ -1724,12 +1731,23 @@ const SegmentTimeline = memo(function SegmentTimeline({
     };
   }, [rewindMenu]);
 
-  /** 右键某个节点：算出可回退性，弹出菜单（禁用项也要弹，理由在 title 里） */
+  /**
+   * 右键某个节点的状态点：算出可回退性，弹出菜单（禁用项也要弹，理由在 title 里）。
+   *
+   * 只有状态点响应（spec 039 FR-001）：整行其余位置右键照常走浏览器默认行为，
+   * 不弹回退菜单——菜单是「这个节点」的动作，不是整行的。
+   */
   const onNodeContextMenu = React.useCallback((
     event: React.MouseEvent<HTMLLIElement>,
     item: { nodeId?: string; isCompactSummary?: boolean },
   ): void => {
     if (!onRewindRequest) return;
+    // 命中盒按 li 的行内起点边 / 顶边算：RTL 下行内起点是右缘，offsetX 换算成同口径
+    const rect = event.currentTarget.getBoundingClientRect();
+    const inlineOffset = getComputedStyle(event.currentTarget).direction === 'rtl'
+      ? rect.right - event.clientX
+      : event.clientX - rect.left;
+    if (!isTimelineDotHit(inlineOffset, event.clientY - rect.top)) return;
     const nodeId = item.nodeId;
     const isLast = nodeId !== undefined && nodeId === lastNodeId;
     // 不可回退的节点也弹菜单：禁用项列出原因（spec 039 AC-6 / AC-7 要求「置灰并说明」）
@@ -1741,7 +1759,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
       isLast,
       isCompactSummary: item.isCompactSummary === true,
     });
-  }, [onRewindRequest, sessionBusy, lastNodeId]);
+  }, [onRewindRequest, lastNodeId]);
 
   const hasThinkingItem = isLastSegment;
 
@@ -1806,7 +1824,7 @@ const SegmentTimeline = memo(function SegmentTimeline({
         >
           {(() => {
             const availability = rewindAvailability(
-              rewindMenu.nodeId, rewindMenu.isLast, sessionBusy === true, rewindMenu.isCompactSummary,
+              rewindMenu.nodeId, rewindMenu.isLast, sessionIdle !== false, rewindMenu.isCompactSummary,
             );
             return (
               <button
@@ -1856,7 +1874,7 @@ const MessagesView = memo(({
   onNavigate,
   onRetryQuery,
   onRewindRequest,
-  sessionBusy,
+  sessionIdle,
 }: MessagesViewProps) => {
 /** 整条时间线最后一个可回退节点的 id（spec 039 AC-6：其后没有可删内容时置灰） */
   const lastTimelineNodeId = React.useMemo(() => {
@@ -2708,7 +2726,7 @@ const MessagesView = memo(({
                           onExpandToggle={handleContentToggle}
                           onBeforePreviewRender={handleBeforePreviewRender}
                           onRewindRequest={onRewindRequest}
-                          sessionBusy={sessionBusy}
+                          sessionIdle={sessionIdle}
                           lastNodeId={lastTimelineNodeId}
                         />
                       )}
