@@ -1,5 +1,5 @@
 ---
-status: 待修
+status: 已修
 ---
 
 # 缺陷：从 Git Bash 启动时原生子进程拿到的 PATH 是混合形态，`cmd /c` 与原生 exe 找不到 `node`
@@ -67,3 +67,5 @@ token 里，内容是 `/mingw64/bin:/usr/bin:/c/Users/...` 这种 POSIX 列表�
 | 全量 core | `cargo test --manifest-path core-rs/Cargo.toml` | 绿 | 1084 passed / 0 failed |
 | 既有回归 | `npm run test:unit` | 绿 | 102 通过 / 0 失败 / 2 跳过（跳过项为 `sidebarDocViewGit` 的 Windows 文件名分支与 `sidebarFiles`） |
 | 真实产物车道 | `npm run build:core:host` + `npm run test:all` | 部分验证 | 单测与 core 全绿；e2e 248 passed / 1 failed（`sessions.spec.ts` US-22，四车道并行的列表刷新超时，单独重跑与该车道单跑均通过，与本缺陷无关联） |
+| 全量 core（复跑） | `npm run test:core` | 绿 | 1120 passed / 0 failed（`62a0e24` 给 RT-1 补 `#[cfg(windows)]` 守卫后，非 Windows 语义由 `native_path_from_returns_none_off_windows` 单独锁定） |
+| 非 Windows 语义 | `cargo test --manifest-path core-rs/Cargo.toml shell_env` | 绿 | 17 passed；`native_path_from` 在非 Windows 恒返回 `None`，Linux CI 不再因无条件 `expect` panic |
