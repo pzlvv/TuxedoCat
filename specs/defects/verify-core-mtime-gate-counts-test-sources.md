@@ -11,34 +11,24 @@ status: 已修
 
 ## 现状
 
-- **复现**：在 `main`（HEAD `fe648af`）直接跑 `npm run package`。Core 产物此前已按当前源码
-  构建完成，但上一条提交 `62a0e24`（只改 `core-rs/src/shell_env_tests.rs`，给一条
+- **复现**：在 `main`（HEAD fe648af）直接跑 `npm run package`。Core 产物此前已按当前源码
+  构建完成，但上一条提交 62a0e24（只改 `core-rs/src/shell_env_tests.rs`，给一条
   Windows 专有用例补 `#[cfg(windows)]` 守卫，未触碰产品代码）让该文件的 mtime 晚于
-  `resources/core/x64-win32/tuxedo-cat-core.exe`。
+  `resources/core/x64-win32/<core.binaryName>.exe`。
 - **失败输出**：
 
   ```
   [verify-core] 打包要携带的 Core 产物不合格：
-    - resources/core/x64-win32/tuxedo-cat-core.exe 比 Rust 源码旧（源码 2026-11-06T22:59:01.721Z，
+    - resources/core/x64-win32/<core.binaryName>.exe 比 Rust 源码旧（源码 2026-11-06T22:59:01.721Z，
       产物 2026-11-06T20:55:16.018Z）；重新构建：npm run build:core
   ```
 
-- **产物其实是最新的**：该产物烧录的构建指纹是 `f6e9974c73523a003dbb7da85881a1649b89f8810a058689b3da4b70f1dfd5f5`，
-  与当前源码重算的 `computeFingerprint('x86_64-pc-windows-msvc', 'release')` 逐位一致。
+- **产物其实是最新的**：该产物烧录的构建指纹是 f6e9974c…（`computeFingerprint` 的输出），
+  与当前源码重算值逐位一致。
   内容判据（指纹）能过，时间判据（mtime）却先把这次检查 `continue` 掉了——指纹那一关根本没跑到。
-- **根因**：`sourceMtime` 的计算是
-
-  ```js
-  Math.max(...RUST_SOURCES.map((entry) => newestMtime(join(repoRoot, entry), isProductSourceFile)))
-  ```
-
-  `isProductSourceFile` 作为 `include` 回调只作用于**目录展开后的文件**；`RUST_SOURCES` 里
-  `core-rs/src` 是目录能过滤，但 `core-rs/Cargo.toml` / `core-rs/Cargo.lock` 是文件，走
-  `newestMtime` 的非目录分支直接返回 mtime、不过 `include`——这与本缺陷无关，真正的问题是
-  该 `include` 过滤对目录内的 `_tests.rs` 生效、**却仍把产品源码与测试源码混在一起取最大值**，
-  使「改测试」等价于「改产品」。同一进程里带的 `isProductSourceFile` 本身口径是对的
-  （排除 `_tests.rs` / `test_support.rs` / `tests/` / `fixtures/` / cargo 产物目录），
-  问题在于 mtime 闸门把两种源码视为一体。
+- **根因**：mtime 闸门当时直接对 `RUST_SOURCES` 逐个取最新 mtime，产品源码与测试源码
+  混在一起取最大值——`isProductSourceFile` 的过滤虽已存在，却没有参与这一步，
+  于是「改测试」等价于「改产品」。
 - **影响面**：只在「改过测试文件、未重建 Core」时触发，`npm run package` /
   `npm run package:app` 会直接失败；`npm run build:core`（重建）能绕过，但代价是几分钟的
   全平台交叉编译，而产物内容根本没变。
@@ -73,7 +63,7 @@ status: 已修
 
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
-| 复现（修复前） | `npm run package` | 红 | `[verify-core] resources/core/x64-win32/tuxedo-cat-core.exe 比 Rust 源码旧`，而该产物指纹与源码重算值一致 |
+| 复现（修复前） | `npm run package` | 红 | `[verify-core] resources/core/x64-win32/<core.binaryName>.exe 比 Rust 源码旧`，而该产物指纹与源码重算值一致 |
 | 回归用例（修复前） | `npm run test:unit -- core-fingerprint` | 红 | `FAIL verify-core-artifacts 导出 productSourceMtime`，26 通过 / 1 失败 |
 | 回归用例（修复后） | `npm run test:unit -- core-fingerprint` | 绿 | 30 通过 / 0 失败（RT-1 / RT-2 逐条通过） |
 | 闸门本体（修复后） | `node scripts/verify-core-artifacts.mjs` | 绿 | `产物齐全且比 Rust 源码新（profile release）：x64-win32 / arm64-win32 / x64-linux / arm64-linux` |
