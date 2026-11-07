@@ -223,6 +223,57 @@ runTests('coreFingerprint', async () => {
     !/fileName\.endsWith\('_tests\.rs'\)/.test(verifySource),
   );
 
+  // RT-1 / RT-2（specs/defects/verify-core-mtime-gate-counts-test-sources）：
+  // mtime 闸门的源码扫描必须与指纹同一口径——只改测试文件不把产物判过期，改产品源码
+  // 仍然要报。这里给扫描根注入人造 mtime，断言它只把产品源码算进「最新时间」。
+  const mtimeGate = runEsm(
+    `const m = await import('./scripts/verify-core-artifacts.mjs');
+     if (typeof m.productSourceMtime !== 'function') {
+       console.log(JSON.stringify({ exported: false }));
+     } else {
+       // 10 = 测试文件专有的 mtime，99 = 产品源码的 mtime。
+       // 扫描根若把 _tests.rs 算进来，结果就是 10 之后的较大值，而不是 99。
+       const fake = {
+         'core-rs/src/engine_tests.rs': 10,
+         'core-rs/src/test_support.rs': 10,
+         'core-rs/tests/parent_watchdog.rs': 10,
+         'core-rs/fixtures/compact.json': 10,
+         'core-rs/src/main.rs': 99,
+         'core-rs/src/rewind.rs': 50,
+       };
+       const seen = [];
+       const newest = m.productSourceMtime({
+         listFiles: () => Object.keys(fake),
+         mtimeOf: (rel) => { seen.push(rel); return fake[rel]; },
+       });
+       console.log(JSON.stringify({ exported: true, newest, seen }));
+     }`,
+  );
+  check('verify-core-artifacts 导出 productSourceMtime（mtime 闸门的源码扫描根）', mtimeGate.status === 0);
+  if (mtimeGate.status === 0) {
+    let parsed: { exported?: boolean; newest?: number; seen?: string[] } = {};
+    try {
+      parsed = JSON.parse(mtimeGate.stdout.trim() || '{}');
+    } catch {
+      parsed = {};
+    }
+    check('productSourceMtime 已导出', parsed.exported === true);
+    check(
+      'RT-1：只改测试文件不推高源码最新时间（_tests.rs / test_support.rs / tests/ / fixtures/ 不计入）',
+      parsed.newest === 99,
+    );
+    check(
+      'RT-2：产品源码仍然计入源码最新时间（改产品源码会让产物判过期）',
+      (parsed.seen ?? []).includes('core-rs/src/main.rs') &&
+        (parsed.seen ?? []).includes('core-rs/src/rewind.rs'),
+    );
+    for (const rel of parsed.seen ?? []) {
+      if (/engine_tests\.rs|test_support\.rs|parent_watchdog\.rs|compact\.json/.test(rel)) {
+        console.log(`     不应计入源码最新时间的文件：${rel}`);
+      }
+    }
+  }
+
   // ---------- 6. 读法不影响指纹值（并发读 + 缓存） ----------
   // 预热一次（并发读）后连算两轮：缓存命中后值必须逐位相同，不同目标互不相同。
   const fingerprints = runEsm(
