@@ -103,27 +103,6 @@ const REQUIRED_CORES = (ASAN ? asanDefaultTargets().map((target) => target.dir) 
   },
 );
 
-/** 目录（或文件）树里最新的修改时间；不存在的路径返回 0。`include` 过滤文件名 */
-function newestMtime(target, include = () => true) {
-  if (!existsSync(target)) return 0;
-  const stat = statSync(target);
-  if (!stat.isDirectory()) return stat.mtimeMs;
-  let newest = stat.mtimeMs;
-  const stack = [target];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const full = join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-      } else if (include(entry.name)) {
-        newest = Math.max(newest, statSync(full).mtimeMs);
-      }
-    }
-  }
-  return newest;
-}
-
 /** 展示用相对路径 */
 function show(target) {
   return relative(repoRoot, target).split('\\').join('/');
@@ -134,10 +113,59 @@ function fileDigest(target) {
   return createHash('sha256').update(readFileSync(target)).digest('hex');
 }
 
+/**
+ * mtime 闸门的源码扫描根：**只算产品源码**的最新修改时间。
+ *
+ * 判据必须与构建指纹同源（`isProductSourceFile`）：只改 `*_tests.rs` / `test_support.rs` /
+ * `tests/` / `fixtures/` 不改变 Core 二进制，却会把 mtime 推到产物之后，让内容完全正确的
+ * 产物被判过期（specs/defects/verify-core-mtime-gate-counts-test-sources）。
+ *
+ * 扫的是 `RUST_SOURCES`（`core-rs/src` 与两个清单）——这是给出「源码改在什么时候、该跑
+ * 哪条重建命令」的快速诊断，覆盖面窄于指纹输入集是安全的：`layerfs/` / `build.rs` 的改动
+ * 由指纹重算那一关兜住。
+ *
+ * `deps` 是测试注入点：默认读真实文件系统，用例传人造表就能断言过滤口径而不必动盘。
+ */
+export function productSourceMtime(deps = {}) {
+  const listFiles = deps.listFiles ?? listSourceFilesShallow;
+  const mtimeOf = deps.mtimeOf ?? ((rel) => statSync(join(repoRoot, rel)).mtimeMs);
+  let newest = 0;
+  for (const rel of listFiles()) {
+    if (!isProductSourceFile(rel)) continue;
+    newest = Math.max(newest, mtimeOf(rel));
+  }
+  return newest;
+}
+
+/**
+ * `RUST_SOURCES` 展开成的文件清单（相对仓库根的 POSIX 路径）。
+ *
+ * 目录递归到底，文件原样收；`isProductSourceFile` 的过滤交给 `productSourceMtime`，
+ * 这样「收哪些路径」与「哪些算产品源码」两件事各自只有一份实现。
+ */
+function listSourceFilesShallow() {
+  const out = [];
+  const walk = (relPath) => {
+    const absolute = join(repoRoot, relPath);
+    if (!existsSync(absolute)) return;
+    if (!statSync(absolute).isDirectory()) {
+      out.push(relPath);
+      return;
+    }
+    for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+      // target/ 与 target-<triple>/ 是 cargo 产物，扫进去永远比 exe 新
+      if (/^target(-|$)/.test(entry.name)) continue;
+      const child = `${relPath}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else out.push(child);
+    }
+  };
+  for (const entry of RUST_SOURCES) walk(entry);
+  return out;
+}
+
 async function main() {
-  const sourceMtime = Math.max(
-    ...RUST_SOURCES.map((entry) => newestMtime(join(repoRoot, entry), isProductSourceFile)),
-  );
+  const sourceMtime = productSourceMtime();
   // 指纹的源码树哈希先算一遍（并发读）：下面每个平台都要重算一次指纹，
   // 命中这份缓存后只花哈希时间，不再重复读盘（FUSE 上每次 open 都是一次往返）。
   await primeSourceTreeHash();
@@ -251,7 +279,15 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(`[verify-core] ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+// 只有被直接执行时才跑校验；被测试 import 时只暴露纯函数（否则导入即执行打包闸门，
+// 测试环境里缺 rustc / 产物就直接 exit 1，用例拿不到表达式）。
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(`[verify-core] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}

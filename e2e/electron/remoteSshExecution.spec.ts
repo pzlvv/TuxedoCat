@@ -683,8 +683,8 @@ async function openRemoteTerminal(): Promise<import('@playwright/test').Page> {
     const raw = await app!.evaluateInMain('(function(){return String(globalThis.__menus.length);})()');
     return Number((raw as { result?: { result?: { value?: string } } })?.result?.result?.value ?? 0);
   }, { timeout: 15_000 }).toBe(1);
-  // 条目顺序：关闭 / 关闭所有空闲会话 / 关闭其它所有工作区 / 分隔线 / 打开终端
-  await clickLastMenuItem(4);
+  // 条目顺序：关闭 / 关闭所有空闲会话 / 关闭其它所有工作区 / 分隔线 / 复制工作区路径 / 打开终端
+  await clickLastMenuItem(5);
   return app!.waitForPage('/terminal/', 60_000);
 }
 

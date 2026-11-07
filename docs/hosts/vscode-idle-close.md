@@ -22,8 +22,8 @@ last_reviewed: 2026-10-18
 对话从非空闲回到空闲，以及对话处于前台期间的每次巡检。
 
 回收只在 VS Code 单视图宿主生效；多视图宿主（Electron）不参与自动回收（桌面端的
-手动批量入口「关闭所有空闲会话」是显式动作，见
-[docs/hosts/electron-multi-workspace.md 第 8.2 节](electron-multi-workspace.md#82-关闭)）。
+手动批量入口——标签页右键「关闭所有空闲会话」与主菜单「关闭所有空闲对话」——是显式
+动作，见 [docs/hosts/workspace-close-menus.md](workspace-close-menus.md)）。
 
 ---
 
@@ -112,7 +112,7 @@ idleCloseHandler(sessionId)
 - 未注入关闭回调时不关闭任何会话。
 - 「活动会话」不落进 core：前台会话由 UI 持有并注入。
 - 多视图宿主不启用本能力（Electron 的手动批量关闭是显式动作，不属自动回收，见
-  [docs/hosts/electron-multi-workspace.md 第 8.2 节](electron-multi-workspace.md#82-关闭)）。
+  [docs/hosts/workspace-close-menus.md](workspace-close-menus.md)）。
 
 ---
 

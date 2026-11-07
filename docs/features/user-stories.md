@@ -68,7 +68,7 @@ last_reviewed: 2026-10-20
 | `e2e/terminal/terminalUi.spec.ts` | US-54（首标签自动建立的页面侧）、US-55（标签新建 / 切换 / 关闭、断开态覆盖层与重连、主题跟随、复制粘贴） | terminal 页面 |
 | `e2e/webview/userChoicePaging.spec.ts` | US-58（分页进度 / 单选翻页 / 多选与其他并存 / Enter 语义 / answers 载荷） | webview UI |
 | `e2e/webview/spinModeInput.spec.ts` | US-39（spin 输入禁用的渲染层：禁用 + placeholder + 停止按钮转黄 + 单向不退出） | webview UI |
-| `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 他区忙碌汇总确认） | Electron 整应用 |
+| `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 复制工作区路径 / 他区忙碌汇总确认） | Electron 整应用 |
 | `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成 / 离场完成后重开绿灯） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 | `e2e/electron/completionAfterRestart.spec.ts` | US-65（离场完成的未读绿灯：重开按 `unreadCompletions` 补武装 / 打开即阅读清除） | Electron 整应用（本地车道，meta.json 计数预置） |
 | `e2e/pycharm/pluginPackage.spec.ts` | US-68（zip 内 jar / 四平台 Core + fingerprint + ripgrep / webview 资源 / 图标 / plugin.xml 身份派生 / 无外部运行时引用） | PyCharm 插件分发（本地车道） |
@@ -87,7 +87,9 @@ SettingsAndLockTest 锁定读写语义与跨进程锁格式，跨宿主实测未
 `e2e/webview/spinModeInput.spec.ts` 覆盖，`meta.json` 的 `workMode` 落盘与恢复、SpinLoop 与
 子代理编排（验收 4）由 core-rs `engine_tests` 锁定；US-48 的原生菜单弹窗外观——菜单条目、
 置灰终态与点击动作由 `e2e/electron/tabContextMenu.spec.ts` 桩住 `Menu.buildFromTemplate`
-断言，只有弹窗渲染人工验证；US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与
+断言，只有弹窗渲染人工验证；主菜单「关闭所有空闲对话」（跨全部打开工作区）由自绘菜单页
+驱动（`e2e/electron/desktopShell.spec.ts`），忙闲判定与逐会话确认与右键同名动作同源，口径由
+`src/test/workspaceBatchClose.test.ts` 锁定；US-50 的 Core 侧整链（真实 Search / Fetch 调用）——依赖外网与
 DeepSeek 账户，由 `core-rs` 单测（参数校验 / 请求构造 / 结果拼装 / 错误映射 / 本地一_shot
 假服务器）与 `engine_tests` 的工具注入用例覆盖；US-54 的连接复用、主机密钥变更告警、
 断开与重连、关闭工作区联动关窗——打开终端 / 首标签连上远端 shell / 标题含工作区路径 /

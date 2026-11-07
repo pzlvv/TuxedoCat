@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
-import path from 'node:path';
+import net from 'node:net';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import {
   launchApp, makeWorkspace, mainEval, waitForMessageBox, clickMessageBoxButton, messageBoxText,
 } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
+import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 
 /**
  * US-48 标签页右键菜单
@@ -18,8 +19,8 @@ import type { MockLlm } from '../helpers/mockLlmServer';
  * `click()` 驱动动作——与 `fileExplorer.spec.ts` 桩 `shell.showItemInFolder` 同一手法。
  *
  * 覆盖：条目集合与顺序、`关闭其它所有工作区` 的单/多工作区置灰、`关闭所有空闲会话`
- * 的忙闲置灰、`打开命令行` 的快捷键同源展示、`关闭` 与 `关闭其它所有工作区` 的动作
- * （后者在任一他区忙碌时先弹汇总确认，取消则不动）。
+ * 的忙闲置灰、`复制工作区路径` 的剪贴板内容、`打开命令行` 的快捷键同源展示、
+ * `关闭` 与 `关闭其它所有工作区` 的动作（后者在任一他区忙碌时先弹汇总确认，取消则不动）。
  */
 
 let mockLlm: MockLlm;
@@ -108,6 +109,23 @@ async function clickMenuItem(index: number): Promise<void> {
   if (result !== 'ok') throw new Error(`菜单条目 ${index} 无点击回调（${result}）`);
 }
 
+/** 替换主进程剪贴板，记录 writeText 调用（原生剪贴板内容无法直接断言） */
+async function stubClipboard(): Promise<void> {
+  const injected = await mainEval<string>(app!, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    globalThis.__clipboardWrites = [];
+    e.clipboard.writeText = (text) => { globalThis.__clipboardWrites.push(String(text)); return true; };
+    return 'ok';
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  if (injected !== 'ok') throw new Error(`剪贴板注入失败：${injected}`);
+}
+
+async function clipboardWrites(): Promise<string[]> {
+  return JSON.parse(
+    await mainEval<string>(app!, 'JSON.stringify(globalThis.__clipboardWrites)'),
+  ) as string[];
+}
+
 /** 发一条消息并等到助手回复落屏（把会话推进到「有对话且空闲」的稳定态）。
  * 60s：一轮完整轮次（core → mock LLM → 流式渲染）在慢机器负载下可超 30s */
 async function sendOneTurn(workspaceIncludes: string, text: string): Promise<void> {
@@ -127,9 +145,9 @@ test('US-48 单工作区本地：条目集合、置灰终态与「打开命令�
   await sendOneTurn('e2e-us48-single', '准备一下');
 
   const items = await rightClickTab('e2e-us48-single');
-  // 条目与顺序：关闭 / 关闭所有空闲会话 / 关闭其它所有工作区 / 分隔线 / 打开命令行
+  // 条目与顺序：关闭 / 关闭所有空闲会话 / 关闭其它所有工作区 / 分隔线 / 复制工作区路径 / 打开命令行
   expect(items.map((i) => i.label)).toEqual([
-    '关闭', '关闭所有空闲会话', '关闭其它所有工作区', null, '打开命令行',
+    '关闭', '关闭所有空闲会话', '关闭其它所有工作区', null, '复制工作区路径', '打开命令行',
   ]);
   expect(items[3].type).toBe('separator');
   // 只有一个工作区：没有「其它」可关 → 置灰是终态
@@ -137,8 +155,8 @@ test('US-48 单工作区本地：条目集合、置灰终态与「打开命令�
   // 刚跑完一轮、会话空闲 → 可批量关闭
   expect(items[1].enabled).toBe(true);
   // 本地工作区是「打开命令行」分支，目录存在即可用，且尾随快捷键取宿主当前值
-  expect(items[4].enabled).toBe(true);
-  expect(items[4].accelerator).toBe('Ctrl+Alt+T');
+  expect(items[5].enabled).toBe(true);
+  expect(items[5].accelerator).toBe('Ctrl+Alt+T');
 });
 
 test('US-48 会话忙碌时「关闭所有空闲会话」置灰', async () => {
@@ -214,4 +232,55 @@ test('US-48 他区忙碌时「关闭其它所有工作区」先弹汇总确认�
   // 取消：两个标签都还在
   await clickMessageBoxButton(box, 1);
   await expect(tabs).toHaveCount(2, { timeout: 10_000 });
+});
+
+test('US-48 复制工作区路径：本地写该目录绝对路径，远程只写远端目录串', async () => {
+  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
+  const localDir = await makeWorkspace({ 'a.md': 'A' }, 'e2e-us48-copy');
+  tempDirs.push(localDir);
+
+  // 远程项用黑洞端口的 SSH 引用：复制路径不依赖连接是否可用（不可连时路径正是
+  // 排查要用的信息），按「打开集合恢复」的同一形态预置，避免真去连远端
+  const blackhole = net.createServer((socket) => { socket.on('error', () => undefined); });
+  const blackholePort = await new Promise<number>((resolve, reject) => {
+    blackhole.listen(0, '127.0.0.1', () => resolve((blackhole.address() as net.AddressInfo).port));
+    blackhole.on('error', reject);
+  });
+  const remoteRef: SerializedWorkspaceRef = {
+    scheme: 'ssh',
+    path: '/home/e2e/copy-path',
+    endpoint: {
+      host: '127.0.0.1',
+      port: blackholePort,
+      user: 'e2e',
+      auth: { kind: 'sshPassword', password: 'e2e-not-used' },
+    },
+  };
+  app = await launchApp({
+    repoRoot, mockLlm, workspaceDir: localDir,
+    openWorkspaces: [localDir, remoteRef], activeWorkspace: localDir,
+  });
+  try {
+    await installMenuStub();
+    await stubClipboard();
+    const tabs = (await app.titlebarPage()).locator('#workspaceTabs [role="tab"]');
+    await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+
+    // 本地：复制工作区路径 = 该目录的绝对路径
+    const localItems = await rightClickTab('e2e-us48-copy');
+    expect(localItems[4].label).toBe('复制工作区路径');
+    expect(localItems[4].enabled).toBe(true);
+    await clickMenuItem(4);
+    await expect.poll(() => clipboardWrites(), { timeout: 5_000 }).toHaveLength(1);
+    expect((await clipboardWrites())[0]).toBe(localDir);
+
+    // 远程：只复制远端目录串，不带 scheme://user@host——要能直接粘进远端 shell
+    const remoteItems = await rightClickTab('copy-path');
+    expect(remoteItems[4].label).toBe('复制工作区路径');
+    await clickMenuItem(4);
+    await expect.poll(() => clipboardWrites(), { timeout: 5_000 }).toHaveLength(2);
+    expect((await clipboardWrites())[1]).toBe(remoteRef.path);
+  } finally {
+    blackhole.close();
+  }
 });

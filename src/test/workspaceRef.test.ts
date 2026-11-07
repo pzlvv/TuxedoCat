@@ -12,6 +12,7 @@ import {
   remoteWorkspaceRef,
   sameWorkspaceRef,
   workspaceEndpointKey,
+  workspaceClipboardPath,
   workspaceRefDisplayPath,
   workspaceRefKey,
   type WorkspaceEndpoint,
@@ -56,6 +57,12 @@ async function run(): Promise<void> {
   // 展示路径
   check('本地展示路径就是路径', workspaceRefDisplayPath(local) === 'D:/repo' || workspaceRefDisplayPath(local).endsWith('repo'));
   check('远程展示路径带 scheme://user@host', workspaceRefDisplayPath(remote) === 'ssh://root@172.20.1.5/home/dev/repo');
+
+  // 复制路径（「复制工作区路径」写剪贴板的值）：两端都只给目录本身，
+  // 远程不带 scheme://user@host——粘进该工作区的终端里要能直接用
+  check('本地复制路径就是目录路径', workspaceClipboardPath(local) === local.path);
+  check('远程复制路径是远端目录串', workspaceClipboardPath(remote) === '/home/dev/repo');
+  check('远程复制路径不含连接目标前缀', !workspaceClipboardPath(remote).startsWith('ssh://'));
 
   // 空引用
   check('空引用判空', isEmptyWorkspaceRef(emptyWorkspaceRef()));

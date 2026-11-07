@@ -54,6 +54,7 @@ import {
   remoteWorkspaceRef,
   sameRemotePath,
   sameWorkspaceRef,
+  workspaceClipboardPath,
   workspacePathMatches,
   workspaceRefDisplayPath,
   workspaceRefKey,
@@ -85,8 +86,10 @@ import { backfillCompletionAttention, diffCompletionAttention, pickReadCompletio
 import { SleepBlocker } from './powerSaveBlocker.js';
 import {
   selectClosableIdleSessions,
+  selectClosableIdleSessionsAcrossWorkspaces,
   selectWorkspaceLoadedSessions,
   summarizeOtherWorkspaces,
+  type OpenWorkspaceSessionFacts,
   type WorkspaceSessionFacts,
 } from './workspaceBatchClose.js';
 import {
@@ -2778,6 +2781,17 @@ function buildMenuSections(): MenuSectionDef[] {
     enabled: canOpenTerminalForActiveWorkspace(),
     run: () => { openTerminalForActiveWorkspace(); },
   };
+  // 关闭所有空闲对话：范围是**整个打开集合**（不是活动工作区），与标签页右键
+  // 「关闭所有空闲会话」同一份忙闲判定（core 的 sessionBusyLevel，waiting 也算忙），
+  // 只是候选跨全部已打开工作区。菜单条目恒可用：自绘菜单页是按 setupMenu 时刻的
+  // 快照生成的缓存页面，运行时状态变化不会重建（重建还会把打开中的菜单关掉），
+  // 按快照置灰会留下「会话已空闲、条目仍灰着点不动」的陈旧态；点击时刻重新收集，
+  // 没有可关的会话就 no-op（设计允许的瞬时状态，不报错）。
+  const closeAllIdleItem: MenuItemDef = {
+    id: 'main.closeAllIdleConversations',
+    label: tt('关闭所有空闲对话', 'Close All Idle Conversations'),
+    run: () => { void closeAllIdleConversations(); },
+  };
   // 偏好设置：Electron 专属能力（主题 / 唤醒快捷键 / 提示音都是宿主本地偏好，
   // webview 里改不了），统一收进一个自绘设置窗口（见 openPreferenceDialog）
   const preferenceItem: MenuItemDef = {
@@ -2809,6 +2823,7 @@ function buildMenuSections(): MenuSectionDef[] {
         nextTabItem,
         prevTabItem,
         openTerminalItem,
+        closeAllIdleItem,
         { type: 'separator' },
         preferenceItem,
         { type: 'separator' },
@@ -2831,6 +2846,7 @@ function buildMenuSections(): MenuSectionDef[] {
       nextTabItem,
       prevTabItem,
       openTerminalItem,
+      closeAllIdleItem,
       { type: 'separator' },
       preferenceItem,
       { type: 'separator' },
@@ -3347,12 +3363,47 @@ function collectWorkspaceSessionFacts(ref: WorkspaceRef): WorkspaceSessionFacts[
 }
 
 /**
+ * 收集打开集合里全部工作区的已打开会话事实（主菜单「关闭所有空闲对话」用）。
+ *
+ * 候选与标签页右键同一来源（`ChatViewManager.getLoadedSessionIds`，含子代理对话），
+ * 但跨**整个打开集合**；范围由调用方传入的打开集合 id 收敛——视图的归属已从
+ * 打开集合里消失（关闭工作区的中途）时不算，避免关到正在拆的工作区。
+ */
+function collectOpenWorkspacesSessionFacts(): OpenWorkspaceSessionFacts[] {
+  const views = chatViews;
+  if (!views) return [];
+  return views.getLoadedSessionIds().map((sessionId) => ({
+    sessionId,
+    workspaceId: views.getWorkspaceForKey(sessionId),
+    busy: sessionIsBusy(sessionId),
+  }));
+}
+
+/**
+ * 主菜单「关闭所有空闲对话」：跨打开集合逐会话走既有关闭入口。
+ *
+ * 与标签页右键同名项同一份语义——判定与执行分离，判定后转忙的会话在关闭时刻
+ * 落入既有逐会话忙碌确认（确认则关、取消则跳过继续其余）。没有可关的会话时
+ * no-op（见 `buildMenuSections` 里条目恒可用的理由）。
+ */
+async function closeAllIdleConversations(): Promise<void> {
+  const ids = selectClosableIdleSessionsAcrossWorkspaces(
+    collectOpenWorkspacesSessionFacts(),
+    openWorkspaces.map((ref) => refKey(ref)),
+  );
+  for (const sid of ids) {
+    await closeConversationWithConfirm(sid);
+  }
+}
+
+/**
  * 标签页右键菜单（原生 OS 菜单，与加号的 popupWorkspaceMenu 同形态；原生菜单无法被
  * Playwright 驱动，交互按 US-48 豁免人工验证）：关闭 / 关闭所有空闲会话（范围＝右键
  * 工作区里已打开的对话视图，含子代理对话，当前选中的对话空闲也包含在内）/ 关闭其它
- * 所有工作区（任一他区忙碌先弹一次汇总确认）/ 打开命令行（仅本地，目录已不存在置灰）
- * 或打开终端（远程工作区，见 docs/hosts/electron-multi-workspace.md 第 14 节），
- * 条目尾随显示「打开终端」快捷键的当前值。置灰是终态，不在点击后再报错。
+ * 所有工作区（任一他区忙碌先弹一次汇总确认）/ 复制工作区路径 / 打开命令行（仅本地，
+ * 目录已不存在置灰）或打开终端（远程工作区，见
+ * docs/hosts/electron-multi-workspace.md 第 14 节），条目尾随显示「打开终端」快捷键
+ * 的当前值。置灰是终态，不在点击后再报错。
  */
 function popupTabContextMenu(ref: WorkspaceRef): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -3394,6 +3445,15 @@ function popupTabContextMenu(ref: WorkspaceRef): void {
       },
     },
     { type: 'separator' },
+    // 复制工作区路径：本地复制该目录的绝对路径，远程只复制**远端目录路径**（不带
+    // scheme://user@host 前缀）——粘进该工作区的终端 / 远端 shell 里可直接用，与侧栏
+    // 文件浏览器「复制完整路径」的远程口径一致
+    // （docs/hosts/electron-multi-workspace.md 第 5 节）。目录已不存在 / 远程不可连时
+    // 照常可复制：此时路径正是排查要用的信息。
+    {
+      label: tt('复制工作区路径', 'Copy Workspace Path'),
+      click: () => { clipboard.writeText(workspaceClipboardPath(ref)); },
+    },
     // 终端入口按端点分叉（docs/hosts/electron-multi-workspace.md 第 14.1 节）：本地是
     // 系统命令行，远程是该工作区的 SSH 终端窗口；两者互斥，一张标签只出现其一。
     // 条目尾随显示 openTerminal 行的当前快捷键（specs/021），与主菜单「打开终端」条目
@@ -4954,7 +5014,7 @@ function setupIpc(): void {
     if (typeof p === 'string' && p) void closeWorkspace(p);
   });
 
-  // 标签页右键：弹出该工作区的上下文菜单（关闭 / 批量关闭 / 打开命令行）
+  // 标签页右键：弹出该工作区的上下文菜单（关闭 / 批量关闭 / 复制工作区路径 / 打开命令行）
   ipcMain.on('titlebar:tab-context-menu', (event, p: unknown) => {
     if (!isTitlebarSender(event.sender)) return;
     if (typeof p !== 'string' || !p) return;

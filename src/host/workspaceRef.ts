@@ -180,6 +180,18 @@ export function workspaceRefDisplayPath(ref: WorkspaceRef): string {
   return `${ref.scheme}://${authority}${ref.path}`;
 }
 
+/**
+ * 「复制工作区路径」写进剪贴板的值：两种工作区都是**目录本身**。
+ *
+ * 本地是宿主上的目录绝对路径；远程是目标机器上的目录串（不带 `scheme://user@host`
+ * 前缀）——复制出来要能直接粘进该工作区的终端 / 远端 shell，与侧栏文件浏览器
+ * 「复制完整路径」的远程口径一致（docs/hosts/electron-multi-workspace.md 第 5 节）。
+ * 展示形态另有 `workspaceRefDisplayPath`（要辨识是哪台机器），两处口径不同、不互相复用。
+ */
+export function workspaceClipboardPath(ref: WorkspaceRef): string {
+  return ref.path;
+}
+
 /** 空工作区引用（宿主未打开任何目录时的占位；path 为空串） */
 export function emptyWorkspaceRef(scheme = 'file'): WorkspaceRef {
   return { scheme, path: '', endpoint: null };
