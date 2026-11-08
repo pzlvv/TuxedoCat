@@ -68,7 +68,9 @@ system prompt 与工具 schema 的 `detach` 说明保持一句防护性口径，
 ### 3.1 实现对照
 
 - 检测纯函数：`tools.rs` 的 `find_detach_construct` 返回命中的构造名供两面文案点名。
-  段首词经 `permission::split_by_separators`（引号感知拆段）+ `extract_command_name`
+  两条判定都跑在 `mask_heredoc_bodies` 产出的屏蔽副本上：heredoc 正文（含终止行）被
+  替换为空格、保留换行，正文里的 `&` 与段首词不参与判定。段首词经
+  `permission::split_by_separators`（引号感知拆段）+ `extract_command_name`
   取首词；`&` 走独立的引号感知扫描，`&&` / `&>` / `&>>` / `>&` 不算后台化。段首词
   优先于 `&`（`nohup server &` 点名 `nohup`）。`Start-Process` 按 PowerShell 大小写
   不敏感口径比对；`start` 仅当第二 token 恰为 `/b`（大小写不敏感）才命中。
@@ -99,11 +101,14 @@ Bash: command uses `nohup`.
 
 - **字符串检测的边界**（以下情形均放行）：脚本内藏构造（`bash deploy.sh` 内部的
   `nohup`）；`$()` / 反引号命令替换内部整体跳过；eval / `sh -c` 的字符串参数内部
-  不展开；`ssh` 远端命令串；换行不是分隔符，非首段的段首词不参与段首词判定。
+  不展开；`ssh` 远端命令串；heredoc 正文（`<<WORD` / `<<'WORD'` / `<<-WORD`，含终止
+  行）整体屏蔽——正文对 shell 是字面文本，终止行之后的命令照常判定，`<<<` here-string
+  与引号内 `<<` 不触发屏蔽；换行不是分隔符，非首段的段首词不参与段首词判定。
   威胁模型是非对抗性误用——检测拦的是模型的顺手写法，不防御有意绕过。
 - **误报口径**：未加引号 URL 中的 `&` 对 shell 就是后台控制操作符，拦截并点名是
-  正确行为、不算误报；其余残余误报表现为工具失败报错，模型可改写重试——温和失败，
-  无数据损失，不做白名单。
+  正确行为、不算误报。检测是纯词法扫描，两处已知误报（`#` 注释里的 `&`、管道双流
+  操作符 `|&`）仍被点名 `&`，表现为工具失败报错、模型可改写重试——温和失败，无数据
+  损失，不做白名单。
 - **判据口径差异**：`is_destructive_command`（`dd` / `mkfs` 等）只看第一个子命令，
   detach 逃生判据扫描全命令——两者并存于 `is_operation_risky`，口径差异是刻意的。
 - **豁免进程持有前台管道**：与现状同口径，`detach: true` 不改变管道 EOF 判据。

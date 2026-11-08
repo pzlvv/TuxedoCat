@@ -1254,8 +1254,12 @@ fn parse_sleep_arg_ms(token: &str) -> Option<u64> {
 /// `nohup`，裸 `&` 才点名 `&`。段首词判定——`nohup` / `setsid` / `disown` 精确匹配；
 /// `Start-Process` 按 PowerShell 大小写不敏感口径；`start` 仅当第二 token 恰为
 /// `/b`（cmd 后台化开关，大小写不敏感）才命中，bash 下裸 `start` 不误拦。
+///
+/// 两条判定都跑在 `mask_heredoc_bodies` 的屏蔽副本上：heredoc 正文对 shell 是字面
+/// 文本，不在控制操作符位（FR-001），体内的 `&` / 段首词不参与判定。
 pub(crate) fn find_detach_construct(command: &str) -> Option<&'static str> {
-    for segment in crate::permission::split_by_separators(command) {
+    let masked = mask_heredoc_bodies(command);
+    for segment in crate::permission::split_by_separators(&masked) {
         let first = extract_command_name(&segment);
         let matched = match first.to_lowercase().as_str() {
             "nohup" => Some("nohup"),
@@ -1275,10 +1279,180 @@ pub(crate) fn find_detach_construct(command: &str) -> Option<&'static str> {
             return matched;
         }
     }
-    if scan_background_ampersand(command) {
+    if scan_background_ampersand(&masked) {
         return Some("&");
     }
     None
+}
+
+/// 把 heredoc 正文（含终止行）替换成空格、保留换行的屏蔽副本。
+///
+/// 结构扫描口径与 `scan_background_ampersand` 一致：引号内与 `$()` 内不认操作符
+/// （`$()` 内部是既有盲区）；另外跳过 `#` 起头的词尾注释，避免注释里的 `<<` 把后续
+/// 命令行误当正文吞掉（造成漏判）。`<<<` here-string 不是 heredoc。
+///
+/// 同一行可以挂多个 heredoc（`cmd <<A <<B`），正文按出现顺序连续排列——因此待处理
+/// 的定界符排队，遇到换行后逐个消费。
+fn mask_heredoc_bodies(command: &str) -> String {
+    let chars: Vec<char> = command.chars().collect();
+    let n = chars.len();
+    let mut out = chars.clone();
+    // (定界符, 是否 `<<-` 的 tab 剥离口径)
+    let mut pending: Vec<(String, bool)> = Vec::new();
+    let mut i = 0;
+
+    while i < n {
+        let ch = chars[i];
+        if ch == '\'' || ch == '"' || ch == '`' {
+            i = scan_quoted_span(&chars, i, ch);
+            continue;
+        }
+        if ch == '$' && i + 1 < n && chars[i + 1] == '(' {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < n && depth > 0 {
+                let inner = chars[j];
+                if inner == '\'' || inner == '"' || inner == '`' {
+                    j = scan_quoted_span(&chars, j, inner);
+                    continue;
+                }
+                if inner == '(' {
+                    depth += 1;
+                } else if inner == ')' {
+                    depth -= 1;
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        if ch == '#' && is_comment_start(&chars, i) {
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '\\' && i + 1 < n {
+            i += 2;
+            continue;
+        }
+        if ch == '<' && i + 1 < n && chars[i + 1] == '<' {
+            // `<<<` 是 here-string；`<<` 后面不接定界符（如 `a < <b`）不是 heredoc
+            if i + 2 < n && chars[i + 2] != '<' {
+                if let Some((delimiter, strip_tabs, end)) = parse_heredoc_operator(&chars, i + 2) {
+                    pending.push((delimiter, strip_tabs));
+                    i = end;
+                    continue;
+                }
+            }
+            i += 2;
+            continue;
+        }
+        if ch == '\n' && !pending.is_empty() {
+            let mut cursor = i + 1;
+            for (delimiter, strip_tabs) in std::mem::take(&mut pending) {
+                cursor = skip_heredoc_body(&chars, &mut out, cursor, &delimiter, strip_tabs);
+                if cursor >= n {
+                    break;
+                }
+            }
+            i = cursor;
+            continue;
+        }
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// 从 `start`（`#` 位置）判断它是否起头一段注释。仅当位于命令开头或紧跟
+/// 未引号包裹的空白时才成立——`a=1#b`、`file#1` 里的 `#` 是普通字符。
+fn is_comment_start(chars: &[char], start: usize) -> bool {
+    if start == 0 {
+        return true;
+    }
+    crate::util::is_js_whitespace(chars[start - 1])
+}
+
+/// 解析 `<<` 之后的定界符：可选 `-`（tab 剥离）、可选空白、引号 / 无引号单词。
+/// 返回（定界符原文, 是否 `<<-`, 操作符之后的游标）；定界符为空或不合法返回 `None`。
+fn parse_heredoc_operator(chars: &[char], mut i: usize) -> Option<(String, bool, usize)> {
+    let n = chars.len();
+    let mut strip_tabs = false;
+    if i < n && chars[i] == '-' {
+        strip_tabs = true;
+        i += 1;
+    }
+    while i < n && (chars[i] == ' ' || chars[i] == '\t') {
+        i += 1;
+    }
+    let mut delimiter = String::new();
+    while i < n {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < n {
+            // 反斜杠转义也去引号语义（`<<\EOF` 的定界符是 EOF）
+            delimiter.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            let end = scan_quoted_span(chars, i, ch);
+            // 去掉包裹引号本身，保留其内容（`<<'EOF'` 与 `<<EOF` 定界符相同）
+            let inner_end = if end > i + 1 { end - 1 } else { end };
+            delimiter.extend(&chars[i + 1..inner_end.min(n)]);
+            i = end;
+            continue;
+        }
+        if crate::util::is_js_whitespace(ch) || matches!(ch, ';' | '&' | '|' | '<' | '>' | '(' | ')') {
+            break;
+        }
+        delimiter.push(ch);
+        i += 1;
+    }
+    if delimiter.is_empty() {
+        return None;
+    }
+    Some((delimiter, strip_tabs, i))
+}
+
+/// 从 `start`（正文首字符）跳过一段 heredoc 正文，直到终止行（含）之后；跳过的内容
+/// 在 `out` 里被替换为空格。返回下一行的起点。终止行：`<<-` 允许前导 tab，其余情况
+/// 必须逐字等于定界符。
+fn skip_heredoc_body(
+    chars: &[char],
+    out: &mut [char],
+    start: usize,
+    delimiter: &str,
+    strip_tabs: bool,
+) -> usize {
+    let n = chars.len();
+    let mut i = start;
+    while i < n {
+        let mut line_end = i;
+        while line_end < n && chars[line_end] != '\n' {
+            line_end += 1;
+        }
+        let mut content_start = i;
+        if strip_tabs {
+            while content_start < line_end && chars[content_start] == '\t' {
+                content_start += 1;
+            }
+        }
+        let line: String = chars[content_start..line_end].iter().collect();
+        for slot in out.iter_mut().take(line_end).skip(i) {
+            if *slot != '\n' {
+                *slot = ' ';
+            }
+        }
+        let next = if line_end < n { line_end + 1 } else { n };
+        if line == delimiter {
+            return next;
+        }
+        if line_end >= n {
+            return n;
+        }
+        i = next;
+    }
+    n
 }
 
 /// 引号感知地扫描控制操作符 `&`（后台化）。扫描口径与
