@@ -580,21 +580,6 @@ impl Core {
 
     /// 会话当前是否空闲（未登记视为空闲）。
     /// 运行中的会话不伪造「会话中断」的取消结果。
-    /// 会话是否正在跑查询或压缩（回退守卫用，specs/039 FR-005）。
-    ///
-    /// 比 `session_is_idle` 窄：排队中的用户消息（`pending_user_message`）与后台任务
-    /// 都不阻止回退——回退只截断**已有**历史，与「还没轮到的那条消息」无关。
-    /// 会话不存在视为不忙（由调用方另行判存在性）。
-    pub fn session_is_rewind_blocked(&self, session_id: &str) -> bool {
-        match self.session_if_exists(session_id) {
-            None => false,
-            Some(state) => {
-                let state = state.lock().unwrap();
-                state.running || state.compacting
-            }
-        }
-    }
-
     pub fn session_is_idle(&self, session_id: &str) -> bool {
         match self.session_if_exists(session_id) {
             None => true,

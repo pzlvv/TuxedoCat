@@ -402,25 +402,40 @@ test('US-75 时间线「从这里继续」：确认后截断消息并回滚文�
   await chatPage.fill('textarea.input-textarea', '改文件 rewind-target.md');
   await chatPage.press('textarea.input-textarea', 'Enter');
 
-  // manual 模式：Edit 先弹确认框
+  // manual 模式：Edit 先弹确认框。确认框打开期间 `waiting` 为真 → 会话非 idle，
+  // 这时右键状态点，菜单项必须置灰（spec 039 FR-005：只有空闲对话能回退）。
   const overlay = chatPage.locator('.user-choice-overlay');
   await expect(overlay).toBeVisible({ timeout: 30_000 });
+  const timelineRows = chatPage.locator('.msg-timeline-item');
+  await expect(timelineRows.first()).toBeVisible({ timeout: 15_000 });
+  // 状态点在 li 的行内起点（圆点 10px / top 7.5px），右键坐标按 li 盒子换算
+  const DOT_POSITION = { x: 6, y: 13 };
+  await timelineRows.first().click({ button: 'right', position: DOT_POSITION });
+  const busyMenuItem = chatPage.getByText('从这里继续').first();
+  await expect(busyMenuItem).toBeVisible({ timeout: 10_000 });
+  // 查询在跑（`idle === false`）→ 菜单项置灰，title 给出原因（可能在跑的工具卡片
+  // 还没有节点身份，原因也可能是「不是对话节点」，两种都必须置灰并说明）
+  await expect(busyMenuItem).toBeDisabled({ timeout: 10_000 });
+  await expect(busyMenuItem).toHaveAttribute('title', /不能回退|不可回退/);
+  await chatPage.keyboard.press('Escape');
+
   await overlay.getByRole('button', { name: /允许/ }).first().click();
   await expect(chatPage.getByText('改完了。').first()).toBeVisible({ timeout: 30_000 });
   // 等本轮查询真正收尾：会话空闲才能回退（spec 039 FR-005 的忙守卫）
   await expect(chatPage.locator('button[title="终止"]')).toBeDisabled({ timeout: 20_000 });
   expect(fs.readFileSync(target, 'utf8')).toBe('改过的内容\n');
 
-  // 右键**工具卡片**节点（它有 core 认得的节点身份）；纯文本 assistant 节点在实时
-  // 流式渲染期还没有 JSONL uuid，菜单项会置灰（spec FR-001 的已知边界）
-  const timelineRows = chatPage.locator('.msg-timeline-item');
-  await expect(timelineRows.first()).toBeVisible({ timeout: 15_000 });
-  // 选带节点身份的时间线行（工具卡片；纯文本节点在实时流式期还没有 JSONL uuid）
+  // 只有状态点响应（spec 039 FR-001）：右键行内正文（圆点右侧的卡片内容）不弹菜单
   const toolRow = chatPage.locator('.msg-timeline-item[data-node-id]:not([data-node-id=""])').first();
   await expect(toolRow).toBeVisible({ timeout: 15_000 });
-  await toolRow.click({ button: 'right' });
+  await toolRow.click({ button: 'right', position: { x: 160, y: 13 } });
+  await expect(chatPage.getByText('从这里继续')).toHaveCount(0);
+
+  // 右键状态点才弹菜单
+  await toolRow.click({ button: 'right', position: DOT_POSITION });
   const menuItem = chatPage.getByText('从这里继续').first();
   await expect(menuItem).toBeVisible({ timeout: 10_000 });
+  await expect(menuItem).toBeEnabled();
 
   // 取消路径：消息与文件都不变
   await menuItem.click();
@@ -430,13 +445,16 @@ test('US-75 时间线「从这里继续」：确认后截断消息并回滚文�
   expect(fs.readFileSync(target, 'utf8')).toBe('改过的内容\n');
 
   // 确认路径：该节点之后的消息消失，文件回到改动前
-  await toolRow.click({ button: 'right' });
+  await toolRow.click({ button: 'right', position: DOT_POSITION });
   await chatPage.getByText('从这里继续').first().click();
   await chatPage.getByRole('button', { name: '确认回退' }).click();
   await expect.poll(() => fs.readFileSync(target, 'utf8'), { timeout: 20_000 }).toBe('原始内容\n');
   // 回执出现在消息区末尾
   await expect(chatPage.getByText(/Rewound the conversation from this point/).first())
     .toBeVisible({ timeout: 20_000 });
+  // 回退完整：保留区不会剩「有 tool_use 没有 tool_result」的孤行——否则回放按
+  // 「没有结果 = running」渲染，卡片会停在转动状态（spec 039 FR-003 的不变量）
+  await expect(chatPage.locator('.msg-timeline-dot-running')).toHaveCount(0);
 });
 
 
