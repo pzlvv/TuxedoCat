@@ -4545,6 +4545,67 @@ fn find_detach_construct_ignores_non_backgrounding_ampersand() {
     assert_eq!(find_detach_construct("echo a\nnohup x"), None);
 }
 
+/// heredoc 正文对 shell 是字面文本，不在控制操作符位（FR-001；缺陷
+/// `bash-detach-gate-flags-heredoc-constructs`）：体内的 `&` 与段首词都不参与判定，
+/// 终止行之后的真构造照常命中。
+#[test]
+fn find_detach_construct_ignores_heredoc_bodies() {
+    for command in [
+        "cat > a.c <<'EOF'\nint *p = &x;\nEOF",
+        "cat > a.c <<EOF\nint *p = &x;\nEOF",
+        "cat > a.c <<-'EOF'\n\tint *p = &x;\n\tEOF\ngcc a.c",
+        "cat > a.yaml <<'YAML'\nbase: &base\n  x: 1\nYAML",
+        "git commit -F - <<'MSG'\nfeat: a & b\nMSG",
+        "cat > a.sh <<'EOF'\necho a; nohup x\nEOF",
+        "cat > a.sh <<'EOF'\necho a && setsid x\nEOF",
+        // 同一行挂两个 heredoc：正文按出现顺序排列，两段都屏蔽
+        "cat <<A <<B\na & b\nA\nc & d\nB",
+    ] {
+        assert_eq!(find_detach_construct(command), None, "不应命中: {command}");
+    }
+    // 终止行之后恢复判定（换行不是分隔符是既有口径，故用 `;` 起新段）
+    assert_eq!(
+        find_detach_construct("cat <<EOF\n&\nEOF\ntrue &"),
+        Some("&")
+    );
+    assert_eq!(
+        find_detach_construct("cat <<'EOF'\n&\nEOF\ntrue; nohup x"),
+        Some("nohup")
+    );
+    // 非 heredoc 的 `<<<`（here-string）与引号内 `<<` 不触发 heredoc 语义
+    assert_eq!(find_detach_construct("cat <<< 'a & b'"), None);
+    assert_eq!(find_detach_construct("grep \"<<\" a.c; server &"), Some("&"));
+    // 注释里的 `<<` 不开启正文屏蔽（否则后续命令行被吞，造成漏判）
+    assert_eq!(find_detach_construct("echo a # <<EOF\nserver &"), Some("&"));
+    // 反斜杠定界符与未闭合 heredoc
+    assert_eq!(
+        find_detach_construct("cat <<\\EOF\nint *p = &x;\nEOF"),
+        None
+    );
+    assert_eq!(find_detach_construct("cat <<EOF\nint *p = &x;"), None);
+}
+
+/// 闸门（缺陷 `bash-detach-gate-flags-heredoc-constructs`）：heredoc 体内的字面 `&`
+/// 不拦、命令真的执行；终止行之后的真构造仍被拦并点名。
+#[test]
+fn bash_gate_allows_ampersand_inside_heredoc() {
+    let sandbox = Sandbox::new("tools-bash-detach-heredoc");
+    let command = "cat > main.c <<'EOF'\nint main(){int x = 1; int *p = &x; return *p;}\nEOF";
+    let outcome = execute("Bash", &json!({ "command": command }), &context(&sandbox));
+    assert!(!outcome.is_error(), "heredoc 正文的 & 不应拦截: {}", text(&outcome));
+    let written = std::fs::read_to_string(sandbox.workspace.join("main.c")).expect("heredoc 应写出文件");
+    assert!(written.contains("*p = &x;"), "got {written}");
+
+    let blocked = "cat > blocked.c <<'EOF'\n&\nEOF\ntrue &";
+    let outcome = execute("Bash", &json!({ "command": blocked }), &context(&sandbox));
+    assert!(outcome.is_error(), "got {}", text(&outcome));
+    assert!(
+        text(&outcome).contains("Bash: command uses `&`."),
+        "got {}",
+        text(&outcome)
+    );
+}
+
 /// Bash schema 暴露 `detach`，说明保持一句防护性口径（FR-004：案例不得写进
 /// schema，详细用法只在闸门失败文案里给）。
 #[test]

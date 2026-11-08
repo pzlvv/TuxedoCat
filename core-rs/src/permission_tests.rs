@@ -614,6 +614,25 @@ fn detach_true_without_construct_is_not_risky() {
     );
 }
 
+/// heredoc 体内的字面 `&` 不是后台化构造（缺陷
+/// `bash-detach-gate-flags-heredoc-constructs`）：`detach: true` 时不按危险操作分级，
+/// 走不到脱离管理确认分支。manual 下的 Ask 来自「写命令逐条询问」的既有口径，与此无关，
+/// 因此这里断言危险谓词与确认文案，而不是 manual 的最终决策。
+#[test]
+fn detach_escape_ignores_heredoc_body_ampersand() {
+    let args = json!({
+        "command": "cat > a.c <<'EOF'\nint *p = &x;\nEOF",
+        "detach": true,
+    });
+    assert!(!is_operation_risky("Bash", &args), "heredoc 正文的 & 不是逃生");
+    assert_eq!(decide("Bash", &args, "risk", CWD), Decision::Allow);
+    assert!(!ask_message("Bash", &args, CWD).starts_with("⚠️ 请求脱离管理执行："));
+    // 对照：同样 `detach: true`，真构造仍在 risk 下询问
+    let real = json!({ "command": "nohup server", "detach": true });
+    assert!(is_operation_risky("Bash", &real));
+    assert_eq!(decide("Bash", &real, "risk", CWD), Decision::Ask);
+}
+
 /// `detach` 缺省的命令不算危险操作：拦截面在工具闸门（第一轮失败教学），权限
 /// 放行——risk 模式的完整体验是「教学 → 带 `detach: true` 重试 → 询问」。
 #[test]
