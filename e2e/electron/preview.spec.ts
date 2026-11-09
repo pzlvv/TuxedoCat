@@ -387,6 +387,26 @@ test('US-38 specs/040 AC-1/FR-001 文本文件变更视图：文件树打开落�
   await expect(toggle).toHaveText(/变更|Changes/, { timeout: 15_000 });
   await expect(page.locator('#container')).toBeVisible();
 
+  // 正文区占满标题栏以下的全部高度：空态是 `hidden` 的初始态，它一旦参与布局就会
+  // 与 `#container` 均分剩余高度（正文只剩下半屏，上半屏一片空白）
+  const layout = await page.evaluate(() => {
+    const bar = document.getElementById('editor-titlebar') as HTMLElement;
+    const empty = document.getElementById('empty-state') as HTMLElement;
+    const container = document.getElementById('container') as HTMLElement;
+    const barRect = bar.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    return {
+      emptyDisplay: getComputedStyle(empty).display,
+      barBottom: barRect.bottom,
+      containerTop: containerRect.top,
+      containerBottom: containerRect.bottom,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  expect(layout.emptyDisplay).toBe('none');
+  expect(Math.abs(layout.containerTop - layout.barBottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.containerBottom - layout.viewportHeight)).toBeLessThanOrEqual(1);
+
   // 点「变更」→ 主进程取两侧原文，页面建 DiffEditor
   await toggle.click();
   await expect(page.locator('.monaco-diff-editor')).toBeVisible({ timeout: 20_000 });

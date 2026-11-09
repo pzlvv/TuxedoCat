@@ -66,6 +66,10 @@ html, body {
   color: var(--empty-fg, #8a8a8a);
 }
 
+/* 空态默认 `hidden`：上面那条 `display: flex` 的 ID 优先级高于 UA 的 `[hidden]`，
+   不显式盖回就会常驻显示并靠 `flex: 1` 与 `#container` 对半分高度——正文只剩下半屏 */
+#empty-state[hidden] { display: none; }
+
 @media (prefers-color-scheme: dark) {
   html, body {
     --titlebar-bg: #1e1e1e;
