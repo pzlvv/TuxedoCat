@@ -294,12 +294,27 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 `build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust
 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
 
+**交叉目标的 rustup 工具链**：Linux 上交叉编 Windows 目标要求 `rustc` 来自 rustup（它按
+`rustup target add` 装了 `*-pc-windows-msvc`）而不是发行版包管理器那份。两者并存时
+（如 `/usr/bin/rustc` 与 `~/.cargo/bin/rustc`）PATH 顺序决定用哪份：用发行版那份会以
+`can't find crate for core` 失败。
+
+**构建与校验必须用同一套工具链**：指纹把编译器身份算进哈希
+（[第 3.4 节](#34-构建指纹) 的 `rustcIdentity`）。用 A 工具链构建、用 B 工具链校验时，
+四个目标会一起报「与当前 Rust 源码不一致」——源码其实没变，变的是编译器。RD 与
+`verify-core-artifacts` 都按 PATH 里的 `rustc` 取值，因此两者要在同一个 shell 环境里执行；
+两个 rustc 版本不同时（发行版 1.98 与 rustup 1.99 并存）尤其容易踩。
+
 预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep 官方发布物
 （15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256` 逐份校验。
 `build-core.mjs::copyBundledRipgrep` 把它复制成 Core 自带 rg（`resources/core/<dir>/ripgrep/`）。
 Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACKAGE_DIRS`，单独重建用
 `npm run build:core:win32-arm64`；TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标
 仍按需补建 Core，兜住单目标场景。
+
+### 3.3.1 对话隔离工作视图
+
+隔离视图对话的改动只落对话私有上层目录，磁盘是唯一基线事实（overlayfs：`lowerdir` 是活磁盘、`userxattr` 参与挂载）。Core 在 `run_core()` 最早处进用户 + 挂载命名空间；工具经视图句柄映射路径，Bash 子进程在私有命名空间里 bind。失败不阻塞启动，能力探测回不可用。详见 [conversation-work-view.md](conversation-work-view.md)。
 
 ### 3.4 构建指纹
 
@@ -346,7 +361,7 @@ Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACK
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。`userChoice` 的载荷与结果按 `kind` 判别：`permission` 带 `message` / `choices`、结果为 `index` / `reply`；`question`（AskUserQuestion）带 `questions`、结果为 `answers`。
-- `UiRequest` 的十四个请求（`conversationListRequested` / `smartNamingRequested` / `balanceRequested` /
+- `UiRequest` 的十五个请求（`conversationListRequested` / `storageCapabilitiesRequested` / `smartNamingRequested` / `balanceRequested` /
   `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
   `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /
   `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：

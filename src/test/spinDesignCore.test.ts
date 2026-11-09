@@ -39,6 +39,7 @@ async function run(): Promise<void> {
   let saveResult: SpinDesignSaveResult = { status: 'ok' };
   const handlers: UiRequestHandlers = {
     conversationListRequested: async () => [],
+    storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, reason: "测试桩" }),
     smartNamingRequested: async () => ({ title: '' }),
     balanceRequested: async () => null,
     compactArchiveRequested: async () => null,

@@ -86,6 +86,11 @@ interface ConversationMeta {
   role?: string;
   /** 该对话所属的工作目录（绝对路径）：打开对话时回传主进程，按对话解析工作目录 */
   project?: string;
+  /**
+   * 会话的文件存储归属（specs/043 FR-001）：`isolated` 的对话改动只落在本对话的
+   * 叠加工作视图上，标题前显示隔离图标。缺失即真实工作区（存量会话）。
+   */
+  storage?: 'workspace' | 'isolated';
 }
 
 /** 工作区项（主进程取好目录名下发；id 是稳定身份，path 是展示路径） */
@@ -385,6 +390,13 @@ function renderEmptyState(): void {
 }
 
 /* ── SVG 图标（与 webview 版本一致，智能命名使用 Sparkles） ── */
+/**
+ * 对话隔离视图标记（specs/043 FR-001）：三层堆叠 = 「磁盘基线 + 对话上层」的叠加语义。
+ *
+ * 不复用分支图标：分支表达「另一条历史」，隔离视图表达「同一基线上的临时上层」，
+ * 两者语义不同，用同一个图形会让用户以为是同一件事。
+ */
+const ICON_ISOLATED = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`;
 const ICON_RENAME = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
 const ICON_SMART_NAME = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>`;
 const ICON_DELETE = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
@@ -637,9 +649,13 @@ function itemHtml(
   // 标题区域：重命名时显示行内输入框。
   // 子代理（subagent）行首带「sub」标记，与 webview 对话列表（ConversationTreeItem）一致
   const subTagHtml = depth > 0 ? '<span class="sub-tag">sub</span>' : '';
+  // 对话隔离视图标记（specs/043）：改动只留在本对话，与「直接改磁盘」区分开
+  const isolatedTagHtml = c.storage === 'isolated'
+    ? `<span class="isolated-tag" title="对话隔离视图（改动只留在这个对话，磁盘不变）">${ICON_ISOLATED}</span>`
+    : '';
   const titleHtml = isRenaming
     ? `<input class="rename-input" type="text" value="${escapeHtml(renameValue)}" spellcheck="false" />`
-    : `<div class="title">${subTagHtml}${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
+    : `<div class="title">${subTagHtml}${isolatedTagHtml}${escapeHtml(title)}${isNaming ? ' <span class="naming-hint">智能命名中…</span>' : ''}</div>`;
 
   // 操作按钮（hover 显示，与 webview 版本一致），固定 2 行 2 列：
   // 重命名 / 智能命名 / 删除 / 关闭。

@@ -1522,6 +1522,14 @@ interface MessagesViewProps {
   userScrolledAwayRef?: React.MutableRefObject<boolean>;
   /** App 模式（Electron）下正在加载对话：空状态显示 loading 动画替代静态 Logo */
   isLoadingConversation?: boolean;
+  /**
+   * 新对话空状态是否渲染「对话隔离视图」勾选框（specs/043 FR-001）。
+   * 由 App 按 Core 的能力应答决定：能力不可用时为 false，勾选框整体不出现。
+   */
+  showWorkViewOption?: boolean;
+  /** 勾选框当前状态与回调（只在 `showWorkViewOption` 为 true 时有意义） */
+  workViewSelected?: boolean;
+  onWorkViewChange?: (selected: boolean) => void;
   showThinkingAnimation: boolean;
   animationMode: 'thinking' | 'compacting';
   isDark: boolean;
@@ -1844,6 +1852,9 @@ const MessagesView = memo(({
   containerRef: containerRefProp,
   userScrolledAwayRef: userScrolledAwayRefProp,
   isLoadingConversation,
+  showWorkViewOption,
+  workViewSelected,
+  onWorkViewChange,
   showThinkingAnimation,
   animationMode,
   isDark,
@@ -2581,6 +2592,22 @@ const MessagesView = memo(({
           ) : (
             <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
           )}
+          {/* 对话隔离视图入口（specs/043 FR-001）：只在**新对话、还没发过消息**时出现，
+              位置固定在 logo 正下方。能力不可用时整块不渲染——不给「勾了却静默无效」的
+              形态。 */}
+          {showWorkViewOption ? (
+            <label
+              className="flex items-center gap-2 cursor-pointer select-none"
+              style={{ color: colors.textSystem, fontSize: uiFontSizePx(12) }}
+            >
+              <input
+                type="checkbox"
+                checked={workViewSelected === true}
+                onChange={(event) => onWorkViewChange?.(event.target.checked)}
+              />
+              {t('app.workViewOption')}
+            </label>
+          ) : null}
         </div>
       ) : (
         <>

@@ -336,6 +336,19 @@ export type CoreRequest =
     };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
+/**
+ * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/043 FR-001）。
+ *
+ * 两个字段都必选：`reason` 在能力可用时为空串（不是 `null`——「没有原因」用空串表达，
+ * 与其它能力应答同一口径）。
+ */
+export interface StorageCapabilities {
+  /** 能否为对话建立隔离工作视图（overlay：磁盘为基线 + 对话私有上层）。 */
+  isolatedWorkView: boolean;
+  /** 不可用的原因；可用时为空串。 */
+  reason: string;
+}
+
 export type CoreRequestResultMap = {
   toolPermissionRequested: PermissionResult;
   userChoice: UserChoiceResult;
@@ -462,7 +475,29 @@ export type UiEvent =
    * 登记（`WebviewMessageHandler.handleStartNewConversation` 先登记再发本事件），
    * core 按会话解析，不从本事件读取。Standalone Core 不发本事件（见 docs/core/core-parity.md）。
    */
-  | { type: 'conversationStarted'; sessionId: string }
+  | {
+      type: 'conversationStarted';
+      sessionId: string;
+      /**
+       * 会话的文件存储归属（specs/043 FR-001）：`workspace` = 工具与 Bash 直接操作真实
+       * 工作区；`isolated` = 落在本对话私有的叠加工作视图上（`lowerdir` 是真实工作区，
+       * `upperdir` 是本对话的改动，对话之间互不可见）。创建时一次写定，之后不变。
+       * 宿主必须显式给出——缺失按 `workspace`（存量会话口径）。
+       */
+      storage: 'workspace' | 'isolated';
+    }
+  /**
+   * 改会话的文件存储归属（specs/043 FR-001）。
+   *
+   * 只对「新建对话、还没有任何消息」生效：勾选框在 `conversationStarted` 之后才渲染，
+   * 用户勾选的时刻晚于创建，必须补发一次归属变更。core 按「meta.json 已存在即忽略」
+   * 拒绝改动（`docs/core/conversation-work-view.md` 第 2 节），归属因此仍是一次写定。
+   */
+  | {
+      type: 'storageChanged';
+      sessionId: string;
+      storage: 'workspace' | 'isolated';
+    }
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。
@@ -656,6 +691,13 @@ export type UiEvent =
 export type UiRequest =
   /** 对话列表元数据（`loadConversationList` 的等价物） */
   | { type: 'conversationListRequested'; workspacePath?: string }
+  /**
+   * 本 Core 的文件存储能力（specs/043 FR-001）。
+   *
+   * 宿主据此决定是否渲染「对话隔离视图」入口。能力由 Core 判断——宿主平台回答不了
+   * 这个问题（Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但 Core 是）。
+   */
+  | { type: 'storageCapabilitiesRequested' }
   /** 智能命名：读会话消息 + 调 LLM + 解析标题（`history/smartNaming` 的等价物） */
   | { type: 'smartNamingRequested'; sessionId: string }
   /**
@@ -782,6 +824,7 @@ export type SpinDesignSaveResult =
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type UiRequestResultMap = {
   conversationListRequested: ConversationMetadata[];
+  storageCapabilitiesRequested: StorageCapabilities;
   smartNamingRequested: { title: string };
   balanceRequested: {
     totalBalance: number;

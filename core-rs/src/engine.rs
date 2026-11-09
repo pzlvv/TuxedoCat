@@ -220,6 +220,34 @@ pub enum WorkMode {
     Spin,
 }
 
+/// 会话的文件存储归属（specs/043 FR-001）。
+///
+/// `Workspace` = 工具与 Bash 直接操作真实工作区；`Isolated` = 落在本对话私有的叠加
+/// 工作视图上（`lowerdir` 是真实工作区，`upperdir` 是本对话的改动）。创建时一次写定。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkViewStorage {
+    Workspace,
+    Isolated,
+}
+
+/// `WorkViewStorage` 的落盘 / 事件文本（`meta.json` 的 `storage` 与
+/// `conversationStarted` 载荷共用）。
+pub fn work_view_storage_text(storage: WorkViewStorage) -> &'static str {
+    match storage {
+        WorkViewStorage::Workspace => "workspace",
+        WorkViewStorage::Isolated => "isolated",
+    }
+}
+
+/// 从落盘文本恢复归属：只有显式 `isolated` 是隔离视图，缺失 / 其它值都是真实工作区
+/// （存量会话没有该字段）。
+pub fn work_view_storage_from_text(text: Option<&str>) -> WorkViewStorage {
+    match text {
+        Some("isolated") => WorkViewStorage::Isolated,
+        _ => WorkViewStorage::Workspace,
+    }
+}
+
 /// `WorkMode` 的落盘 / 事件文本（`meta.json` 的 `workMode` 字段与
 /// `workModeChanged` 载荷共用；specs/016 FR-005）
 pub fn work_mode_text(mode: WorkMode) -> &'static str {
@@ -305,6 +333,9 @@ pub struct SessionState {
     pub last_uuid: Option<String>,
     pub agent_mode: String,
     pub project: Option<String>,
+    /// 会话的文件存储归属（specs/043 FR-001）：`workspace` = 直接操作磁盘，
+    /// `isolated` = 读写落在本对话的叠加工作视图上。创建时一次写定，之后不变。
+    pub storage: WorkViewStorage,
     pub model: Option<String>,
     pub provider: Option<String>,
     /// 会话级思考强度覆盖（`thinkingEffortChanged` / 消息随带）
@@ -462,6 +493,7 @@ impl SessionState {
             last_uuid: None,
             agent_mode,
             project,
+            storage: WorkViewStorage::Workspace,
             model: None,
             provider: None,
             thinking_effort: None,
@@ -561,15 +593,171 @@ impl Core {
 
     // ==================== 会话 ====================
 
+    /// 确保某会话的隔离工作视图已挂载，返回工具该用的句柄（specs/043 FR-002）。
+    ///
+    /// 只在归属为隔离视图时有效；挂载失败记日志并返回 `None`，工具按真实磁盘执行
+    /// （FR-007 的设计允许降级，但必须留痕，不能静默）。
+    ///
+    /// Core 重启后登记表是空的，因此这里按需补登记：会话归属存在 `meta.json` 里，
+    /// 与「第一次工具调用」之间没有任何别的时机能重建它。
+    pub fn ensure_work_view(&self, session_id: &str) -> Option<crate::work_view::WorkViewHandle> {
+        if self.session_storage(session_id) != WorkViewStorage::Isolated {
+            return None;
+        }
+        if let Some(handle) = crate::work_view::WorkViewHandle::of(session_id) {
+            return Some(handle);
+        }
+        let Some(project) = self.project_of(session_id).ok() else {
+            eprintln!("[core] 会话 {session_id} 的隔离工作视图没有工作目录，无法建立");
+            return None;
+        };
+        let view = match crate::work_view::WorkView::register(&project, session_id) {
+            Ok(view) => view,
+            Err(reason) if reason.contains("已有工作视图") => {
+                match crate::work_view::WorkView::reopen(&project, session_id) {
+                    Ok(view) => view,
+                    Err(reason) => {
+                        eprintln!("[core] 会话 {session_id} 的隔离工作视图取回失败：{reason}");
+                        return None;
+                    }
+                }
+            }
+            Err(reason) => {
+                eprintln!("[core] 会话 {session_id} 的隔离工作视图登记失败：{reason}");
+                return None;
+            }
+        };
+        let mut view = view;
+        if let Err(reason) = view.ensure_mounted() {
+            eprintln!(
+                "[core] 会话 {session_id} 的隔离工作视图建立失败：{reason}（工具按真实工作区执行）"
+            );
+            return None;
+        }
+        eprintln!(
+            "[core] 会话 {session_id} 的隔离工作视图已就绪：{}",
+            view.mount_point()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<无挂载点>".to_string())
+        );
+        crate::work_view::WorkViewHandle::of(session_id)
+    }
+
+    /// 会话的文件存储归属（specs/043 FR-001）；未知会话按真实工作区处理。
+    ///
+    /// 内存态优先：`conversationStarted` 在**首条消息落盘之前**到达，此时 meta.json
+    /// 还不存在，只有内存记得本次新建勾了隔离。内存态是「本次进程内已确定」的归属，
+    /// 一定比磁盘新。
+    ///
+    /// 内存态缺失（Core 重启 / 会话是刚加载的存量会话）时读 meta.json：
+    /// `conversationStarted` 不会为存量会话重放，重启后唯一的归属来源就是落盘值。
+    /// 两处都读不到才回 `Workspace`——那是「没有 storage 字段的旧会话」的正确定义。
+    pub fn session_storage(&self, session_id: &str) -> WorkViewStorage {
+        if let Some(state) = self.session_if_exists(session_id) {
+            return state.lock().unwrap().storage;
+        }
+        history::storage_of_session(session_id)
+    }
+
+    /// 改会话的文件存储归属（specs/043 FR-001）：`UiEvent.storageChanged` 的落点。
+    ///
+    /// 存在只因为一个时序事实：勾选框在新建对话之后才渲染，用户勾选必然晚于
+    /// `conversationStarted`。这里是那次补发，不是「归属可变」——已经有消息落盘时
+    /// 直接忽略，归属仍然是写一次不变。
+    ///
+    /// 拒绝时记日志：静默忽略会让「勾了没生效」无从排查。
+    pub fn set_session_storage(&self, session_id: &str, storage: WorkViewStorage) {
+        if Self::has_persisted_messages(session_id) {
+            eprintln!(
+                "[core] 会话 {session_id} 已有消息落盘，忽略归属变更（specs/043 FR-001）"
+            );
+            return;
+        }
+        let state = self.session(session_id);
+        state.lock().unwrap().storage = storage;
+        // 已有 meta 要当场补写归属：建档入口不止 `touch_metadata` 一个（`update_context`
+        // 兜底也会建档），逐处补写必然漏——新建对话时宿主写默认配置就建档了，而那时
+        // 用户还没勾选。归属的唯一写入口在这里，就地补最稳妥。
+        // meta 缺失时不预建：纯声明性对话（只发一条消息就关）不留磁盘痕迹。
+        if history::metadata_of_session(session_id).is_some() {
+            if let Ok(project) = self.project_of(session_id) {
+                let text = work_view_storage_text(storage);
+                if let Err(error) = history::update_metadata(
+                    session_id,
+                    &project,
+                    || json!({ "sessionId": session_id, "project": project }),
+                    |metadata| metadata["storage"] = json!(text),
+                ) {
+                    eprintln!("[core] 会话 {session_id} 的归属写入 meta 失败：{error}");
+                }
+            }
+        }
+        // 已登记的视图随归属一起作废：先勾上、又取消时不能留下旧登记（否则工具仍按
+        // 视图读写）。`release` 只卸载与注销，**保留** upper 目录——用户可能再勾回来。
+        if storage == WorkViewStorage::Isolated {
+            match self.project_of(session_id) {
+                Ok(project) => {
+                    if let Err(reason) =
+                        crate::work_view::WorkView::register(&project, session_id)
+                    {
+                        // 已登记（重复勾选）不是错误；其它原因记日志，工具按真实磁盘执行
+                        if !reason.contains("已有工作视图") {
+                            eprintln!(
+                                "[core] 会话 {session_id} 的隔离工作视图登记失败：{reason}"
+                            );
+                        }
+                    }
+                }
+                // 工作目录还没登记（`sessionWorkspaceAssigned` 未到）：留痕，不 panic。
+                // 工具执行时 `ensure_work_view` 还会按 meta / 登记表补救一次。
+                Err(reason) => eprintln!(
+                    "[core] 会话 {session_id} 的隔离工作视图暂不能登记：{reason}"
+                ),
+            }
+        } else if let Ok(project) = self.project_of(session_id) {
+            crate::work_view::release(&project, session_id);
+        }
+        // 不发 `emit_runtime`：归属是存储事实，不进 `sessionRuntime` 快照
+        // （`docs/core/conversation-work-view.md` 第 2 节）。勾选期间发一次全量运行时快照
+        // 只会让 UI 无谓地重算，不携带任何新信息。
+    }
+
+    /// 该会话是否已经有消息落盘（= 归属不可再改）。
+    ///
+    /// 判据是 `messageCount > 0`，**不是**「`meta.json` 是否存在」：新建对话一开始就有
+    /// meta（宿主建会话时立刻写入默认 model / provider / context），拿「文件存在」当
+    /// 判据会让每一次勾选都被当成「已有消息」拒绝——勾选框因此永远无效。
+    fn has_persisted_messages(session_id: &str) -> bool {
+        history::metadata_of_session(session_id)
+            .map(|metadata| {
+                metadata
+                    .get("messageCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+            })
+            .unwrap_or(false)
+    }
+
     pub fn session(&self, session_id: &str) -> Arc<Mutex<SessionState>> {
         let mut sessions = self.sessions.lock().unwrap();
         if !sessions.contains_key(session_id) {
             let agent_mode = config::default_agent_mode();
-            sessions.insert(
-                session_id.to_string(),
-                Arc::new(Mutex::new(SessionState::new(agent_mode, None))),
-            );
-            self.session_order.lock().unwrap().push(session_id.to_string());
+            // 存量会话的内存态从 meta.json 恢复归属（specs/043 FR-001）：`conversationStarted`
+            // 只为新建对话重放，会话重开（重启后加载）时磁盘是唯一来源。
+            //
+            // 必须在放锁之后读盘：`storage_of_session` 要枚举项目目录，把它放在
+            // `sessions` 锁内会让建会话这一步等磁盘，而磁盘慢时其它会话的读写一起卡住。
+            drop(sessions);
+            let storage = history::storage_of_session(session_id);
+            sessions = self.sessions.lock().unwrap();
+            // 重取锁后重新判定：并发建同一会话时只有一个赢家，另一个直接复用它
+            if !sessions.contains_key(session_id) {
+                let mut state = SessionState::new(agent_mode, None);
+                state.storage = storage;
+                sessions.insert(session_id.to_string(), Arc::new(Mutex::new(state)));
+                self.session_order.lock().unwrap().push(session_id.to_string());
+            }
         }
         sessions.get(session_id).unwrap().clone()
     }
@@ -3350,6 +3538,14 @@ fn execute_tool(
             options.clone(),
         ))
     });
+    // 隔离工作视图句柄（specs/043）：只有归属为隔离视图的会话才有。挂载失败时为
+    // `None`，工具按真实磁盘执行（FR-007 的设计允许降级，原因已由建立处记日志）。
+    let work_view = core.ensure_work_view(session_id);
+    let mode = core.session_storage(session_id);
+    eprintln!(
+        "[core] 工具 {tool_name} 会话 {session_id} 归属={mode:?} 视图句柄={}",
+        if work_view.is_some() { "Some" } else { "None" }
+    );
     // 取共享句柄必须在字面量之外：字段表达式产生的临时 guard 存活到整条
     // let 语句结束，两个字段各写一次 state.lock() 会让第二个与第一个尚未
     // 释放的 guard 互斥，自死锁。
@@ -3379,6 +3575,7 @@ fn execute_tool(
         subagent: Some(core.subagent_hooks()),
         // 跨工作区传输钩子（Transfer，specs/028）
         transfer: Some(core.transfer_hook()),
+        work_view,
     };
     // MCP 工具（`mcp__<server>__<tool>`）不在内置工具表里：必须先分流，
     // 否则会落到 `tools::execute` 的兜底分支被报成「工具不存在」。
@@ -4203,20 +4400,25 @@ fn announce_message_appended(
     project: &str,
     user_initiated: bool,
 ) {
-    let (prompt_mode, creator) = {
+    let (prompt_mode, creator, storage) = {
         match core.session_if_exists(session_id) {
             Some(state) => {
                 let state = state.lock().unwrap();
-                (state.prompt_mode.clone(), state.creator.clone())
+                (state.prompt_mode.clone(), state.creator.clone(), state.storage)
             }
             // 会话状态不存在（尚无引擎）按用户会话兜底：touch 兜底建档只可能命中
             // 用户路径（子代理 meta 由创建方预建，不会走到 ENOENT）
-            None => (None, SessionCreator::User),
+            None => (None, SessionCreator::User, WorkViewStorage::Workspace),
         }
     };
-    if let Err(error) =
-        history::touch_metadata(session_id, project, user_initiated, prompt_mode.as_deref(), &creator)
-    {
+    if let Err(error) = history::touch_metadata(
+        session_id,
+        project,
+        user_initiated,
+        prompt_mode.as_deref(),
+        &creator,
+        storage,
+    ) {
         eprintln!("[core] touch metadata failed: {error}");
     }
     core.emit(json!({ "type": "conversationListChanged" }));

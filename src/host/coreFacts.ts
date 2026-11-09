@@ -22,6 +22,7 @@ import type {
 import type { SpinDesign } from '../shared/spin/Types.js';
 import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
 import type { ConversationMetadata } from '../shared/history/Conversation.js';
+import type { StorageCapabilities } from '../shared/AssistantEventBus.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
 import type { McpServerInfo } from '../shared/webviewTypes.js';
 import type { Message, TodoEntry } from '../shared/types.js';
@@ -111,6 +112,16 @@ export async function requestCompactArchive(sessionId: string): Promise<Message[
  */
 export async function requestMcpServers(sessionId: string | undefined): Promise<McpServerInfo[]> {
   return requireEventBus().requestCore({ type: 'mcpServersRequested', sessionId });
+}
+
+/**
+ * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/043 FR-001）。
+ *
+ * 界面据此决定是否渲染「对话隔离视图」入口；不满足时 `reason` 写明缺哪项前提，
+ * 由 Core 判断——宿主平台回答不了这个问题。
+ */
+export async function requestStorageCapabilities(): Promise<StorageCapabilities> {
+  return requireEventBus().requestCore({ type: 'storageCapabilitiesRequested' });
 }
 
 /**

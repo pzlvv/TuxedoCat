@@ -88,14 +88,14 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 79 个事件：
+四组词汇表，共 81 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 33 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 28 | Core 进程的 `dispatch_ui_event` 分派 |
-| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 14 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 29 | Core 进程的 `dispatch_ui_event` 分派 |
+| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 15 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
 
@@ -203,7 +203,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | --- | --- | --- | --- | --- |
 | 1 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的根事实推导，见[docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md#8-abort-按钮读-core-的-sessionruntime不由这里判定)与 [docs/features/abort-button.md](../features/abort-button.md)） | `Core::on_abort`（按该会话运行时事实决定中止范围：spin 模式递归中止子代理与后台任务并让 SpinLoop 收尾，spin 单向、恢复态 spin 为空操作；常规会话前台有工作只中止前台，前台空闲则中止后台 Bash + 递归子代理。范围判定幂等） |
 | 2 | `compactRequested` | `sessionId` | `requestCompress` | Core 的手动压缩入口（空闲立即执行；非空闲登记「待压缩」，当前轮次结束后执行） |
-| 3 | `conversationStarted` | `sessionId` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | Core 的 `start_conversation`（预创建引擎 + MCP 引用 + 缓存该会话工作目录的环境事实） |
+| 3 | `conversationStarted` | `sessionId`, `storage` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | Core 的 `start_conversation`（预创建引擎 + MCP 引用 + 缓存该会话工作目录的环境事实） |
 | 4 | `conversationOpened` | `sessionId` | `loadConversation` 与 `startNewConversation`（handler 都先登记会话工作目录，再发事件；新会话也登记为「已打开」，供 Core 重启后重放） | Core 的 `on_conversation_opened`（载入历史 + MCP 引用） |
 | 5 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`；临时 `new-` key 不发，[docs/hosts/webview-ui.md 第 1 节](../hosts/webview-ui.md#1-类定义与接线)） | Core 的 `on_conversation_closed`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
 | 6 | `conversationRenamed` | `sessionId`, `title` | `renameConversation`、智能命名、Electron 侧栏 | Core 的 `update_conversation_title`（meta.json 缺失时建档）→ `titleChanged` + `conversationListChanged` |
@@ -229,10 +229,9 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径） |
 | 26 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
 | 27 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
+| 28 | `storageChanged` | `sessionId`, `storage` | `setConversationStorage`（新建对话空状态的勾选框） | Core 的 `Core::set_session_storage`（改内存态归属；`meta.json` 已存在即忽略——归属仍是一次写定，[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)） |
 
-**`changes` 数组而不是可选字段**：Core 的 `history.update_context` 是**部分合并**语义
-（未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」
-（如 `currentFile` + `selectedLines`）和「不用 `?`」。
+**`changes` 数组而不是可选字段**：Core 的 `history.update_context` 是**部分合并**语义（未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」（如 `currentFile` + `selectedLines`）和「不用 `?`」。
 
 **`conversationStarted` 与 `conversationOpened` 的区别**
 

@@ -47,6 +47,7 @@ import {
   requestSessionTodos,
   requestSkills,
   requestSmartNaming,
+  requestStorageCapabilities,
 } from '../coreFacts.js';
 import { applyLlmConfigSave } from '../llmConfigSave.js';
 import { sameMcpEnabledList } from '../../shared/utils/mcpList.js';
@@ -304,6 +305,7 @@ export class WebviewMessageHandler {
       // 会话 Todo 清单：core 持有事实，视图切换 / 重挂载时拉一次（按来源回包）
       entry('requestSessionTodos', (msg, ctx) => this.handleRequestSessionTodos(msg, ctx)),
       entry('requestMcpServers', (msg) => this.handleRequestMcpServers(msg)),
+      entry('requestStorageCapabilities', () => this.handleRequestStorageCapabilities()),
       entry('getConversations', () => this.handleGetConversations()),
       // 会话运行时状态全量快照：状态流只在「变化」时推，视图创建 / 激活不会补发，
       // 新视图会错过广播；webview 启动 / 切到单视图时主动拉一次（按来源回包）。
@@ -340,6 +342,12 @@ export class WebviewMessageHandler {
       // ===== 会话生命周期（UiEvent 翻译）=====
       entry('loadConversation', (msg) => this.handleLoadConversation(msg)),
       entry('startNewConversation', (msg) => this.handleStartNewConversation(msg)),
+      // 勾选框在新建对话之后才渲染，用户勾选必须补发一次归属（specs/043 FR-001）
+      entry('setConversationStorage', (msg) => this.emitUiEvent({
+        type: 'storageChanged',
+        sessionId: msg.sessionId,
+        storage: msg.storage,
+      })),
       entry('deleteConversation', (msg) => this.emitUiEvent({ type: 'conversationDeleted', sessionId: msg.sessionId })),
       entry('renameConversation', (msg) => this.emitUiEvent({ type: 'conversationRenamed', sessionId: msg.sessionId, title: msg.title })),
       entry('updateConversationContext', (msg) => this.handleUpdateConversationContext(msg)),
@@ -416,6 +424,21 @@ export class WebviewMessageHandler {
   /**
    * 读取 mcp.json + 当前会话的启用状态，并合并运行时状态后推送给 webview。
    */
+  /**
+   * 转发 Core 的文件存储能力（specs/043 FR-001）。
+   *
+   * 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，
+   * 但 Core 是。不可用时带上原因，界面据此不渲染入口——不出现「勾选后静默无效」。
+   */
+  private async handleRequestStorageCapabilities(): Promise<void> {
+    const capabilities = await requestStorageCapabilities();
+    this.host.sendToWebview({
+      type: 'setStorageCapabilities',
+      isolatedWorkView: capabilities.isolatedWorkView,
+      reason: capabilities.reason,
+    });
+  }
+
   private async handleRequestMcpServers(message: Extract<WebviewToHostMessage, { type: 'requestMcpServers' }>): Promise<void> {
     const sessionId = await this.getActiveMcpSessionId(message?.sessionId);
     this.log(`MCP servers requested (session=${sessionId ?? '-'})`);
@@ -966,8 +989,14 @@ export class WebviewMessageHandler {
     this.trackedActiveSessionId = newSessionId;
     // 先登记该会话的工作目录：core 收到 conversationStarted 后要按会话解析目录建引擎
     this.ensureSessionWorkspace(newSessionId);
-    // UI → core：报告「用户新建了对话」（core 预创建引擎）
-    await this.emitUiEvent({ type: 'conversationStarted', sessionId: newSessionId });
+    // UI → core：报告「用户新建了对话」（core 预创建引擎）。
+    // 归属在这里一次写定（specs/043 FR-001）：勾选框此时还没渲染，所以这里一律是初始值
+    // `workspace`；用户随后的勾选由 `setConversationStorage` 补发。
+    await this.emitUiEvent({
+      type: 'conversationStarted',
+      sessionId: newSessionId,
+      storage: message.storage,
+    });
     // 登记为「已打开会话」：Standalone 下 Core 重启后据此重放 conversationOpened。
     await this.emitUiEvent({ type: 'conversationOpened', sessionId: newSessionId });
     // 新建对话：开始空闲关闭计时（空闲回收只在 VS Code 生效）

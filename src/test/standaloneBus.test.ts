@@ -478,6 +478,7 @@ async function run(): Promise<void> {
     await core.bus.whenReady();
     const handlers = {
       conversationListRequested: async () => [],
+      storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, reason: "测试桩" }),
       smartNamingRequested: async () => ({ title: 't' }),
       balanceRequested: async () => null,
       compactArchiveRequested: async () => null,

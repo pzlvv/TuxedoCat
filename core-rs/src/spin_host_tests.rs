@@ -245,8 +245,15 @@ fn spin_ready_bootstraps_list_timestamps() {
         None,
     )
     .unwrap();
-    history::touch_metadata("s1", &project, false, None, &crate::engine::SessionCreator::User)
-        .unwrap();
+    history::touch_metadata(
+        "s1",
+        &project,
+        false,
+        None,
+        &crate::engine::SessionCreator::User,
+        crate::engine::WorkViewStorage::Workspace,
+    )
+    .unwrap();
 
     let list = history::load_conversation_list(Some(&project));
     let entry = list
