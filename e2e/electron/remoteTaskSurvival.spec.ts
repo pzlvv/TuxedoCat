@@ -210,8 +210,10 @@ function armSleepTaskHandler(mockLlm: MockLlm): void {
       kind: 'tool',
       name: 'Bash',
       // sleep 取 180s（超过 Bash 工具 2 分钟默认超时，由超时收口出工具结果）：
-      // 认领重开（SSH 引导 + 建链）要几十秒，任务必须撑过重开完成后的断言窗口
-      args: { command: 'sleep 180 && printf orphan-survival-ok', description: 'background survival probe' },
+      // 认领重开（SSH 引导 + 建链）要几十秒，任务必须撑过重开完成后的断言窗口。
+      // sleep 不能放在首段——那命中「sleep 等待闸门」（docs/features/background-bash.md
+      // FR-005）直接 deny，起不出长任务；把无害命令放前面即放行。
+      args: { command: 'printf probe; sleep 180 && printf orphan-survival-ok', description: 'background survival probe' },
     };
   });
 }

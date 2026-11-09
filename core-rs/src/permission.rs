@@ -444,6 +444,13 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                     )
                 }
             };
+            // sleep 等待闸门（`docs/features/background-bash.md` 第 2 节 FR-005）：
+            // 「首段 sleep + 后续命令」是用计时器等结果，而完成时 core 会通知并接续。
+            // 必须在 `is_read_only_command` 之前、且用 deny 而不是 ask——ask 在 auto 模式
+            // 会被放行，三档模式的一致性就没了（FR-002）。
+            if crate::tools::is_sleep_wait_command(&command) {
+                return CheckResult::deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string());
+            }
             if is_read_only_command(&command) {
                 return CheckResult::allow_with_input(args);
             }
