@@ -62,6 +62,71 @@ fn risk_mode_allows_safe_commands() {
     assert_eq!(decide("Bash", &bash("ls -la"), "risk", CWD), Decision::Allow);
 }
 
+/// sleep 等待闸门（`docs/features/background-bash.md` 第 2 节 FR-005）：
+/// 三档工作模式给同一个 deny 与同一段文案——闸门不是权限分级，不能因为 auto / risk
+/// 把 ask 放行就漏过去（spec AC-12）。
+#[test]
+fn sleep_wait_gate_denies_in_every_agent_mode() {
+    let command = bash("sleep 30 && cat a.txt");
+    for mode in ["manual", "risk", "auto"] {
+        assert_eq!(
+            decide("Bash", &command, mode, CWD),
+            Decision::Deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string()),
+            "mode={mode}"
+        );
+    }
+    // 闸门不是 ask：ask 会在 auto 模式被放行，也不会给用户弹框
+    assert!(!matches!(
+        decide("Bash", &command, "manual", CWD),
+        Decision::Ask
+    ));
+}
+
+/// 放行范围（spec FR-003）：首段不是 sleep、只有单条 sleep、引号内的 sleep 字样、
+/// `&` 接后续命令（shell 立刻执行，不是先等再干）都不受闸门影响。
+#[test]
+fn sleep_wait_gate_leaves_allowed_forms_untouched() {
+    for command in [
+        "cat a.txt; sleep 30",
+        "sleep 30",
+        "echo anything; sleep 10",
+        "echo 'sleep 10 && cat a.txt'",
+        "sleep 10 & cat a.txt",
+        "sleep 10 # wait",
+        "/usr/bin/sleep 10 && x",
+        "timeout 30 sleep 5 && x",
+    ] {
+        assert!(
+            !matches!(
+                decide("Bash", &bash(command), "manual", CWD),
+                Decision::Deny(_)
+            ),
+            "{command}"
+        );
+    }
+}
+
+/// detach 不解除本闸门（spec FR-004）：`detach: true` 的豁免只覆盖后台化构造，
+/// 用 sleep 等结果的命令仍是失败。
+#[test]
+fn sleep_wait_gate_is_not_lifted_by_detach() {
+    let args = json!({ "command": "sleep 10 && nohup x &", "detach": true });
+    assert_eq!(
+        decide("Bash", &args, "auto", CWD),
+        Decision::Deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string())
+    );
+}
+
+/// 双闸门命中顺序（spec AC-10）：两条都命中时报 sleep 等待闸门的文案——该命令的主因
+/// 是用 sleep 等结果，后台化构造只是附带写法。
+#[test]
+fn sleep_wait_gate_wins_over_detach_gate() {
+    assert_eq!(
+        decide("Bash", &bash("sleep 10 && nohup x &"), "manual", CWD),
+        Decision::Deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string())
+    );
+}
+
 #[test]
 fn risk_mode_intercepts_dangerous_commands() {
     assert_eq!(decide("Bash", &bash("dd if=/dev/zero of=x"), "risk", CWD), Decision::Ask);

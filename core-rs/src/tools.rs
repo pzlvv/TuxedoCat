@@ -478,6 +478,15 @@ const BASH_DETACH_GATE_MESSAGE: &str = "Bash: command uses `{}`.\n\
 - Need the result in this session: run in the foreground, or use run_in_background: true (notifies on completion).\n\
 - Need it to keep running after this session ends — e.g. installing/starting a system-level service or daemon: re-run the same command with detach: true.";
 
+/// sleep 等待闸门的 LLM 面失败文案（`docs/features/background-bash.md` 第 2 节 FR-005，
+/// 逐字锁定、不插值）。
+///
+/// 只写模型可感知的两条路由判据：不要用 sleep 等结果（完成会通知并接续），确实要延时
+/// 就把任意命令放在 sleep 之前——后者正是闸门的放行形态（首段不是 `sleep`）。
+pub(crate) const BASH_SLEEP_GATE_MESSAGE: &str = "Bash: do not sleep to wait for results — \
+you will be notified when the background task completes and the turn continues.\n\
+If you really need a sleep for another reason, put any command before it, e.g. `echo anything; sleep 10`.";
+
 /// 工具定义（Anthropic 风格：`name` / `description` / `input_schema`）
 pub fn definitions() -> Vec<Value> {
     vec![
@@ -1183,6 +1192,39 @@ pub(crate) fn contains_sleep_command(command: &str) -> bool {
     crate::permission::split_by_separators(command)
         .iter()
         .any(|segment| extract_command_name(segment) == "sleep")
+}
+
+/// 命令是否为「用前导 sleep 等结果」的写法：切开后首段命令名是 `sleep`、后面还有
+/// 非空且非纯注释的命令段。
+///
+/// 闸门判据（`docs/features/background-bash.md` 第 2 节 FR-005）：后台任务完成时 core
+/// 会通知并接续，模型不需要自己 sleep 轮询。换行同样是命令分隔（换行不是逃逸口），
+/// 但只在闸门内部按行切开——`permission::split_by_separators` 是只读 / 破坏性 / detach
+/// 共用的口径，改它会连带改变那些判定。控制操作符 `&` 不算「先等再干」，不在此判定
+/// （`sleep 10 & cat a.txt` 会立刻执行 cat）。
+///
+/// 首段命令名与 `contains_sleep_command` / `sleep_duration_ms` 共用
+/// `extract_command_name`（环境变量前缀、首尾引号口径一致）。
+pub(crate) fn is_sleep_wait_command(command: &str) -> bool {
+    // heredoc 正文先在屏蔽副本上去掉（对 shell 是字面文本，不是命令）：否则
+    // `sleep 5 <<EOF` 的正文行会被当成「后续命令」误拦。
+    let masked = mask_heredoc_bodies(command);
+    let segments: Vec<String> = masked
+        .split('\n')
+        .flat_map(crate::permission::split_by_separators)
+        .filter(|segment| !is_comment_segment(segment))
+        .collect();
+    if segments.len() < 2 {
+        return false;
+    }
+    extract_command_name(&segments[0]) == "sleep"
+}
+
+/// 段是否只以注释开头（`# ...`）：注释不是命令，不构成「sleep 之后的后续命令」。
+fn is_comment_segment(segment: &str) -> bool {
+    segment
+        .trim_start_matches(crate::util::is_js_whitespace)
+        .starts_with('#')
 }
 
 /// 前台默认超时（毫秒）：命令含 `sleep` 子命令时取

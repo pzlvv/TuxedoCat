@@ -452,8 +452,10 @@ test('manual 权限模式：远程 Bash 弹确认、允许后在远端执行', a
       kind: 'tool',
       name: 'Bash',
       // sleep 不在只读白名单（core-rs/src/permission.rs 的 READONLY_COMMANDS）：
-      // manual 模式必须弹确认；printf/uname/pwd 这类只读命令按设计自动放行，测不出 ask 路径
-      args: { command: "sleep 2; printf 'manual-perm-ok\\n'; uname -s", description: 'manual perm probe' },
+      // manual 模式必须弹确认；printf/uname/pwd 这类只读命令按设计自动放行，测不出 ask 路径。
+      // sleep 不能放在首段——那命中「sleep 等待闸门」（docs/features/background-bash.md FR-005）
+      // 直接 deny，永远等不到确认框。
+      args: { command: "printf 'manual-perm-ok\\n'; sleep 2; uname -s", description: 'manual perm probe' },
     };
   });
   await chatPage.fill('textarea.input-textarea', '手动确认探针');

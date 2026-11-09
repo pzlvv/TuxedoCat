@@ -60,6 +60,13 @@
     { "tool": "Bash", "mode": "manual", "args": { "command": "\ufeff" }, "expect": "ask", "why": "仅 U+FEFF：JS trim 去空后无段，isReadOnly=false → ask" },
     { "tool": "AskUserQuestion", "mode": "manual", "args": { "question": "hi" }, "expect": "allow", "why": "checkPermissions 直接放行：提问在 call() 里弹框，不再双重确认" },
     { "tool": "AskUserQuestion", "mode": "risk", "args": { "question": "hi", "choices": [{ "label": "A" }, { "label": "B" }] }, "expect": "allow", "why": "risk 模式同样直接放行（非 Bash 不参与风险拦截）" },
-    { "tool": "AskUserQuestion", "mode": "auto", "args": { "question": "hi" }, "expect": "deny", "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，不弹提问框" }
+    { "tool": "AskUserQuestion", "mode": "auto", "args": { "question": "hi" }, "expect": "deny", "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，不弹提问框" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "sleep 等待闸门：前导 sleep 接后续命令直接失败" },
+    { "tool": "Bash", "mode": "risk", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "sleep 等待闸门不是权限分级：risk 同样失败，不会被自动放行" },
+    { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "sleep 等待闸门用 deny 而非 ask：auto 模式不放行" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 10\ncat a.txt" }, "expect": "deny", "why": "换行是命令分隔：换行不是逃逸口" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 10 & cat a.txt" }, "expect": "ask", "why": "& 接后续命令不是「先等再干」：不命中闸门，按普通命令询问" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30" }, "expect": "ask", "why": "单条 sleep 没有后续命令：不命中闸门" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "echo anything; sleep 10" }, "expect": "ask", "why": "放行写法：首段不是 sleep（文案给出的逃逸形态）" }
   ]
 }

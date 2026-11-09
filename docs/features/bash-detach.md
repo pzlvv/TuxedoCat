@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-30
+last_reviewed: 2026-11-10
 ---
 
 # 规格：Bash 命令的 detach 豁免
@@ -47,6 +47,10 @@ Bash 工具的 `detach` 字段是**管辖豁免开关**：命令的进程需要�
 只作用于闸门，不改变前台生命周期：命令若未自我脱离，管道持有、前台超时、自动转
 后台等既有行为照旧（转后台后按既有后台任务事实处理）。`detach: true` 但命令不含
 任何构造时字段惰性，正常执行。
+
+豁免只覆盖后台化构造闸门，**不解除** sleep 等待闸门：`detach: true` 且命令以前导
+`sleep` 接后续命令时同样失败（判据与文案见
+[background-bash.md FR-005](background-bash.md#fr-005sleep-等待闸门)）。
 
 ### FR-003：脱离管理的授权分级
 

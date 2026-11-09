@@ -1,15 +1,17 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-10
 ---
 
 # 规格：Bash 后台任务
 
-本规格界定 Bash 任务后台化的两块语义：**手工转后台**（FR-001 / FR-002——用户把正在
+本规格界定 Bash 任务后台化的三块语义：**手工转后台**（FR-001 / FR-002——用户把正在
 前台运行的命令转入后台继续执行时，工具结果如何进入上下文、本轮 agent 循环如何暂停、
-暂停后由谁接续）与**后台任务提醒**（FR-003 / FR-004——查询结束兜底提醒与周期性进度
-提醒的调度与文案）。后台任务的注册 / 完成通知 / 中止不在本规格内；运行时事实
-（`backgroundRunning`）的归属见 [docs/core/session-runtime.md](../core/session-runtime.md)。
+暂停后由谁接续）、**后台任务提醒**（FR-003 / FR-004——查询结束兜底提醒与周期性进度
+提醒的调度与文案）与 **sleep 等待闸门**（FR-005——命令以 `sleep` 开头且后面还有其它
+命令时直接失败，引导模型等完成通知而不是自己轮询）。后台任务的注册 / 完成通知 / 中止
+不在本规格内；运行时事实（`backgroundRunning`）的归属见
+[docs/core/session-runtime.md](../core/session-runtime.md)。
 
 交叉引用：UiEvent 词汇表见 [events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)；
 「core 描述事实，UI 决定表现」见 [principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)、
@@ -33,6 +35,12 @@ last_reviewed: 2026-10-18
   - **AC-9**（FR-004）：GIVEN 会话前台空闲且任务时钟累计到档 WHEN tick THEN 投递该任务的进度提醒；query engine 运行时（无论谁启动）时钟暂停不累计
   - **AC-10**（FR-004）：GIVEN 同一 tick 多个任务同时到点 WHEN 投递 THEN 追加到 `pendingReminder`（空行分隔）而不是覆盖
   - **AC-11**（FR-004）：GIVEN 压缩进行中 WHEN 时钟到点 THEN 不投递，调度线程下一轮再发
+- 场景 4：sleep 等待闸门
+  - **AC-12**（FR-005）：GIVEN Bash 调用（前台 / `run_in_background` / `detach` 任一形态）WHEN 命令按 `;` / `&&` / `||` / `|` / 换行切分后首段命令名是 `sleep` 且后面还有非空、非纯注释的命令 THEN 工具结果失败，命令不执行
+  - **AC-13**（FR-005）：GIVEN 调用被拦 WHEN 观察本轮 THEN 不弹权限确认框、不产生后台任务与 taskId、不发完成通知与提醒，且 `manual` / `risk` / `auto` 三档的文案与行为完全相同
+  - **AC-14**（FR-005）：GIVEN `cat a.txt; sleep 30`、`sleep 30`、`sleep 10 & cat a.txt`、`echo 'sleep 10 && cat a.txt'`、`/usr/bin/sleep 10 && x` WHEN 调用 THEN 都不被拦
+  - **AC-15**（FR-005）：GIVEN 命令是 `sleep 10 && nohup x &`（后台化构造与本闸门都命中） WHEN 调用 THEN 报本闸门的文案
+  - **AC-16**（FR-005）：GIVEN `detach: true` WHEN 命令命中本闸门 THEN 同样失败（豁免只覆盖后台化构造）
 
 ## 2. 功能需求
 
@@ -151,6 +159,41 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 - `run_in_background` 与自动转后台两种路径返回给 LLM 的 `tool_result` 都带上首次提醒
   间隔（`5min`）：任务仍在运行时，模型会收到进度提醒。
 
+### FR-005：sleep 等待闸门
+
+Bash 的每次调用在执行前过一道闸门：命令按 `;` / `&&` / `||` / `|` / 换行切分后
+**首段命令名是 `sleep`、且后面还有非空且非纯注释的命令**时，工具直接失败、命令不执行。
+这类写法是用计时器等结果，而完成时 core 会注入通知并接续消费循环，模型不必自己轮询。
+
+判定口径：
+
+- 首段命令名与 `contains_sleep_command` / `sleep_duration_ms` 同一口径（剥环境变量前缀、
+  剥首尾各至多一个引号后取首词，等于 `sleep`）；换行是命令分隔，只在闸门内部按行切开
+  ——`permission::split_by_separators` 是只读 / 破坏性 / 后台化构造共用的口径，不为闸门
+  改它。
+- 控制操作符 `&` 不算「先等再干」（`sleep 10 & cat a.txt` 会立刻执行 `cat`），不拦。
+- 判定只看命令文本，不看 `run_in_background` / `detach` / `timeout`：三种调用形态一视同仁。
+  不读文件系统、不识别 sleep 时长、不解析后续命令是否引用了某个后台任务的输出路径。
+- 以 `#` 开头的纯注释段不构成后续命令；heredoc 正文先在屏蔽副本上去掉（正文对 shell 是
+  字面文本）。
+
+闸门落点：`permission.rs` 的 `base_check` Bash 分支在只读判定之前返回
+`Decision::Deny`（`check` 的 `deny` 分支，不是 `ask`）——`ask` 在 auto 模式会被放行，
+三档模式的一致性就没了。因此被拦的调用**不弹权限确认框**、不产生后台任务与 taskId、
+不发完成通知或提醒；`detach: true` 的豁免只覆盖后台化构造，不解除本闸门。两条闸门都
+命中时先报本闸门的文案（`tools.rs` 的 `BASH_SLEEP_GATE_MESSAGE`）。
+
+LLM 面失败文案（逐字锁定，不插值）：
+
+```text
+Bash: do not sleep to wait for results — you will be notified when the background task completes and the turn continues.
+If you really need a sleep for another reason, put any command before it, e.g. `echo anything; sleep 10`.
+```
+
+放行范围（前两条正是文案给出的两条出路）：首段不是 `sleep`（`echo anything; sleep 10`、
+`npm run build && sleep 5`）、只有单条 `sleep`（`sleep 5`，按既有 sleep 口径后移前台
+死线）、引号内的 sleep 字样。系统提示词与工具描述不因本闸门改动。
+
 ## 3. 行为规格
 
 ### 3.1 实现对照
@@ -163,6 +206,7 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 | core 分发 | `main.rs` 的 `dispatch_ui_event` → `Core::on_bash_background_requested` |
 | 注册表 | `tools.rs` 的 `MANUAL_BG`（`tool_use_id` → 请求标记） |
 | 暂停信号 | `tools.rs` 的 `LoopPauseSignal`（`paused` + `source_task`）挂在 `SessionState.pause_loop` |
+| sleep 闸门 | `permission.rs` 的 `base_check` Bash 分支（只读判定之前 deny）；纯函数 `tools.rs` 的 `is_sleep_wait_command`，文案 `BASH_SLEEP_GATE_MESSAGE` |
 | 兜底抑制 | 暂停出口消费 `source_task` → `ReminderEntry.fallback_reminded` |
 | 消费点 | `core-rs/src/engine.rs` 的 `run_query_loop`（工具批收尾、下一轮请求前） |
 
@@ -213,6 +257,15 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 - **同一 tick 多任务到点**：追加不覆盖（AC-10）。
 - **detach 豁免的进程**：`detach: true` 的命令进程不属于后台任务事实（无注册、无
   完成通知、abort 不杀）——见 [bash-detach.md](bash-detach.md)。
+- **sleep 等待闸门的边界**：
+  - `sleep 10 && cat <某后台任务的输出路径>` 仍然拦——完成时会通知并接续，工具结果里
+    已给出输出路径与通知承诺，不需要再 poll。
+  - `sleep` 写成绝对路径（`/usr/bin/sleep 10 && x`）或被其它命令包裹
+    （`timeout 30 sleep 5 && x`、`bash -c 'sleep 5 && x'`）：首段命令名不是 `sleep`，
+    不拦——既有首词口径的已知边界，不为此扩判定。
+  - 续段只有重定向或分号尾巴（`sleep 5 > out`、`sleep 5;`）：只有一段，不拦。
+  - 被拦后换写法重试：`echo anything; sleep 10` 与单条 `sleep 5` 都能过；重复命中只会
+    重复同一条失败文案，不升级为权限询问或会话中止。
 - **两种解码都不干净**（混合编码 / 被截断的流）：回到宽松 UTF-8，至少不丢可读部分。
 - **BOM 声明的编码与内容不符**：按宽松 UTF-8 收尾，不抛错——输出只能尽力而为，失败不
   值得让工具报错。
@@ -221,10 +274,14 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 
 - 后台任务的注册 / 完成通知 / 中止语义不在本规格内。
 - 运行时事实（`backgroundRunning`）的归属见 [docs/core/session-runtime.md](../core/session-runtime.md)。
+- sleep 等待闸门不拦「只有 sleep、没有后续命令」的调用（模型可能确实只想等一段时间），
+  不拦「sleep 不在首段」的写法（那是文案给出的逃逸通道），也不识别「在等某个后台任务」
+  的语义——判定只看命令文本形态，不解析输出路径、不做跨任务关联。
 
 ## 6. 对需求基线的影响
 
-关联既有 [user-stories.md](user-stories.md) 的 US-45（命令转入后台）；无新增 US。
+关联既有 [user-stories.md](user-stories.md) 的 US-45（命令转入后台）与新增 US-76
+（后台等待不靠 sleep 轮询，见 [user-stories/tools.md](user-stories/tools.md#us-76-后台等待不靠-sleep-轮询)）。
 
 ## 7. 追溯矩阵
 
@@ -234,4 +291,5 @@ sleep 豁免都不再命中，因此查询收尾的兜底提醒（FR-003）不�
 | FR-002 | `core-rs/src/engine.rs` 的 `run_query_loop` | `core-rs/src/engine_tests.rs` 的 `manual_background_pauses_the_loop_until_a_queued_message_arrives`；e2e `e2e/electron/backgroundBash.spec.ts` | 自动 |
 | FR-003 | `core-rs/src/engine.rs` 的 `background_reminder`（门槛与刷新，`core-rs/src/bash_task.rs` 的 `qualifies_fallback_reminder`） | `core-rs/src/engine_tests.rs` 的 `fallback_reminder_gate`；`core-rs/src/tools_tests.rs` 的 `contains_sleep_command_splits_on_separators` | 自动 |
 | FR-004 | `core-rs/src/engine.rs` 的 `tick_background_reminders`（纯函数 `core-rs/src/bash_task.rs` 的 `advance_reminder_clock` / `build_background_reminder_text`） | `core-rs/src/bash_task_tests.rs` 的 `background_reminder_parity`；事件序列对照表 `core-rs/fixtures/eventTypes.json` | 自动 |
+| FR-005 | `core-rs/src/permission.rs` 的 `base_check` Bash 分支；纯函数 `core-rs/src/tools.rs` 的 `is_sleep_wait_command`，文案 `BASH_SLEEP_GATE_MESSAGE` | `core-rs/src/tools_tests.rs` 的 `sleep_wait_gate_detects_leading_sleep_with_trailing_commands`；`core-rs/src/permission_tests.rs` 的 `sleep_wait_gate_denies_in_every_agent_mode` / `sleep_wait_gate_leaves_allowed_forms_untouched` / `sleep_wait_gate_is_not_lifted_by_detach` / `sleep_wait_gate_wins_over_detach_gate`；对照表 `core-rs/fixtures/permission.json` | 自动 |
 | 输出解码（第 3.3 节） | `core-rs/src/text_decode.rs`；`core-rs/src/tools.rs` 的 `read_pipe` / `run_bash`；`core-rs/src/bash_task.rs` 的 `handle_finish` / `read_output_tail` | `core-rs/src/text_decode_tests.rs`（码页判定与增量不劈字）；`core-rs/src/tools_tests.rs` 的 `bash_decodes_gbk_output_to_readable_chinese` / `bash_decodes_utf8_output_unchanged` / `bash_does_not_split_multibyte_chars_across_pipe_chunks` | 自动 |

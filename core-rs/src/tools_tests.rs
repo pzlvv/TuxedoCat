@@ -619,6 +619,47 @@ fn contains_sleep_command_splits_on_separators() {
     assert!(!contains_sleep_command("echo done"));
 }
 
+/// sleep 等待闸门的判定（`docs/features/background-bash.md` 第 2 节 FR-005）：
+/// 首段 `sleep` + 后续命令命中；换行是分隔（换行不是逃逸口）；`&` 接后续命令不算
+/// 「先等再干」；纯注释段与引号内的 sleep 字样都不构成命中。
+#[test]
+fn sleep_wait_gate_detects_leading_sleep_with_trailing_commands() {
+    for command in [
+        "sleep 30 && cat a.txt",
+        "sleep 10; cat a.txt",
+        "sleep 10 || cat a.txt",
+        "sleep 5 | cat",
+        "sleep 10\ncat a.txt",
+        "FOO=1 sleep 5 && x",
+        "sleep 30  # wait\ncat a.txt",
+    ] {
+        assert!(is_sleep_wait_command(command), "{command}");
+    }
+    for command in [
+        // 首段不是 sleep：这正是文案给出的逃逸写法
+        "cat a.txt; sleep 30",
+        "echo anything; sleep 10",
+        "npm run build && sleep 5",
+        // 只有一条 sleep，没有后续命令
+        "sleep 30",
+        "sleep 5 > out",
+        // `&` 接后续命令：shell 立刻执行，不是先等再干
+        "sleep 10 & cat a.txt",
+        // 引号内 / 注释里的 sleep 字样不是子命令
+        "echo 'sleep 10 && cat a.txt'",
+        "sleep 10 # wait",
+        // 首词不是 sleep（与 contains_sleep_command 的首词口径一致）
+        "/usr/bin/sleep 10 && x",
+        "timeout 30 sleep 5 && x",
+        "nosleep 5 && x",
+        // heredoc 正文是字面文本，不是命令
+        "sleep 5 <<EOF\ncat\nEOF",
+        "echo done",
+    ] {
+        assert!(!is_sleep_wait_command(command), "{command}");
+    }
+}
+
 #[test]
 fn bash_sleep_timeout_is_the_default_deadline_when_below_the_sleep_duration() {
     // 命令含 sleep 子命令时前台死线取 `max(默认超时, sleep 时长总和)`；
