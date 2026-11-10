@@ -7,9 +7,15 @@ use super::*;
 #[test]
 fn notice_keys_translate_in_both_locales() {
     *LOCALE.lock().unwrap() = Some(Locale::Zh);
-    assert_eq!(notice_text("notice.spin.allCompleted", &json!({})), "所有任务已完成！");
+    assert_eq!(
+        notice_text("notice.spin.allCompleted", &json!({})),
+        "所有任务已完成！"
+    );
     *LOCALE.lock().unwrap() = Some(Locale::En);
-    assert_eq!(notice_text("notice.spin.allCompleted", &json!({})), "All tasks completed!");
+    assert_eq!(
+        notice_text("notice.spin.allCompleted", &json!({})),
+        "All tasks completed!"
+    );
     *LOCALE.lock().unwrap() = Some(Locale::Zh);
 }
 
@@ -26,7 +32,10 @@ fn placeholder_substitution() {
 
 #[test]
 fn missing_key_echoes_itself() {
-    assert_eq!(notice_text("notice.unknown.key", &json!({})), "notice.unknown.key");
+    assert_eq!(
+        notice_text("notice.unknown.key", &json!({})),
+        "notice.unknown.key"
+    );
 }
 
 #[test]

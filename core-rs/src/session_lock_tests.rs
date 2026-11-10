@@ -101,13 +101,14 @@ fn child_helper() {
 fn spawn_child(mode: &str, path: &std::path::Path) -> std::process::Child {
     let exe = std::env::current_exe().expect("current exe");
     Command::new(exe)
-        .args(["session_lock::tests::child_helper", "--exact", "--nocapture"])
+        .args([
+            "session_lock::tests::child_helper",
+            "--exact",
+            "--nocapture",
+        ])
         .env("SESSION_LOCK_CHILD", mode)
         .env("SESSION_LOCK_PATH", path)
-        .env(
-            "SESSION_LOCK_READY",
-            path.with_extension("ready"),
-        )
+        .env("SESSION_LOCK_READY", path.with_extension("ready"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -169,8 +170,8 @@ fn different_sessions_do_not_contend() {
     let _env = test_env();
     let project = unique_project("session-level");
     let (_path, mut child) = held_by_child(&project, "s-a");
-    let handle = session_lock::acquire(&lock_file(&project, "s-b"))
-        .expect("同目录的另一个会话必须可获取");
+    let handle =
+        session_lock::acquire(&lock_file(&project, "s-b")).expect("同目录的另一个会话必须可获取");
     drop(handle);
     let _ = child.kill();
     let _ = child.wait();
@@ -280,18 +281,13 @@ fn corrupt_content_still_holds() {
 
 // ==================== 变更守卫（engine 级）====================
 
-fn core_with_session(
-    project: &str,
-    session_id: &str,
-) -> (Core, crate::test_support::Capture) {
+fn core_with_session(project: &str, session_id: &str) -> (Core, crate::test_support::Capture) {
     let (core, sink) = bare_core();
     config::set_session_workspace(session_id, Some(project.to_string()));
     (core, sink)
 }
 
-fn last_notice(
-    sink: &crate::test_support::Capture,
-) -> Option<serde_json::Value> {
+fn last_notice(sink: &crate::test_support::Capture) -> Option<serde_json::Value> {
     sink.events()
         .into_iter()
         .find(|event| event["type"] == "notice")
@@ -397,9 +393,8 @@ fn unloaded_mutation_takes_a_short_lease() {
 #[test]
 fn manual_compact_rejected_when_held_elsewhere() {
     let sandbox = crate::test_support::Sandbox::new("lock-manual-compact");
-    let llm = crate::test_support::FakeLlm::fixed(crate::test_support::openai_text_sse(&[
-        "压缩摘要",
-    ]));
+    let llm =
+        crate::test_support::FakeLlm::fixed(crate::test_support::openai_text_sse(&["压缩摘要"]));
     sandbox.write_llm_settings(&llm.base_url, "auto");
     let harness = crate::test_support::EngineHarness::allow_all();
 
@@ -435,7 +430,9 @@ fn manual_compact_rejected_when_held_elsewhere() {
 
     let types = harness.sink.event_types();
     assert!(
-        !types.iter().any(|kind| kind == "compactBegin" || kind == "compactEnd"),
+        !types
+            .iter()
+            .any(|kind| kind == "compactBegin" || kind == "compactEnd"),
         "被持会话不得进入压缩流程，实际事件：{types:?}"
     );
     assert!(
@@ -483,7 +480,8 @@ fn compact_archive_read_works_when_held() {
         "纯读不受限：他持会话的归档展开不得被拒，实际 {display:?}"
     );
     assert!(
-        !sink.events()
+        !sink
+            .events()
             .into_iter()
             .any(|event| event["type"] == "notice"),
         "纯读不发占用通知"

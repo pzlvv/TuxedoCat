@@ -22,16 +22,14 @@ use serde_json::{json, Value};
 
 use crate::choices::{ChoiceDelivery, ChoiceManager, ChoiceOptions, DiffSnapshot};
 use crate::conversations::{parse_conversation_list, ConversationCache};
+use crate::i18n;
 use crate::protocol::{CoreToUiFrame, UiToCoreFrame};
-use crate::settings::{
-    resolve_model_ref, snapshot_to_payload, McpServerDefinition, SettingsStore,
-};
+use crate::settings::{resolve_model_ref, snapshot_to_payload, McpServerDefinition, SettingsStore};
 use crate::store::{
-    Action, AddMessageData, ConversationLoadedData, Ids, LocalAction, NoticeLevel,
-    Overlay, OverlayKind, Role, RuntimeState, TuiMessage, ToolStatus,
+    Action, AddMessageData, ConversationLoadedData, Ids, LocalAction, NoticeLevel, Overlay,
+    OverlayKind, Role, RuntimeState, ToolStatus, TuiMessage,
 };
 use crate::ui_state::SessionUiState;
-use crate::i18n;
 
 // ==================== 日志 ====================
 
@@ -44,8 +42,17 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(path: Option<PathBuf>, verbose: bool) -> Logger {
-        let file = path.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
-        Logger { file: Mutex::new(file), verbose }
+        let file = path.and_then(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        });
+        Logger {
+            file: Mutex::new(file),
+            verbose,
+        }
     }
 
     pub fn log(&self, line: &str) {
@@ -67,12 +74,20 @@ impl Logger {
 enum PendingReply {
     ConversationList,
     Skills,
-    Balance { session_id: String },
-    ConversationLoad { session_id: String },
-    SmartNaming { session_id: String },
+    Balance {
+        session_id: String,
+    },
+    ConversationLoad {
+        session_id: String,
+    },
+    SmartNaming {
+        session_id: String,
+    },
     McpServers,
     /// 切换会话前等旧会话落盘收尾（`flushSessionRequested`），回包后继续加载新会话
-    FlushThenLoad { session_id: String },
+    FlushThenLoad {
+        session_id: String,
+    },
 }
 
 /// `sendMessage` 携带的会话覆盖（app 从 store 的活动会话投影读出；未到达的不猜）。
@@ -154,7 +169,12 @@ impl Host {
     }
 
     fn respond(&mut self, id: u64, result: Value) {
-        self.outbox.push(UiToCoreFrame::Response { id, ok: true, result, error: None });
+        self.outbox.push(UiToCoreFrame::Response {
+            id,
+            ok: true,
+            result,
+            error: None,
+        });
     }
 
     fn respond_error(&mut self, id: u64, error: impl Into<String>) {
@@ -208,12 +228,16 @@ impl Host {
         // 选择框与查询计数随 core 一起消失：重启后的 core 是全新状态
         self.choices = ChoiceManager::default();
         self.ui_state = SessionUiState::default();
-        self.log.log("[host] connection lost; pending requests discarded");
+        self.log
+            .log("[host] connection lost; pending requests discarded");
         vec![
             Action::Local(LocalAction::ClearPendingChoice),
             Action::Local(LocalAction::CloseOverlay),
             self.notice(
-                i18n::tt("Core 已断开，请重启 TUI。", "Core disconnected, please restart the TUI."),
+                i18n::tt(
+                    "Core 已断开，请重启 TUI。",
+                    "Core disconnected, please restart the TUI.",
+                ),
                 NoticeLevel::Error,
             ),
         ]
@@ -230,14 +254,21 @@ impl Host {
             }
             CoreToUiFrame::Event(event) => self.handle_event(&event),
             CoreToUiFrame::Request { id, request } => self.handle_core_request(id, &request),
-            CoreToUiFrame::Response { id, ok, result, error } => {
+            CoreToUiFrame::Response {
+                id,
+                ok,
+                result,
+                error,
+            } => {
                 let Some(pending) = self.pending.remove(&id) else {
-                    self.log.log(&format!("[host] response for unknown request id={id}"));
+                    self.log
+                        .log(&format!("[host] response for unknown request id={id}"));
                     return Vec::new();
                 };
                 if !ok {
                     let message = error.unwrap_or_else(|| "request failed".into());
-                    self.log.log(&format!("[host] request id={id} failed: {message}"));
+                    self.log
+                        .log(&format!("[host] request id={id} failed: {message}"));
                     return self.handle_failed_reply(pending, message);
                 }
                 self.handle_reply(pending, &result)
@@ -249,7 +280,8 @@ impl Host {
         match pending {
             PendingReply::FlushThenLoad { session_id } => {
                 // 切换会话被落盘收尾失败挡住：仍然继续加载（尽力而为），错误只记日志
-                self.log.log(&format!("[host] flush failed, continuing load: {message}"));
+                self.log
+                    .log(&format!("[host] flush failed, continuing load: {message}"));
                 self.start_load(&session_id)
             }
             PendingReply::ConversationLoad { .. } => {
@@ -262,7 +294,9 @@ impl Host {
                 )]
             }
             PendingReply::ConversationList => Vec::new(),
-            PendingReply::Skills | PendingReply::McpServers | PendingReply::SmartNaming { .. } => Vec::new(),
+            PendingReply::Skills | PendingReply::McpServers | PendingReply::SmartNaming { .. } => {
+                Vec::new()
+            }
             PendingReply::Balance { session_id } => vec![clear_balance(&session_id)],
         }
     }
@@ -282,12 +316,19 @@ impl Host {
                 vec![balance_action(&session_id, result)]
             }
             PendingReply::SmartNaming { session_id } => {
-                let title = result.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+                let title = result
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 // 标题写盘走总线（core 落盘 + 广播 titleChanged）；列表刷新由
                 // conversationListChanged 统一驱动
                 self.emit(json!({ "type": "conversationRenamed", "sessionId": session_id, "title": title }));
                 vec![
-                    Action::SetTitle { session_id: session_id.clone(), title: title.clone() },
+                    Action::SetTitle {
+                        session_id: session_id.clone(),
+                        title: title.clone(),
+                    },
                     Action::SmartNamingResult { session_id, title },
                 ]
             }
@@ -306,19 +347,28 @@ impl Host {
 
     fn handle_event(&mut self, event: &Value) -> Vec<Action> {
         let Some(kind) = event.get("type").and_then(Value::as_str) else {
-            self.log.log("[host] dropped CoreEvent without a type field");
+            self.log
+                .log("[host] dropped CoreEvent without a type field");
             return Vec::new();
         };
         let session = |event: &Value| {
-            event.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string()
+            event
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
         };
         match kind {
             // ===== 渲染 =====
             "message" => {
                 let session_id = session(event);
-                let Some(data) = event.get("data") else { return Vec::new() };
+                let Some(data) = event.get("data") else {
+                    return Vec::new();
+                };
                 let Some(mut data) = add_message_data(data) else {
-                    self.log.log(&format!("[host] dropped message event with unknown shape: {data:?}"));
+                    self.log.log(&format!(
+                        "[host] dropped message event with unknown shape: {data:?}"
+                    ));
                     return Vec::new();
                 };
                 data.session_id = session_id;
@@ -333,9 +383,19 @@ impl Host {
             "streamMessage" => {
                 let session_id = session(event);
                 let data = event.get("data").cloned().unwrap_or(Value::Null);
-                let role = data.get("role").and_then(Value::as_str).and_then(Role::parse);
-                let accumulated = data.get("accumulated").and_then(Value::as_str).unwrap_or("");
-                let stream_id = data.get("streamId").and_then(Value::as_str).unwrap_or("").to_string();
+                let role = data
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .and_then(Role::parse);
+                let accumulated = data
+                    .get("accumulated")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let stream_id = data
+                    .get("streamId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 // 流式阶段决定当前是 thinking 还是 assistant 文本输出
                 match role {
                     Some(Role::Assistant) => {
@@ -348,24 +408,57 @@ impl Host {
                     None => return Vec::new(),
                 }
                 let role = role.unwrap_or(Role::Assistant);
-                vec![Action::StreamMessage { session_id, role, text: accumulated.to_string(), stream_id }]
+                vec![Action::StreamMessage {
+                    session_id,
+                    role,
+                    text: accumulated.to_string(),
+                    stream_id,
+                }]
             }
             "streamEnd" => {
                 let session_id = session(event);
                 let data = event.get("data").cloned().unwrap_or(Value::Null);
-                let Some(role) = data.get("role").and_then(Value::as_str).and_then(Role::parse) else {
+                let Some(role) = data
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .and_then(Role::parse)
+                else {
                     return Vec::new();
                 };
-                let accumulated = data.get("accumulated").and_then(Value::as_str).unwrap_or("").to_string();
-                let stream_id = data.get("streamId").and_then(Value::as_str).unwrap_or("").to_string();
+                let accumulated = data
+                    .get("accumulated")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let stream_id = data
+                    .get("streamId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let usage = data.get("usage").cloned().unwrap_or(Value::Null);
-                let input = usage.get("input_tokens").and_then(Value::as_f64).unwrap_or(0.0);
-                let output = usage.get("output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
-                vec![Action::StreamEnd { session_id, role, accumulated, total_tokens: input + output, stream_id }]
+                let input = usage
+                    .get("input_tokens")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let output = usage
+                    .get("output_tokens")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                vec![Action::StreamEnd {
+                    session_id,
+                    role,
+                    accumulated,
+                    total_tokens: input + output,
+                    stream_id,
+                }]
             }
             "toolCall" => {
                 let session_id = session(event);
-                let tool_call_id = event.get("toolUseId").and_then(Value::as_str).unwrap_or("").to_string();
+                let tool_call_id = event
+                    .get("toolUseId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 self.ui_state.mark_tool_phase(&session_id);
                 vec![Action::UpdateToolStatus {
                     session_id,
@@ -376,14 +469,27 @@ impl Host {
             }
             "toolResult" => {
                 let session_id = session(event);
-                let tool_call_id = event.get("toolUseId").and_then(Value::as_str).unwrap_or("").to_string();
-                let output = event.get("output").and_then(Value::as_str).unwrap_or("").to_string();
+                let tool_call_id = event
+                    .get("toolUseId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let output = event
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let status = match event.get("status").and_then(Value::as_str) {
                     Some("error") => ToolStatus::Fail,
                     _ => ToolStatus::Success,
                 };
                 self.ui_state.end_tool_phase(&session_id);
-                vec![Action::UpdateToolStatus { session_id, tool_call_id, status: Some(status), output: Some(output) }]
+                vec![Action::UpdateToolStatus {
+                    session_id,
+                    tool_call_id,
+                    status: Some(status),
+                    output: Some(output),
+                }]
             }
             "toolArgsUpdated" => {
                 // 文件引用 chips 与紧凑 diff 的数据面，TUI v1 不渲染（原样忽略）
@@ -391,7 +497,11 @@ impl Host {
             }
             "toolProgress" => {
                 let session_id = session(event);
-                let tool_call_id = event.get("toolUseId").and_then(Value::as_str).unwrap_or("").to_string();
+                let tool_call_id = event
+                    .get("toolUseId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let progress = event.get("progress").cloned().unwrap_or(Value::Null);
                 // 内容已由工具层按统一上限（4K，前 2K + 后 2K）裁剪，原样转发
                 let streamed = progress
@@ -400,13 +510,20 @@ impl Host {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                vec![Action::ToolProgress { session_id, tool_call_id, output: streamed }]
+                vec![Action::ToolProgress {
+                    session_id,
+                    tool_call_id,
+                    output: streamed,
+                }]
             }
             "aiBegin" => {
                 let session_id = session(event);
                 self.ui_state.mark_thinking(&session_id);
                 vec![
-                    Action::ShowThinkingAnimation { session_id: session_id.clone(), show: true },
+                    Action::ShowThinkingAnimation {
+                        session_id: session_id.clone(),
+                        show: true,
+                    },
                     Action::AiBegin { session_id },
                 ]
             }
@@ -415,16 +532,25 @@ impl Host {
                 self.ui_state.mark_idle(&session_id);
                 self.fetch_balance(&session_id);
                 vec![
-                    Action::ShowThinkingAnimation { session_id: session_id.clone(), show: false },
+                    Action::ShowThinkingAnimation {
+                        session_id: session_id.clone(),
+                        show: false,
+                    },
                     Action::AiEnd { session_id },
                 ]
             }
             "messagesReplaced" => {
                 let session_id = session(event);
                 let empty = Vec::new();
-                let records = event.get("messages").and_then(Value::as_array).unwrap_or(&empty);
+                let records = event
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .unwrap_or(&empty);
                 let messages = self.map_message_data_list(records);
-                vec![Action::MessagesReplaced { session_id, messages }]
+                vec![Action::MessagesReplaced {
+                    session_id,
+                    messages,
+                }]
             }
 
             // ===== 控制面 =====
@@ -433,16 +559,23 @@ impl Host {
                 // 同一 session 可能被多个调用方同时标记 begin，由查询计数去重，
                 // 保证一次查询只表现一次开始
                 if !self.ui_state.begin_query(&session_id) {
-                    self.log.log(&format!("[host] ignoring nested queryBegin for session: {session_id}"));
+                    self.log.log(&format!(
+                        "[host] ignoring nested queryBegin for session: {session_id}"
+                    ));
                     return Vec::new();
                 }
                 self.ui_state.mark_thinking(&session_id);
-                vec![Action::ShowThinkingAnimation { session_id, show: true }]
+                vec![Action::ShowThinkingAnimation {
+                    session_id,
+                    show: true,
+                }]
             }
             "queryEnd" => {
                 let session_id = session(event);
                 if !self.ui_state.end_query(&session_id) {
-                    self.log.log(&format!("[host] ignoring redundant queryEnd for session: {session_id}"));
+                    self.log.log(&format!(
+                        "[host] ignoring redundant queryEnd for session: {session_id}"
+                    ));
                     return Vec::new();
                 }
                 self.ui_state.mark_idle(&session_id);
@@ -450,13 +583,20 @@ impl Host {
                 // 查询结束代表消息已持久化完成：推送最新对话列表
                 self.refresh_conversations();
                 vec![
-                    Action::ShowThinkingAnimation { session_id: session_id.clone(), show: false },
+                    Action::ShowThinkingAnimation {
+                        session_id: session_id.clone(),
+                        show: false,
+                    },
                     Action::QueryEnd { session_id },
                 ]
             }
             "titleChanged" => {
                 let session_id = session(event);
-                let title = event.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+                let title = event
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 vec![Action::SetTitle { session_id, title }]
             }
             "sessionCreated" => Vec::new(), // initSessionState：TUI 无需初始化动作
@@ -506,7 +646,10 @@ impl Host {
                         // （specs/defects/compact-context-facts-stale-across-views）
                         let mut actions = Vec::new();
                         if let Some(tokens) = tokens {
-                            actions.push(Action::SetContextTokens { session_id: session_id.clone(), tokens });
+                            actions.push(Action::SetContextTokens {
+                                session_id: session_id.clone(),
+                                tokens,
+                            });
                         }
                         actions.push(self.compress_notice("complete", tokens, &session_id));
                         actions
@@ -516,7 +659,10 @@ impl Host {
             }
             "commandDispatched" => {
                 let session_id = session(event);
-                let command = event.get("commandName").and_then(Value::as_str).unwrap_or("");
+                let command = event
+                    .get("commandName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 // 内置命令就地执行、不进入 LLM 上下文：显式清除排队项，避免 queryEnd 时
                 // 把它当成「未被消费」而重复投递
                 let mut actions = vec![Action::ClearQueuedMessage { session_id }];
@@ -543,25 +689,47 @@ impl Host {
                         let r = change.get("ref").cloned().unwrap_or(Value::Null);
                         vec![Action::SetModel {
                             session_id,
-                            model: r.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
-                            provider: r.get("provider").and_then(Value::as_str).map(str::to_string),
+                            model: r
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            provider: r
+                                .get("provider")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
                         }]
                     }
                     "thinkingEffort" => vec![Action::SetThinkingMode {
                         session_id,
-                        mode: change.get("value").and_then(Value::as_str).unwrap_or("").to_string(),
+                        mode: change
+                            .get("value")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     }],
                     "promptMode" => vec![Action::SetPromptMode {
                         session_id,
-                        mode: change.get("value").and_then(Value::as_str).unwrap_or("").to_string(),
+                        mode: change
+                            .get("value")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     }],
                     "agentMode" => vec![Action::SetAgentMode {
                         session_id,
-                        mode: change.get("value").and_then(Value::as_str).unwrap_or("").to_string(),
+                        mode: change
+                            .get("value")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     }],
                     "webSearch" => vec![Action::SetWebSearch {
                         session_id,
-                        enabled: change.get("value").and_then(Value::as_bool).unwrap_or(false),
+                        enabled: change
+                            .get("value")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     }],
                     // 重新读取该会话的 MCP 配置 + 运行时状态并回推（连接同步完成后 core 才广播）
                     "mcpEnabled" => {
@@ -574,7 +742,9 @@ impl Host {
             "notice" => {
                 let key = event.get("key").and_then(Value::as_str).unwrap_or("");
                 let params = event.get("params").cloned().unwrap_or(Value::Null);
-                let level = NoticeLevel::parse(event.get("level").and_then(Value::as_str).unwrap_or("info"));
+                let level = NoticeLevel::parse(
+                    event.get("level").and_then(Value::as_str).unwrap_or("info"),
+                );
                 // core 只给「键 + 参数」，翻译与呈现由 UI 承担；键缺失回显键本身
                 vec![self.notice(i18n::notice_text(key, &params), level)]
             }
@@ -585,7 +755,8 @@ impl Host {
             }
             "coreReady" => Vec::new(), // 重新推送快照后的回执；宿主侧只记录，不触发渲染
             other => {
-                self.log.log(&format!("[host] dropped unknown CoreEvent type: {other}"));
+                self.log
+                    .log(&format!("[host] dropped unknown CoreEvent type: {other}"));
                 Vec::new()
             }
         }
@@ -594,7 +765,10 @@ impl Host {
     fn compress_notice(&self, status: &str, tokens: Option<f64>, _session: &str) -> Action {
         // 压缩进度走瞬时提示（start / complete / error 三态都是一次性事件）
         let (text, level) = match status {
-            "start" => (i18n::tt("开始压缩上下文…", "Compacting context…"), NoticeLevel::Info),
+            "start" => (
+                i18n::tt("开始压缩上下文…", "Compacting context…"),
+                NoticeLevel::Info,
+            ),
             "complete" => (
                 match tokens {
                     Some(tokens) => i18n::tt(
@@ -613,7 +787,9 @@ impl Host {
     /// 消息里出现了新的高亮语言 → 并入 settings.json 的 highlightLanguages 字段
     /// （UI 专属字段，Core 不感知；写盘后重推快照，与 TS 的订阅链同语义）。
     fn record_highlight_languages(&mut self, languages: Option<&Value>) {
-        let Some(list) = languages.and_then(Value::as_array) else { return };
+        let Some(list) = languages.and_then(Value::as_array) else {
+            return;
+        };
         let incoming: Vec<String> = list
             .iter()
             .filter_map(Value::as_str)
@@ -626,11 +802,19 @@ impl Host {
         let result = self.settings.update_settings(|cfg| {
             const FIELD: &str = "highlightLanguages";
             const MAX: usize = 60;
-            let Some(object) = cfg.as_object_mut() else { return };
+            let Some(object) = cfg.as_object_mut() else {
+                return;
+            };
             let mut current: Vec<String> = object
                 .get(FIELD)
                 .and_then(Value::as_array)
-                .map(|list| list.iter().filter_map(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string).collect())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default();
             let mut changed = false;
             for language in &incoming {
@@ -650,7 +834,9 @@ impl Host {
         });
         match result {
             Ok(_) => self.emit_host_environment(),
-            Err(error) => self.log.log(&format!("[host] failed to record highlight languages: {error}")),
+            Err(error) => self.log.log(&format!(
+                "[host] failed to record highlight languages: {error}"
+            )),
         }
     }
 
@@ -665,7 +851,8 @@ impl Host {
             "toolPermissionRequested" => self.handle_tool_permission(id, request),
             "userChoice" => self.handle_user_choice_request(id, request),
             other => {
-                self.log.log(&format!("[host] unknown CoreRequest type: {other}"));
+                self.log
+                    .log(&format!("[host] unknown CoreRequest type: {other}"));
                 self.respond_error(id, format!("unknown CoreRequest type: {other}"));
                 Vec::new()
             }
@@ -675,11 +862,26 @@ impl Host {
     /// 权限请求：上架工具卡片；permResult 原样返回（'ask' 的确认框由 core 随后的
     /// userChoice 请求发出，这里提前弹框会造成双重确认）。
     fn handle_tool_permission(&mut self, id: u64, request: &Value) -> Vec<Action> {
-        let session_id = request.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
-        let tool_use_id = request.get("toolUseId").and_then(Value::as_str).unwrap_or("").to_string();
-        let tool_name = request.get("toolName").and_then(Value::as_str).unwrap_or("").to_string();
+        let session_id = request
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let tool_use_id = request
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let tool_name = request
+            .get("toolName")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let perm_result = request.get("permResult").cloned().unwrap_or(Value::Null);
-        let agent_mode = request.get("agentMode").and_then(Value::as_str).unwrap_or("");
+        let agent_mode = request
+            .get("agentMode")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let display_args = request.get("displayArgs").cloned().unwrap_or(Value::Null);
 
         // 进入工具阶段（包括等待用户授权），thinking 动画应让位于工具卡片
@@ -695,7 +897,11 @@ impl Host {
                 DiffSnapshot {
                     // Write 新建文件时 beforeContent 为 null：diff 按空原文处理
                     before_content: before.and_then(Value::as_str).unwrap_or("").to_string(),
-                    after_content: perm_result.get("afterContent").and_then(Value::as_str).unwrap_or("").to_string(),
+                    after_content: perm_result
+                        .get("afterContent")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     context_before: string_list(perm_result.get("contextBefore")),
                     context_after: string_list(perm_result.get("contextAfter")),
                     start_line: perm_result.get("startLine").and_then(Value::as_f64),
@@ -724,7 +930,11 @@ impl Host {
                 .and_then(Value::as_str)
                 .unwrap_or(&tool_name)
                 .to_string();
-            let lines = crate::diffview::diff_overlay_lines(&snapshot.before_content, &snapshot.after_content, 3);
+            let lines = crate::diffview::diff_overlay_lines(
+                &snapshot.before_content,
+                &snapshot.after_content,
+                3,
+            );
             actions.push(Action::Local(LocalAction::ShowOverlay(Overlay {
                 kind: OverlayKind::Diff,
                 title,
@@ -738,7 +948,11 @@ impl Host {
 
     /// 用户选择请求：按会话入队，open（== 当前显示的会话）时立即弹出。
     fn handle_user_choice_request(&mut self, id: u64, request: &Value) -> Vec<Action> {
-        let session_id = request.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
+        let session_id = request
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let options = ChoiceOptions::from_value(request);
         // ask user 请求自带 diff 字段时更新当前快照（与 TS showUserChoice 同语义；
         // 权限请求已写过的场景下两者取值一致）
@@ -757,8 +971,14 @@ impl Host {
         }
         let choice_id = format!("choice-{}-{}", now_millis(), random_suffix());
         let is_open = self.tracked_active_session.as_deref() == Some(session_id.as_str());
-        match self.choices.request(&session_id, options, id, choice_id, is_open) {
-            ChoiceDelivery::Replaced { replaced_frames, delivery } => {
+        match self
+            .choices
+            .request(&session_id, options, id, choice_id, is_open)
+        {
+            ChoiceDelivery::Replaced {
+                replaced_frames,
+                delivery,
+            } => {
                 for frame in replaced_frames {
                     self.respond_error(frame, "User choice was replaced by a new request");
                 }
@@ -784,9 +1004,15 @@ impl Host {
     }
 
     /// 用户应答（覆盖层提交）：解除 waiting 并回帧。
-    pub fn respond_choice(&mut self, choice_id: &str, index: i64, reply: Option<String>) -> Vec<Action> {
+    pub fn respond_choice(
+        &mut self,
+        choice_id: &str,
+        index: i64,
+        reply: Option<String>,
+    ) -> Vec<Action> {
         let Some(shown) = self.choices.respond(choice_id) else {
-            self.log.log(&format!("[host] no pending choice found for {choice_id}"));
+            self.log
+                .log(&format!("[host] no pending choice found for {choice_id}"));
             return Vec::new();
         };
         self.emit(json!({
@@ -870,7 +1096,13 @@ impl Host {
         let groups: Vec<(String, Vec<String>)> = providers
             .into_iter()
             .filter(|(_, provider)| {
-                provider.get("baseURL").and_then(Value::as_str).map(str::trim).map(str::len).unwrap_or(0) > 0
+                provider
+                    .get("baseURL")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .map(str::len)
+                    .unwrap_or(0)
+                    > 0
             })
             .map(|(key, provider)| {
                 let mut models: Vec<String> = Vec::new();
@@ -878,7 +1110,8 @@ impl Host {
                     for model in list {
                         if let Some(model) = model.as_str() {
                             let model = model.trim();
-                            if !model.is_empty() && !models.iter().any(|existing| existing == model) {
+                            if !model.is_empty() && !models.iter().any(|existing| existing == model)
+                            {
                                 models.push(model.to_string());
                             }
                         }
@@ -886,7 +1119,9 @@ impl Host {
                 }
                 if let Some(default_model) = provider.get("defaultModel").and_then(Value::as_str) {
                     let default_model = default_model.trim();
-                    if !default_model.is_empty() && !models.iter().any(|existing| existing == default_model) {
+                    if !default_model.is_empty()
+                        && !models.iter().any(|existing| existing == default_model)
+                    {
                         models.insert(0, default_model.to_string());
                     }
                 }
@@ -894,7 +1129,10 @@ impl Host {
             })
             .collect();
 
-        vec![Action::SetModels(crate::store::ModelsState { providers: groups, active_provider: active_key })]
+        vec![Action::SetModels(crate::store::ModelsState {
+            providers: groups,
+            active_provider: active_key,
+        })]
     }
 
     /// settings.json 的会话级默认值（先重读一次磁盘：手工恢复 / 编辑 settings.json 后
@@ -927,7 +1165,9 @@ impl Host {
     fn fetch_balance(&mut self, session_id: &str) {
         self.request(
             json!({ "type": "balanceRequested", "sessionId": session_id }),
-            PendingReply::Balance { session_id: session_id.to_string() },
+            PendingReply::Balance {
+                session_id: session_id.to_string(),
+            },
         );
     }
 
@@ -952,7 +1192,10 @@ impl Host {
         self.emit(json!({ "type": "conversationOpened", "sessionId": session_id }));
         self.fetch_balance(session_id);
         // 新对话默认标题（空串 = 未命名，与 webview 的 defaultTitle 同约定）
-        vec![Action::SetTitle { session_id: session_id.to_string(), title: String::new() }]
+        vec![Action::SetTitle {
+            session_id: session_id.to_string(),
+            title: String::new(),
+        }]
     }
 
     /// 打开会话：切换前等旧会话的挂起持久化收尾（引擎归 core，宿主只发请求）。
@@ -961,7 +1204,9 @@ impl Host {
             if old != session_id {
                 self.request(
                     json!({ "type": "flushSessionRequested", "sessionId": old }),
-                    PendingReply::FlushThenLoad { session_id: session_id.to_string() },
+                    PendingReply::FlushThenLoad {
+                        session_id: session_id.to_string(),
+                    },
                 );
                 return Vec::new();
             }
@@ -978,7 +1223,9 @@ impl Host {
         }));
         self.request(
             json!({ "type": "conversationLoadRequested", "sessionId": session_id }),
-            PendingReply::ConversationLoad { session_id: session_id.to_string() },
+            PendingReply::ConversationLoad {
+                session_id: session_id.to_string(),
+            },
         );
         Vec::new()
     }
@@ -995,7 +1242,11 @@ impl Host {
         let context = metadata.get("context").cloned().unwrap_or(Value::Null);
 
         // 标题
-        let title = metadata.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+        let title = metadata
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
 
         // meta.json 未保存的配置回退配置快照默认值（默认值只有一处来源）
         let snapshot = self.settings.snapshot().clone();
@@ -1048,7 +1299,12 @@ impl Host {
             .get("agentMode")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or_else(|| context.get("agentMode").and_then(Value::as_str).map(str::to_string))
+            .or_else(|| {
+                context
+                    .get("agentMode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .or_else(|| Some(snapshot.default_agent_mode.clone()));
 
         let messages = loaded
@@ -1058,7 +1314,10 @@ impl Host {
             .unwrap_or_default();
 
         let has_active_query = self.ui_state.is_query_active(session_id);
-        let context_tokens = context.get("totalContextTokens").and_then(Value::as_f64).unwrap_or(0.0);
+        let context_tokens = context
+            .get("totalContextTokens")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
 
         actions.push(Action::ConversationLoaded(ConversationLoadedData {
             session_id: session_id.to_string(),
@@ -1101,7 +1360,10 @@ impl Host {
         self.ui_state.drop_session(session_id);
         let (frames, had_shown) = self.choices.drop_session(session_id);
         for frame in frames {
-            self.respond_error(frame, format!("Session {session_id} closed before user choice was answered"));
+            self.respond_error(
+                frame,
+                format!("Session {session_id} closed before user choice was answered"),
+            );
         }
         let mut actions = Vec::new();
         if had_shown {
@@ -1116,7 +1378,9 @@ impl Host {
     }
 
     pub fn rename_conversation(&mut self, session_id: &str, title: &str) {
-        self.emit(json!({ "type": "conversationRenamed", "sessionId": session_id, "title": title }));
+        self.emit(
+            json!({ "type": "conversationRenamed", "sessionId": session_id, "title": title }),
+        );
     }
 
     /// 智能命名：读会话消息 + 调 LLM + 解析标题；回包后经 conversationRenamed 落盘。
@@ -1128,7 +1392,9 @@ impl Host {
         }));
         self.request(
             json!({ "type": "smartNamingRequested", "sessionId": session_id }),
-            PendingReply::SmartNaming { session_id: session_id.to_string() },
+            PendingReply::SmartNaming {
+                session_id: session_id.to_string(),
+            },
         );
     }
 
@@ -1137,7 +1403,9 @@ impl Host {
     pub fn set_model(&mut self, session_id: &str, model: &str, provider: &str) {
         // provider 缺失或为空串即非法：不猜测/回退到其它 provider
         if provider.is_empty() {
-            self.log.log(&format!("[host] setModel: provider 为空（非法），忽略 model=\"{model}\""));
+            self.log.log(&format!(
+                "[host] setModel: provider 为空（非法），忽略 model=\"{model}\""
+            ));
             return;
         }
         self.emit(json!({
@@ -1148,7 +1416,9 @@ impl Host {
     }
 
     pub fn set_thinking_mode(&mut self, session_id: &str, mode: &str) {
-        self.emit(json!({ "type": "thinkingEffortChanged", "sessionId": session_id, "mode": mode }));
+        self.emit(
+            json!({ "type": "thinkingEffortChanged", "sessionId": session_id, "mode": mode }),
+        );
     }
 
     pub fn set_prompt_mode(&mut self, session_id: &str, mode: &str) {
@@ -1175,7 +1445,12 @@ impl Host {
 
     /// 用户消息的唯一入口（`handleUserMessage` 移植）：生成 uuid、乐观回显 / 排队、
     /// 组装载荷发给 core。命令解析与消费都在 core 侧。
-    pub fn submit_message(&mut self, session_id: &str, content: &str, overrides: &SessionOverrides) -> Vec<Action> {
+    pub fn submit_message(
+        &mut self,
+        session_id: &str,
+        content: &str,
+        overrides: &SessionOverrides,
+    ) -> Vec<Action> {
         if session_id.is_empty() || (content.trim().is_empty()) {
             return Vec::new();
         }
@@ -1274,27 +1549,46 @@ impl Host {
     pub fn map_history(&mut self, records: &[Value]) -> Vec<TuiMessage> {
         let mut out: Vec<TuiMessage> = Vec::new();
         for record in records {
-            if record.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
-                || record.get("silent").and_then(Value::as_bool).unwrap_or(false)
+            if record
+                .get("isMeta")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || record
+                    .get("silent")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
             {
                 continue;
             }
             let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
             let message = record.get("message").cloned().unwrap_or(Value::Null);
-            let is_compact_summary = record.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false);
+            let is_compact_summary = record
+                .get("isCompactSummary")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             match kind {
                 "user" => {
-                    let uuid = record.get("uuid").and_then(Value::as_str).map(str::to_string);
+                    let uuid = record
+                        .get("uuid")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
                     match message.get("content") {
                         Some(Value::String(content)) => {
-                            out.push(self.history_message(Role::User, content, uuid, is_compact_summary));
+                            out.push(self.history_message(
+                                Role::User,
+                                content,
+                                uuid,
+                                is_compact_summary,
+                            ));
                         }
                         Some(Value::Array(blocks)) => {
                             let mut text = String::new();
                             for block in blocks {
                                 match block.get("type").and_then(Value::as_str) {
                                     Some("text") => {
-                                        if let Some(piece) = block.get("text").and_then(Value::as_str) {
+                                        if let Some(piece) =
+                                            block.get("text").and_then(Value::as_str)
+                                        {
                                             text.push_str(piece);
                                         }
                                     }
@@ -1305,7 +1599,12 @@ impl Host {
                                 }
                             }
                             if !text.is_empty() {
-                                out.push(self.history_message(Role::User, &text, uuid, is_compact_summary));
+                                out.push(self.history_message(
+                                    Role::User,
+                                    &text,
+                                    uuid,
+                                    is_compact_summary,
+                                ));
                             }
                         }
                         _ => {}
@@ -1330,7 +1629,12 @@ impl Host {
                                     .or_else(|| block.get("text").and_then(Value::as_str))
                                     .unwrap_or("");
                                 if !thinking.is_empty() {
-                                    out.push(self.history_message(Role::Thinking, thinking, None, false));
+                                    out.push(self.history_message(
+                                        Role::Thinking,
+                                        thinking,
+                                        None,
+                                        false,
+                                    ));
                                 }
                             }
                             Some("tool_use") => {
@@ -1338,8 +1642,14 @@ impl Host {
                                     id: self.ids.next_message_id(),
                                     role: Role::ToolCall,
                                     content: String::new(),
-                                    tool_name: block.get("name").and_then(Value::as_str).map(str::to_string),
-                                    tool_call_id: block.get("id").and_then(Value::as_str).map(str::to_string),
+                                    tool_name: block
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
+                                    tool_call_id: block
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
                                     status: ToolStatus::Normal,
                                     context_tokens: 0.0,
                                     message_uuid: None,
@@ -1356,7 +1666,12 @@ impl Host {
                 }
                 "system" => {
                     if let Some(content) = message.get("content").and_then(Value::as_str) {
-                        out.push(self.history_message(Role::System, content, None, is_compact_summary));
+                        out.push(self.history_message(
+                            Role::System,
+                            content,
+                            None,
+                            is_compact_summary,
+                        ));
                     }
                 }
                 _ => {}
@@ -1365,7 +1680,13 @@ impl Host {
         out
     }
 
-    fn history_message(&mut self, role: Role, content: &str, uuid: Option<String>, is_compact_summary: bool) -> TuiMessage {
+    fn history_message(
+        &mut self,
+        role: Role,
+        content: &str,
+        uuid: Option<String>,
+        is_compact_summary: bool,
+    ) -> TuiMessage {
         TuiMessage {
             id: self.ids.next_message_id(),
             role,
@@ -1386,7 +1707,11 @@ impl Host {
         let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
             return;
         };
-        let status = if block.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+        let status = if block
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             ToolStatus::Fail
         } else {
             ToolStatus::Success
@@ -1400,10 +1725,9 @@ impl Host {
                 .join(""),
             _ => String::new(),
         };
-        if let Some(index) = out
-            .iter()
-            .position(|message| message.role == Role::ToolCall && message.tool_call_id.as_deref() == Some(tool_use_id))
-        {
+        if let Some(index) = out.iter().position(|message| {
+            message.role == Role::ToolCall && message.tool_call_id.as_deref() == Some(tool_use_id)
+        }) {
             out[index].status = status;
             out[index].content = output;
         }
@@ -1418,14 +1742,39 @@ fn add_message_data(data: &Value) -> Option<AddMessageData> {
     Some(AddMessageData {
         session_id: String::new(),
         role: Some(role),
-        content: data.get("content").and_then(Value::as_str).unwrap_or("").to_string(),
-        tool_name: data.get("toolName").and_then(Value::as_str).map(str::to_string),
-        tool_call_id: data.get("toolCallId").and_then(Value::as_str).map(str::to_string),
-        status: data.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
-        context_tokens: data.get("contextLength").and_then(Value::as_f64).unwrap_or(0.0),
-        output_tokens: data.get("outputTokens").and_then(Value::as_f64).unwrap_or(0.0),
-        message_uuid: data.get("messageUuid").and_then(Value::as_str).map(str::to_string),
-        is_compact_summary: data.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false),
+        content: data
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        tool_name: data
+            .get("toolName")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tool_call_id: data
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        status: data
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(ToolStatus::parse),
+        context_tokens: data
+            .get("contextLength")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        output_tokens: data
+            .get("outputTokens")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        message_uuid: data
+            .get("messageUuid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        is_compact_summary: data
+            .get("isCompactSummary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -1437,9 +1786,20 @@ fn parse_skills(value: &Value) -> Vec<crate::store::SkillItem> {
         .map(|list| {
             list.iter()
                 .map(|skill| crate::store::SkillItem {
-                    name: skill.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
-                    description: skill.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
-                    is_builtin: skill.get("isBuiltin").and_then(Value::as_bool).unwrap_or(false),
+                    name: skill
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    description: skill
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    is_builtin: skill
+                        .get("isBuiltin")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 })
                 .collect()
         })
@@ -1454,7 +1814,13 @@ fn parse_mcp_servers(value: &Value) -> Vec<(String, bool)> {
             list.iter()
                 .filter_map(|server| {
                     let name = server.get("name").and_then(Value::as_str)?;
-                    Some((name.to_string(), server.get("enabled").and_then(Value::as_bool).unwrap_or(false)))
+                    Some((
+                        name.to_string(),
+                        server
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    ))
                 })
                 .collect()
         })
@@ -1464,16 +1830,25 @@ fn parse_mcp_servers(value: &Value) -> Vec<(String, bool)> {
 /// 余额应答 → BalanceUpdate 动作（null → 清空余额，避免显示旧值）。
 fn balance_action(_session_id: &str, value: &Value) -> Action {
     if value.is_null() {
-        return Action::BalanceUpdate { total_balance: None, currency: None };
+        return Action::BalanceUpdate {
+            total_balance: None,
+            currency: None,
+        };
     }
     Action::BalanceUpdate {
         total_balance: value.get("totalBalance").and_then(Value::as_f64),
-        currency: value.get("currency").and_then(Value::as_str).map(str::to_string),
+        currency: value
+            .get("currency")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
 fn clear_balance(_session_id: &str) -> Action {
-    Action::BalanceUpdate { total_balance: None, currency: None }
+    Action::BalanceUpdate {
+        total_balance: None,
+        currency: None,
+    }
 }
 
 fn serialize_mcp_definition(definition: &McpServerDefinition) -> Value {
@@ -1502,7 +1877,10 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
 }
 
 pub fn now_millis() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1510,7 +1888,10 @@ static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// 短随机后缀（uuid 的廉价替代；uuid crate 只在会话 id 上使用）。
 pub fn random_suffix() -> String {
     let counter = RANDOM_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{:x}", now_millis() as u64 ^ (counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+    format!(
+        "{:x}",
+        now_millis() as u64 ^ (counter.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    )
 }
 
 fn format_tokens(tokens: f64) -> String {
@@ -1527,10 +1908,7 @@ mod tests {
 
     /// 空配置目录的 Host：settings.json / mcp.json 缺失按「未配置」继续，不碰真实用户目录。
     fn test_host(tag: &str) -> Host {
-        let dir = std::env::temp_dir().join(format!(
-            "tui-host-tests-{}-{tag}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("tui-host-tests-{}-{tag}", std::process::id()));
         Host::new(
             std::sync::Arc::new(Logger::new(None, false)),
             SettingsStore::with_dir(dir),
@@ -1551,7 +1929,11 @@ mod tests {
             "change": { "key": "model", "ref": { "model": "glm-4.7", "provider": "zhipu" } }
         }));
         match actions.as_slice() {
-            [Action::SetModel { session_id, model, provider }] => {
+            [Action::SetModel {
+                session_id,
+                model,
+                provider,
+            }] => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(model, "glm-4.7");
                 assert_eq!(provider.as_deref(), Some("zhipu"));
@@ -1577,6 +1959,8 @@ mod tests {
             "expected SetContextTokens, got {actions:?}"
         );
         // 压缩完成通知保留（带 tokens 数）
-        assert!(actions.iter().any(|action| matches!(action, Action::Local(LocalAction::Notice { .. }))));
+        assert!(actions
+            .iter()
+            .any(|action| matches!(action, Action::Local(LocalAction::Notice { .. }))));
     }
 }

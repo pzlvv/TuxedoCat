@@ -32,7 +32,9 @@ impl ConversationCache {
     }
 
     pub fn state_of(&self, session_id: &str) -> Option<&RuntimeState> {
-        self.states.iter().find(|state| state.session_id == session_id)
+        self.states
+            .iter()
+            .find(|state| state.session_id == session_id)
     }
 }
 
@@ -46,9 +48,19 @@ pub fn parse_conversation_list(value: &Value) -> Vec<ConversationSummary> {
                     let session_id = metadata.get("sessionId").and_then(Value::as_str)?;
                     Some(ConversationSummary {
                         session_id: session_id.to_string(),
-                        title: metadata.get("title").and_then(Value::as_str).unwrap_or("（无标题）").to_string(),
-                        updated_at: metadata.get("updatedAt").and_then(Value::as_f64).unwrap_or(0.0),
-                        message_count: metadata.get("messageCount").and_then(Value::as_u64).unwrap_or(0),
+                        title: metadata
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("（无标题）")
+                            .to_string(),
+                        updated_at: metadata
+                            .get("updatedAt")
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0),
+                        message_count: metadata
+                            .get("messageCount")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
                     })
                 })
                 .collect()

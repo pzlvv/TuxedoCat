@@ -21,10 +21,8 @@ fn temp_dir(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    let dir = std::env::temp_dir().join(format!(
-        "core-remote-{tag}-{}-{nanos}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("core-remote-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -74,9 +72,16 @@ fn lists_only_subdirectories_sorted() {
     std::fs::write(dir.join("note.txt"), b"x").unwrap();
 
     let listing = list_directories(Some(dir.to_string_lossy().as_ref())).expect("list");
-    let names: Vec<&str> = listing.entries.iter().map(|entry| entry.name.as_str()).collect();
+    let names: Vec<&str> = listing
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
     assert_eq!(names, vec!["alpha", "Beta"], "只列子目录并按名字排序");
-    assert!(listing.entries.iter().all(|entry| entry.path.starts_with(&listing.path)));
+    assert!(listing
+        .entries
+        .iter()
+        .all(|entry| entry.path.starts_with(&listing.path)));
     let expected_parent = dir.parent().map(|p| p.to_string_lossy().to_string());
     assert_eq!(listing.parent, expected_parent);
 
@@ -106,7 +111,10 @@ fn creates_directory_and_missing_parents() {
     let target = dir.join("nested").join("leaf");
 
     let created = create_directory(target.to_string_lossy().as_ref()).expect("create");
-    assert!(PathBuf::from(&created).is_dir(), "应真的建出目录：{created}");
+    assert!(
+        PathBuf::from(&created).is_dir(),
+        "应真的建出目录：{created}"
+    );
     // 父目录不存在时一并创建
     assert!(dir.join("nested").is_dir());
 
@@ -154,7 +162,8 @@ fn deletes_non_empty_directory_recursively() {
     std::fs::create_dir_all(target.join("nested").join("deeper")).unwrap();
     std::fs::write(target.join("nested").join("note.txt"), b"x").unwrap();
 
-    let removed = delete_directory(target.to_string_lossy().as_ref(), true).expect("recursive delete");
+    let removed =
+        delete_directory(target.to_string_lossy().as_ref(), true).expect("recursive delete");
     assert_eq!(PathBuf::from(&removed), target);
     assert!(!target.exists(), "整棵子树应被删掉");
     assert!(dir.exists(), "只删目标目录，不动它的父目录");
@@ -207,13 +216,23 @@ fn rename_rejects_names_that_are_not_plain_names() {
     let path = target.to_string_lossy().to_string();
 
     // 空名字
-    assert!(rename_directory(&path, "   ").expect_err("空名字应被拒绝").contains("empty"));
+    assert!(rename_directory(&path, "   ")
+        .expect_err("空名字应被拒绝")
+        .contains("empty"));
     // 带分隔符（等于移动，不开放）
-    assert!(rename_directory(&path, "a/b").expect_err("分隔符应被拒绝").contains("separator"));
-    assert!(rename_directory(&path, "a\\b").expect_err("分隔符应被拒绝").contains("separator"));
+    assert!(rename_directory(&path, "a/b")
+        .expect_err("分隔符应被拒绝")
+        .contains("separator"));
+    assert!(rename_directory(&path, "a\\b")
+        .expect_err("分隔符应被拒绝")
+        .contains("separator"));
     // 路径穿越
-    assert!(rename_directory(&path, "..").expect_err(".. 应被拒绝").contains("traversal"));
-    assert!(rename_directory(&path, ".").expect_err(". 应被拒绝").contains("traversal"));
+    assert!(rename_directory(&path, "..")
+        .expect_err(".. 应被拒绝")
+        .contains("traversal"));
+    assert!(rename_directory(&path, ".")
+        .expect_err(". 应被拒绝")
+        .contains("traversal"));
     assert!(target.is_dir(), "拒绝后目录原样保留");
 
     std::fs::remove_dir_all(&dir).ok();
@@ -227,7 +246,8 @@ fn rename_refuses_existing_target() {
     std::fs::create_dir_all(&source).unwrap();
     std::fs::create_dir_all(&taken).unwrap();
 
-    let error = rename_directory(source.to_string_lossy().as_ref(), "taken").expect_err("已存在应被拒绝");
+    let error =
+        rename_directory(source.to_string_lossy().as_ref(), "taken").expect_err("已存在应被拒绝");
     assert!(error.contains("already exists"), "{error}");
     assert!(source.is_dir(), "源目录原样保留");
     assert!(taken.is_dir(), "目标目录不能被覆盖");
@@ -290,7 +310,9 @@ fn lists_directories_over_the_control_channel() {
 
     let (address, server) = start_server();
     let mut client = TcpStream::connect(address).expect("connect");
-    client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(client.try_clone().unwrap());
 
     let request = format!(
@@ -468,7 +490,13 @@ fn existing_daemon_reuses_a_live_daemon() {
     let path = dir.join(daemon_state_file_name());
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let endpoint = listener.local_addr().unwrap().to_string();
-    write_daemon_state(&path, &DaemonState { endpoint: endpoint.clone() }).unwrap();
+    write_daemon_state(
+        &path,
+        &DaemonState {
+            endpoint: endpoint.clone(),
+        },
+    )
+    .unwrap();
 
     assert_eq!(
         existing_daemon(&path),
@@ -502,7 +530,13 @@ fn sibling_daemon_endpoint_detects_a_running_sibling() {
     let path = dir.join(daemon_state_file_name());
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let sibling = listener.local_addr().unwrap().to_string();
-    write_daemon_state(&path, &DaemonState { endpoint: sibling.clone() }).unwrap();
+    write_daemon_state(
+        &path,
+        &DaemonState {
+            endpoint: sibling.clone(),
+        },
+    )
+    .unwrap();
 
     assert_eq!(
         sibling_daemon_endpoint(&path, "127.0.0.1:1"),
@@ -522,9 +556,19 @@ fn sibling_daemon_endpoint_ignores_its_own_endpoint() {
     let path = dir.join(daemon_state_file_name());
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let endpoint = listener.local_addr().unwrap().to_string();
-    write_daemon_state(&path, &DaemonState { endpoint: endpoint.clone() }).unwrap();
+    write_daemon_state(
+        &path,
+        &DaemonState {
+            endpoint: endpoint.clone(),
+        },
+    )
+    .unwrap();
 
-    assert_eq!(sibling_daemon_endpoint(&path, &endpoint), None, "自己的 endpoint 不拦");
+    assert_eq!(
+        sibling_daemon_endpoint(&path, &endpoint),
+        None,
+        "自己的 endpoint 不拦"
+    );
 
     drop(listener);
     std::fs::remove_dir_all(&dir).ok();
@@ -744,11 +788,15 @@ fn silent_connection_is_dropped_after_heartbeat_timeout() {
         )
     });
     let client = TcpStream::connect(address).expect("connect");
-    client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     // 什么都不发：超时后服务端关闭连接，读到 EOF
     let mut reader = BufReader::new(client.try_clone().unwrap());
     let mut line = String::new();
-    let read = reader.read_line(&mut line).expect("read after heartbeat timeout");
+    let read = reader
+        .read_line(&mut line)
+        .expect("read after heartbeat timeout");
     assert_eq!(read, 0, "沉默连接应在心跳死线到期后被关闭");
     assert_eq!(server.join().expect("server thread"), ChannelExit::Continue);
 }
@@ -772,7 +820,9 @@ fn heartbeat_silence_ends_the_connection() {
         )
     });
     let mut client = TcpStream::connect(address).expect("connect");
-    client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(client.try_clone().unwrap());
     client.write_all(b"{\"kind\":\"ping\"}\n").unwrap();
     // daemon 对 ping 回 pong（Host 靠它武装沉默判定）；此后沉默：心跳超时（300ms）
@@ -923,7 +973,10 @@ impl TestDaemon {
             if lines.len() >= expected {
                 return lines;
             }
-            assert!(Instant::now() < deadline, "core did not receive frames in time");
+            assert!(
+                Instant::now() < deadline,
+                "core did not receive frames in time"
+            );
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -1017,7 +1070,10 @@ impl TestClient {
     fn assert_no_frame_within(&mut self, duration: Duration) {
         // 超时必须设到真正执行读的句柄上：Windows 上克隆 socket 句柄各自持有选项
         // 快照，改原句柄不影响已建克隆的读
-        self.reader.get_ref().set_read_timeout(Some(duration)).unwrap();
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(duration))
+            .unwrap();
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Err(error)
@@ -1045,10 +1101,7 @@ fn two_connections_serve_concurrently() {
     let mut second = daemon.connect();
 
     // 各自列自己的目录：应答只回各自的连接（id 相同也不串线）
-    for (client, id, marker) in [
-        (&mut first, 1u64, "alpha"),
-        (&mut second, 2u64, "beta"),
-    ] {
+    for (client, id, marker) in [(&mut first, 1u64, "alpha"), (&mut second, 2u64, "beta")] {
         let request = json!({
             "kind": "listDirectories",
             "id": id,
@@ -1209,7 +1262,10 @@ fn idle_exit_fires_when_no_connection_ever_arrives() {
     assert!(!stopped, "到期应报空闲退出，而不是 shutdown");
     // 收尾置停机位后，迟到的连接被拒绝，不会接在一个将死的 daemon 上
     runtime.begin_stop();
-    assert!(runtime.register(idle_entry()).is_none(), "停机位应拒绝新连接");
+    assert!(
+        runtime.register(idle_entry()).is_none(),
+        "停机位应拒绝新连接"
+    );
 }
 
 #[test]
@@ -1227,10 +1283,7 @@ fn idle_exit_counts_from_the_last_connection_drop() {
         .register(idle_entry())
         .expect("register while not stopping");
     std::thread::sleep(Duration::from_millis(250));
-    assert!(
-        done_rx.try_recv().is_err(),
-        "有连接时空闲退出不应触发"
-    );
+    assert!(done_rx.try_recv().is_err(), "有连接时空闲退出不应触发");
     // 最后一条连接断开：死线从断开时刻重新起算
     let started = std::time::Instant::now();
     runtime.unregister(id);
@@ -1280,8 +1333,14 @@ fn panic_hook_appends_trace_to_file() {
     payload.join().expect_err("panic thread should unwind");
     std::panic::set_hook(previous);
     let content = std::fs::read_to_string(&log_path).expect("panic trace file should exist");
-    assert!(content.contains("[core] panic:"), "trace 块应带 panic 前缀：{content}");
-    assert!(content.contains("boom-in-daemon"), "trace 块应含 panic 信息：{content}");
+    assert!(
+        content.contains("[core] panic:"),
+        "trace 块应带 panic 前缀：{content}"
+    );
+    assert!(
+        content.contains("boom-in-daemon"),
+        "trace 块应含 panic 信息：{content}"
+    );
     std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
 }
 
@@ -1304,7 +1363,10 @@ impl TestDaemon {
             if sweep.alive == expected {
                 return;
             }
-            assert!(Instant::now() < deadline, "orphans were not registered in time");
+            assert!(
+                Instant::now() < deadline,
+                "orphans were not registered in time"
+            );
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -1366,14 +1428,18 @@ fn orphaned_core_is_claimed_by_the_next_open_with_replay() {
         "frame": { "kind": "hello", "protocol": 2 },
     }));
     let lines = daemon.wait_for_lines(0, 1);
-    assert_eq!(lines[lines.len() - 1], "{\"kind\":\"hello\",\"protocol\":2}");
+    assert_eq!(
+        lines[lines.len() - 1],
+        "{\"kind\":\"hello\",\"protocol\":2}"
+    );
 }
 
 /// 空闲判定新口径（spec FR-007 / AC-16 / AC-17）：非 idle 孤儿在跑 daemon 不空退；
 /// 孤儿转全 idle 满 [ORPHAN_IDLE_TTL] 宽限后被收尾，随后空闲退出照常触发。
 #[test]
 fn busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace() {
-    let daemon = TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
+    let daemon =
+        TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
     let mut client = daemon.connect();
     let _ = client.open_workspace(1, "D:/repo/w");
     daemon.emit_line(0, &orphan_snapshot(false));
@@ -1410,7 +1476,8 @@ fn busy_orphan_holds_the_daemon_and_idle_orphan_closes_after_grace() {
 /// 永远无人收尾。
 #[test]
 fn idle_orphan_is_swept_while_a_connection_is_alive() {
-    let daemon = TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
+    let daemon =
+        TestDaemon::start_with_orphan_ttl(remote_daemon_options(), Duration::from_millis(200));
     // 监听循环（清扫的宿主）生产里跑在 start-daemon 主线程；测试里单独拉起。
     // 先等它停进 wait_timeout：register 的 notify 先于等待到达会丢（一次性 30s
     // 空窗），测试要的是循环随即开始按 1s 轮询
@@ -1440,7 +1507,10 @@ fn idle_orphan_is_swept_while_a_connection_is_alive() {
         if daemon.child(0).killed.load(Ordering::SeqCst) {
             break;
         }
-        assert!(Instant::now() < deadline, "idle orphan was not reaped in time");
+        assert!(
+            Instant::now() < deadline,
+            "idle orphan was not reaped in time"
+        );
         thread::sleep(Duration::from_millis(100));
     }
 }

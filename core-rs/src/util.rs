@@ -33,7 +33,6 @@ pub fn hide_console_with(command: &mut Command, extra_flags: u32) {
     }
 }
 
-
 /// 诊断输出（按行原子）：整行格式化后在 stderr 锁内一次 `write_all`。
 ///
 /// 不能用 `eprintln!`：它按格式片段分多次 write，而 daemon 的 stderr 就是
@@ -88,7 +87,11 @@ pub fn install_panic_hook_with_file(log_path: std::path::PathBuf) {
             let mut stderr = std::io::stderr().lock();
             let _ = stderr.write_all(block.as_bytes());
         }
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
             let _ = file.write_all(block.as_bytes());
         }
     }));
@@ -215,13 +218,14 @@ pub fn is_js_whitespace(ch: char) -> bool {
             | '\u{0020}'
             | '\u{00A0}'
             | '\u{1680}'
-            | '\u{2000}'..='\u{200A}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
-            | '\u{FEFF}'
+            | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
     )
 }
 
@@ -279,9 +283,7 @@ pub fn js_json_stringify(value: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Bool(value) => value.to_string(),
         Value::Number(number) => js_number_string(number),
-        Value::String(text) => {
-            serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
-        }
+        Value::String(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string()),
         Value::Array(items) => format!(
             "[{}]",
             items
@@ -452,7 +454,11 @@ pub fn estimate_text_tokens(text: &str) -> u64 {
 /// 对齐 `tokenEstimate.ts` 的 `estimateRequestTokens`：内联 base64 图片先替换成
 /// 占位符再统计长度，最后按固定成本补回，避免 base64 长度把估算值抬到远高于真实
 /// token 的水平。
-pub fn estimate_request_tokens(messages: Option<&Value>, system_prompt: &str, tools: Option<&Value>) -> u64 {
+pub fn estimate_request_tokens(
+    messages: Option<&Value>,
+    system_prompt: &str,
+    tools: Option<&Value>,
+) -> u64 {
     let mut image_count: u64 = 0;
     // 与 `JSON.stringify` 逐字对齐（数字走 JS 口径，见 `js_number_string`）；
     // 长度由 `estimate_text_tokens` 按 UTF-16 code unit 统计。
@@ -487,7 +493,10 @@ fn replace_inline_images(value: &Value, image_count: &mut u64) -> Value {
                     if let Value::String(text) = item {
                         if text.starts_with("data:") {
                             *image_count += 1;
-                            out.insert(key.clone(), Value::String("data:image/omitted;base64,".to_string()));
+                            out.insert(
+                                key.clone(),
+                                Value::String("data:image/omitted;base64,".to_string()),
+                            );
                             continue;
                         }
                     }

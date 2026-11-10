@@ -52,7 +52,11 @@ struct Guard<H> {
 
 impl<H> Guard<H> {
     fn new(start: fn() -> Option<H>) -> Self {
-        Self { active: None, start, unavailable: false }
+        Self {
+            active: None,
+            start,
+            unavailable: false,
+        }
     }
 
     /// 按「是否需要阻断」同步状态：需要则申请（已有则 no-op），不需要则释放
@@ -127,7 +131,10 @@ mod platform {
                     unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
                 })
                 .ok()?;
-            Some(Handle { release: Some(release), thread: Some(thread) })
+            Some(Handle {
+                release: Some(release),
+                thread: Some(thread),
+            })
         }
     }
 
@@ -192,7 +199,10 @@ mod platform {
             if child.try_wait().ok().flatten().is_some() {
                 return None;
             }
-            Some(Handle { child, _liveness: liveness })
+            Some(Handle {
+                child,
+                _liveness: liveness,
+            })
         }
     }
 

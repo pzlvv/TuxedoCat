@@ -82,10 +82,16 @@ fn direct_take_up_to_limit_then_release() {
     let _guard = serial();
     reset_for_test();
     hold_all_slots();
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 0));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 0)
+    );
     // 无排队者时释放 = 真正归还
     release_slot(CREATOR);
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT - 1, 0));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT - 1, 0)
+    );
     reset_for_test();
 }
 
@@ -105,14 +111,20 @@ fn call_beyond_limit_queues_until_release() {
     hold_all_slots();
     let (rx, handle) = spawn_acquirer(CREATOR, Arc::new(AtomicBool::new(false)));
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 1));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 1)
+    );
     // 槽位未释放前排队者不得被唤醒
     assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     release_slot(CREATOR);
     assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(true));
     handle.join().unwrap();
     // 预留即转移：active 回到满额
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 0));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 0)
+    );
     reset_for_test();
 }
 
@@ -130,7 +142,10 @@ fn waiters_wake_in_fifo_order() {
         // 间隔入队，保证队列顺序与启动顺序一致
         std::thread::sleep(Duration::from_millis(40));
     }
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 3));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 3)
+    );
     // 逐个释放：最早排队者先获得，其余保持等待
     for i in 0..3 {
         release_slot(CREATOR);
@@ -174,21 +189,17 @@ fn request_slot_or_defer_queues_instead_of_blocking() {
     // Canceled：未入队、不执行 on_grant
     let granted = Arc::new(AtomicBool::new(false));
     let granted_probe = Arc::clone(&granted);
-    let decision = request_slot_or_defer(
-        CREATOR,
-        Arc::new(AtomicBool::new(true)),
-        move || granted_probe.store(true, Ordering::Relaxed),
-    );
+    let decision = request_slot_or_defer(CREATOR, Arc::new(AtomicBool::new(true)), move || {
+        granted_probe.store(true, Ordering::Relaxed)
+    });
     assert!(matches!(decision, SlotDecision::Canceled));
     assert_eq!(slot_stats_for_test(CREATOR), (0, 0));
     assert!(!granted.load(Ordering::Relaxed));
 
     // Acquired：有空位当场到手（调用方即刻创建）
-    let decision = request_slot_or_defer(
-        CREATOR,
-        Arc::new(AtomicBool::new(false)),
-        || panic!("Acquired 路径不应执行 on_grant"),
-    );
+    let decision = request_slot_or_defer(CREATOR, Arc::new(AtomicBool::new(false)), || {
+        panic!("Acquired 路径不应执行 on_grant")
+    });
     assert!(matches!(decision, SlotDecision::Acquired));
     assert_eq!(slot_stats_for_test(CREATOR), (1, 0));
 
@@ -202,13 +213,9 @@ fn request_slot_or_defer_queues_instead_of_blocking() {
         (SUBAGENT_CONCURRENCY_LIMIT, 0)
     );
     let (granted_tx, granted_rx) = mpsc::channel::<()>();
-    let decision = request_slot_or_defer(
-        CREATOR,
-        Arc::new(AtomicBool::new(false)),
-        move || {
-            granted_tx.send(()).expect("接收端存活");
-        },
-    );
+    let decision = request_slot_or_defer(CREATOR, Arc::new(AtomicBool::new(false)), move || {
+        granted_tx.send(()).expect("接收端存活");
+    });
     assert!(matches!(decision, SlotDecision::Queued));
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(
@@ -224,7 +231,10 @@ fn request_slot_or_defer_queues_instead_of_blocking() {
         "槽位空出后 on_grant 应在后台执行"
     );
     // 预留即转移：on_grant 在握槽位，由调用方的创建收尾配对释放
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 0));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 0)
+    );
     reset_for_test();
 }
 
@@ -236,13 +246,19 @@ fn cancel_while_queued_returns_false() {
     let cancel = Arc::new(AtomicBool::new(false));
     let (rx, handle) = spawn_acquirer(CREATOR, Arc::clone(&cancel));
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 1));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 1)
+    );
     // 100ms 轮询内退出等待
     cancel.store(true, Ordering::Relaxed);
     assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(false));
     handle.join().unwrap();
     // 未获预留即出队：active 不变
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 0));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 0)
+    );
     reset_for_test();
 }
 
@@ -257,11 +273,17 @@ fn cancelled_queued_call_does_not_block_following_waiter() {
     std::thread::sleep(Duration::from_millis(40));
     let (rx2, handle2) = spawn_acquirer(CREATOR, Arc::new(AtomicBool::new(false)));
     std::thread::sleep(Duration::from_millis(40));
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 2));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 2)
+    );
     cancel1.store(true, Ordering::Relaxed);
     assert_eq!(rx1.recv_timeout(Duration::from_secs(2)), Ok(false));
     handle1.join().unwrap();
-    assert_eq!(slot_stats_for_test(CREATOR), (SUBAGENT_CONCURRENCY_LIMIT, 1));
+    assert_eq!(
+        slot_stats_for_test(CREATOR),
+        (SUBAGENT_CONCURRENCY_LIMIT, 1)
+    );
     release_slot(CREATOR);
     assert_eq!(rx2.recv_timeout(Duration::from_secs(2)), Ok(true));
     handle2.join().unwrap();

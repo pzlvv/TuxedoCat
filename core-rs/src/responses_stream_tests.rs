@@ -123,7 +123,11 @@ fn responses_stream_emits_text_usage_and_stop_reason() {
 fn responses_stream_emits_thinking_and_tool_call() {
     let arguments = r#"{"command":"echo hi"}"#;
     let (result, events) = collect(responses_thinking_tool_sse(
-        "想一想", "好的", "call_1", "Bash", arguments,
+        "想一想",
+        "好的",
+        "call_1",
+        "Bash",
+        arguments,
     ));
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(thinking_of(&events), "想一想");
@@ -370,7 +374,10 @@ fn responses_stream_abort_is_not_a_truncation_error() {
     let mut events: Vec<LlmEvent> = Vec::new();
     let result = stream(&request, &mut |event| events.push(event));
     assert!(result.is_ok(), "取消不应报错：{result:?}");
-    assert!(text_of(&events).is_empty(), "取消后不应再产出内容：{events:?}");
+    assert!(
+        text_of(&events).is_empty(),
+        "取消后不应再产出内容：{events:?}"
+    );
     assert!(
         events
             .iter()

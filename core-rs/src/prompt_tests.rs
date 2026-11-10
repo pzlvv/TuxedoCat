@@ -44,7 +44,10 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
     let cwd = sandbox.workspace.to_string_lossy().to_string();
     let prompt = build_system_prompt(&cwd, "risk", &json!({})).expect("PATH 已由 Sandbox 钉死");
 
-    assert!(prompt.contains("\n\n## Tool Details\n### Bash\n"), "got {prompt}");
+    assert!(
+        prompt.contains("\n\n## Tool Details\n### Bash\n"),
+        "got {prompt}"
+    );
     let order = [
         "Bash",
         "Read",
@@ -68,7 +71,9 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
     assert!(prompt.contains("- Maximum file size for whole-file reads: 256.0 KB"));
     assert!(prompt.contains("- Maximum output bytes per read: 50.0 KB"));
     assert!(prompt.contains("- `replace_all` (boolean, optional): Replace all occurrences"));
-    assert!(prompt.contains("- output_mode (optional): \"files_with_matches\" (default), \"content\", or \"count\""));
+    assert!(prompt.contains(
+        "- output_mode (optional): \"files_with_matches\" (default), \"content\", or \"count\""
+    ));
     assert!(prompt.contains("- pattern (required): The glob pattern to match files against (e.g. \"**/*.js\", \"src/**/*.ts\")"));
     assert!(prompt.contains("1. **Complex multi-step tasks** - When a task requires 3 or more distinct steps or actions"));
     // Tool Details 是最后一个 `###` 段落之前的正文；尾部不能多出换行
@@ -232,8 +237,17 @@ fn git_description_reports_the_branch_and_is_cached() {
         .expect("git init");
     assert!(init.success());
     let commit = std::process::Command::new("git")
-        .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "commit",
-               "--allow-empty", "-q", "-m", "init"])
+        .args([
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ])
         .current_dir(&cwd)
         .status()
         .expect("git commit");
@@ -255,7 +269,10 @@ fn git_description_falls_back_when_the_directory_is_gone() {
 #[test]
 fn windows_release_parsing_matches_node_os_release() {
     // 英文 `ver` 输出
-    assert_eq!(parse_windows_release("Version 10.0.26200.9457"), "10.0.26200");
+    assert_eq!(
+        parse_windows_release("Version 10.0.26200.9457"),
+        "10.0.26200"
+    );
     // 本地化（中文）输出：不能依赖 "Version" 字样
     assert_eq!(parse_windows_release("版本 10.0.26200.9457"), "10.0.26200");
     // 只有三段时原样返回
@@ -380,8 +397,14 @@ fn tool_usage_details_follow_the_injected_tool_list() {
     let with = tool_usage_section(&full, None);
     let without = tool_usage_section(&without_web, None);
 
-    assert!(with.contains("## WebSearch Tool"), "全量清单应含 WebSearch 段");
-    assert!(with.contains("## WebFetch Tool"), "全量清单应含 WebFetch 段");
+    assert!(
+        with.contains("## WebSearch Tool"),
+        "全量清单应含 WebSearch 段"
+    );
+    assert!(
+        with.contains("## WebFetch Tool"),
+        "全量清单应含 WebFetch 段"
+    );
     assert!(
         !without.contains("## WebSearch Tool"),
         "剔除后不应再含 WebSearch 段"
@@ -396,8 +419,14 @@ fn tool_usage_details_follow_the_injected_tool_list() {
         "其余工具说明应原样保留"
     );
     assert!(without.contains("**Bash**"), "其余工具 bullet 应原样保留");
-    assert!(!without.contains("**WebSearch**"), "Tool Usage 清单 bullet 应同步消失");
-    assert!(with.contains("**WebSearch**"), "全量清单应有 WebSearch bullet");
+    assert!(
+        !without.contains("**WebSearch**"),
+        "Tool Usage 清单 bullet 应同步消失"
+    );
+    assert!(
+        with.contains("**WebSearch**"),
+        "全量清单应有 WebSearch bullet"
+    );
 }
 
 /// Agent 角色表列出全部合法角色（specs/020 FR-001）：提示词正文与
@@ -416,10 +445,7 @@ fn explorer_role_description_matches_allowlist() {
         if *tool == "Reply" {
             continue;
         }
-        assert!(
-            line.contains(tool),
-            "Explorer 角色说明缺少 {tool}: {line}"
-        );
+        assert!(line.contains(tool), "Explorer 角色说明缺少 {tool}: {line}");
     }
 }
 
@@ -440,7 +466,10 @@ fn agent_role_table_lists_all_registered_roles() {
 #[test]
 fn reply_promise_matches_delivery_capability() {
     let usage = tool_usage_section(&tools::definitions(), None);
-    for (label, text) in [("核心原则", core_prompt()), ("Agent 工具说明", usage.as_str())] {
+    for (label, text) in [
+        ("核心原则", core_prompt()),
+        ("Agent 工具说明", usage.as_str()),
+    ] {
         assert!(
             text.contains("another workspace"),
             "{label} 应点明跨工作区子代理收不到追加消息"

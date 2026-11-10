@@ -147,7 +147,10 @@ fn manual_compact_rewrites_the_conversation_and_archives_the_rest() {
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect();
     assert_eq!(archive_messages.len(), 11);
-    assert_eq!(archive_messages[0]["message"]["message"]["content"], "消息 0");
+    assert_eq!(
+        archive_messages[0]["message"]["message"]["content"],
+        "消息 0"
+    );
 
     // meta.json 的压缩状态 + 消息数
     let metadata = crate::history::load_metadata("s1", &project).unwrap();
@@ -223,7 +226,9 @@ fn repeated_compact_keeps_the_global_user_input_head() {
     // 第一次压缩：归档区是「消息 0」..「消息 9」，10 条 ≤ 12 全部保留。
     harness.core.request_compact("s1");
     let after_first = crate::history::load_messages("s1", &project);
-    let first_history = after_first[1]["compactUserInputHistory"].as_array().unwrap();
+    let first_history = after_first[1]["compactUserInputHistory"]
+        .as_array()
+        .unwrap();
     assert_eq!(first_history.len(), 10, "首次压缩保留归档区全部 10 条");
     assert_eq!(first_history[0]["content"], json!("消息 0"));
     assert_eq!(first_history[9]["content"], json!("消息 9"));
@@ -234,7 +239,9 @@ fn repeated_compact_keeps_the_global_user_input_head() {
 
     let after_second = crate::history::load_messages("s1", &project);
     let summary = after_second[1]["message"]["content"].as_str().unwrap();
-    let second_history = after_second[1]["compactUserInputHistory"].as_array().unwrap();
+    let second_history = after_second[1]["compactUserInputHistory"]
+        .as_array()
+        .unwrap();
     // 头部 = 会话最早的 4 条（从上次持久化历史沿用，不因再次压缩而丢失）；
     // 尾部 = 本次归档区最近 8 条（「消息 42」..「消息 49」）。
     assert_eq!(second_history.len(), 12, "got {second_history:?}");
@@ -333,7 +340,11 @@ fn auto_compact_triggers_when_the_context_exceeds_the_threshold() {
 
     // 压缩发生在**本轮请求之前**：第 1 次请求是摘要，之后才是真正的对话请求
     let bodies = bodies.lock().unwrap();
-    assert!(bodies.len() >= 2, "应当有摘要请求 + 对话请求，实际 {}", bodies.len());
+    assert!(
+        bodies.len() >= 2,
+        "应当有摘要请求 + 对话请求，实际 {}",
+        bodies.len()
+    );
     assert!(
         bodies[0]["messages"]
             .as_array()
@@ -746,7 +757,11 @@ fn write_todos(sandbox: &Sandbox, session_id: &str, todos: Value) -> crate::tool
         &json!({ "todos": todos }),
         &todo_ctx(sandbox, session_id),
     );
-    assert!(!outcome.is_error(), "TodoWrite 应当成功: {}", outcome.text());
+    assert!(
+        !outcome.is_error(),
+        "TodoWrite 应当成功: {}",
+        outcome.text()
+    );
     outcome
 }
 

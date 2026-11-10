@@ -42,15 +42,27 @@ pub enum CoreToUiFrame {
     /// 请求-响应（权限确认 / 用户问答）
     Request { id: u64, request: Value },
     /// 应答：UI → core 请求的响应
-    Response { id: u64, ok: bool, result: Value, error: Option<String> },
+    Response {
+        id: u64,
+        ok: bool,
+        result: Value,
+        error: Option<String>,
+    },
 }
 
 impl UiToCoreFrame {
     /// 编码为一帧（含结尾换行）。
     pub fn encode(&self) -> Result<String, serde_json::Error> {
         let value = match self {
-            UiToCoreFrame::Hello => serde_json::json!({ "kind": "hello", "protocol": CORE_PROTOCOL_VERSION }),
-            UiToCoreFrame::Response { id, ok, result, error } => {
+            UiToCoreFrame::Hello => {
+                serde_json::json!({ "kind": "hello", "protocol": CORE_PROTOCOL_VERSION })
+            }
+            UiToCoreFrame::Response {
+                id,
+                ok,
+                result,
+                error,
+            } => {
                 let mut frame = serde_json::json!({ "kind": "response", "id": id, "ok": ok });
                 let object = frame.as_object_mut().expect("frame is an object");
                 if *ok {
@@ -61,7 +73,9 @@ impl UiToCoreFrame {
                 }
                 frame
             }
-            UiToCoreFrame::UiEvent(event) => serde_json::json!({ "kind": "uiEvent", "event": event }),
+            UiToCoreFrame::UiEvent(event) => {
+                serde_json::json!({ "kind": "uiEvent", "event": event })
+            }
             UiToCoreFrame::Request { id, request } => {
                 serde_json::json!({ "kind": "request", "id": id, "request": request })
             }
@@ -88,7 +102,10 @@ pub fn decode_frame(line: &str) -> Option<CoreToUiFrame> {
             id: value.get("id")?.as_u64()?,
             ok: value.get("ok")?.as_bool()?,
             result: value.get("result").cloned().unwrap_or(Value::Null),
-            error: value.get("error").and_then(Value::as_str).map(str::to_string),
+            error: value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }),
         _ => None,
     }
@@ -110,7 +127,11 @@ pub struct FrameDecoder {
 #[allow(dead_code)]
 impl FrameDecoder {
     pub fn new() -> Self {
-        Self { buffer: Vec::new(), frames: Vec::new(), bad_lines: 0 }
+        Self {
+            buffer: Vec::new(),
+            frames: Vec::new(),
+            bad_lines: 0,
+        }
     }
 
     pub fn reset(&mut self) {

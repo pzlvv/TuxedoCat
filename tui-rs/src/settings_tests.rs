@@ -19,7 +19,10 @@ fn empty_settings_fall_back_to_defaults() {
     assert_eq!(snapshot.default_agent_mode, "risk");
     assert_eq!(snapshot.default_prompt_mode, "normal");
     assert_eq!(snapshot.max_tokens, FALLBACK_MAX_OUTPUT_TOKENS);
-    assert_eq!(snapshot.model_limits_fallback.context, FALLBACK_CONTEXT_WINDOW);
+    assert_eq!(
+        snapshot.model_limits_fallback.context,
+        FALLBACK_CONTEXT_WINDOW
+    );
 }
 
 #[test]
@@ -82,13 +85,25 @@ fn resolve_model_ref_chain() {
         "b": { "baseURL": "https://b", "models": ["m-b"], "defaultModel": "m-b" },
     } } }));
     // 未记录 provider → active 默认
-    assert_eq!(resolve_model_ref(&snapshot, "", ""), Some(("a".into(), "m-a".into())));
+    assert_eq!(
+        resolve_model_ref(&snapshot, "", ""),
+        Some(("a".into(), "m-a".into()))
+    );
     // 合法身份原样返回
-    assert_eq!(resolve_model_ref(&snapshot, "b", "m-b"), Some(("b".into(), "m-b".into())));
+    assert_eq!(
+        resolve_model_ref(&snapshot, "b", "m-b"),
+        Some(("b".into(), "m-b".into()))
+    );
     // provider 已移除 → active 默认
-    assert_eq!(resolve_model_ref(&snapshot, "gone", "m"), Some(("a".into(), "m-a".into())));
+    assert_eq!(
+        resolve_model_ref(&snapshot, "gone", "m"),
+        Some(("a".into(), "m-a".into()))
+    );
     // provider 在、模型不在列表 → 该 provider 的默认模型
-    assert_eq!(resolve_model_ref(&snapshot, "b", "gone"), Some(("b".into(), "m-b".into())));
+    assert_eq!(
+        resolve_model_ref(&snapshot, "b", "gone"),
+        Some(("b".into(), "m-b".into()))
+    );
 }
 
 #[test]
@@ -100,30 +115,53 @@ fn mcp_json_parsing() {
     } });
     let servers = parse_mcp_server_definitions(Some(&raw));
     assert_eq!(servers.len(), 2);
-    let local = servers.iter().find(|server| server.name == "local").unwrap();
+    let local = servers
+        .iter()
+        .find(|server| server.name == "local")
+        .unwrap();
     assert_eq!(local.kind, "local");
     assert_eq!(local.command, vec!["npx".to_string()]);
-    let remote = servers.iter().find(|server| server.name == "remote").unwrap();
+    let remote = servers
+        .iter()
+        .find(|server| server.name == "remote")
+        .unwrap();
     assert_eq!(remote.kind, "remote");
-    assert_eq!(remote.headers.get("Authorization").map(String::as_str), Some("Bearer t"));
+    assert_eq!(
+        remote.headers.get("Authorization").map(String::as_str),
+        Some("Bearer t")
+    );
 }
 
 #[test]
 fn snapshot_payload_round_shape() {
-    let snapshot = snapshot_of(json!({ "llm": { "activeProvider": "p", "providers": { "p": {
+    let snapshot = snapshot_of(
+        json!({ "llm": { "activeProvider": "p", "providers": { "p": {
         "baseURL": "https://x", "apiKey": "k", "models": ["m"]
-    } } } }));
+    } } } }),
+    );
     let payload = snapshot_to_payload(&snapshot);
     assert_eq!(payload["llm"]["activeProvider"], "p");
     assert_eq!(payload["llm"]["providers"]["p"]["defaultModel"], "m");
-    assert_eq!(payload["llm"]["providers"]["p"]["modelLimits"]["m"]["apiType"], "OpenAI");
+    assert_eq!(
+        payload["llm"]["providers"]["p"]["modelLimits"]["m"]["apiType"],
+        "OpenAI"
+    );
     assert_eq!(payload["defaultAgentMode"], "risk");
     // 令牌数出线必须是整数（core 按 u64 收）：f64 直接序列化会写出 `131072.0`，
     // core 解析整个 settings 时拒收 → Core 永不 ready。as_u64 对浮点返回 None，据此锁死。
     assert_eq!(payload["llm"]["maxTokens"].as_u64(), Some(131072));
-    assert_eq!(payload["llm"]["modelLimitsFallback"]["context"].as_u64(), Some(1048576));
-    assert_eq!(payload["llm"]["providers"]["p"]["modelLimits"]["m"]["context"].as_u64(), Some(1048576));
-    assert_eq!(payload["llm"]["providers"]["p"]["modelLimits"]["m"]["output"].as_u64(), Some(131072));
+    assert_eq!(
+        payload["llm"]["modelLimitsFallback"]["context"].as_u64(),
+        Some(1048576)
+    );
+    assert_eq!(
+        payload["llm"]["providers"]["p"]["modelLimits"]["m"]["context"].as_u64(),
+        Some(1048576)
+    );
+    assert_eq!(
+        payload["llm"]["providers"]["p"]["modelLimits"]["m"]["output"].as_u64(),
+        Some(131072)
+    );
     assert_eq!(
         payload["llm"]["providers"]["p"]["modelLimits"]["m"]["thinkingTokenBudget"].as_u64(),
         Some(196608)
@@ -154,7 +192,13 @@ fn snapshot_payload_carries_multimodal() {
     fallback_keys.sort_unstable();
     assert_eq!(
         fallback_keys,
-        ["apiType", "context", "multimodal", "output", "thinkingTokenBudget"]
+        [
+            "apiType",
+            "context",
+            "multimodal",
+            "output",
+            "thinkingTokenBudget"
+        ]
     );
 
     // 未配置的模型按默认开启解析
@@ -167,14 +211,31 @@ fn snapshot_payload_carries_multimodal() {
     // 只覆盖 context 的条目不因缺少 multimodal 而漏字段
     assert_eq!(limits("ctx-only")["multimodal"].as_bool(), Some(true));
     // 兜底限值的多模态为默认开启
-    assert_eq!(payload["llm"]["modelLimitsFallback"]["multimodal"].as_bool(), Some(true));
+    assert_eq!(
+        payload["llm"]["modelLimitsFallback"]["multimodal"].as_bool(),
+        Some(true)
+    );
     // 每个 modelLimits 条目都必须带齐五个字段（缺一项 core 就拒收）
-    for (model, entry) in payload["llm"]["providers"]["p"]["modelLimits"].as_object().unwrap() {
-        let mut keys: Vec<&str> = entry.as_object().unwrap().keys().map(String::as_str).collect();
+    for (model, entry) in payload["llm"]["providers"]["p"]["modelLimits"]
+        .as_object()
+        .unwrap()
+    {
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["apiType", "context", "multimodal", "output", "thinkingTokenBudget"],
+            [
+                "apiType",
+                "context",
+                "multimodal",
+                "output",
+                "thinkingTokenBudget"
+            ],
             "modelLimits.{model} 字段名单不齐"
         );
     }
@@ -222,7 +283,11 @@ fn store_load_write_and_guards() {
     assert!(error.contains("拒绝覆盖"));
 
     // 磁盘内容未变 → refresh_from_disk 返回 None（不重推快照）
-    fs::write(dir.join("settings.json"), "{\n  \"llm\": {\n    \"activeProvider\": \"p\"\n  }\n}\n").unwrap();
+    fs::write(
+        dir.join("settings.json"),
+        "{\n  \"llm\": {\n    \"activeProvider\": \"p\"\n  }\n}\n",
+    )
+    .unwrap();
     store.load();
     assert!(store.refresh_from_disk().is_none());
 
@@ -240,7 +305,10 @@ fn refresh_from_disk_replaces_stored_snapshot() {
 
     let snapshot = store.load();
     assert_eq!(snapshot.active_provider, "");
-    assert_eq!(store.read_context_limit(None, None), FALLBACK_CONTEXT_WINDOW);
+    assert_eq!(
+        store.read_context_limit(None, None),
+        FALLBACK_CONTEXT_WINDOW
+    );
 
     // 用户手工编辑 settings.json：配上 provider p 并设为活跃
     fs::write(
@@ -256,7 +324,10 @@ fn refresh_from_disk_replaces_stored_snapshot() {
     assert_eq!(refreshed.active_provider, "p");
     // 返回的新快照必须同时成为 store 的当前快照：否则后续读取全拿编辑前的值
     assert_eq!(store.snapshot().active_provider, "p");
-    assert_eq!(store.snapshot().active_model_ref(), Some(("p".to_string(), "m".to_string())));
+    assert_eq!(
+        store.snapshot().active_model_ref(),
+        Some(("p".to_string(), "m".to_string()))
+    );
 
     // 配置被清空：快照跟着回落（不能留着上一位 provider）
     fs::write(dir.join("settings.json"), "{\n}\n").unwrap();

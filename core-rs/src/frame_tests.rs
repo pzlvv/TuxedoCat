@@ -31,9 +31,15 @@ fn shutdown_decodes() {
 #[test]
 fn response_decodes_ok_and_error() {
     let ok: UiToCoreFrame =
-        serde_json::from_str(r#"{"kind":"response","id":7,"ok":true,"result":{"index":0}}"#).unwrap();
+        serde_json::from_str(r#"{"kind":"response","id":7,"ok":true,"result":{"index":0}}"#)
+            .unwrap();
     match ok {
-        UiToCoreFrame::Response { id, ok, result, error } => {
+        UiToCoreFrame::Response {
+            id,
+            ok,
+            result,
+            error,
+        } => {
             assert_eq!(id, 7);
             assert!(ok);
             assert_eq!(result["index"], 0);
@@ -56,7 +62,8 @@ fn response_decodes_ok_and_error() {
 
 #[test]
 fn response_defaults_result_and_error() {
-    let frame: UiToCoreFrame = serde_json::from_str(r#"{"kind":"response","id":1,"ok":true}"#).unwrap();
+    let frame: UiToCoreFrame =
+        serde_json::from_str(r#"{"kind":"response","id":1,"ok":true}"#).unwrap();
     match frame {
         UiToCoreFrame::Response { result, error, .. } => {
             assert!(result.is_null());
@@ -83,15 +90,23 @@ fn ui_event_decodes() {
 
 #[test]
 fn core_frames_encode_with_camel_case_kind() {
-    assert_eq!(CoreToUiFrame::Ready.encode().unwrap(), "{\"kind\":\"ready\"}\n");
+    assert_eq!(
+        CoreToUiFrame::Ready.encode().unwrap(),
+        "{\"kind\":\"ready\"}\n"
+    );
 
-    let event = CoreToUiFrame::Event { event: json!({ "type": "log", "message": "hi" }) };
+    let event = CoreToUiFrame::Event {
+        event: json!({ "type": "log", "message": "hi" }),
+    };
     assert_eq!(
         event.encode().unwrap(),
         "{\"kind\":\"event\",\"event\":{\"type\":\"log\",\"message\":\"hi\"}}\n"
     );
 
-    let request = CoreToUiFrame::Request { id: 3, request: json!({ "type": "userChoice" }) };
+    let request = CoreToUiFrame::Request {
+        id: 3,
+        request: json!({ "type": "userChoice" }),
+    };
     assert_eq!(
         request.encode().unwrap(),
         "{\"kind\":\"request\",\"id\":3,\"request\":{\"type\":\"userChoice\"}}\n"

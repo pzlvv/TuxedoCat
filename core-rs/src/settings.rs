@@ -178,25 +178,17 @@ pub fn has_settings_snapshot() -> bool {
 
 /// 读取配置快照；未到达时报错
 pub fn settings_snapshot() -> Result<SettingsSnapshot, String> {
-    SETTINGS
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| {
-            "settings snapshot is not available (hostEnvironmentProvided has not arrived)".to_string()
-        })
+    SETTINGS.lock().unwrap().clone().ok_or_else(|| {
+        "settings snapshot is not available (hostEnvironmentProvided has not arrived)".to_string()
+    })
 }
 
 /// 读取 MCP 服务器定义；未到达时报错
 pub fn mcp_server_definitions() -> Result<Vec<McpServerDefinition>, String> {
-    MCP_SERVERS
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| {
-            "MCP server definitions are not available (hostEnvironmentProvided has not arrived)"
-                .to_string()
-        })
+    MCP_SERVERS.lock().unwrap().clone().ok_or_else(|| {
+        "MCP server definitions are not available (hostEnvironmentProvided has not arrived)"
+            .to_string()
+    })
 }
 
 /// 上一次应用快照时的 MCP 默认启用列表。

@@ -21,7 +21,10 @@ fn collects_user_and_assistant_text() {
     ];
     assert_eq!(
         collect_smart_naming_context(&messages),
-        vec!["[用户]: 帮我写个排序函数".to_string(), "[助手]: 以下是实现".to_string()],
+        vec![
+            "[用户]: 帮我写个排序函数".to_string(),
+            "[助手]: 以下是实现".to_string()
+        ],
     );
 }
 
@@ -50,7 +53,11 @@ fn counts_one_assistant_message_once_even_with_many_text_blocks() {
     // 每条 text block 各占一个名额
     assert_eq!(
         collect_smart_naming_context(&messages),
-        vec!["[助手]: a".to_string(), "[助手]: b".to_string(), "[助手]: c".to_string()],
+        vec![
+            "[助手]: a".to_string(),
+            "[助手]: b".to_string(),
+            "[助手]: c".to_string()
+        ],
     );
 }
 
@@ -90,7 +97,10 @@ fn ignores_non_text_and_empty_entries() {
 
 #[test]
 fn parses_the_title_from_a_json_object() {
-    assert_eq!(parse_smart_naming_title(r#"{"title": "Python排序函数"}"#), "Python排序函数");
+    assert_eq!(
+        parse_smart_naming_title(r#"{"title": "Python排序函数"}"#),
+        "Python排序函数"
+    );
 }
 
 #[test]
@@ -127,7 +137,10 @@ fn title_pattern_tolerates_loose_whitespace() {
 fn title_pattern_uses_js_whitespace() {
     // TS 正则的 `\s` 是 ECMAScript WhiteSpace + LineTerminator：含 U+FEFF、不含 U+0085。
     // Rust `char::is_whitespace()` 恰好相反，因此这里必须用 `util::is_js_whitespace`。
-    assert_eq!(extract_title_pattern("{\u{FEFF}\"title\": \"x\"}").unwrap(), "x");
+    assert_eq!(
+        extract_title_pattern("{\u{FEFF}\"title\": \"x\"}").unwrap(),
+        "x"
+    );
     assert_eq!(extract_title_pattern("{\u{0085}\"title\": \"x\"}"), None);
 }
 
@@ -154,7 +167,10 @@ fn feff_prefixed_json_falls_back_to_the_title_pattern() {
 
 #[test]
 fn falls_back_to_the_last_non_empty_line() {
-    assert_eq!(parse_smart_naming_title("思考中\n\n  最终标题  \n"), "最终标题");
+    assert_eq!(
+        parse_smart_naming_title("思考中\n\n  最终标题  \n"),
+        "最终标题"
+    );
 }
 
 #[test]
@@ -172,7 +188,10 @@ fn last_line_fallback_truncates_to_fifty_units() {
 #[test]
 fn ignores_a_json_object_without_a_string_title() {
     // title 不是字符串 → `extractLastJsonObject` 不认，退到最后一行
-    assert_eq!(parse_smart_naming_title(r#"{"title": 42}"#), r#"{"title": 42}"#);
+    assert_eq!(
+        parse_smart_naming_title(r#"{"title": 42}"#),
+        r#"{"title": 42}"#
+    );
 }
 
 // ==================== 最后一个 JSON 对象 ====================
@@ -180,7 +199,10 @@ fn ignores_a_json_object_without_a_string_title() {
 #[test]
 fn takes_the_last_json_object() {
     let text = r#"先看 {"title": "旧的"} 再输出 {"title": "新的"}"#;
-    assert_eq!(extract_last_json_object(text).unwrap(), r#"{"title": "新的"}"#);
+    assert_eq!(
+        extract_last_json_object(text).unwrap(),
+        r#"{"title": "新的"}"#
+    );
 }
 
 #[test]
@@ -192,7 +214,10 @@ fn skips_braces_inside_strings() {
 #[test]
 fn falls_back_to_an_earlier_object_when_the_last_is_unbalanced() {
     let text = r#"{"title": "可用的"} 后面是 { 没配平"#;
-    assert_eq!(extract_last_json_object(text).unwrap(), r#"{"title": "可用的"}"#);
+    assert_eq!(
+        extract_last_json_object(text).unwrap(),
+        r#"{"title": "可用的"}"#
+    );
 }
 
 #[test]

@@ -332,7 +332,10 @@ pub fn build_completion_notification(finished: &FinishedTask, stdout: &str) -> S
             "Background command \"{}\" failed with exit code {}",
             finished.description, finished.exit_code
         ),
-        _ => format!("Background command \"{}\" was stopped", finished.description),
+        _ => format!(
+            "Background command \"{}\" was stopped",
+            finished.description
+        ),
     };
     let mut lines = vec![
         "Background task completed".to_string(),
@@ -551,7 +554,12 @@ pub fn register_running(
 }
 
 /// 把已在运行的子进程交给等待线程（自动转后台用）：线程只负责轮询退出 + 收尾通知。
-pub fn watch_backgrounded(child: Child, task_id: String, kill: Arc<AtomicBool>, hooks: Option<Hooks>) {
+pub fn watch_backgrounded(
+    child: Child,
+    task_id: String,
+    kill: Arc<AtomicBool>,
+    hooks: Option<Hooks>,
+) {
     let pid = child.id();
     watch(child, task_id, pid, kill, hooks);
 }

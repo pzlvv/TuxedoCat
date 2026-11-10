@@ -54,7 +54,11 @@ fn host_environment_defaults_are_used_for_missing_fields() {
     let env = config::host_environment().expect("host env");
     assert_eq!(env.extension_path, "");
     assert!(!env.log_to_console);
-    assert_eq!(env.config_dir_name, config::DEFAULT_CONFIG_DIR_NAME, "缺省值对齐默认配置目录名");
+    assert_eq!(
+        env.config_dir_name,
+        config::DEFAULT_CONFIG_DIR_NAME,
+        "缺省值对齐默认配置目录名"
+    );
 }
 
 /// 一份最小的合法快照（与 `settings_tests` 的同名构造同口径）
@@ -107,7 +111,10 @@ fn ui_events_before_the_host_environment_are_rejected() {
     // 沙箱默认注入一份空快照（模拟「宿主已连接」）；这里显式回到「还没连上」的状态。
     settings::reset_settings_snapshot();
 
-    dispatch(&harness, json!({ "type": "workspaceChanged", "workspacePath": "D:/repo" }));
+    dispatch(
+        &harness,
+        json!({ "type": "workspaceChanged", "workspacePath": "D:/repo" }),
+    );
 
     // 事件被拒绝：core 侧状态不变，且记一条 log 暴露顺序错误
     assert!(config::project_root("s1").is_err());
@@ -139,7 +146,10 @@ fn mcp_defaults_change_resyncs_registered_sessions() {
 
     let mut first = minimal_snapshot();
     first["mcp"]["enabled"] = json!(["a"]);
-    dispatch(&harness, minimal_host_environment(&sandbox.config_dir_name, first));
+    dispatch(
+        &harness,
+        minimal_host_environment(&sandbox.config_dir_name, first),
+    );
 
     // 默认启用列表不变：不重同步（幂等，不产生额外工作）
     let unchanged = settings::apply_from_host_environment(&minimal_host_environment(
@@ -177,9 +187,15 @@ fn workspace_changed_event_updates_the_active_workspace() {
         &harness,
         json!({ "type": "workspaceChanged", "workspacePath": sandbox.workspace.to_string_lossy() }),
     );
-    assert_eq!(config::project_root("s1").unwrap(), sandbox.workspace.to_string_lossy());
+    assert_eq!(
+        config::project_root("s1").unwrap(),
+        sandbox.workspace.to_string_lossy()
+    );
 
-    dispatch(&harness, json!({ "type": "workspaceChanged", "workspacePath": null }));
+    dispatch(
+        &harness,
+        json!({ "type": "workspaceChanged", "workspacePath": null }),
+    );
     assert!(config::project_root("s1").is_err());
 }
 
@@ -223,11 +239,20 @@ fn conversation_started_only_registers_the_workspace() {
         &harness,
         json!({ "type": "sessionWorkspaceAssigned", "sessionId": "s1", "workspacePath": workspace }),
     );
-    dispatch(&harness, json!({ "type": "conversationStarted", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationStarted", "sessionId": "s1" }),
+    );
 
     // 不落盘
-    assert!(history::load_metadata("s1", &workspace).is_none(), "不应预建 meta.json");
-    assert!(!history::messages_path("s1", &workspace).unwrap().exists(), "不应预建 .jsonl");
+    assert!(
+        history::load_metadata("s1", &workspace).is_none(),
+        "不应预建 meta.json"
+    );
+    assert!(
+        !history::messages_path("s1", &workspace).unwrap().exists(),
+        "不应预建 .jsonl"
+    );
     // 不广播会话创建 / 列表变化
     assert!(harness.sink.event_of("sessionCreated").is_none());
     assert!(harness.sink.event_of("conversationListChanged").is_none());
@@ -235,7 +260,13 @@ fn conversation_started_only_registers_the_workspace() {
     assert!(harness.sink.event_of("sessionRuntimeChanged").is_some());
     // 会话运行时状态记住了工作目录
     assert_eq!(
-        harness.core.session("s1").lock().unwrap().project.as_deref(),
+        harness
+            .core
+            .session("s1")
+            .lock()
+            .unwrap()
+            .project
+            .as_deref(),
         Some(workspace.as_str())
     );
 }
@@ -256,9 +287,15 @@ fn conversation_started_keeps_existing_metadata() {
         &harness,
         json!({ "type": "sessionWorkspaceAssigned", "sessionId": "s1", "workspacePath": workspace }),
     );
-    dispatch(&harness, json!({ "type": "conversationStarted", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationStarted", "sessionId": "s1" }),
+    );
 
-    assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "老标题");
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["title"],
+        "老标题"
+    );
     assert!(harness.sink.event_of("sessionCreated").is_none());
 }
 
@@ -278,7 +315,10 @@ fn conversation_started_without_a_session_id_is_ignored() {
 fn conversation_started_without_a_workspace_is_silent() {
     let _sandbox = Sandbox::new("main-conversation-started-no-workspace");
     let harness = EngineHarness::allow_all();
-    dispatch(&harness, json!({ "type": "conversationStarted", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationStarted", "sessionId": "s1" }),
+    );
 
     assert!(harness.sink.events().is_empty());
     assert!(harness.core.session_if_exists("s1").is_none());
@@ -291,9 +331,18 @@ fn conversation_started_falls_back_to_the_active_workspace() {
     config::set_active_workspace(Some(workspace.clone()));
     let harness = EngineHarness::allow_all();
 
-    dispatch(&harness, json!({ "type": "conversationStarted", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationStarted", "sessionId": "s1" }),
+    );
     assert_eq!(
-        harness.core.session("s1").lock().unwrap().project.as_deref(),
+        harness
+            .core
+            .session("s1")
+            .lock()
+            .unwrap()
+            .project
+            .as_deref(),
         Some(workspace.as_str())
     );
     assert!(history::load_metadata("s1", &workspace).is_none());
@@ -307,11 +356,20 @@ fn conversation_lifecycle_events_are_dispatched() {
     history::create_conversation("s1", &workspace, json!({ "sessionId": "s1" })).unwrap();
     let harness = EngineHarness::allow_all();
 
-    dispatch(&harness, json!({ "type": "conversationOpened", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationOpened", "sessionId": "s1" }),
+    );
     assert!(harness.core.session_if_exists("s1").is_some());
 
-    dispatch(&harness, json!({ "type": "conversationRenamed", "sessionId": "s1", "title": "改名" }));
-    assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "改名");
+    dispatch(
+        &harness,
+        json!({ "type": "conversationRenamed", "sessionId": "s1", "title": "改名" }),
+    );
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["title"],
+        "改名"
+    );
 
     dispatch(
         &harness,
@@ -324,12 +382,21 @@ fn conversation_lifecycle_events_are_dispatched() {
     );
 
     // 缺 changes 字段时按空列表处理，不应 panic
-    dispatch(&harness, json!({ "type": "conversationContextUpdated", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationContextUpdated", "sessionId": "s1" }),
+    );
 
-    dispatch(&harness, json!({ "type": "conversationClosed", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationClosed", "sessionId": "s1" }),
+    );
     assert!(harness.core.session_if_exists("s1").is_none());
 
-    dispatch(&harness, json!({ "type": "conversationDeleted", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationDeleted", "sessionId": "s1" }),
+    );
     assert!(history::load_metadata("s1", &workspace).is_none());
 }
 
@@ -338,8 +405,12 @@ fn conversation_space_cleared_removes_space_files_and_resets_state() {
     let sandbox = Sandbox::new("main-space-cleared");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace.clone()));
-    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1", "title": "留标题" }))
-        .unwrap();
+    history::create_conversation(
+        "s1",
+        &workspace,
+        json!({ "sessionId": "s1", "title": "留标题" }),
+    )
+    .unwrap();
     history::append_message(
         "s1",
         &workspace,
@@ -380,9 +451,19 @@ fn conversation_space_cleared_removes_space_files_and_resets_state() {
         .expect("应发 conversationSpaceCleared 回执");
     assert_eq!(receipt["dirName"], dir_name);
     assert_eq!(receipt["result"]["status"], "complete");
-    let removed_files = receipt["result"]["removedFiles"].as_u64().expect("removedFiles");
-    assert!(removed_files >= 2, "至少删掉 .jsonl 与 .meta.json：{removed_files}");
-    assert!(receipt["result"]["removedBytes"].as_u64().expect("removedBytes") > 0);
+    let removed_files = receipt["result"]["removedFiles"]
+        .as_u64()
+        .expect("removedFiles");
+    assert!(
+        removed_files >= 2,
+        "至少删掉 .jsonl 与 .meta.json：{removed_files}"
+    );
+    assert!(
+        receipt["result"]["removedBytes"]
+            .as_u64()
+            .expect("removedBytes")
+            > 0
+    );
     // 完成事实走专用回执：不再向「空间目录名」这个非会话 id 发 phantom message
     assert!(
         harness.sink.event_of("message").is_none(),
@@ -438,13 +519,25 @@ fn session_config_events_are_dispatched() {
     assert_eq!(model_change["change"]["ref"]["provider"], "p1");
     assert!(model_change["change"].get("value").is_none());
 
-    dispatch(&harness, json!({ "type": "agentModeChanged", "sessionId": "s1", "mode": "auto" }));
+    dispatch(
+        &harness,
+        json!({ "type": "agentModeChanged", "sessionId": "s1", "mode": "auto" }),
+    );
     assert_eq!(state.lock().unwrap().agent_mode, "auto");
 
     // 会话级开关：应用到 SessionState 并广播 sessionConfigChanged（不再静默丢弃）
-    dispatch(&harness, json!({ "type": "thinkingEffortChanged", "sessionId": "s1", "mode": "low" }));
-    dispatch(&harness, json!({ "type": "promptModeChanged", "sessionId": "s1", "mode": "minimal" }));
-    dispatch(&harness, json!({ "type": "webSearchChanged", "sessionId": "s1", "enabled": false }));
+    dispatch(
+        &harness,
+        json!({ "type": "thinkingEffortChanged", "sessionId": "s1", "mode": "low" }),
+    );
+    dispatch(
+        &harness,
+        json!({ "type": "promptModeChanged", "sessionId": "s1", "mode": "minimal" }),
+    );
+    dispatch(
+        &harness,
+        json!({ "type": "webSearchChanged", "sessionId": "s1", "enabled": false }),
+    );
     {
         let state = state.lock().unwrap();
         assert_eq!(state.thinking_effort.as_deref(), Some("low"));
@@ -513,7 +606,10 @@ fn session_config_events_are_dispatched() {
         &harness,
         json!({ "type": "mcpEnabledListChanged", "sessionId": "s1", "names": [] }),
     );
-    assert_eq!(crate::mcp_config::read_session_enabled_mcps(Some("s1")), Some(vec![]));
+    assert_eq!(
+        crate::mcp_config::read_session_enabled_mcps(Some("s1")),
+        Some(vec![])
+    );
 
     // 会话覆盖与 MCP 管理器都是进程级静态状态，必须清理干净：
     // 先丢弃管理器（Drop 会 join 工作线程，让排队的差量同步按本沙箱配置跑完），
@@ -528,7 +624,10 @@ fn compact_requested_is_wired_to_the_engine() {
     let harness = EngineHarness::allow_all();
 
     // 没有可压缩的消息 → 什么都不做（不再有「尚未实现」占位消息）
-    dispatch(&harness, json!({ "type": "compactRequested", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "compactRequested", "sessionId": "s1" }),
+    );
     assert!(
         harness.sink.event_of("message").is_none(),
         "无可压缩消息时不发任何消息: {:?}",
@@ -554,7 +653,10 @@ fn compact_requested_is_wired_to_the_engine() {
         .unwrap();
     }
     harness.core.ensure_loaded("s2").unwrap();
-    dispatch(&harness, json!({ "type": "compactRequested", "sessionId": "s2" }));
+    dispatch(
+        &harness,
+        json!({ "type": "compactRequested", "sessionId": "s2" }),
+    );
     assert!(
         harness.wait_for(
             |sink| !sink.events_of("compactBegin").is_empty(),
@@ -573,10 +675,7 @@ fn compact_requested_is_wired_to_the_engine() {
 fn edit_rolled_back_dispatches_to_rollback() {
     let sandbox = Sandbox::new("main-edit-rolled-back");
     let harness = EngineHarness::allow_all();
-    config::set_session_workspace(
-        "s1",
-        Some(sandbox.workspace.to_string_lossy().to_string()),
-    );
+    config::set_session_workspace("s1", Some(sandbox.workspace.to_string_lossy().to_string()));
 
     dispatch(
         &harness,
@@ -597,8 +696,15 @@ fn abort_requested_sets_the_cancel_flag() {
     let state = harness.core.session("s1");
     // 前台在跑：第一阶段置 cancel（对齐 `Integration.abortCurrentQuery`）
     state.lock().unwrap().running = true;
-    dispatch(&harness, json!({ "type": "abortRequested", "sessionId": "s1" }));
-    assert!(state.lock().unwrap().cancel.load(std::sync::atomic::Ordering::Relaxed));
+    dispatch(
+        &harness,
+        json!({ "type": "abortRequested", "sessionId": "s1" }),
+    );
+    assert!(state
+        .lock()
+        .unwrap()
+        .cancel
+        .load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
@@ -615,7 +721,11 @@ fn user_message_submitted_runs_a_turn() {
         json!({ "type": "userMessageSubmitted", "sessionId": "s1",
                 "content": "你好", "uuid": "u-1" }),
     );
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
     assert!(harness.sink.event_of("queryEnd").is_some());
     assert_eq!(history::load_messages("s1", &workspace).len(), 2);
 }
@@ -626,7 +736,10 @@ fn events_without_a_type_and_unknown_types_are_dropped() {
     let harness = EngineHarness::allow_all();
 
     dispatch(&harness, json!({ "sessionId": "s1" }));
-    dispatch(&harness, json!({ "type": "somethingNew", "sessionId": "s1" }));
+    dispatch(
+        &harness,
+        json!({ "type": "somethingNew", "sessionId": "s1" }),
+    );
     assert!(harness.sink.events().is_empty());
 }
 
@@ -634,7 +747,10 @@ fn events_without_a_type_and_unknown_types_are_dropped() {
 fn emit_writes_a_single_event_frame() {
     let _sandbox = Sandbox::new("main-emit");
     let harness = EngineHarness::allow_all();
-    emit(&harness.core, json!({ "type": "aiBegin", "sessionId": "s1" }));
+    emit(
+        &harness.core,
+        json!({ "type": "aiBegin", "sessionId": "s1" }),
+    );
 
     let frames = harness.sink.frames();
     assert_eq!(frames.len(), 1);
@@ -646,12 +762,22 @@ fn emit_writes_a_single_event_frame() {
 fn ui_events_are_counted_on_the_bus() {
     let sandbox = Sandbox::new("main-event-count");
     let harness = EngineHarness::allow_all();
-    dispatch(&harness, json!({ "type": "workspaceChanged", "workspacePath": null }));
+    dispatch(
+        &harness,
+        json!({ "type": "workspaceChanged", "workspacePath": null }),
+    );
     dispatch(
         &harness,
         json!({ "type": "workspaceChanged", "workspacePath": sandbox.workspace.to_string_lossy() }),
     );
-    assert_eq!(harness.bus.lock().unwrap().ui_event_count("workspaceChanged"), 2);
+    assert_eq!(
+        harness
+            .bus
+            .lock()
+            .unwrap()
+            .ui_event_count("workspaceChanged"),
+        2
+    );
 }
 
 #[test]
@@ -671,7 +797,10 @@ fn project_conversation_dir_meta_is_written_by_core() {
     let parsed: serde_json::Value = serde_json::from_str(&meta).unwrap();
     assert_eq!(parsed["workspacePath"], project);
     assert!(!dir.join("settings.json").exists());
-    assert!(harness.sink.events_of("projectConversationDirReady").is_empty());
+    assert!(harness
+        .sink
+        .events_of("projectConversationDirReady")
+        .is_empty());
 }
 
 // ==================== 帧循环 ====================
@@ -717,7 +846,10 @@ fn frame_loop_rejects_a_protocol_mismatch() {
 fn frame_loop_skips_blank_and_malformed_lines() {
     let _sandbox = Sandbox::new("main-loop-malformed");
     let harness = EngineHarness::allow_all();
-    let input = format!("\n   \n{{ not json\n{{\"kind\":\"nope\"}}\n{}", hello_frame());
+    let input = format!(
+        "\n   \n{{ not json\n{{\"kind\":\"nope\"}}\n{}",
+        hello_frame()
+    );
     assert_eq!(run_loop(&harness, &input), 0);
 
     let frames = harness.sink.frames();
@@ -740,10 +872,20 @@ fn frame_loop_dispatches_ui_events_and_responses() {
     );
     assert_eq!(run_loop(&harness, &input), 0);
 
-    assert_eq!(config::project_root("s1").unwrap(), sandbox.workspace.to_string_lossy());
+    assert_eq!(
+        config::project_root("s1").unwrap(),
+        sandbox.workspace.to_string_lossy()
+    );
     // 没有待应答请求时，迟到 / 未知的应答被忽略
     assert_eq!(harness.bus.lock().unwrap().pending_count(), 0);
-    assert_eq!(harness.bus.lock().unwrap().ui_event_count("workspaceChanged"), 1);
+    assert_eq!(
+        harness
+            .bus
+            .lock()
+            .unwrap()
+            .ui_event_count("workspaceChanged"),
+        1
+    );
 }
 
 #[test]
@@ -803,7 +945,10 @@ fn frame_loop_drops_frames_it_cannot_write() {
 
     // 回 ready 失败（宿主已退出）→ 立刻收摊，不进入下一轮
     let input = format!("{}{{\"kind\":\"shutdown\"}}\n", hello_frame());
-    assert_eq!(run_frame_loop(Cursor::new(input.to_string()), &core, &bus), 0);
+    assert_eq!(
+        run_frame_loop(Cursor::new(input.to_string()), &core, &bus),
+        0
+    );
 }
 
 /// 宿主序列化帧时可能带孤立代理项转义（历史里被切坏的 emoji 预览）。
@@ -933,10 +1078,13 @@ fn ui_request_lists_conversations_of_the_requested_workspace() {
     // 清空过的会话保留条目
     write("cleared", 0, 400, true);
 
-    let listed = dispatch_ui_request(&test_core(), &json!({
-        "type": "conversationListRequested",
-        "workspacePath": project,
-    }))
+    let listed = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "conversationListRequested",
+            "workspacePath": project,
+        }),
+    )
     .unwrap();
     let ids: Vec<String> = listed
         .as_array()
@@ -952,12 +1100,20 @@ fn ui_request_list_falls_back_to_the_active_workspace() {
     let sandbox = Sandbox::new("main-ui-request-list-active");
     // 没有活动工作目录 → 空表而不是报错
     assert_eq!(
-        dispatch_ui_request(&test_core(), &json!({ "type": "conversationListRequested" })).unwrap(),
+        dispatch_ui_request(
+            &test_core(),
+            &json!({ "type": "conversationListRequested" })
+        )
+        .unwrap(),
         json!([]),
     );
     config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
     assert_eq!(
-        dispatch_ui_request(&test_core(), &json!({ "type": "conversationListRequested" })).unwrap(),
+        dispatch_ui_request(
+            &test_core(),
+            &json!({ "type": "conversationListRequested" })
+        )
+        .unwrap(),
         json!([]),
     );
 }
@@ -973,7 +1129,11 @@ fn ui_request_without_an_archive_returns_null() {
     )
     .unwrap();
     assert_eq!(
-        dispatch_ui_request(&test_core(), &json!({ "type": "compactArchiveRequested", "sessionId": "s1" })).unwrap(),
+        dispatch_ui_request(
+            &test_core(),
+            &json!({ "type": "compactArchiveRequested", "sessionId": "s1" })
+        )
+        .unwrap(),
         Value::Null,
     );
 }
@@ -989,10 +1149,13 @@ fn ui_request_mcp_servers_merges_config_and_runtime() {
         }
     }));
 
-    let listed = dispatch_ui_request(&test_core(), &json!({
-        "type": "mcpServersRequested",
-        "sessionId": "s1",
-    }))
+    let listed = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "mcpServersRequested",
+            "sessionId": "s1",
+        }),
+    )
     .unwrap();
     let servers = listed.as_array().unwrap();
     assert_eq!(servers.len(), 2);
@@ -1014,8 +1177,12 @@ fn ui_request_conversation_spaces_counts_files_and_projects() {
     let project = sandbox.workspace.to_string_lossy().to_string();
     let dir = config::ensure_project_conversation_dir(&project).unwrap();
     std::fs::write(dir.join("s1.meta.json"), "{}").unwrap();
-    std::fs::write(dir.join("s1.jsonl"), "{\"uuid\":\"u\"}
-").unwrap();
+    std::fs::write(
+        dir.join("s1.jsonl"),
+        "{\"uuid\":\"u\"}
+",
+    )
+    .unwrap();
 
     // 项目目录已删除的空间：统计顺带核实「目录不存在」这个事实
     let gone_dir = config::conversations_root().unwrap().join("gone-ws");
@@ -1026,7 +1193,11 @@ fn ui_request_conversation_spaces_counts_files_and_projects() {
     )
     .unwrap();
 
-    let spaces = dispatch_ui_request(&test_core(), &json!({ "type": "conversationSpacesRequested" })).unwrap();
+    let spaces = dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "conversationSpacesRequested" }),
+    )
+    .unwrap();
     let spaces = spaces.as_array().unwrap();
     assert_eq!(spaces.len(), 2);
     let space = spaces
@@ -1076,7 +1247,10 @@ fn conversation_space_cleared_remove_mode_deletes_the_directory() {
 
     // 整目录删除：workspace.meta.json 也一并消失，列表不再显示该空间
     assert!(!dir.exists(), "空间目录应整体删除");
-    let receipt = harness.sink.event_of("conversationSpaceCleared").expect("回执");
+    let receipt = harness
+        .sink
+        .event_of("conversationSpaceCleared")
+        .expect("回执");
     assert_eq!(receipt["result"]["status"], "complete");
     assert!(harness.sink.event_of("conversationListChanged").is_some());
 }
@@ -1097,18 +1271,30 @@ fn conversation_space_cleared_without_mode_defaults_to_clear() {
 
     let harness = EngineHarness::allow_all();
     // 旧宿主不带 mode：按 clear 处理（跨版本窗口期兜底）
-    dispatch(&harness, json!({ "type": "conversationSpaceCleared", "sessionId": dir_name }));
+    dispatch(
+        &harness,
+        json!({ "type": "conversationSpaceCleared", "sessionId": dir_name }),
+    );
 
     assert!(dir.is_dir(), "clear 模式保留空间目录");
-    assert!(history::load_metadata("s1", &workspace).is_none(), "对话数据被清空");
+    assert!(
+        history::load_metadata("s1", &workspace).is_none(),
+        "对话数据被清空"
+    );
 }
 
 #[test]
 fn ui_request_flush_session_validates_session_id() {
     let _sandbox = Sandbox::new("main-ui-request-flush");
-    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "flushSessionRequested" })).is_err());
+    assert!(
+        dispatch_ui_request(&test_core(), &json!({ "type": "flushSessionRequested" })).is_err()
+    );
     assert_eq!(
-        dispatch_ui_request(&test_core(), &json!({ "type": "flushSessionRequested", "sessionId": "s1" })).unwrap(),
+        dispatch_ui_request(
+            &test_core(),
+            &json!({ "type": "flushSessionRequested", "sessionId": "s1" })
+        )
+        .unwrap(),
         Value::Null,
     );
 }
@@ -1131,10 +1317,13 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
     )
     .unwrap();
 
-    let loaded = dispatch_ui_request(&test_core(), &json!({
-        "type": "conversationLoadRequested",
-        "sessionId": "s1",
-    }))
+    let loaded = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "conversationLoadRequested",
+            "sessionId": "s1",
+        }),
+    )
     .unwrap();
     assert_eq!(loaded["messages"].as_array().unwrap().len(), 1);
     assert_eq!(loaded["messages"][0]["uuid"], "u1");
@@ -1155,25 +1344,42 @@ fn ui_request_conversation_load_returns_messages_metadata_and_facts() {
         &json!({ "role": "system", "content": "压缩已排队" }),
     )
     .unwrap();
-    let with_once = dispatch_ui_request(&test_core(), &json!({
-        "type": "conversationLoadRequested",
-        "sessionId": "s1",
-    }))
+    let with_once = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "conversationLoadRequested",
+            "sessionId": "s1",
+        }),
+    )
     .unwrap();
-    assert_eq!(with_once["metadata"]["onceMessage"]["content"], "压缩已排队");
+    assert_eq!(
+        with_once["metadata"]["onceMessage"]["content"],
+        "压缩已排队"
+    );
     assert_eq!(with_once["metadata"]["onceMessage"]["role"], "system");
-    assert_eq!(with_once["messages"].as_array().unwrap().len(), 1, "通知不进消息列表");
+    assert_eq!(
+        with_once["messages"].as_array().unwrap().len(),
+        1,
+        "通知不进消息列表"
+    );
 
     // 会话不存在：空消息 + null 元数据，不报错
-    let missing = dispatch_ui_request(&test_core(), &json!({
-        "type": "conversationLoadRequested",
-        "sessionId": "no-such",
-    }))
+    let missing = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "conversationLoadRequested",
+            "sessionId": "no-such",
+        }),
+    )
     .unwrap();
     assert_eq!(missing["messages"], json!([]));
     assert!(missing["metadata"].is_null());
 
-    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "conversationLoadRequested" })).is_err());
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "conversationLoadRequested" })
+    )
+    .is_err());
 }
 
 /// 崩溃残留的孤儿 tool_use（无配对 tool_result）：空闲会话加载时补「会话中断」
@@ -1238,7 +1444,8 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
     let sandbox = Sandbox::new("main-ui-request-skills");
     let project = sandbox.workspace.to_string_lossy().to_string();
     // 没有会话工作目录：只列内置命令与内置技能
-    let without_session = dispatch_ui_request(&test_core(), &json!({ "type": "skillsRequested" })).unwrap();
+    let without_session =
+        dispatch_ui_request(&test_core(), &json!({ "type": "skillsRequested" })).unwrap();
     let skills = without_session["skills"].as_array().unwrap();
     assert!(!skills.is_empty());
     assert!(skills.iter().any(|skill| skill["isBuiltin"] == true));
@@ -1258,10 +1465,13 @@ fn ui_request_skills_lists_builtins_and_project_skills() {
     )
     .unwrap();
     config::set_session_workspace("s1", Some(project));
-    let with_session = dispatch_ui_request(&test_core(), &json!({
-        "type": "skillsRequested",
-        "sessionId": "s1",
-    }))
+    let with_session = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "skillsRequested",
+            "sessionId": "s1",
+        }),
+    )
     .unwrap();
     let skills = with_session["skills"].as_array().unwrap();
     assert!(
@@ -1371,7 +1581,9 @@ fn ui_request_spin_design_reads_and_saves_in_core_data_dir() {
         path.display()
     );
     assert!(
-        sink.event_types().iter().all(|kind| kind != "spinDesignDataChanged"),
+        sink.event_types()
+            .iter()
+            .all(|kind| kind != "spinDesignDataChanged"),
         "保存不广播 spinDesignDataChanged"
     );
 
@@ -1439,7 +1651,9 @@ fn ui_request_unknown_type_is_an_error() {
 fn ui_request_requires_a_session_id_where_needed() {
     let _sandbox = Sandbox::new("main-ui-request-session");
     assert!(dispatch_ui_request(&test_core(), &json!({ "type": "smartNamingRequested" })).is_err());
-    assert!(dispatch_ui_request(&test_core(), &json!({ "type": "compactArchiveRequested" })).is_err());
+    assert!(
+        dispatch_ui_request(&test_core(), &json!({ "type": "compactArchiveRequested" })).is_err()
+    );
 }
 
 #[test]
@@ -1483,14 +1697,18 @@ fn session_workspace_assigned_registers_and_clears() {
 /// 局限：这是对源码文本的断言——match 重写为别的分发结构时，本测试要跟着改。
 #[test]
 fn dispatch_ui_event_covers_every_ui_event_type() {
-    let fixture: serde_json::Value = serde_json::from_str(
-        include_str!("../fixtures/eventTypes.json"),
-    )
-    .expect("parse eventTypesParity.json");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/eventTypes.json"))
+            .expect("parse eventTypesParity.json");
 
     let src = include_str!("main.rs");
-    let start = src.find("fn dispatch_ui_event").expect("dispatch_ui_event in main.rs");
-    let end = src[start..].find("fn emit").expect("fn emit after dispatch_ui_event") + start;
+    let start = src
+        .find("fn dispatch_ui_event")
+        .expect("dispatch_ui_event in main.rs");
+    let end = src[start..]
+        .find("fn emit")
+        .expect("fn emit after dispatch_ui_event")
+        + start;
     let dispatch_src = &src[start..end];
 
     for event_type in fixture["uiEvents"].as_array().expect("uiEvents") {
@@ -1543,7 +1761,10 @@ fn non_test_rs_sources() -> Vec<(String, String)> {
     }
     let mut out = Vec::new();
     walk(std::path::Path::new("src"), &mut out);
-    assert!(!out.is_empty(), "src/ 下没有找到 Rust 源码（工作目录应为 crate 根）");
+    assert!(
+        !out.is_empty(),
+        "src/ 下没有找到 Rust 源码（工作目录应为 crate 根）"
+    );
     out
 }
 
@@ -1625,7 +1846,9 @@ fn rust_type_literals_are_registered_in_the_fixture() {
 fn dispatch_ui_request_covers_every_ui_request_type() {
     let fixture = event_parity_fixture();
     let src = include_str!("main.rs");
-    let start = src.find("fn dispatch_ui_request").expect("dispatch_ui_request in main.rs");
+    let start = src
+        .find("fn dispatch_ui_request")
+        .expect("dispatch_ui_request in main.rs");
     // 取到下一个顶级声明为止（列位 0 的 `fn ` / `pub fn ` / `const `；属性行不影响定位）
     let offset = src[start + 1..]
         .find("\nfn ")
@@ -1651,10 +1874,9 @@ fn dispatch_ui_request_covers_every_ui_request_type() {
 /// fixture 与 TS 测试时，这里失败。
 #[test]
 fn runtime_state_fields_match_parity_fixture() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../fixtures/runtimeState.json"
-    ))
-    .expect("parse runtimeStateParity.json");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/runtimeState.json"))
+            .expect("parse runtimeStateParity.json");
     let sample = crate::engine::Core::runtime_state_json(
         "s",
         false,
@@ -1683,7 +1905,10 @@ fn runtime_state_fields_match_parity_fixture() {
         .map(|v| v.as_str().expect("field name").to_string())
         .collect();
     expected.sort();
-    assert_eq!(actual, expected, "runtime_state_json 字段集与 runtimeStateParity.json 不一致");
+    assert_eq!(
+        actual, expected,
+        "runtime_state_json 字段集与 runtimeStateParity.json 不一致"
+    );
 }
 
 // ==================== 远程文件监听请求（specs/018 FR-003） ====================
@@ -1691,11 +1916,7 @@ fn runtime_state_fields_match_parity_fixture() {
 #[test]
 fn watch_workspace_file_request_requires_fields() {
     let core = test_core();
-    assert!(dispatch_ui_request(
-        &core,
-        &json!({ "type": "watchWorkspaceFileRequested" })
-    )
-    .is_err());
+    assert!(dispatch_ui_request(&core, &json!({ "type": "watchWorkspaceFileRequested" })).is_err());
     assert!(dispatch_ui_request(
         &core,
         &json!({ "type": "watchWorkspaceFileRequested", "watchId": "w1" })
@@ -1721,11 +1942,9 @@ fn unwatch_workspace_file_request_is_idempotent() {
     )
     .expect("unwatch missing id is ok");
     assert_eq!(result, Value::Null);
-    assert!(dispatch_ui_request(
-        &core,
-        &json!({ "type": "unwatchWorkspaceFileRequested" })
-    )
-    .is_err());
+    assert!(
+        dispatch_ui_request(&core, &json!({ "type": "unwatchWorkspaceFileRequested" })).is_err()
+    );
 }
 
 /// `sessionTodosRequested`（`docs/features/todo-list.md` FR-002）：表里没有该会话时按
@@ -1960,10 +2179,13 @@ fn conversation_load_clears_unread_completions() {
         1
     );
 
-    dispatch_ui_request(&test_core(), &json!({
-        "type": "conversationLoadRequested",
-        "sessionId": "s1",
-    }))
+    dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "conversationLoadRequested",
+            "sessionId": "s1",
+        }),
+    )
     .unwrap();
     assert_eq!(
         history::load_metadata("s1", &project).unwrap()["unreadCompletions"],
@@ -1971,10 +2193,13 @@ fn conversation_load_clears_unread_completions() {
     );
 
     // 已为 0：再次装载走免落盘路径，计数保持 0
-    dispatch_ui_request(&test_core(), &json!({
-        "type": "conversationLoadRequested",
-        "sessionId": "s1",
-    }))
+    dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "conversationLoadRequested",
+            "sessionId": "s1",
+        }),
+    )
     .unwrap();
     assert_eq!(
         history::load_metadata("s1", &project).unwrap()["unreadCompletions"],

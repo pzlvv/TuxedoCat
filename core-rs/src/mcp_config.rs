@@ -412,7 +412,8 @@ pub fn set_session_mcp_enabled(session_id: Option<&str>, name: &str, enabled: bo
         return;
     }
 
-    let current = read_session_enabled_mcps(Some(session_id)).unwrap_or_else(read_default_enabled_mcps);
+    let current =
+        read_session_enabled_mcps(Some(session_id)).unwrap_or_else(read_default_enabled_mcps);
     // Set 语义：去重且保留首次出现顺序（对齐 `Array.from(new Set(...))`）
     let mut next: Vec<String> = Vec::new();
     for item in current {

@@ -307,7 +307,10 @@ pub enum LocalAction {
     /// TUI 单视图没有视图关闭事件，v1 未触发（契约动作保留）。
     #[allow(dead_code)]
     CloseConversationView(String),
-    Notice { text: String, level: NoticeLevel },
+    Notice {
+        text: String,
+        level: NoticeLevel,
+    },
     DismissNotice(u64),
     ShowOverlay(Overlay),
     CloseOverlay,
@@ -322,24 +325,68 @@ pub enum Action {
 
     // ===== 消息流 =====
     AddMessage(AddMessageData),
-    StreamMessage { session_id: String, role: Role, text: String, stream_id: String },
-    StreamEnd { session_id: String, role: Role, accumulated: String, total_tokens: f64, stream_id: String },
-    ShowThinkingAnimation { session_id: String, show: bool },
-    AiBegin { session_id: String },
-    AiEnd { session_id: String },
-    QueryEnd { session_id: String },
-    UpdateToolStatus { session_id: String, tool_call_id: String, status: Option<ToolStatus>, output: Option<String> },
-    ToolProgress { session_id: String, tool_call_id: String, output: String },
+    StreamMessage {
+        session_id: String,
+        role: Role,
+        text: String,
+        stream_id: String,
+    },
+    StreamEnd {
+        session_id: String,
+        role: Role,
+        accumulated: String,
+        total_tokens: f64,
+        stream_id: String,
+    },
+    ShowThinkingAnimation {
+        session_id: String,
+        show: bool,
+    },
+    AiBegin {
+        session_id: String,
+    },
+    AiEnd {
+        session_id: String,
+    },
+    QueryEnd {
+        session_id: String,
+    },
+    UpdateToolStatus {
+        session_id: String,
+        tool_call_id: String,
+        status: Option<ToolStatus>,
+        output: Option<String>,
+    },
+    ToolProgress {
+        session_id: String,
+        tool_call_id: String,
+        output: String,
+    },
 
     // ===== 排队 =====
-    QueuedMessage { session_id: String, uuid: Option<String>, content: String },
-    ClearQueuedMessage { session_id: String },
+    QueuedMessage {
+        session_id: String,
+        uuid: Option<String>,
+        content: String,
+    },
+    ClearQueuedMessage {
+        session_id: String,
+    },
 
     // ===== 会话生命周期 =====
     ConversationLoaded(ConversationLoadedData),
-    MessagesReplaced { session_id: String, messages: Vec<TuiMessage> },
-    SetTitle { session_id: String, title: String },
-    SmartNamingResult { session_id: String, title: String },
+    MessagesReplaced {
+        session_id: String,
+        messages: Vec<TuiMessage>,
+    },
+    SetTitle {
+        session_id: String,
+        title: String,
+    },
+    SmartNamingResult {
+        session_id: String,
+        title: String,
+    },
     ConversationsData(Vec<ConversationSummary>),
     SessionRuntimeStates(Vec<RuntimeState>),
 
@@ -352,18 +399,40 @@ pub enum Action {
     SetSkills(Vec<SkillItem>),
     SetMcpServers(Vec<(String, bool)>),
     ContextLimitUpdated(f64),
-    BalanceUpdate { total_balance: Option<f64>, currency: Option<String> },
+    BalanceUpdate {
+        total_balance: Option<f64>,
+        currency: Option<String>,
+    },
 
     // ===== 会话配置确认（core 收敛结果广播） =====
-    SetModel { session_id: String, model: String, provider: Option<String> },
-    SetAgentMode { session_id: String, mode: String },
-    SetThinkingMode { session_id: String, mode: String },
-    SetPromptMode { session_id: String, mode: String },
-    SetWebSearch { session_id: String, enabled: bool },
+    SetModel {
+        session_id: String,
+        model: String,
+        provider: Option<String>,
+    },
+    SetAgentMode {
+        session_id: String,
+        mode: String,
+    },
+    SetThinkingMode {
+        session_id: String,
+        mode: String,
+    },
+    SetPromptMode {
+        session_id: String,
+        mode: String,
+    },
+    SetWebSearch {
+        session_id: String,
+        enabled: bool,
+    },
     /// 会话上下文占用的非流式更新（core 的 `compactEnd.postCompactTokenCount`）：
     /// 压缩替换了整份上下文，状态栏 tokens 不能停留在压缩前旧值等到下一轮 streamEnd
     /// （specs/defects/compact-context-facts-stale-across-views）。
-    SetContextTokens { session_id: String, tokens: f64 },
+    SetContextTokens {
+        session_id: String,
+        tokens: f64,
+    },
 }
 
 /// wire `addMessage` 的投影字段（译层从 MessageData / 乐观回显构造）。
@@ -457,17 +526,28 @@ fn status_rank(status: ToolStatus) -> u8 {
 
 fn now_ms() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 fn push_notice(state: &TuiState, ids: &mut Ids, text: String, level: NoticeLevel) -> TuiState {
     let mut notices = state.notices.clone();
-    notices.push(Notice { id: ids.next_notice(), text, level, at_ms: now_ms() });
+    notices.push(Notice {
+        id: ids.next_notice(),
+        text,
+        level,
+        at_ms: now_ms(),
+    });
     // 只保留最近 5 条（旧提示不再占行；UI 层再按时效消散）
     if notices.len() > 5 {
         notices.drain(..notices.len() - 5);
     }
-    TuiState { notices, ..state.clone() }
+    TuiState {
+        notices,
+        ..state.clone()
+    }
 }
 
 /// reducer。纯函数：状态 + 动作 → 新状态；未知动作在译层就不会产生，
@@ -476,13 +556,17 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
     match action {
         // ===== 本地动作 =====
         Action::Local(local) => match local {
-            LocalAction::ActivateSession(session_id) => {
-                TuiState { active_session_id: session_id.clone(), ..state.clone() }
-            }
+            LocalAction::ActivateSession(session_id) => TuiState {
+                active_session_id: session_id.clone(),
+                ..state.clone()
+            },
             LocalAction::CloseConversationView(session_id) => {
                 // 只在正查看该会话时切出（回到「选择 / 新建」空态）；其余情况无显示变化
                 if state.active_session_id.as_deref() == Some(session_id.as_str()) {
-                    TuiState { active_session_id: None, ..state.clone() }
+                    TuiState {
+                        active_session_id: None,
+                        ..state.clone()
+                    }
                 } else {
                     state.clone()
                 }
@@ -493,23 +577,41 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
                 next.notices.retain(|notice| notice.id != *id);
                 next
             }
-            LocalAction::ShowOverlay(overlay) => TuiState { overlay: Some(overlay.clone()), ..state.clone() },
-            LocalAction::CloseOverlay => TuiState { overlay: None, ..state.clone() },
-            LocalAction::ClearPendingChoice => TuiState { pending_choice: None, ..state.clone() },
+            LocalAction::ShowOverlay(overlay) => TuiState {
+                overlay: Some(overlay.clone()),
+                ..state.clone()
+            },
+            LocalAction::CloseOverlay => TuiState {
+                overlay: None,
+                ..state.clone()
+            },
+            LocalAction::ClearPendingChoice => TuiState {
+                pending_choice: None,
+                ..state.clone()
+            },
         },
 
         // ===== 消息流 =====
         Action::AddMessage(data) => reduce_add_message(state, ids, data),
-        Action::StreamMessage { session_id, role, text, stream_id } => {
-            with_session(state, session_id, |session| {
-                session.stream = Some(StreamBlock {
-                    role: *role,
-                    text: text.clone(),
-                    stream_id: stream_id.clone(),
-                });
-            })
-        }
-        Action::StreamEnd { session_id, role, accumulated, total_tokens, stream_id } => {
+        Action::StreamMessage {
+            session_id,
+            role,
+            text,
+            stream_id,
+        } => with_session(state, session_id, |session| {
+            session.stream = Some(StreamBlock {
+                role: *role,
+                text: text.clone(),
+                stream_id: stream_id.clone(),
+            });
+        }),
+        Action::StreamEnd {
+            session_id,
+            role,
+            accumulated,
+            total_tokens,
+            stream_id,
+        } => {
             with_session(state, session_id, |session| {
                 // 流式缓冲按 (role, streamId) 收敛：只有本块自己的收尾才清掉，
                 // 跨块 / 跨角色的迟到收尾不误清别的块
@@ -526,7 +628,8 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
                 // 的两条收尾与 block_stop 落下的消息角色交错，比对「最后一条」必然失配
                 // （对齐 webview 的 streamId + role 精确匹配语义）。
                 if let Some(index) = session.messages.iter().rposition(|message| {
-                    message.role == *role && message.stream_id.as_deref() == Some(stream_id.as_str())
+                    message.role == *role
+                        && message.stream_id.as_deref() == Some(stream_id.as_str())
                 }) {
                     let existing = &session.messages[index];
                     session.messages[index] = TuiMessage {
@@ -540,7 +643,17 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
                     if !duplicate {
                         session.messages.push(TuiMessage {
                             stream_id: Some(stream_id.clone()),
-                            ..message_from_wire(ids, *role, accumulated, None, None, None, *total_tokens, None, false)
+                            ..message_from_wire(
+                                ids,
+                                *role,
+                                accumulated,
+                                None,
+                                None,
+                                None,
+                                *total_tokens,
+                                None,
+                                false,
+                            )
                         });
                     }
                 }
@@ -568,10 +681,16 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
                 session.show_thinking = false;
             })
         }
-        Action::UpdateToolStatus { session_id, tool_call_id, status, output } => {
+        Action::UpdateToolStatus {
+            session_id,
+            tool_call_id,
+            status,
+            output,
+        } => {
             with_session(state, session_id, |session| {
                 let Some(index) = session.messages.iter().position(|message| {
-                    message.role == Role::ToolCall && message.tool_call_id.as_deref() == Some(tool_call_id.as_str())
+                    message.role == Role::ToolCall
+                        && message.tool_call_id.as_deref() == Some(tool_call_id.as_str())
                 }) else {
                     return;
                 };
@@ -588,22 +707,30 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
                 };
             })
         }
-        Action::ToolProgress { session_id, tool_call_id, output } => {
-            with_session(state, session_id, |session| {
-                if let Some(index) = session.messages.iter().position(|message| {
-                    message.role == Role::ToolCall && message.tool_call_id.as_deref() == Some(tool_call_id.as_str())
-                }) {
-                    session.messages[index].content = output.clone();
-                }
-            })
-        }
+        Action::ToolProgress {
+            session_id,
+            tool_call_id,
+            output,
+        } => with_session(state, session_id, |session| {
+            if let Some(index) = session.messages.iter().position(|message| {
+                message.role == Role::ToolCall
+                    && message.tool_call_id.as_deref() == Some(tool_call_id.as_str())
+            }) {
+                session.messages[index].content = output.clone();
+            }
+        }),
 
         // ===== 排队 =====
-        Action::QueuedMessage { session_id, uuid, content } => {
-            with_session(state, session_id, |session| {
-                session.queued = Some(QueuedMessage { uuid: uuid.clone(), content: content.clone() });
-            })
-        }
+        Action::QueuedMessage {
+            session_id,
+            uuid,
+            content,
+        } => with_session(state, session_id, |session| {
+            session.queued = Some(QueuedMessage {
+                uuid: uuid.clone(),
+                content: content.clone(),
+            });
+        }),
         Action::ClearQueuedMessage { session_id } => with_session(state, session_id, |session| {
             session.queued = None;
         }),
@@ -624,51 +751,73 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
             session.web_search = data.web_search;
             session.context_tokens = data.context_tokens;
         }),
-        Action::MessagesReplaced { session_id, messages } => with_session(state, session_id, |session| {
+        Action::MessagesReplaced {
+            session_id,
+            messages,
+        } => with_session(state, session_id, |session| {
             session.messages = messages.clone();
         }),
         Action::SetTitle { session_id, title } => with_session(state, session_id, |session| {
             session.title = Some(title.clone());
         }),
-        Action::SmartNamingResult { session_id, title } => with_session(state, session_id, |session| {
-            session.title = Some(title.clone());
-        }),
-        Action::ConversationsData(conversations) => {
-            TuiState { conversations: conversations.clone(), ..state.clone() }
+        Action::SmartNamingResult { session_id, title } => {
+            with_session(state, session_id, |session| {
+                session.title = Some(title.clone());
+            })
         }
-        Action::SessionRuntimeStates(states) => {
-            TuiState { runtime_states: states.clone(), ..state.clone() }
-        }
+        Action::ConversationsData(conversations) => TuiState {
+            conversations: conversations.clone(),
+            ..state.clone()
+        },
+        Action::SessionRuntimeStates(states) => TuiState {
+            runtime_states: states.clone(),
+            ..state.clone()
+        },
 
         // ===== 用户选择 / 权限确认 =====
-        Action::RequestUserChoice(choice) => {
-            TuiState { pending_choice: Some(choice.clone()), ..state.clone() }
-        }
+        Action::RequestUserChoice(choice) => TuiState {
+            pending_choice: Some(choice.clone()),
+            ..state.clone()
+        },
 
         // ===== 配置面 =====
-        Action::SettingsDefaults(defaults) => {
-            TuiState { settings_defaults: Some(defaults.clone()), ..state.clone() }
-        }
-        Action::SetModels(models) => TuiState { models: Some(models.clone()), ..state.clone() },
-        Action::SetSkills(skills) => TuiState { skills: skills.clone(), ..state.clone() },
-        Action::SetMcpServers(servers) => {
-            TuiState { mcp_servers: Some(servers.clone()), ..state.clone() }
-        }
-        Action::ContextLimitUpdated(max) => {
-            TuiState { max_context_tokens: Some(*max), ..state.clone() }
-        }
-        Action::BalanceUpdate { total_balance, currency } => {
-            TuiState {
-                balance: match (total_balance, currency) {
-                    (Some(total), Some(currency)) => Some((*total, currency.clone())),
-                    _ => None,
-                },
-                ..state.clone()
-            }
-        }
+        Action::SettingsDefaults(defaults) => TuiState {
+            settings_defaults: Some(defaults.clone()),
+            ..state.clone()
+        },
+        Action::SetModels(models) => TuiState {
+            models: Some(models.clone()),
+            ..state.clone()
+        },
+        Action::SetSkills(skills) => TuiState {
+            skills: skills.clone(),
+            ..state.clone()
+        },
+        Action::SetMcpServers(servers) => TuiState {
+            mcp_servers: Some(servers.clone()),
+            ..state.clone()
+        },
+        Action::ContextLimitUpdated(max) => TuiState {
+            max_context_tokens: Some(*max),
+            ..state.clone()
+        },
+        Action::BalanceUpdate {
+            total_balance,
+            currency,
+        } => TuiState {
+            balance: match (total_balance, currency) {
+                (Some(total), Some(currency)) => Some((*total, currency.clone())),
+                _ => None,
+            },
+            ..state.clone()
+        },
 
         // ===== 会话配置确认（core 收敛结果广播） =====
-        Action::SetModel { session_id, model, provider } => with_session(state, session_id, |session| {
+        Action::SetModel {
+            session_id,
+            model,
+            provider,
+        } => with_session(state, session_id, |session| {
             session.model = Some(model.clone());
             if provider.is_some() {
                 session.provider = provider.clone();
@@ -677,13 +826,18 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
         Action::SetAgentMode { session_id, mode } => with_session(state, session_id, |session| {
             session.agent_mode = Some(mode.clone());
         }),
-        Action::SetThinkingMode { session_id, mode } => with_session(state, session_id, |session| {
-            session.thinking_mode = Some(mode.clone());
-        }),
+        Action::SetThinkingMode { session_id, mode } => {
+            with_session(state, session_id, |session| {
+                session.thinking_mode = Some(mode.clone());
+            })
+        }
         Action::SetPromptMode { session_id, mode } => with_session(state, session_id, |session| {
             session.prompt_mode = Some(mode.clone());
         }),
-        Action::SetWebSearch { session_id, enabled } => with_session(state, session_id, |session| {
+        Action::SetWebSearch {
+            session_id,
+            enabled,
+        } => with_session(state, session_id, |session| {
             session.web_search = Some(*enabled);
         }),
         Action::SetContextTokens { session_id, tokens } => {
@@ -716,7 +870,8 @@ fn reduce_add_message(state: &TuiState, ids: &mut Ids, data: &AddMessageData) ->
         if data.role == Some(Role::ToolCall) {
             if let Some(tool_call_id) = &data.tool_call_id {
                 if let Some(index) = session.messages.iter().position(|message| {
-                    message.role == Role::ToolCall && message.tool_call_id.as_deref() == Some(tool_call_id.as_str())
+                    message.role == Role::ToolCall
+                        && message.tool_call_id.as_deref() == Some(tool_call_id.as_str())
                 }) {
                     let existing = session.messages[index].clone();
                     let status = match data.status {
@@ -724,7 +879,11 @@ fn reduce_add_message(state: &TuiState, ids: &mut Ids, data: &AddMessageData) ->
                         _ => existing.status,
                     };
                     session.messages[index] = TuiMessage {
-                        content: if data.content.is_empty() { existing.content.clone() } else { data.content.clone() },
+                        content: if data.content.is_empty() {
+                            existing.content.clone()
+                        } else {
+                            data.content.clone()
+                        },
                         status,
                         ..existing
                     };
@@ -810,9 +969,17 @@ fn message_from_wire(
 }
 
 /// 就地会话写入（不存在则先建空会话）。
-fn with_session(state: &TuiState, session_id: &str, mutate: impl FnOnce(&mut SessionState)) -> TuiState {
+fn with_session(
+    state: &TuiState,
+    session_id: &str,
+    mutate: impl FnOnce(&mut SessionState),
+) -> TuiState {
     let mut next = state.clone();
-    let mut session = next.sessions.get(session_id).cloned().unwrap_or_else(|| empty_session(session_id));
+    let mut session = next
+        .sessions
+        .get(session_id)
+        .cloned()
+        .unwrap_or_else(|| empty_session(session_id));
     mutate(&mut session);
     next.sessions.insert(session_id.to_string(), session);
     next
@@ -828,14 +995,19 @@ pub fn active_session<'a>(state: &'a TuiState) -> Option<&'a SessionState> {
 /// 会话运行态（sessionRuntimeStates 的单项投影；没有记录视为空闲）。
 pub fn runtime_of<'a>(state: &'a TuiState, session_id: Option<&str>) -> Option<&'a RuntimeState> {
     let id = session_id?;
-    state.runtime_states.iter().find(|state| state.session_id == id)
+    state
+        .runtime_states
+        .iter()
+        .find(|state| state.session_id == id)
 }
 
 /// 运行态点符号（○空闲 ●运行 ◑等待 ◍后台类）。
 pub fn runtime_dot(state: Option<&RuntimeState>) -> &'static str {
     match state {
         None => "○",
-        Some(state) if state.compacting || state.background_running || state.sub_agent_running => "◍",
+        Some(state) if state.compacting || state.background_running || state.sub_agent_running => {
+            "◍"
+        }
         Some(state) if state.query_running => "●",
         Some(state) if state.waiting => "◑",
         Some(_) => "○",

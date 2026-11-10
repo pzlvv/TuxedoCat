@@ -192,7 +192,9 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                 }));
             }
             Some("user") => {
-                let content = message.get("message").and_then(|inner| inner.get("content"));
+                let content = message
+                    .get("message")
+                    .and_then(|inner| inner.get("content"));
                 let (text, images) = extract_user_content(content);
                 if text.is_empty() && images.is_empty() {
                     continue;
@@ -211,10 +213,11 @@ pub fn build_replay_message_data(messages: &[Value]) -> Vec<Value> {
                             .and_then(Value::as_str)
                             .map(str::to_string)
                     });
-                let raw_selected_lines = message
-                    .get("fileSelectedLines")
-                    .cloned()
-                    .or_else(|| inner_meta.and_then(|meta| meta.get("fileSelectedLines")).cloned());
+                let raw_selected_lines = message.get("fileSelectedLines").cloned().or_else(|| {
+                    inner_meta
+                        .and_then(|meta| meta.get("fileSelectedLines"))
+                        .cloned()
+                });
                 let was_file_hidden =
                     message.get("fileHidden").and_then(Value::as_bool) == Some(true);
                 let show_file_info = !was_file_hidden && raw_file_path.is_some();

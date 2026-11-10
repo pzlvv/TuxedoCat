@@ -343,7 +343,10 @@ impl OrphanRegistry {
 /// [`RoutableSink`] 的当前去向。
 enum SinkRoute {
     /// 送本连接的事件通道（channel 是当前连接分配的号；认领会改写它）
-    Connection { events: Sender<DaemonEvent>, channel: u64 },
+    Connection {
+        events: Sender<DaemonEvent>,
+        channel: u64,
+    },
     /// 送孤儿表的一条登记（持续排水 + 窥探缓存）
     Orphan(Arc<Mutex<OrphanEntry>>),
 }
@@ -403,13 +406,13 @@ enum OrphanLevel {
 }
 
 fn snapshot_level(state: &Value) -> OrphanLevel {
-    if state.get("waiting").and_then(Value::as_bool).unwrap_or(false) {
-        OrphanLevel::Waiting
-    } else if state
-        .get("idle")
+    if state
+        .get("waiting")
         .and_then(Value::as_bool)
-        .unwrap_or(true)
+        .unwrap_or(false)
     {
+        OrphanLevel::Waiting
+    } else if state.get("idle").and_then(Value::as_bool).unwrap_or(true) {
         OrphanLevel::Idle
     } else {
         OrphanLevel::Running
@@ -426,7 +429,8 @@ fn completed_sessions(previous: Option<&Value>, latest: &Value) -> Vec<String> {
     let Some(states) = latest.get("states").and_then(Value::as_array) else {
         return Vec::new();
     };
-    let Some(previous) = previous.and_then(|snapshot| snapshot.get("states").and_then(Value::as_array))
+    let Some(previous) =
+        previous.and_then(|snapshot| snapshot.get("states").and_then(Value::as_array))
     else {
         return Vec::new();
     };
@@ -468,11 +472,14 @@ fn feed_orphan_line(entry: &Mutex<OrphanEntry>, line: String) {
             if entry.busy {
                 entry.idle_since = None;
             }
-            push_replay(&mut entry.replay, BufferedFrame {
-                line,
-                at: Instant::now(),
-                is_request: false,
-            });
+            push_replay(
+                &mut entry.replay,
+                BufferedFrame {
+                    line,
+                    at: Instant::now(),
+                    is_request: false,
+                },
+            );
             if !completed.is_empty() {
                 if let Some(handle) = entry.handle.as_ref() {
                     let frame = json!({
@@ -487,11 +494,14 @@ fn feed_orphan_line(entry: &Mutex<OrphanEntry>, line: String) {
             }
         }
         Some(PeekedFrame::PendingRequest) => {
-            push_replay(&mut entry.replay, BufferedFrame {
-                line,
-                at: Instant::now(),
-                is_request: true,
-            });
+            push_replay(
+                &mut entry.replay,
+                BufferedFrame {
+                    line,
+                    at: Instant::now(),
+                    is_request: true,
+                },
+            );
         }
         None => {}
     }
@@ -665,7 +675,10 @@ impl CoreSpawner for SystemCoreSpawner {
         let mut child = command.spawn()?;
         // 子进程事实先落日志再接线：Core 异常退出（段错误 / 被杀）时日志里得有
         // pid 与启动时刻这一行锚点，才能对上系统侧的进程事件
-        diag!("[daemon] channel {channel}: core process started (pid={})", child.id());
+        diag!(
+            "[daemon] channel {channel}: core process started (pid={})",
+            child.id()
+        );
         let stdin = child
             .stdin
             .take()
@@ -734,8 +747,7 @@ impl CoreSpawner for SystemCoreSpawner {
                         // Unix 上 code=None 意味着被信号杀死（段错误是 SIGSEGV=11），
                         // 单独记一行，把「崩溃」与「带退出码退出」区分开
                         #[cfg(unix)]
-                        if let Some(signal) =
-                            std::os::unix::process::ExitStatusExt::signal(&status)
+                        if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status)
                         {
                             diag!("[daemon] channel {channel}: core terminated by signal {signal}");
                         }
@@ -752,7 +764,10 @@ impl CoreSpawner for SystemCoreSpawner {
             }
         });
 
-        Ok(Box::new(SystemCoreHandle { out: out_tx, kill: kill_tx }))
+        Ok(Box::new(SystemCoreHandle {
+            out: out_tx,
+            kill: kill_tx,
+        }))
     }
 }
 
@@ -870,8 +885,9 @@ pub fn run_daemon(
     let mut grace_deadline: Option<Instant> = None;
     // 心跳空闲超时的到期时刻：启用心跳（远程控制通道）时从连接建立即武装，
     // 收到任何控制帧都顺延；`None` = 不启用（本地 stdio）
-    let mut heartbeat_deadline: Option<Instant> =
-        options.heartbeat_timeout.map(|timeout| Instant::now() + timeout);
+    let mut heartbeat_deadline: Option<Instant> = options
+        .heartbeat_timeout
+        .map(|timeout| Instant::now() + timeout);
 
     loop {
         let now = Instant::now();
@@ -981,7 +997,12 @@ pub fn run_daemon(
                                     entries: listing.entries,
                                 },
                             ),
-                            Err(error) => send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other),
+                            Err(error) => send_directory_failed(
+                                out.as_ref(),
+                                id,
+                                error,
+                                DirectoryFailureReason::Other,
+                            ),
                         }
                     }
                     HostToDaemonFrame::CreateDirectory { id, path } => {
@@ -990,7 +1011,12 @@ pub fn run_daemon(
                                 out.as_ref(),
                                 &DaemonToHostFrame::DirectoryCreated { id, path: created },
                             ),
-                            Err(error) => send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other),
+                            Err(error) => send_directory_failed(
+                                out.as_ref(),
+                                id,
+                                error,
+                                DirectoryFailureReason::Other,
+                            ),
                         }
                     }
                     HostToDaemonFrame::RenameDirectory { id, path, name } => {
@@ -999,10 +1025,19 @@ pub fn run_daemon(
                                 out.as_ref(),
                                 &DaemonToHostFrame::DirectoryRenamed { id, path: renamed },
                             ),
-                            Err(error) => send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other),
+                            Err(error) => send_directory_failed(
+                                out.as_ref(),
+                                id,
+                                error,
+                                DirectoryFailureReason::Other,
+                            ),
                         }
                     }
-                    HostToDaemonFrame::DeleteDirectory { id, path, recursive } => {
+                    HostToDaemonFrame::DeleteDirectory {
+                        id,
+                        path,
+                        recursive,
+                    } => {
                         match crate::remote::delete_directory(&path, recursive) {
                             Ok(removed) => send_to_host(
                                 out.as_ref(),
@@ -1010,10 +1045,20 @@ pub fn run_daemon(
                             ),
                             // 非空是「还能继续」的失败：Host 据此提示递归删除
                             Err(crate::remote::DeleteDirectoryError::NotEmpty(error)) => {
-                                send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::NotEmpty)
+                                send_directory_failed(
+                                    out.as_ref(),
+                                    id,
+                                    error,
+                                    DirectoryFailureReason::NotEmpty,
+                                )
                             }
                             Err(crate::remote::DeleteDirectoryError::Failed(error)) => {
-                                send_directory_failed(out.as_ref(), id, error, DirectoryFailureReason::Other)
+                                send_directory_failed(
+                                    out.as_ref(),
+                                    id,
+                                    error,
+                                    DirectoryFailureReason::Other,
+                                )
                             }
                         }
                     }
@@ -1050,17 +1095,24 @@ pub fn run_daemon(
                     }
                 }
                 match serde_json::from_str::<Value>(&line) {
-                    Ok(frame) => send_to_host(
-                        out.as_ref(),
-                        &DaemonToHostFrame::Frame { channel, frame },
-                    ),
+                    Ok(frame) => {
+                        send_to_host(out.as_ref(), &DaemonToHostFrame::Frame { channel, frame })
+                    }
                     Err(err) => {
                         diag!("[daemon] channel {channel}: malformed inner frame: {err}; dropped")
                     }
                 }
             }
             Ok(DaemonEvent::CoreExited { channel, code }) => {
-                handle_core_exit(&mut channels, channel, code, &spawner, &events_tx, &out, &options);
+                handle_core_exit(
+                    &mut channels,
+                    channel,
+                    code,
+                    &spawner,
+                    &events_tx,
+                    &out,
+                    &options,
+                );
                 maybe_start_grace(&channels, &mut grace_deadline, &options);
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -1097,7 +1149,10 @@ fn next_deadline(
         });
     }
     for state in channels.values() {
-        for deadline in [state.restart_at, state.kill_deadline].into_iter().flatten() {
+        for deadline in [state.restart_at, state.kill_deadline]
+            .into_iter()
+            .flatten()
+        {
             next = Some(match next {
                 Some(current) => current.min(deadline),
                 None => deadline,
@@ -1144,9 +1199,7 @@ fn open_workspace(
     // 认领（specs/031）：同 path 的孤儿优先于新进程；摘表与移交原子，败者按无孤儿处理
     if let Some(ctx) = context {
         if !workspace_path.is_empty() {
-            if let Some(state) =
-                claim_orphan(ctx, &workspace_path, channel, events_tx, out, id)
-            {
+            if let Some(state) = claim_orphan(ctx, &workspace_path, channel, events_tx, out, id) {
                 *next_channel += 1;
                 channels.insert(channel, state);
                 return;
@@ -1214,11 +1267,7 @@ fn claim_orphan(
             replay.push(runtime_line.clone());
         }
     }
-    let mut state = ChannelState::new(
-        channel,
-        Arc::clone(&slot.sink),
-        workspace_path.to_string(),
-    );
+    let mut state = ChannelState::new(channel, Arc::clone(&slot.sink), workspace_path.to_string());
     state.handle = entry.handle.take();
     state.last_runtime = entry.runtime.take();
     drop(entry);
@@ -1233,10 +1282,7 @@ fn claim_orphan(
     );
     for line in replay {
         match serde_json::from_str::<Value>(&line) {
-            Ok(frame) => send_to_host(
-                out.as_ref(),
-                &DaemonToHostFrame::Frame { channel, frame },
-            ),
+            Ok(frame) => send_to_host(out.as_ref(), &DaemonToHostFrame::Frame { channel, frame }),
             Err(err) => diag!("[daemon] claimed replay frame malformed: {err}; dropped"),
         }
     }
@@ -1355,11 +1401,7 @@ fn orphan_on_disconnect(
     }
 }
 
-fn begin_close(
-    channels: &mut HashMap<u64, ChannelState>,
-    channel: u64,
-    options: &DaemonOptions,
-) {
+fn begin_close(channels: &mut HashMap<u64, ChannelState>, channel: u64, options: &DaemonOptions) {
     let Some(state) = channels.get_mut(&channel) else {
         diag!("[daemon] closeWorkspace for unknown channel {channel}");
         return;

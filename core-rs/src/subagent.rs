@@ -115,7 +115,9 @@ static SLOTS: LazyLock<Mutex<HashMap<String, SlotState>>> =
 /// 槽位表的容毒访问：前一个用例 panic 毒化锁后恢复而不是连锁 panic
 /// （对齐 `test_support::serial` 的手法）
 fn slots() -> std::sync::MutexGuard<'static, HashMap<String, SlotState>> {
-    SLOTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SLOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 把一个空闲预留顺延给队列中最早尚未获预留的等待者（FIFO）；
@@ -261,7 +263,9 @@ pub fn request_slot_or_defer(
 pub fn release_slot(creator_session_id: &str) {
     let mut slots = slots();
     let state = slots.get_mut(creator_session_id).unwrap_or_else(|| {
-        panic!("release_slot: creator {creator_session_id} 没有槽位状态（acquire/release 配对被破坏）")
+        panic!(
+            "release_slot: creator {creator_session_id} 没有槽位状态（acquire/release 配对被破坏）"
+        )
     });
     if state.active == 0 {
         panic!("release_slot: creator {creator_session_id} 没有在握的槽位（acquire/release 配对被破坏）");
@@ -316,7 +320,10 @@ pub fn on_reply_delivered(listener: ReplyDeliveredListener) -> u64 {
 
 /// 取消订阅
 pub fn off_reply_delivered(id: u64) {
-    REPLY_LISTENERS.lock().unwrap().retain(|(key, _)| *key != id);
+    REPLY_LISTENERS
+        .lock()
+        .unwrap()
+        .retain(|(key, _)| *key != id);
 }
 
 /// 触发 Reply 投递事件（目标会话、来源子会话、Reply 正文）
@@ -335,7 +342,11 @@ pub fn emit_reply_delivered(target_session_id: &str, from_session_id: &str, mess
 
 /// 生成子会话 ID：`sub_<millis>_<suffix>`（对齐 AgentTool 的 `sub_${Date.now()}_${rand}`）
 pub fn generate_sub_session_id() -> String {
-    format!("sub_{}_{}", crate::util::now_millis(), crate::util::random_suffix())
+    format!(
+        "sub_{}_{}",
+        crate::util::now_millis(),
+        crate::util::random_suffix()
+    )
 }
 
 // ==================== 跨工作区子代理（specs/023） ====================
@@ -380,12 +391,19 @@ pub fn remote_workspace_of(id: &str) -> Option<String> {
 
 /// 注销一个跨工作区子代理（结束事件到达时）
 pub fn unregister_remote(id: &str) {
-    REMOTE_AGENTS.lock().unwrap().retain(|record| record.id != id);
+    REMOTE_AGENTS
+        .lock()
+        .unwrap()
+        .retain(|record| record.id != id);
 }
 
 /// 该会话 id 是否是跨工作区子代理（发起方 Core 侧）
 pub fn is_remote(id: &str) -> bool {
-    REMOTE_AGENTS.lock().unwrap().iter().any(|record| record.id == id)
+    REMOTE_AGENTS
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|record| record.id == id)
 }
 
 /// 本进程创建的跨工作区子代理 → 发起方会话 id（specs/023）。
@@ -406,11 +424,7 @@ pub fn mark_remote_origin(sub_session_id: &str, origin_session_id: &str) {
 
 /// 该子代理是否是跨工作区子代理（运行时在本进程、父会话在别的 Core）
 pub fn remote_origin_of(sub_session_id: &str) -> Option<String> {
-    REMOTE_ORIGINS
-        .lock()
-        .unwrap()
-        .get(sub_session_id)
-        .cloned()
+    REMOTE_ORIGINS.lock().unwrap().get(sub_session_id).cloned()
 }
 
 /// 清空注册表与并发槽位（单测隔离用）

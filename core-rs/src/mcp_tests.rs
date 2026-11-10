@@ -74,10 +74,7 @@ fn stdio_handshake_paging_call_and_reverse_request() {
     assert_eq!(names, vec!["echo", "reverse", "second"], "{tools:?}");
     assert_eq!(tools[0].description.as_deref(), Some("Echo"));
     assert_eq!(tools[0].input_schema, Some(json!({ "type": "object" })));
-    assert_eq!(
-        tools[0].annotations,
-        Some(json!({ "readOnlyHint": true }))
-    );
+    assert_eq!(tools[0].annotations, Some(json!({ "readOnlyHint": true })));
     assert!(annotations_read_only(&tools[0]));
     assert!(!annotations_destructive(&tools[0]));
 
@@ -237,7 +234,10 @@ fn list_tools_skips_invalid_items() {
 
 #[test]
 fn build_tool_name_sanitizes_both_parts() {
-    assert_eq!(build_mcp_tool_name("my server", "do.it"), "mcp__my_server__do_it");
+    assert_eq!(
+        build_mcp_tool_name("my server", "do.it"),
+        "mcp__my_server__do_it"
+    );
     assert_eq!(build_mcp_tool_name("a-b_c", "x/y"), "mcp__a-b_c__x_y");
     // 非 BMP 字符按 UTF-16 code unit 各替换一个下划线
     assert_eq!(sanitize_name_part("a😀b"), "a__b");
@@ -257,7 +257,10 @@ fn create_tool_definition_falls_back_to_generated_description() {
         value["description"],
         "Tool \"do\" provided by MCP server \"srv\"."
     );
-    assert_eq!(value["input_schema"], json!({ "type": "object", "properties": {} }));
+    assert_eq!(
+        value["input_schema"],
+        json!({ "type": "object", "properties": {} })
+    );
 }
 
 #[test]
@@ -266,14 +269,23 @@ fn quote_windows_arg_matches_node_shell_semantics() {
     assert_eq!(quote_windows_arg("node"), "node");
     assert_eq!(quote_windows_arg("a b"), "\"a b\"");
     assert_eq!(quote_windows_arg("a\"b"), "\"a\"\"b\"");
-    assert_eq!(quote_windows_arg("C:\\Program Files\\x"), "\"C:\\Program Files\\x\"");
+    assert_eq!(
+        quote_windows_arg("C:\\Program Files\\x"),
+        "\"C:\\Program Files\\x\""
+    );
 }
 
 #[test]
 fn js_json_stringify_matches_ecmascript_number_format() {
     assert_eq!(js_json_stringify(&json!(1.0)), "1");
-    assert_eq!(js_json_stringify(&json!([1.5, true, null, "x"])), "[1.5,true,null,\"x\"]");
-    assert_eq!(js_json_stringify(&json!({"a": 1, "b": [2]})), "{\"a\":1,\"b\":[2]}");
+    assert_eq!(
+        js_json_stringify(&json!([1.5, true, null, "x"])),
+        "[1.5,true,null,\"x\"]"
+    );
+    assert_eq!(
+        js_json_stringify(&json!({"a": 1, "b": [2]})),
+        "{\"a\":1,\"b\":[2]}"
+    );
 }
 
 // ==================== 管理器：连接池 / 引用 / 延迟回收 ====================
@@ -406,7 +418,10 @@ fn manager_sync_session_detaches_disabled_server() {
     sandbox.write_settings(json!({ "mcp": { "enabled": ["fake"] } }));
 
     let session = "mcp-sync-session";
-    config::set_session_workspace(session, Some(sandbox.workspace.to_string_lossy().to_string()));
+    config::set_session_workspace(
+        session,
+        Some(sandbox.workspace.to_string_lossy().to_string()),
+    );
 
     let manager = manager();
     manager.acquire(session);
@@ -424,7 +439,10 @@ fn manager_sync_session_detaches_disabled_server() {
         }),
         "ref count should drop to zero"
     );
-    assert!(tools_for_session(session).is_empty(), "该会话不应再看到 MCP 工具");
+    assert!(
+        tools_for_session(session).is_empty(),
+        "该会话不应再看到 MCP 工具"
+    );
     assert_eq!(get_tools().len(), 3, "进程仍存活时全局工具集合不变");
 
     shutdown();
@@ -494,7 +512,11 @@ mod parity_tests {
                     Value::Object(object)
                 })
                 .collect();
-            assert_eq!(actual, case["tools"].as_array().unwrap().clone(), "tools: {name}");
+            assert_eq!(
+                actual,
+                case["tools"].as_array().unwrap().clone(),
+                "tools: {name}"
+            );
         }
     }
 
@@ -503,7 +525,10 @@ mod parity_tests {
         let fixture = fixture();
         for case in fixture["toolNames"].as_array().expect("toolNames") {
             assert_eq!(
-                build_mcp_tool_name(case["server"].as_str().unwrap(), case["tool"].as_str().unwrap()),
+                build_mcp_tool_name(
+                    case["server"].as_str().unwrap(),
+                    case["tool"].as_str().unwrap()
+                ),
                 case["result"].as_str().unwrap()
             );
         }
@@ -512,7 +537,10 @@ mod parity_tests {
     #[test]
     fn quote_windows_arg_parity() {
         let fixture = fixture();
-        for case in fixture["quoteWindowsArgs"].as_array().expect("quoteWindowsArgs") {
+        for case in fixture["quoteWindowsArgs"]
+            .as_array()
+            .expect("quoteWindowsArgs")
+        {
             assert_eq!(
                 quote_windows_arg(case["input"].as_str().unwrap()),
                 case["result"].as_str().unwrap()
@@ -536,7 +564,10 @@ mod parity_tests {
     #[test]
     fn is_remote_server_parity() {
         let fixture = fixture();
-        for case in fixture["isRemoteServer"].as_array().expect("isRemoteServer") {
+        for case in fixture["isRemoteServer"]
+            .as_array()
+            .expect("isRemoteServer")
+        {
             let command: Vec<String> = case["command"]
                 .as_array()
                 .unwrap()

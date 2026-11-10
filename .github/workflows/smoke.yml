@@ -56,6 +56,9 @@ jobs:
       - run: npm run build:core:linux-x64
       - run: npm run check-types
       - run: npm run lint
+      # Rust 格式基线（AGENTS.md 第 5 节）：三个 crate 的 cargo fmt --check，
+      # 工具链与 tests job 的 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
+      - run: npm run fmt:rust:check
       - run: npm run test:unit
       # 偶发失败的后台线程 panic（如子代理槽位配对）需要完整回溯定位
       - run: npm run test:core

@@ -27,7 +27,11 @@ pub struct EditorKey {
 }
 
 pub fn initial_editor() -> EditorState {
-    EditorState { lines: vec![String::new()], row: 0, col: 0 }
+    EditorState {
+        lines: vec![String::new()],
+        row: 0,
+        col: 0,
+    }
 }
 
 impl EditorState {
@@ -49,7 +53,11 @@ pub fn apply_key(state: &EditorState, chunk: &str, key: &EditorKey) -> EditorSta
         if state.col > 0 {
             let mut next = state.clone();
             let byte = char_boundary_left(line, state.col);
-            next.lines[state.row] = format!("{}{}", &line[..byte], &line[char_boundary_right(line, byte)..]);
+            next.lines[state.row] = format!(
+                "{}{}",
+                &line[..byte],
+                &line[char_boundary_right(line, byte)..]
+            );
             next.col = state.col - 1;
             return next;
         }
@@ -85,7 +93,10 @@ pub fn apply_key(state: &EditorState, chunk: &str, key: &EditorKey) -> EditorSta
     }
     if key.left {
         if state.col > 0 {
-            return EditorState { col: state.col - 1, ..state.clone() };
+            return EditorState {
+                col: state.col - 1,
+                ..state.clone()
+            };
         }
         if state.row > 0 {
             return EditorState {
@@ -98,10 +109,17 @@ pub fn apply_key(state: &EditorState, chunk: &str, key: &EditorKey) -> EditorSta
     }
     if key.right {
         if state.col < state.lines[state.row].chars().count() {
-            return EditorState { col: state.col + 1, ..state.clone() };
+            return EditorState {
+                col: state.col + 1,
+                ..state.clone()
+            };
         }
         if state.row < state.lines.len() - 1 {
-            return EditorState { row: state.row + 1, col: 0, ..state.clone() };
+            return EditorState {
+                row: state.row + 1,
+                col: 0,
+                ..state.clone()
+            };
         }
         return state.clone();
     }
@@ -187,7 +205,10 @@ pub fn clear_line(state: &EditorState) -> EditorState {
 
 /// 字符列 → 字节偏移（列按 char 计，避免多字节字符切坏 UTF-8）。
 fn char_offset(line: &str, col: usize) -> usize {
-    line.char_indices().nth(col).map(|(byte, _)| byte).unwrap_or(line.len())
+    line.char_indices()
+        .nth(col)
+        .map(|(byte, _)| byte)
+        .unwrap_or(line.len())
 }
 
 fn char_boundary_left(line: &str, col: usize) -> usize {

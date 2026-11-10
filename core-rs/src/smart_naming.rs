@@ -34,7 +34,11 @@ pub fn collect_smart_naming_context(messages: &[Value]) -> Vec<String> {
     for raw in messages {
         let message_type = raw.get("type").and_then(Value::as_str).unwrap_or("");
         if message_type == "user" {
-            if let Some(text) = raw.get("message").and_then(|m| m.get("content")).and_then(Value::as_str) {
+            if let Some(text) = raw
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_str)
+            {
                 content_messages.push(format!(
                     "[用户]: {}",
                     util::utf16_take(text, MAX_CONTENT_CHARS)
@@ -172,8 +176,9 @@ fn extract_last_json_object(text: &str) -> Option<String> {
             } else if ch == '}' {
                 depth -= 1;
                 if depth == 0 {
-                    let json_str: String =
-                        chars[last_brace as usize..=(index as usize)].iter().collect();
+                    let json_str: String = chars[last_brace as usize..=(index as usize)]
+                        .iter()
+                        .collect();
                     if let Ok(parsed) = serde_json::from_str::<Value>(&json_str) {
                         if parsed.get("title").map(Value::is_string).unwrap_or(false) {
                             return Some(json_str);

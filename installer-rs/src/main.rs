@@ -27,7 +27,10 @@ mod payload {
 /// 产品命令名（软链接名）：`src/config/project.json` 的 `core.deployPrefix`，
 /// 也是载荷里产品目录段（`share/<产品名>`）的来源
 fn product_name() -> &'static str {
-    payload::PRODUCT_DIR.split_once('/').map(|(_, name)| name).unwrap_or(payload::PRODUCT_DIR)
+    payload::PRODUCT_DIR
+        .split_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(payload::PRODUCT_DIR)
 }
 
 /// 程序名：取可执行文件名（分发产物名由构建脚本按 `project.json` 落位）。
@@ -100,7 +103,12 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { prefix: None, print_prefix: false, version: false, help: false };
+    let mut args = Args {
+        prefix: None,
+        print_prefix: false,
+        version: false,
+        help: false,
+    };
     let mut it = env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -178,11 +186,7 @@ fn install_launch_link(prefix: &Path) -> io::Result<bool> {
 
     // 临时链接 + 原子换名：并发安装各用各的临时名，rename 只换目录项，
     // 正在通过旧链接跑 TUI 的进程不受影响
-    let staging = bin_dir.join(format!(
-        ".{}.{}.new",
-        product_name(),
-        std::process::id()
-    ));
+    let staging = bin_dir.join(format!(".{}.{}.new", product_name(), std::process::id()));
     let _ = fs::remove_file(&staging);
     symlink(&target, &staging)?;
     fs::rename(&staging, &link)?;

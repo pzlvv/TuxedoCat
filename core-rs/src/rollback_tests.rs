@@ -79,7 +79,10 @@ fn rolls_back_to_before_content_from_meta() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "before", None);
-    assert_eq!(message, "Rolled back to before the target edit: restored 1 file(s)");
+    assert_eq!(
+        message,
+        "Rolled back to before the target edit: restored 1 file(s)"
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
         "OLD CONTENT\n"
@@ -105,7 +108,10 @@ fn rolls_back_to_after_content_from_meta() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "after", None);
-    assert_eq!(message, "Rolled back to after the target edit: restored 1 file(s)");
+    assert_eq!(
+        message,
+        "Rolled back to after the target edit: restored 1 file(s)"
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
         "NEW CONTENT\n"
@@ -134,7 +140,10 @@ fn falls_back_to_tool_result_before_content() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "before", None);
-    assert_eq!(message, "Rolled back to before the target edit: restored 1 file(s)");
+    assert_eq!(
+        message,
+        "Rolled back to before the target edit: restored 1 file(s)"
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
         "OLD CONTENT\n"
@@ -160,7 +169,10 @@ fn deletes_file_when_before_content_is_null() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "before", None);
-    assert_eq!(message, "Rolled back to before the target edit: restored 1 file(s)");
+    assert_eq!(
+        message,
+        "Rolled back to before the target edit: restored 1 file(s)"
+    );
     assert!(!created.exists(), "beforeContent 为 null 应删除文件");
 }
 
@@ -200,7 +212,10 @@ fn restores_subsequent_edits_to_their_first_before_content() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "before", None);
-    assert_eq!(message, "Rolled back to before the target edit: restored 2 file(s)");
+    assert_eq!(
+        message,
+        "Rolled back to before the target edit: restored 2 file(s)"
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
         "FIRST\n"
@@ -232,7 +247,10 @@ fn uses_fallback_file_path_when_input_is_double_encoded() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "before", Some("a.txt"));
-    assert_eq!(message, "Rolled back to before the target edit: restored 1 file(s)");
+    assert_eq!(
+        message,
+        "Rolled back to before the target edit: restored 1 file(s)"
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
         "OLD CONTENT\n"
@@ -257,7 +275,10 @@ fn reports_missing_target() {
     );
 
     let message = rollback_edit("s1", "toolu_missing", "before", None);
-    assert_eq!(message, "Edit operation not found; the history may have been compacted");
+    assert_eq!(
+        message,
+        "Edit operation not found; the history may have been compacted"
+    );
 }
 
 #[test]
@@ -300,7 +321,10 @@ fn reports_missing_before_content() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "before", None);
-    assert_eq!(message, "Target edit has no beforeContent backup; cannot roll back");
+    assert_eq!(
+        message,
+        "Target edit has no beforeContent backup; cannot roll back"
+    );
 }
 
 #[test]
@@ -322,5 +346,8 @@ fn reports_missing_after_content() {
     );
 
     let message = rollback_edit("s1", "toolu_1", "after", None);
-    assert_eq!(message, "Target edit has no afterContent backup; cannot roll back to post-edit state");
+    assert_eq!(
+        message,
+        "Target edit has no afterContent backup; cannot roll back to post-edit state"
+    );
 }

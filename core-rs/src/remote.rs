@@ -39,8 +39,8 @@ use crate::daemon::{
     self, ChannelExit, ConnectionContext, CoreSpawner, DaemonEvent, DaemonOptions, FrameOutput,
     OrphanRegistry, HEARTBEAT_TIMEOUT, ORPHAN_IDLE_TTL,
 };
-use crate::util::diag;
 use crate::daemon_protocol::DirectoryEntry;
+use crate::util::diag;
 
 /// 远程服务的运行参数（`start` / `start-daemon` 共用）。
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -71,7 +71,9 @@ impl RemoteOptions {
             if let Some(value) = take_value("--idle-exit") {
                 match value.parse::<u64>() {
                     // 0 会让 daemon 在宿主接入前就退出，视为没给
-                    Ok(seconds) if seconds > 0 => options.idle_exit = Some(Duration::from_secs(seconds)),
+                    Ok(seconds) if seconds > 0 => {
+                        options.idle_exit = Some(Duration::from_secs(seconds))
+                    }
                     _ => diag!("[core] remote: invalid --idle-exit value {value:?}; ignored"),
                 }
                 index += if arg == "--idle-exit" { 2 } else { 1 };
@@ -159,7 +161,10 @@ pub fn list_directories(path: Option<&str>) -> Result<DirectoryListing, String> 
     });
     Ok(DirectoryListing {
         path: requested.to_string_lossy().to_string(),
-        parent: requested.parent().map(Path::to_string_lossy).map(|p| p.to_string()),
+        parent: requested
+            .parent()
+            .map(Path::to_string_lossy)
+            .map(|p| p.to_string()),
         entries,
     })
 }
@@ -183,7 +188,9 @@ pub fn rename_directory(path: &str, name: &str) -> Result<String, String> {
         return Err("new name must not be empty".to_string());
     }
     if name.contains('/') || name.contains('\\') {
-        return Err(format!("new name must not contain a path separator: {name}"));
+        return Err(format!(
+            "new name must not contain a path separator: {name}"
+        ));
     }
     if name == "." || name == ".." {
         return Err(format!("new name must not be a path traversal: {name}"));
@@ -265,7 +272,10 @@ impl FrameOutput for SocketOutput {
             Ok(stream) => stream,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Err(error) = stream.write_all(line.as_bytes()).and_then(|_| stream.flush()) {
+        if let Err(error) = stream
+            .write_all(line.as_bytes())
+            .and_then(|_| stream.flush())
+        {
             diag!("[core] remote control write failed: {error}");
         }
     }
@@ -441,7 +451,9 @@ pub fn daemon_log_path() -> Result<PathBuf, String> {
 /// 与状态文件同在 `run/` 子目录。名字由状态文件名派生，自动按指纹区分——同版本（同
 /// 指纹）才互斥，多版本各锁各的。锁获取前会先建目录（`acquire_start_lock_for`）。
 fn daemon_lock_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join("run").join(format!("{}.lock", daemon_state_file_name())))
+    Ok(config_dir()?
+        .join("run")
+        .join(format!("{}.lock", daemon_state_file_name())))
 }
 
 /// 读状态文件：不存在 / 读不出 / 解析失败都当作「没有 daemon」。
@@ -559,10 +571,16 @@ fn acquire_start_lock_for(
     }
     let deadline = Instant::now() + wait;
     loop {
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
             Ok(mut file) => {
                 let _ = writeln!(file, "{}", std::process::id());
-                return Ok(StartLock { path: path.to_path_buf() });
+                return Ok(StartLock {
+                    path: path.to_path_buf(),
+                });
             }
             // 锁被占：持有者已死 / 锁文件超龄就接管，否则等一等再试
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -632,7 +650,10 @@ fn print_ready(state: &DaemonState) -> bool {
         .rsplit_once(':')
         .and_then(|(_, port)| port.parse::<u16>().ok())
     else {
-        diag!("[core] remote: malformed endpoint in state file: {}", state.endpoint);
+        diag!(
+            "[core] remote: malformed endpoint in state file: {}",
+            state.endpoint
+        );
         return false;
     };
     println!("{}", ready_message(port));
@@ -794,7 +815,10 @@ pub fn run_kill() -> i32 {
             // 连上了但 `ping` 等不到 `pong`：daemon 进程还在，但整体卡死了。
             // 协议路径走不通，按进程兜底强杀——只匹配本可执行文件 + `start-daemon`，
             // 不会误伤别的进程。
-            diag!("[core] remote: daemon at {} is not answering; killing the process", state.endpoint);
+            diag!(
+                "[core] remote: daemon at {} is not answering; killing the process",
+                state.endpoint
+            );
             let exe = match std::env::current_exe() {
                 Ok(exe) => exe,
                 Err(error) => {
@@ -950,7 +974,10 @@ fn kill_process(pid: u32) -> bool {
     let mut command = Command::new("kill");
     command.arg("-9").arg(pid.to_string());
     crate::util::hide_console(&mut command);
-    command.status().map(|status| status.success()).unwrap_or(false)
+    command
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// 等 daemon 把状态文件写成「endpoint 连得上」。
@@ -999,7 +1026,10 @@ fn spawn_daemon(options: &RemoteOptions, log_path: &Path) -> Result<(), String> 
     let log_err = log
         .try_clone()
         .map_err(|error| format!("clone log handle failed: {error}"))?;
-    command.stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
     detach(&mut command);
     // 不等待：daemon 常驻后台，启动器打印连接信息后自己退出。
     command
@@ -1278,13 +1308,7 @@ fn serve_accepted(
         orphans: Arc::clone(&runtime.orphans),
         connection: id,
     };
-    let exit = serve_connection(
-        stream,
-        options,
-        spawner,
-        (events, event_rx),
-        Some(context),
-    );
+    let exit = serve_connection(stream, options, spawner, (events, event_rx), Some(context));
     runtime.unregister(id);
     diag!("[core] remote: control connection closed (exit={exit:?})");
     if exit == ChannelExit::Stop {
@@ -1339,7 +1363,10 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     let state = DaemonState { endpoint };
     // 落盘先于 accept：启动器按「状态文件可读 + endpoint 连得上」判断就绪。
     if let Err(error) = write_daemon_state(&state_path, &state) {
-        diag!("[core] remote: cannot write {}: {error}", state_path.display());
+        diag!(
+            "[core] remote: cannot write {}: {error}",
+            state_path.display()
+        );
         return 1;
     }
     println!("{}", ready_message(local.port()));
@@ -1352,7 +1379,10 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
         "[core] daemon started (pid={}, endpoint={}, idle-exit={}s, binary={})",
         std::process::id(),
         state.endpoint,
-        options.idle_exit.map(|idle| idle.as_secs()).unwrap_or_default(),
+        options
+            .idle_exit
+            .map(|idle| idle.as_secs())
+            .unwrap_or_default(),
         std::env::current_exe()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|_| "<unknown>".to_string())
@@ -1385,7 +1415,10 @@ pub fn run_start_daemon(options: RemoteOptions) -> i32 {
     if !stopped {
         diag!(
             "[core] remote: no control connections for {}s; the idle daemon exits",
-            options.idle_exit.map(|idle| idle.as_secs()).unwrap_or_default()
+            options
+                .idle_exit
+                .map(|idle| idle.as_secs())
+                .unwrap_or_default()
         );
         // 置停机位：死线判定与连接登记在同一把锁下，但主线程从等待返回到进程退出
         // 之间仍有窗口，置位让迟到的连接被 `register` 拒绝，不会接在一个将死的

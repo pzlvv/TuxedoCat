@@ -229,12 +229,7 @@ fn js_replace_dollar_name(text: &str, name: &str, replacement: &str) -> String {
 /// 展开 JS 替换串里的 `$$` / `$&` / `` $` `` / `$'`。
 ///
 /// `$n` / `$<name>` 在本模块用到的正则里都没有捕获组，按规范保持字面量。
-fn expand_js_replacement(
-    replacement: &str,
-    matched: &str,
-    prefix: &str,
-    suffix: &str,
-) -> String {
+fn expand_js_replacement(replacement: &str, matched: &str, prefix: &str, suffix: &str) -> String {
     let chars: Vec<char> = replacement.chars().collect();
     let mut out = String::with_capacity(replacement.len());
     let mut index = 0usize;
@@ -693,7 +688,9 @@ pub fn prepend_base_dir(blocks: Vec<Value>, base_dir: &str) -> Vec<Value> {
     let mut iter = blocks.into_iter();
     let mut out: Vec<Value> = Vec::new();
     match iter.next() {
-        Some(Value::Object(mut first)) if first.get("type").and_then(Value::as_str) == Some("text") => {
+        Some(Value::Object(mut first))
+            if first.get("type").and_then(Value::as_str) == Some("text") =>
+        {
             let text = first
                 .get("text")
                 .and_then(Value::as_str)
@@ -753,8 +750,7 @@ pub fn create_skill_command(params: CreateSkillCommandParams) -> SkillCommand {
         model_invocable,
         version,
         get_prompt_for_command: Arc::new(move |args: &str| {
-            let mut final_content =
-                substitute_arguments(&prompt_content, args, &prompt_arguments);
+            let mut final_content = substitute_arguments(&prompt_content, args, &prompt_arguments);
             // sessionId 由 ToolUseContext 提供，不在这一层
             final_content =
                 substitute_builtin_variables(&final_content, prompt_base_dir.as_deref(), None);
@@ -839,9 +835,12 @@ pub fn bundled_skills() -> Vec<SkillCommand> {
 
 /// 内置 Skill 参考文件的提取目录：`~/.<configDir>/.skills/<name>`
 fn bundled_skill_extract_dir(skill_name: &str) -> Option<String> {
-    config::config_home()
-        .ok()
-        .map(|home| home.join(".skills").join(skill_name).to_string_lossy().into_owned())
+    config::config_home().ok().map(|home| {
+        home.join(".skills")
+            .join(skill_name)
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 /// 提取内置 Skill 的参考文件到磁盘（首次调用时执行）
@@ -906,7 +905,9 @@ fn resolve_skill_file_path(base_dir: &Path, rel_path: &str) -> Result<PathBuf, S
     let escapes = crate::tools::is_absolute_like_node(rel_path)
         || normalized.split(['\\', '/']).any(|part| part == "..");
     if escapes {
-        return Err(format!("Bundled skill file path escapes skill dir: {rel_path}"));
+        return Err(format!(
+            "Bundled skill file path escapes skill dir: {rel_path}"
+        ));
     }
     Ok(base_dir.join(normalized))
 }
@@ -998,7 +999,9 @@ fn skill_roots(cwd: &str) -> Vec<SkillRoot> {
 /// 两个技能是否同名：name 或 alias 任一方向命中。
 fn names_collide(a: &SkillCommand, b: &SkillCommand) -> bool {
     a.name == b.name
-        || a.aliases.iter().any(|alias| alias == &b.name || b.aliases.contains(alias))
+        || a.aliases
+            .iter()
+            .any(|alias| alias == &b.name || b.aliases.contains(alias))
         || b.aliases.iter().any(|alias| alias == &a.name)
 }
 
@@ -1036,7 +1039,10 @@ fn arbitrate(mut candidates: Vec<RankedSkill>) -> (Vec<SkillCommand>, Vec<String
             )),
         }
     }
-    (kept.into_iter().map(|entry| entry.skill).collect(), warnings)
+    (
+        kept.into_iter().map(|entry| entry.skill).collect(),
+        warnings,
+    )
 }
 
 /// 同一物理文件经多个根可见（junction / symlink）时只保留第一个（rank 最小）。
@@ -1144,10 +1150,7 @@ fn load_skills_from_skills_dir(base_path: &Path, source: SkillSource) -> Vec<Ski
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         // 只支持目录格式（符号链接由 `file_type` 跟随 `metadata` 判定）
-        let is_dir = entry
-            .metadata()
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false);
+        let is_dir = entry.metadata().map(|meta| meta.is_dir()).unwrap_or(false);
         if !is_dir {
             continue;
         }

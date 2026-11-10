@@ -53,22 +53,43 @@ impl ChoiceOptions {
                 .unwrap_or_default()
         };
         ChoiceOptions {
-            tool_name: value.get("toolName").and_then(Value::as_str).unwrap_or("").to_string(),
-            message: value.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+            tool_name: value
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            message: value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             choices: value
                 .get("choices")
                 .and_then(Value::as_array)
                 .map(|list| {
                     list.iter()
                         .map(|choice| ChoiceItem {
-                            label: choice.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
-                            description: choice.get("description").and_then(Value::as_str).map(str::to_string),
+                            label: choice
+                                .get("label")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            description: choice
+                                .get("description")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
                         })
                         .collect()
                 })
                 .unwrap_or_default(),
-            before_content: value.get("beforeContent").and_then(Value::as_str).map(str::to_string),
-            after_content: value.get("afterContent").and_then(Value::as_str).map(str::to_string),
+            before_content: value
+                .get("beforeContent")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            after_content: value
+                .get("afterContent")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             context_before: text_list("contextBefore"),
             context_after: text_list("contextAfter"),
             start_line: value.get("startLine").and_then(Value::as_f64),
@@ -99,7 +120,10 @@ pub enum ChoiceDelivery {
     /// 会话未 open：保留 pending，等会话打开后由 `on_session_loaded` 重新投递
     Held,
     /// 本次请求替换了该会话旧的 pending（未投递或已弹出）：旧帧必须以错误应答收场
-    Replaced { replaced_frames: Vec<u64>, delivery: Box<ChoiceDelivery> },
+    Replaced {
+        replaced_frames: Vec<u64>,
+        delivery: Box<ChoiceDelivery>,
+    },
 }
 
 /// 已弹出、等应答的选择。
@@ -132,12 +156,25 @@ impl ChoiceManager {
     /// 检查指定会话是否有等待中的选择（已弹出或未投递都算）。
     #[allow(dead_code)] // 宿主接线保留：会话切换提醒 / 托盘口径复用
     pub fn has_pending(&self, session_id: &str) -> bool {
-        self.shown.values().any(|entry| entry.choice.session_id == session_id)
-            || self.held.as_ref().map(|(owner, _, _)| owner == session_id).unwrap_or(false)
+        self.shown
+            .values()
+            .any(|entry| entry.choice.session_id == session_id)
+            || self
+                .held
+                .as_ref()
+                .map(|(owner, _, _)| owner == session_id)
+                .unwrap_or(false)
     }
 
     /// 请求用户选择或确认（`CoreRequest.userChoice` 的入口）。`choice_id` 在投递时刻生成。
-    pub fn request(&mut self, session_id: &str, options: ChoiceOptions, frame_id: u64, choice_id: String, is_open: bool) -> ChoiceDelivery {
+    pub fn request(
+        &mut self,
+        session_id: &str,
+        options: ChoiceOptions,
+        frame_id: u64,
+        choice_id: String,
+        is_open: bool,
+    ) -> ChoiceDelivery {
         // 每会话最多一个 pending：新请求覆盖旧的（未投递的直接替换；已弹出的摘下），
         // 被替换的旧帧必须以错误应答收场，否则 core 侧永久挂起
         let mut replaced_frames: Vec<u64> = Vec::new();
@@ -165,7 +202,10 @@ impl ChoiceManager {
             };
             self.shown.insert(
                 choice.choice_id.clone(),
-                ShownChoice { choice: choice.clone(), frame_id },
+                ShownChoice {
+                    choice: choice.clone(),
+                    frame_id,
+                },
             );
             ChoiceDelivery::Show(choice)
         } else {
@@ -175,13 +215,20 @@ impl ChoiceManager {
         if replaced_frames.is_empty() {
             delivery
         } else {
-            ChoiceDelivery::Replaced { replaced_frames, delivery: Box::new(delivery) }
+            ChoiceDelivery::Replaced {
+                replaced_frames,
+                delivery: Box::new(delivery),
+            }
         }
     }
 
     /// 会话被打开 / 加载：重新投递该会话的 pending 选择（若有），生成新的 choiceId。
     /// 返回 (已弹出的选择, 被清理的旧帧 id——调用方错误应答)。
-    pub fn on_session_loaded(&mut self, session_id: &str, choice_id: String) -> (Option<ShownChoice>, Vec<u64>) {
+    pub fn on_session_loaded(
+        &mut self,
+        session_id: &str,
+        choice_id: String,
+    ) -> (Option<ShownChoice>, Vec<u64>) {
         let Some((owner, options, frame_id)) = self.held.take() else {
             return (None, Vec::new());
         };
@@ -209,7 +256,10 @@ impl ChoiceManager {
             message: options.message.clone(),
             choices: options.choices.clone(),
         };
-        let entry = ShownChoice { choice: choice.clone(), frame_id };
+        let entry = ShownChoice {
+            choice: choice.clone(),
+            frame_id,
+        };
         self.shown.insert(choice.choice_id.clone(), entry.clone());
         (Some(entry), stale_frames)
     }
@@ -253,7 +303,10 @@ mod tests {
         ChoiceOptions {
             tool_name: "Bash".into(),
             message: "允许执行？".into(),
-            choices: vec![ChoiceItem { label: "允许".into(), description: None }],
+            choices: vec![ChoiceItem {
+                label: "允许".into(),
+                description: None,
+            }],
             before_content: None,
             after_content: None,
             context_before: Vec::new(),
@@ -279,7 +332,10 @@ mod tests {
     #[test]
     fn held_request_redelivered_on_session_load() {
         let mut manager = ChoiceManager::default();
-        assert!(matches!(manager.request("s1", options(), 11, "c1".into(), false), ChoiceDelivery::Held));
+        assert!(matches!(
+            manager.request("s1", options(), 11, "c1".into(), false),
+            ChoiceDelivery::Held
+        ));
         // 别的会话打开不投递
         assert!(manager.on_session_loaded("s2", "c2".into()).0.is_none());
         let (shown, stale) = manager.on_session_loaded("s1", "c3".into());
@@ -296,7 +352,10 @@ mod tests {
         let mut manager = ChoiceManager::default();
         let _ = manager.request("s1", options(), 11, "c1".into(), false);
         match manager.request("s1", options(), 12, "c2".into(), true) {
-            ChoiceDelivery::Replaced { replaced_frames, delivery } => {
+            ChoiceDelivery::Replaced {
+                replaced_frames,
+                delivery,
+            } => {
                 assert_eq!(replaced_frames, vec![11]);
                 assert!(matches!(*delivery, ChoiceDelivery::Show(_)));
             }
@@ -310,7 +369,9 @@ mod tests {
         let mut manager = ChoiceManager::default();
         let _ = manager.request("s1", options(), 11, "c1".into(), true);
         match manager.request("s1", options(), 12, "c2".into(), true) {
-            ChoiceDelivery::Replaced { replaced_frames, .. } => assert_eq!(replaced_frames, vec![11]),
+            ChoiceDelivery::Replaced {
+                replaced_frames, ..
+            } => assert_eq!(replaced_frames, vec![11]),
             _ => panic!("覆盖已弹出的选择应报告旧帧"),
         }
         assert!(manager.respond("c1").is_none(), "旧 choiceId 已被摘下");
@@ -320,15 +381,31 @@ mod tests {
     #[test]
     fn drop_session_collects_frames_for_error_response() {
         let mut manager = ChoiceManager::default();
-        manager.save_diff_snapshot("s1", DiffSnapshot { before_content: "old".into(), ..Default::default() });
+        manager.save_diff_snapshot(
+            "s1",
+            DiffSnapshot {
+                before_content: "old".into(),
+                ..Default::default()
+            },
+        );
         let _ = manager.request("s1", options(), 11, "c1".into(), true);
         let (frames, had_shown) = manager.drop_session("s1");
         assert_eq!(frames, vec![11]);
         assert!(had_shown, "已弹出的选择随视图一起消失");
         assert!(!manager.has_pending("s1"));
-        assert_eq!(manager.diff_snapshot().before_content, "", "归属该会话的 diff 快照一并清理");
+        assert_eq!(
+            manager.diff_snapshot().before_content,
+            "",
+            "归属该会话的 diff 快照一并清理"
+        );
         // 其它会话的快照不误伤
-        manager.save_diff_snapshot("s2", DiffSnapshot { before_content: "keep".into(), ..Default::default() });
+        manager.save_diff_snapshot(
+            "s2",
+            DiffSnapshot {
+                before_content: "keep".into(),
+                ..Default::default()
+            },
+        );
         let _ = manager.drop_session("s1");
         assert_eq!(manager.diff_snapshot().before_content, "keep");
     }

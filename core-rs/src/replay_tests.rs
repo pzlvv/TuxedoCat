@@ -56,7 +56,9 @@ fn image_block_to_data_url_requires_base64_source() {
         Some("data:image/png;base64,X")
     );
     // 非 base64 source / 非 image 块
-    assert!(image_block_to_data_url(&json!({ "type": "image", "source": { "type": "url" } })).is_none());
+    assert!(
+        image_block_to_data_url(&json!({ "type": "image", "source": { "type": "url" } })).is_none()
+    );
     assert!(image_block_to_data_url(&json!({ "type": "text", "text": "x" })).is_none());
 }
 
@@ -66,8 +68,14 @@ fn message_origin_falls_back_to_legacy_flags() {
     assert_eq!(message_origin(&json!({ "origin": "bash" })), Some("bash"));
     assert_eq!(message_origin(&json!({ "origin": "user" })), Some("user"));
     assert_eq!(message_origin(&json!({ "origin": "other" })), None);
-    assert_eq!(message_origin(&json!({ "fromSubAgent": true })), Some("agent"));
-    assert_eq!(message_origin(&json!({ "fromBashTask": true })), Some("bash"));
+    assert_eq!(
+        message_origin(&json!({ "fromSubAgent": true })),
+        Some("agent")
+    );
+    assert_eq!(
+        message_origin(&json!({ "fromBashTask": true })),
+        Some("bash")
+    );
     assert_eq!(message_origin(&json!({})), None);
 }
 
@@ -75,29 +83,30 @@ fn message_origin_falls_back_to_legacy_flags() {
 /// `beforeContent` / `afterContent`，由 webview 回退计算。
 #[test]
 fn edit_tool_use_sends_before_and_after_instead_of_diff_hunks() {
-    let messages = vec![
-        json!({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": "call_e",
-                    "name": "Edit",
-                    "input": { "file_path": "/tmp/a.ts", "replace_all": false },
-                    "_meta": { "beforeContent": "old line", "afterContent": "new line", "startLine": 1, "endLine": 1 },
-                }],
-            },
-            "uuid": "a-e",
-            "timestamp": 1,
-        }),
-    ];
+    let messages = vec![json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "call_e",
+                "name": "Edit",
+                "input": { "file_path": "/tmp/a.ts", "replace_all": false },
+                "_meta": { "beforeContent": "old line", "afterContent": "new line", "startLine": 1, "endLine": 1 },
+            }],
+        },
+        "uuid": "a-e",
+        "timestamp": 1,
+    })];
     let out = build_replay_message_data(&messages);
     assert_eq!(out.len(), 1);
     let args = &out[0]["toolArgs"];
     assert_eq!(args["beforeContent"], "old line");
     assert_eq!(args["afterContent"], "new line");
-    assert!(args.get("diffHunks").is_none(), "Standalone 不下发 diffHunks");
+    assert!(
+        args.get("diffHunks").is_none(),
+        "Standalone 不下发 diffHunks"
+    );
     assert_eq!(out[0]["status"], "running");
     assert_eq!(out[0]["param"], "⚙️ Edit");
 }
@@ -128,19 +137,17 @@ fn write_tool_use_keeps_before_and_after() {
 
 #[test]
 fn tool_result_map_skips_canceled_and_keeps_last() {
-    let messages = vec![
-        json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    { "type": "tool_result", "tool_use_id": "a", "content": "first", "exit_code": 0 },
-                    { "type": "tool_result", "tool_use_id": "a", "content": "second", "exit_code": 3 },
-                    { "type": "tool_result", "tool_use_id": "b", "content": "canceled", "is_canceled": true },
-                ],
-            },
-        }),
-    ];
+    let messages = vec![json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                { "type": "tool_result", "tool_use_id": "a", "content": "first", "exit_code": 0 },
+                { "type": "tool_result", "tool_use_id": "a", "content": "second", "exit_code": 3 },
+                { "type": "tool_result", "tool_use_id": "b", "content": "canceled", "is_canceled": true },
+            ],
+        },
+    })];
     let (map, canceled) = build_tool_result_maps(&messages);
     assert_eq!(map.len(), 1, "后写覆盖先写 + 已取消的不入结果表");
     assert_eq!(map[0].0, "a");
@@ -230,7 +237,10 @@ fn replay_messages_carry_message_uuid() {
         assert!(uuid.is_string(), "有 uuid 的源消息必须透传");
     }
     let roles: Vec<&str> = out.iter().filter_map(|m| m["role"].as_str()).collect();
-    assert_eq!(roles, vec!["system", "thinking", "assistant", "toolcall", "user"]);
+    assert_eq!(
+        roles,
+        vec!["system", "thinking", "assistant", "toolcall", "user"]
+    );
 
     // 缺 uuid 的源消息：字段仍在，值为 null（不是缺键）
     let legacy = build_replay_message_data(&[json!({"type": "system", "content": "old"})]);

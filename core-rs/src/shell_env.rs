@@ -206,15 +206,18 @@ pub fn native_path_from(raw: &OsStr) -> Option<OsString> {
 /// 沙箱钉的都是自己的 PATH。不这么做的话每个跑命令的用例都要先执行用户的启动文件。
 #[cfg(test)]
 pub fn force_path_for_test(shell: OsString, native: OsString) {
-    *TEST_FORCED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        Some(ShellPath { shell, native });
+    *TEST_FORCED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ShellPath { shell, native });
 }
 
 /// 测试专用：清除钉定（`Sandbox::drop` 调用）——覆盖只随沙箱存亡，沙箱销毁后
 /// 恢复探测语义，沙箱外的用例看到的是真实探测结果。
 #[cfg(test)]
 pub fn clear_forced_path_for_test() {
-    *TEST_FORCED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *TEST_FORCED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 // ==================== 探测 ====================
@@ -334,10 +337,7 @@ fn run_probe(path: &str, args: &[String], timeout: Duration) -> Result<String, S
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    let message = err
-                        .as_ref()
-                        .map(|err| err.text())
-                        .unwrap_or_default();
+                    let message = err.as_ref().map(|err| err.text()).unwrap_or_default();
                     return Err(format!(
                         "{path} 退出码 {:?}，没有取到 PATH{}",
                         status.code(),
@@ -374,7 +374,14 @@ fn failure_detail(stderr: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
-    let tail: String = text.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(600)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("：{tail}")
 }
 
@@ -390,7 +397,8 @@ impl Drained {
     /// 等到读完（或到宽限时间）再取文本
     fn wait_settled(&self, grace: Duration) {
         let deadline = Instant::now() + grace;
-        while !self.drained.load(std::sync::atomic::Ordering::Relaxed) && Instant::now() < deadline {
+        while !self.drained.load(std::sync::atomic::Ordering::Relaxed) && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(10));
         }
     }

@@ -92,7 +92,10 @@ fn search_results_render_meta_and_summaries() {
 
 #[test]
 fn empty_search_results_render_a_notice() {
-    assert_eq!(format_search_results(&json!({ "results": [] })), "No results found.");
+    assert_eq!(
+        format_search_results(&json!({ "results": [] })),
+        "No results found."
+    );
     // results 缺失 / 非数组同「无结果」
     assert_eq!(format_search_results(&json!({})), "No results found.");
 }
@@ -105,10 +108,7 @@ fn fetch_result_renders_title_and_content() {
         "# Example article\n\n# Example article\n\nBody."
     );
     // title 缺失：只给正文
-    assert_eq!(
-        format_fetch_result(&json!({ "content": "Body." })),
-        "Body."
-    );
+    assert_eq!(format_fetch_result(&json!({ "content": "Body." })), "Body.");
 }
 
 // ---------- 错误映射 ----------
@@ -176,10 +176,18 @@ fn post_request_parses_success_json() {
     let url = one_shot_server(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: close\r\n\r\n{\"results\":[{\"title\":\"t\"}]}".to_string(),
     );
-    let value = post_tool_request(&format!("{url}/v1/tools/search"), "key", &json!({ "query": "q" }), 5)
-        .expect("success response");
+    let value = post_tool_request(
+        &format!("{url}/v1/tools/search"),
+        "key",
+        &json!({ "query": "q" }),
+        5,
+    )
+    .expect("success response");
     assert_eq!(
-        value.get("results").and_then(|r| r.get(0)).and_then(|e| e.get("title")),
+        value
+            .get("results")
+            .and_then(|r| r.get(0))
+            .and_then(|e| e.get("title")),
         Some(&json!("t"))
     );
 }
@@ -208,8 +216,13 @@ fn post_request_times_out_on_silent_socket() {
         std::thread::sleep(std::time::Duration::from_secs(3));
         drop(hold);
     });
-    let error = post_tool_request(&format!("{url}/v1/tools/fetch"), "key", &json!({ "url": "https://x" }), 1)
-        .expect_err("silent socket must time out");
+    let error = post_tool_request(
+        &format!("{url}/v1/tools/fetch"),
+        "key",
+        &json!({ "url": "https://x" }),
+        1,
+    )
+    .expect_err("silent socket must time out");
     assert!(error.status.is_none());
     assert!(map_http_error(&error).contains("network error or timeout"));
 }
@@ -221,7 +234,10 @@ fn run_web_search_without_provider_errors_without_request() {
     let _sandbox = Sandbox::new("web-search-no-provider");
     match run_web_search(&json!({ "query": "q" })) {
         ToolOutcome::Error(message) => {
-            assert!(message.contains("no api.deepseek.com provider is configured"), "{message}");
+            assert!(
+                message.contains("no api.deepseek.com provider is configured"),
+                "{message}"
+            );
         }
         other => panic!("expected error, got {other:?}"),
     }

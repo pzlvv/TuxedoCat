@@ -49,7 +49,10 @@ fn bash_probe_uses_login_and_interactive_shell() {
 fn bash_probe_script_matches_platform() {
     let args = probe_args(&shell_at("/bin/bash"));
     let script = args.last().expect("脚本在最后一个参数");
-    assert!(script.contains(SHELL_FORM_MARKER), "探测脚本要打 shell 形式的标记：{script}");
+    assert!(
+        script.contains(SHELL_FORM_MARKER),
+        "探测脚本要打 shell 形式的标记：{script}"
+    );
     // 两边都只是把 shell 自己的 `$PATH` 打出来：不做 POSIX → Windows 转换（Windows 的
     // 原生形式直接取进程环境里的 PATH），也不再需要 cygpath。
     assert!(script.contains("printf"), "{script}");
@@ -307,7 +310,10 @@ fn windows_bash_probe_keeps_the_environment_path() {
     let mut env: Vec<(OsString, OsString)> = std::env::vars_os()
         .filter(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case("PATH"))
         .collect();
-    env.push(("PATH".into(), format!(r"{marker};C:\Windows\System32").into()));
+    env.push((
+        "PATH".into(),
+        format!(r"{marker};C:\Windows\System32").into(),
+    ));
     env.push(("MSYS2_PATH_TYPE".into(), "strict".into()));
     let output = Command::new(&detected.path)
         .args(&args)
@@ -328,7 +334,9 @@ fn windows_bash_probe_keeps_the_environment_path() {
     let resolved = probe(&detected).expect("探测应当成功");
     assert_eq!(
         resolved.native(),
-        std::env::var_os("PATH").expect("测试进程有 PATH").as_os_str(),
+        std::env::var_os("PATH")
+            .expect("测试进程有 PATH")
+            .as_os_str(),
         "原生形式就是进程环境里的 Windows PATH"
     );
 }

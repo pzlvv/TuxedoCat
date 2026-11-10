@@ -57,9 +57,18 @@ fn destructive_detection() {
 #[test]
 fn risk_mode_allows_safe_commands() {
     // 关键回归：sleep 这类普通命令在 risk 模式下不应弹确认框
-    assert_eq!(decide("Bash", &bash("sleep 1"), "risk", CWD), Decision::Allow);
-    assert_eq!(decide("Bash", &bash("rm -rf build"), "risk", CWD), Decision::Allow);
-    assert_eq!(decide("Bash", &bash("ls -la"), "risk", CWD), Decision::Allow);
+    assert_eq!(
+        decide("Bash", &bash("sleep 1"), "risk", CWD),
+        Decision::Allow
+    );
+    assert_eq!(
+        decide("Bash", &bash("rm -rf build"), "risk", CWD),
+        Decision::Allow
+    );
+    assert_eq!(
+        decide("Bash", &bash("ls -la"), "risk", CWD),
+        Decision::Allow
+    );
 }
 
 /// sleep 等待闸门（`docs/features/background-bash.md` 第 2 节 FR-005）：
@@ -129,11 +138,23 @@ fn sleep_wait_gate_wins_over_detach_gate() {
 
 #[test]
 fn risk_mode_intercepts_dangerous_commands() {
-    assert_eq!(decide("Bash", &bash("dd if=/dev/zero of=x"), "risk", CWD), Decision::Ask);
-    assert_eq!(decide("Bash", &bash("mkfs /dev/sda1"), "risk", CWD), Decision::Ask);
-    assert_eq!(decide("Bash", &bash("shred -u secret.txt"), "risk", CWD), Decision::Ask);
+    assert_eq!(
+        decide("Bash", &bash("dd if=/dev/zero of=x"), "risk", CWD),
+        Decision::Ask
+    );
+    assert_eq!(
+        decide("Bash", &bash("mkfs /dev/sda1"), "risk", CWD),
+        Decision::Ask
+    );
+    assert_eq!(
+        decide("Bash", &bash("shred -u secret.txt"), "risk", CWD),
+        Decision::Ask
+    );
     // 破坏性判定只看第一个词：`mkfs.ext4` 不匹配 `mkfs`，risk 放行
-    assert_eq!(decide("Bash", &bash("mkfs.ext4 /dev/sda1"), "risk", CWD), Decision::Allow);
+    assert_eq!(
+        decide("Bash", &bash("mkfs.ext4 /dev/sda1"), "risk", CWD),
+        Decision::Allow
+    );
 }
 
 /// git 写子命令不在危险名单里：risk 模式与 `rm` 同口径自动放行，
@@ -164,7 +185,10 @@ fn risk_mode_allows_git_write_subcommands() {
 
 #[test]
 fn auto_mode_allows_asks_but_not_denies() {
-    assert_eq!(decide("Bash", &bash("dd if=/dev/zero of=x"), "auto", CWD), Decision::Allow);
+    assert_eq!(
+        decide("Bash", &bash("dd if=/dev/zero of=x"), "auto", CWD),
+        Decision::Allow
+    );
     assert_eq!(
         decide("Bash", &bash(""), "auto", CWD),
         Decision::Deny("Invalid command: command is required and must be a string".to_string())
@@ -183,9 +207,15 @@ fn ask_user_question_denied_in_auto_mode() {
     let args = json!({ "question": "hi", "choices": [{ "label": "A" }, { "label": "B" }] });
 
     // manual：工具自身 checkPermissions 放行，行为不变
-    assert_eq!(decide("AskUserQuestion", &args, "manual", CWD), Decision::Allow);
+    assert_eq!(
+        decide("AskUserQuestion", &args, "manual", CWD),
+        Decision::Allow
+    );
     // risk：不受影响
-    assert_eq!(decide("AskUserQuestion", &args, "risk", CWD), Decision::Allow);
+    assert_eq!(
+        decide("AskUserQuestion", &args, "risk", CWD),
+        Decision::Allow
+    );
     // auto：deny，message 逐字锁定
     assert_eq!(
         decide("AskUserQuestion", &args, "auto", CWD),
@@ -205,8 +235,14 @@ fn ask_user_question_denied_in_auto_mode() {
 
 #[test]
 fn manual_mode_asks_for_writes() {
-    assert_eq!(decide("Bash", &bash("sleep 1"), "manual", CWD), Decision::Ask);
-    assert_eq!(decide("Bash", &bash("ls -la"), "manual", CWD), Decision::Allow);
+    assert_eq!(
+        decide("Bash", &bash("sleep 1"), "manual", CWD),
+        Decision::Ask
+    );
+    assert_eq!(
+        decide("Bash", &bash("ls -la"), "manual", CWD),
+        Decision::Allow
+    );
     assert_eq!(decide("Read", &json!({}), "manual", CWD), Decision::Allow);
     assert_eq!(
         decide(
@@ -222,11 +258,13 @@ fn manual_mode_asks_for_writes() {
 /// 非法入参直接 deny（auto / risk 不加工）。
 #[test]
 fn write_input_validation_denies() {
-    let invalid_path = Decision::Deny(
-        "Invalid file path: file_path is required and must be a string".to_string(),
-    );
+    let invalid_path =
+        Decision::Deny("Invalid file path: file_path is required and must be a string".to_string());
     assert_eq!(decide("Write", &json!({}), "auto", CWD), invalid_path);
-    assert_eq!(decide("Write", &json!({ "file_path": "" }), "auto", CWD), invalid_path);
+    assert_eq!(
+        decide("Write", &json!({ "file_path": "" }), "auto", CWD),
+        invalid_path
+    );
     assert_eq!(
         decide("Write", &json!({ "file_path": "out.txt" }), "auto", CWD),
         Decision::Deny("Invalid content: content is required".to_string())
@@ -281,7 +319,8 @@ fn edit_input_validation_denies() {
             CWD
         ),
         Decision::Deny(
-            "File does not exist: missing-file.txt. Use Write tool to create new files.".to_string()
+            "File does not exist: missing-file.txt. Use Write tool to create new files."
+                .to_string()
         )
     );
 }
@@ -289,7 +328,8 @@ fn edit_input_validation_denies() {
 /// 目标文件存在时 `Edit` 回到 ask（auto 模式下被放行为 allow）。
 #[test]
 fn edit_existing_file_is_ask() {
-    let dir = std::env::temp_dir().join(format!("permission-edit-{}", crate::util::random_suffix()));
+    let dir =
+        std::env::temp_dir().join(format!("permission-edit-{}", crate::util::random_suffix()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("target.txt");
     std::fs::write(&file, "hello world\n").unwrap();
@@ -322,7 +362,8 @@ fn edit_existing_file_is_ask() {
 /// 因此 `auto` / `risk` 也不会把它放行（旧实现会先 ask 再在执行阶段报错）。
 #[test]
 fn edit_match_failures_are_denied_before_asking() {
-    let dir = std::env::temp_dir().join(format!("permission-edit-{}", crate::util::random_suffix()));
+    let dir =
+        std::env::temp_dir().join(format!("permission-edit-{}", crate::util::random_suffix()));
     std::fs::create_dir_all(&dir).unwrap();
     let cwd = dir.to_string_lossy().to_string();
 
@@ -410,7 +451,10 @@ mod parity_tests {
 
         // 对照表里的相对路径一律按一个空目录解析，保证「文件不存在」分支可复现。
         // 带 `files` 的用例（Edit 的 old_string 匹配校验）先落盘再决策。
-        let dir = std::env::temp_dir().join(format!("permission-parity-{}", crate::util::random_suffix()));
+        let dir = std::env::temp_dir().join(format!(
+            "permission-parity-{}",
+            crate::util::random_suffix()
+        ));
         std::fs::create_dir_all(&dir).expect("create parity dir");
         let cwd = dir.to_string_lossy().to_string();
 
@@ -459,7 +503,8 @@ mod parity_tests {
             .expect("对照表缺少 cases");
         assert!(!cases.is_empty(), "对照表不能为空");
 
-        let dir = std::env::temp_dir().join(format!("permission-fuzz-{}", crate::util::random_suffix()));
+        let dir =
+            std::env::temp_dir().join(format!("permission-fuzz-{}", crate::util::random_suffix()));
         std::fs::create_dir_all(&dir).expect("create fuzz dir");
         let cwd = dir.to_string_lossy().to_string();
 
@@ -486,7 +531,6 @@ mod parity_tests {
     }
 }
 
-
 /// 权限加工对照表（`core-rs/fixtures/permissionPolicy.json`）：
 /// 与 TS 侧 `permissionPolicyParity.test.ts` 共用同一份期望值，逐字段比对
 /// `permResult` 与 `displayArgs`（路径用 `__CWD__` 占位）。
@@ -496,8 +540,8 @@ mod parity_tests {
 /// 得到一致渲染。
 #[test]
 fn permission_policy_matches_the_fixture() {
-    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures/permissionPolicy.json");
+    let fixture_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/permissionPolicy.json");
     let raw = std::fs::read_to_string(&fixture_path).expect("读取对照表失败");
     let fixture: Value = serde_json::from_str(&raw).expect("对照表必须是合法 JSON");
     let cases = fixture
@@ -537,10 +581,7 @@ fn permission_policy_matches_the_fixture() {
         let tool = case.get("tool").and_then(Value::as_str).unwrap_or("");
         let mode = case.get("mode").and_then(Value::as_str).unwrap_or("");
         let args = case.get("args").cloned().unwrap_or_else(|| json!({}));
-        let no_tool = case
-            .get("noTool")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let no_tool = case.get("noTool").and_then(Value::as_bool).unwrap_or(false);
         let (perm_result, mut display_args) = if no_tool {
             (
                 json!({ "behavior": "allow" }),
@@ -578,7 +619,10 @@ fn permission_policy_matches_the_fixture() {
                     );
                     assert_eq!(
                         after.unwrap_or(Value::Null),
-                        perm_result.get("afterContent").cloned().unwrap_or(Value::Null),
+                        perm_result
+                            .get("afterContent")
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         "{}: Edit displayArgs.afterContent 应与 permResult.afterContent 一致",
                         case.get("name").and_then(Value::as_str).unwrap_or("")
                     );
@@ -689,7 +733,10 @@ fn detach_escape_ignores_heredoc_body_ampersand() {
         "command": "cat > a.c <<'EOF'\nint *p = &x;\nEOF",
         "detach": true,
     });
-    assert!(!is_operation_risky("Bash", &args), "heredoc 正文的 & 不是逃生");
+    assert!(
+        !is_operation_risky("Bash", &args),
+        "heredoc 正文的 & 不是逃生"
+    );
     assert_eq!(decide("Bash", &args, "risk", CWD), Decision::Allow);
     assert!(!ask_message("Bash", &args, CWD).starts_with("⚠️ 请求脱离管理执行："));
     // 对照：同样 `detach: true`，真构造仍在 risk 下询问
@@ -702,7 +749,10 @@ fn detach_escape_ignores_heredoc_body_ampersand() {
 /// 放行——risk 模式的完整体验是「教学 → 带 `detach: true` 重试 → 询问」。
 #[test]
 fn detach_default_command_is_not_permission_business() {
-    assert_eq!(decide("Bash", &bash("nohup server"), "risk", CWD), Decision::Allow);
+    assert_eq!(
+        decide("Bash", &bash("nohup server"), "risk", CWD),
+        Decision::Allow
+    );
 }
 
 /// detach 逃生的确认文案与选项（FR-003）：⚠️ 专用文案写场景与代价，选项沿用
@@ -725,4 +775,3 @@ fn detach_escape_ask_message_and_choices() {
     let plain = ask_message("Bash", &bash("sleep 1"), CWD);
     assert_eq!(plain, "请求执行：sleep 1");
 }
-

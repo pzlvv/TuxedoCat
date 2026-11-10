@@ -147,7 +147,10 @@ fn rollback_inner(
             Some(Some(text)) => text.is_empty(),
         };
         if missing {
-            return Ok("Target edit has no afterContent backup; cannot roll back to post-edit state".to_string());
+            return Ok(
+                "Target edit has no afterContent backup; cannot roll back to post-edit state"
+                    .to_string(),
+            );
         }
     }
 
@@ -190,7 +193,11 @@ fn rollback_inner(
     } else {
         "no files to restore".to_string()
     };
-    let label = if direction == "before" { "before" } else { "after" };
+    let label = if direction == "before" {
+        "before"
+    } else {
+        "after"
+    };
     Ok(format!("Rolled back to {label} the target edit: {detail}"))
 }
 
@@ -199,7 +206,11 @@ fn rollback_inner(
 /// 单次 Edit / Write 回滚与对话级回退（specs/039 FR-004）共用的**唯一**写盘实现：
 /// 两者只是「选哪一份 beforeContent」不同，恢复动作本身不复制第二份。
 /// 父目录缺失时先建；「已经不存在」的删除也算成功（幂等）。
-pub(crate) fn restore_before(project: &str, file_path: &str, before: Option<&str>) -> Result<(), String> {
+pub(crate) fn restore_before(
+    project: &str,
+    file_path: &str,
+    before: Option<&str>,
+) -> Result<(), String> {
     let full_path = tools::expand_path(project, file_path);
     match before {
         None => match std::fs::remove_file(&full_path) {

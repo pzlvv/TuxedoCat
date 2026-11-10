@@ -2,60 +2,60 @@
 
 use super::*;
 
-    fn bus() -> CoreBus<Vec<u8>> {
-        CoreBus::new(Vec::new())
-    }
+fn bus() -> CoreBus<Vec<u8>> {
+    CoreBus::new(Vec::new())
+}
 
-    fn written(bus: &CoreBus<Vec<u8>>) -> String {
-        String::from_utf8(bus.out.clone()).unwrap()
-    }
+fn written(bus: &CoreBus<Vec<u8>>) -> String {
+    String::from_utf8(bus.out.clone()).unwrap()
+}
 
-    #[test]
-    fn emit_writes_one_event_frame_per_line() {
-        let mut bus = bus();
-        assert!(bus.emit(json!({ "type": "aiBegin", "sessionId": "s1" })));
-        assert!(bus.log("hello"));
-        assert_eq!(
-            written(&bus),
-            "{\"kind\":\"event\",\"event\":{\"type\":\"aiBegin\",\"sessionId\":\"s1\"}}\n\
+#[test]
+fn emit_writes_one_event_frame_per_line() {
+    let mut bus = bus();
+    assert!(bus.emit(json!({ "type": "aiBegin", "sessionId": "s1" })));
+    assert!(bus.log("hello"));
+    assert_eq!(
+        written(&bus),
+        "{\"kind\":\"event\",\"event\":{\"type\":\"aiBegin\",\"sessionId\":\"s1\"}}\n\
              {\"kind\":\"event\",\"event\":{\"type\":\"log\",\"message\":\"hello\"}}\n"
-        );
-    }
+    );
+}
 
-    #[test]
-    fn request_assigns_increasing_ids_and_resolves_response() {
-        let mut bus = bus();
-        let (first, rx) = bus
-            .request(json!({ "type": "userChoice", "sessionId": "s1" }))
-            .unwrap();
-        let (second, _) = bus
-            .request(json!({ "type": "toolPermissionRequested", "sessionId": "s1" }))
-            .unwrap();
-        assert_eq!((first, second), (1, 2));
-        assert_eq!(bus.pending_count(), 2);
+#[test]
+fn request_assigns_increasing_ids_and_resolves_response() {
+    let mut bus = bus();
+    let (first, rx) = bus
+        .request(json!({ "type": "userChoice", "sessionId": "s1" }))
+        .unwrap();
+    let (second, _) = bus
+        .request(json!({ "type": "toolPermissionRequested", "sessionId": "s1" }))
+        .unwrap();
+    assert_eq!((first, second), (1, 2));
+    assert_eq!(bus.pending_count(), 2);
 
-        bus.handle_response(first, true, json!({ "index": 0 }), None);
-        assert_eq!(bus.pending_count(), 1);
-        assert_eq!(rx.recv().unwrap(), json!({ "index": 0 }));
-    }
+    bus.handle_response(first, true, json!({ "index": 0 }), None);
+    assert_eq!(bus.pending_count(), 1);
+    assert_eq!(rx.recv().unwrap(), json!({ "index": 0 }));
+}
 
-    #[test]
-    fn ui_events_are_counted_by_type() {
-        let mut bus = bus();
-        bus.handle_ui_event(&json!({ "type": "workspaceChanged", "workspacePath": null }));
-        bus.handle_ui_event(&json!({ "type": "workspaceChanged", "workspacePath": "D:/repo" }));
-        bus.handle_ui_event(&json!({ "type": "conversationOpened", "sessionId": "s1" }));
-        assert_eq!(bus.ui_event_count("workspaceChanged"), 2);
-        assert_eq!(bus.ui_event_count("conversationOpened"), 1);
-        assert_eq!(bus.ui_event_count("unknown"), 0);
-    }
+#[test]
+fn ui_events_are_counted_by_type() {
+    let mut bus = bus();
+    bus.handle_ui_event(&json!({ "type": "workspaceChanged", "workspacePath": null }));
+    bus.handle_ui_event(&json!({ "type": "workspaceChanged", "workspacePath": "D:/repo" }));
+    bus.handle_ui_event(&json!({ "type": "conversationOpened", "sessionId": "s1" }));
+    assert_eq!(bus.ui_event_count("workspaceChanged"), 2);
+    assert_eq!(bus.ui_event_count("conversationOpened"), 1);
+    assert_eq!(bus.ui_event_count("unknown"), 0);
+}
 
-    #[test]
-    fn ui_event_without_type_is_dropped() {
-        let mut bus = bus();
-        assert!(bus.handle_ui_event(&json!({ "sessionId": "s1" })).is_none());
-        assert!(written(&bus).is_empty());
-    }
+#[test]
+fn ui_event_without_type_is_dropped() {
+    let mut bus = bus();
+    assert!(bus.handle_ui_event(&json!({ "sessionId": "s1" })).is_none());
+    assert!(written(&bus).is_empty());
+}
 
 #[test]
 fn handle_response_with_unknown_id_is_ignored() {

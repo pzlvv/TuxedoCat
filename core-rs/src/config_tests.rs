@@ -55,7 +55,10 @@ fn ensure_project_conversation_dir_writes_meta_once_and_backfills() {
 
     // 目录名可反解成原始项目路径（项目清单的记录口径）
     let dir_name = dir.file_name().unwrap().to_string_lossy().to_string();
-    assert_eq!(decode_project_dir_name(&dir_name).as_deref(), Some(project.as_str()));
+    assert_eq!(
+        decode_project_dir_name(&dir_name).as_deref(),
+        Some(project.as_str())
+    );
 
     // 模拟「目录是旧版本留下的」：清掉缓存与清单后 backfill 应补写
     std::fs::remove_file(&meta_path).unwrap();
@@ -78,10 +81,16 @@ fn host_environment_round_trips() {
 #[test]
 fn config_home_and_conversations_root_live_under_home() {
     let sandbox = Sandbox::new("config-home");
-    assert_eq!(config_home().unwrap(), sandbox.home.join(&sandbox.config_dir_name));
+    assert_eq!(
+        config_home().unwrap(),
+        sandbox.home.join(&sandbox.config_dir_name)
+    );
     assert_eq!(
         conversations_root().unwrap(),
-        sandbox.home.join(&sandbox.config_dir_name).join("conversations")
+        sandbox
+            .home
+            .join(&sandbox.config_dir_name)
+            .join("conversations")
     );
     ensure_config_dirs().unwrap();
     assert!(conversations_root().unwrap().is_dir());
@@ -106,7 +115,10 @@ fn project_conversation_dir_merges_separator_variants() {
     std::fs::create_dir_all(&backslash).unwrap();
     let forward = project_conversation_dir("D:/parity-merge/demo").unwrap();
     assert_eq!(forward, backslash, "两种分隔符写法应解析到同一目录");
-    assert_eq!(project_conversation_dir(r"D:\parity-merge\demo").unwrap(), backslash);
+    assert_eq!(
+        project_conversation_dir(r"D:\parity-merge\demo").unwrap(),
+        backslash
+    );
 }
 
 #[test]
@@ -246,7 +258,8 @@ fn resolve_provider_carries_the_multimodal_flag() {
     {
         let sandbox = Sandbox::new("config-provider-multimodal-off");
         let mut settings = provider_settings();
-        settings["llm"]["providers"]["main"]["modelConfigs"]["model-a"]["multimodal"] = json!(false);
+        settings["llm"]["providers"]["main"]["modelConfigs"]["model-a"]["multimodal"] =
+            json!(false);
         sandbox.write_settings(settings);
         let provider = resolve_provider(None, None).unwrap();
         assert!(!provider.multimodal);
@@ -339,7 +352,9 @@ fn resolve_provider_prefers_the_legacy_top_level_model() {
     );
     // 会话级 model 覆盖仍然最高优先级
     assert_eq!(
-        resolve_provider(Some("p"), Some("session-model")).unwrap().model,
+        resolve_provider(Some("p"), Some("session-model"))
+            .unwrap()
+            .model,
         "session-model"
     );
 }
@@ -414,7 +429,6 @@ fn home_dir_prefers_userprofile_then_home() {
     }
 }
 
-
 #[test]
 fn write_workspace_meta_is_idempotent_and_readable() {
     let sandbox = Sandbox::new("config-project-settings");
@@ -434,7 +448,10 @@ fn write_workspace_meta_is_idempotent_and_readable() {
     // 幂等：workspacePath 未变化时不重写（紧凑格式原样保留）
     std::fs::write(&path, "{\"workspacePath\":\"x\"}").unwrap();
     write_workspace_meta(&dir, "x").unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"workspacePath\":\"x\"}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{\"workspacePath\":\"x\"}"
+    );
 
     // 反查
     assert_eq!(workspace_meta_workspace_path(&dir).as_deref(), Some("x"));
@@ -475,7 +492,12 @@ fn read_modified_docs(dir: &std::path::Path) -> Vec<String> {
             .unwrap();
     meta["modifiedDocs"]
         .as_array()
-        .map(|items| items.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .map(|items| {
+            items
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -494,12 +516,18 @@ fn record_md_modification_unions_and_is_idempotent() {
     record_md_modification(&project, &b);
     record_md_modification(&project, &a); // 重复登记幂等（无新增不落盘）
 
-    assert_eq!(read_modified_docs(&dir), vec!["b.md".to_string(), "notes/a.md".to_string()]);
+    assert_eq!(
+        read_modified_docs(&dir),
+        vec!["b.md".to_string(), "notes/a.md".to_string()]
+    );
     let meta: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("workspace.meta.json")).unwrap())
             .unwrap();
     assert_eq!(meta["workspacePath"], project, "workspacePath 字段不动");
-    assert!(!dir.join("workspace.meta.json.lock").exists(), "锁文件用完即摘");
+    assert!(
+        !dir.join("workspace.meta.json.lock").exists(),
+        "锁文件用完即摘"
+    );
 }
 
 #[test]
@@ -529,7 +557,11 @@ fn record_md_modification_skips_git_workspace() {
     let mut init = std::process::Command::new("git");
     init.arg("init").current_dir(&repo);
     crate::util::hide_console(&mut init);
-    if !init.output().map(|out| out.status.success()).unwrap_or(false) {
+    if !init
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+    {
         return; // 环境无 git：本用例无从构造真实 git 仓，跳过
     }
     let doc = repo.join("a.md");
@@ -560,5 +592,8 @@ fn record_md_modification_rejects_corrupt_meta() {
         "{ not json",
         "解析失败拒绝写入，不覆盖原文件"
     );
-    assert!(!dir.join("workspace.meta.json.lock").exists(), "错误路径同样摘锁");
+    assert!(
+        !dir.join("workspace.meta.json.lock").exists(),
+        "错误路径同样摘锁"
+    );
 }

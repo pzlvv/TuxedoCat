@@ -32,7 +32,6 @@ const SUB_AGENT_MAX_REMINDER_RETRIES: usize = 3;
 /// 压缩保留的最近消息条数（对齐 `compactConversation` 的 `maxMessagesToKeep = 30`）
 const COMPACT_MAX_MESSAGES_TO_KEEP: usize = 30;
 
-
 /// 子代理的后台驱动（对齐 `AgentTool.call` 里那个立即执行的后台 async IIFE）。
 ///
 /// 一对 `queryBegin` / `queryEnd` 覆盖**整个**子代理生命周期（含 Reminder 重试），
@@ -505,8 +504,7 @@ impl SessionState {
     /// `None`（specs/025 FR-001 / FR-002）。取或才是创建即成立的完整判据；
     /// 普通会话两者皆空。
     pub fn is_sub_agent_session(&self) -> bool {
-        self.parent_session_id.is_some()
-            || matches!(self.creator, SessionCreator::Agent { .. })
+        self.parent_session_id.is_some() || matches!(self.creator, SessionCreator::Agent { .. })
     }
 }
 
@@ -569,7 +567,10 @@ impl Core {
                 session_id.to_string(),
                 Arc::new(Mutex::new(SessionState::new(agent_mode, None))),
             );
-            self.session_order.lock().unwrap().push(session_id.to_string());
+            self.session_order
+                .lock()
+                .unwrap()
+                .push(session_id.to_string());
         }
         sessions.get(session_id).unwrap().clone()
     }
@@ -602,7 +603,10 @@ impl Core {
         // 这里，跟着一起清，避免全局表无界增长
         crate::read_guard::clear_session(session_id);
         self.sessions.lock().unwrap().remove(session_id);
-        self.session_order.lock().unwrap().retain(|id| id != session_id);
+        self.session_order
+            .lock()
+            .unwrap()
+            .retain(|id| id != session_id);
     }
 
     /// 当前登记的全部会话 id（按创建序）。
@@ -662,7 +666,16 @@ impl Core {
             .iter()
             .filter_map(|session_id| sessions.get(session_id).map(|state| (session_id, state)))
             .map(|(session_id, state)| {
-                let (running, pending, waiting, compacting, background, parent, sub_agent_desc, creator) = {
+                let (
+                    running,
+                    pending,
+                    waiting,
+                    compacting,
+                    background,
+                    parent,
+                    sub_agent_desc,
+                    creator,
+                ) = {
                     let state = state.lock().unwrap();
                     (
                         state.running,
@@ -1259,8 +1272,7 @@ impl Core {
                 });
                 let Some(result) = core.cancellable_request(payload, cancel) else {
                     return Err(
-                        "cross-workspace transfer request failed: host did not respond"
-                            .to_string(),
+                        "cross-workspace transfer request failed: host did not respond".to_string(),
                     );
                 };
                 if let Some(error) = result.get("error").and_then(Value::as_str) {
@@ -1548,7 +1560,10 @@ impl Core {
         .map_err(|error| format!("create sub agent metadata: {error}"))?;
         // 同步把继承来的 agent mode 落进子会话 meta.json 的 context：
         // 重启后重新打开子会话，UI 仍显示继承自主对话的模式。
-        self.persist_context(&sub_session_id, json!({ "key": "agentMode", "value": agent_mode }));
+        self.persist_context(
+            &sub_session_id,
+            json!({ "key": "agentMode", "value": agent_mode }),
+        );
 
         crate::subagent::register(&sub_session_id, &creator);
         self.emit_runtime();
@@ -1672,11 +1687,23 @@ impl Core {
         )?;
         // 继承的会话级设置落进 meta.json 的 context（与 agentMode 的持久化动机相同）：
         // 重启后重新打开子会话，UI 仍显示继承自容器的配置
-        self.persist_context(&session_id, json!({ "key": "agentMode", "value": agent_mode }));
-        self.persist_context(&session_id, json!({ "key": "thinkingMode", "value": thinking_effort }));
+        self.persist_context(
+            &session_id,
+            json!({ "key": "agentMode", "value": agent_mode }),
+        );
+        self.persist_context(
+            &session_id,
+            json!({ "key": "thinkingMode", "value": thinking_effort }),
+        );
         // 提示词模式恒 normal（specs/025 FR-005，不随派发继承）——落盘让重启重开仍显示
-        self.persist_context(&session_id, json!({ "key": "promptMode", "value": "normal" }));
-        self.persist_context(&session_id, json!({ "key": "webSearch", "value": web_search }));
+        self.persist_context(
+            &session_id,
+            json!({ "key": "promptMode", "value": "normal" }),
+        );
+        self.persist_context(
+            &session_id,
+            json!({ "key": "webSearch", "value": web_search }),
+        );
         // MCP 启用名单全量继承发起方（specs/025 FR-005）。写成子会话的启用覆盖，
         // 名单里目标 Core 无同名定义的 server 不建立连接（定义是机器本地资源）。
         crate::mcp_config::write_session_enabled(&session_id, &mcp_servers);
@@ -1829,11 +1856,7 @@ impl Core {
             persist_spin_reply(self, target_session_id, &state, content, from_session_id);
             // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台。
             // 必须先于静默中止：监听器（SpinLoop / sleep 检测）要先拿到 Reply。
-            crate::subagent::emit_reply_delivered(
-                target_session_id,
-                from_session_id,
-                content,
-            );
+            crate::subagent::emit_reply_delivered(target_session_id, from_session_id, content);
             // 子代理首次 Reply 后立即
             // 静默中止其自身引擎——否则它会拿到 Reply 的 tool_result 后再跑一轮
             // LLM（多余 token，还可能重复 Reply）。
@@ -1841,18 +1864,9 @@ impl Core {
                 self.request_silent_abort(from_session_id);
             }
         } else {
-            self.enqueue_agent_message(
-                target_session_id,
-                content,
-                "agent",
-                from_session_id,
-            );
+            self.enqueue_agent_message(target_session_id, content, "agent", from_session_id);
             // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台
-            crate::subagent::emit_reply_delivered(
-                target_session_id,
-                from_session_id,
-                content,
-            );
+            crate::subagent::emit_reply_delivered(target_session_id, from_session_id, content);
         }
         Ok(())
     }
@@ -1894,7 +1908,8 @@ impl Core {
             "uuid": format!("assistant_{}", util::now_millis()),
             "timestamp": util::now_millis(),
         });
-        let tool_call_uuid = persist_message(self, session_id, &project, &state, &assistant_message)?;
+        let tool_call_uuid =
+            persist_message(self, session_id, &project, &state, &assistant_message)?;
         // 每条落盘消息各发一次 `conversationListChanged`（对齐 `Conversation.appendMessage`）
         announce_message_appended(self, session_id, &project, false);
 
@@ -1908,8 +1923,14 @@ impl Core {
             "messageUuid": tool_call_uuid,
         }));
         let agent_mode = state.lock().unwrap().agent_mode.clone();
-        match self.resolve_permission(session_id, &tool_use_id, tool_name, input, &agent_mode, &project)
-        {
+        match self.resolve_permission(
+            session_id,
+            &tool_use_id,
+            tool_name,
+            input,
+            &agent_mode,
+            &project,
+        ) {
             PermissionOutcome::Allowed { .. } => {
                 // 执行前再发一次 `toolCall`（卡片转「执行中」）
                 self.emit(json!({
@@ -1949,8 +1970,23 @@ impl Core {
             }
         }
 
-        let outcome = execute_tool(self, session_id, &project, &state, &tool_use_id, tool_name, input);
-        let block = emit_tool_outcome(self, session_id, &project, &tool_use_id, tool_name, &outcome);
+        let outcome = execute_tool(
+            self,
+            session_id,
+            &project,
+            &state,
+            &tool_use_id,
+            tool_name,
+            input,
+        );
+        let block = emit_tool_outcome(
+            self,
+            session_id,
+            &project,
+            &tool_use_id,
+            tool_name,
+            &outcome,
+        );
         let result_message = json!({
             "type": "user",
             "message": { "role": "user", "content": [block] },
@@ -2112,7 +2148,11 @@ impl Core {
             // 只有锁拒绝发占用通知
             Err(error) => {
                 if error.is_rejection() {
-                    self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                    self.emit_locked_notice(
+                        session_id,
+                        crate::core_text::SESSION_LOCKED_CHANGE,
+                        &error.to_string(),
+                    );
                 }
                 return;
             }
@@ -2146,7 +2186,11 @@ impl Core {
             // Io 不是占用：静默返回，只有锁拒绝发占用通知
             Err(error) => {
                 if error.is_rejection() {
-                    self.emit_locked_notice(session_id, crate::core_text::SESSION_LOCKED_CHANGE, &error.to_string());
+                    self.emit_locked_notice(
+                        session_id,
+                        crate::core_text::SESSION_LOCKED_CHANGE,
+                        &error.to_string(),
+                    );
                 }
                 return;
             }
@@ -2174,8 +2218,10 @@ impl Core {
                     let _ = history::update_context(
                         session_id,
                         &project,
-                        &[json!({ "key": "model", "value": model }),
-                          json!({ "key": "provider", "value": provider })],
+                        &[
+                            json!({ "key": "model", "value": model }),
+                            json!({ "key": "provider", "value": provider }),
+                        ],
                     );
                 }
                 json!({
@@ -2324,7 +2370,10 @@ impl Core {
                 }
             }
             if let Some(model_ref) = payload.get("model") {
-                let model = model_ref.get("model").and_then(Value::as_str).map(|s| s.to_string());
+                let model = model_ref
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
                 let provider = model_ref
                     .get("provider")
                     .and_then(Value::as_str)
@@ -2577,7 +2626,11 @@ impl Core {
         // specs/032 FR-001：装载先取会话锁；被其他实例持有时硬拒绝。
         // 前缀供 `is_lock_rejection` 判别（调用方只对锁拒绝发占用通知）
         if let Err(error) = crate::session_lock::acquire_for_core(self, session_id, &project) {
-            return Err(format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error));
+            return Err(format!(
+                "{}{}",
+                crate::session_lock::LOCK_REJECT_PREFIX,
+                error
+            ));
         }
         let state = self.session(session_id);
         let mut state = state.lock().unwrap();
@@ -2684,7 +2737,10 @@ impl Core {
             session_id,
             tool_name,
             agent_mode,
-            perm_result.get("behavior").and_then(Value::as_str).unwrap_or("?")
+            perm_result
+                .get("behavior")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
         ));
         record_tool_diff_meta(session_id, cwd, tool_use_id, tool_name, &perm_result);
         self.request_tool_permission(
@@ -3115,7 +3171,12 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
         if let Err(error) = result {
             // 一次性通知：记 meta + 时间线末位显示，下一轮新节点追加前被移除。
             // `llmError` 类别标记供 UI 渲染重试按钮（specs/036 FR-001）。
-            emit_once_notice(&core, &session_id, &llm_error_message(&error), Some("llmError"));
+            emit_once_notice(
+                &core,
+                &session_id,
+                &llm_error_message(&error),
+                Some("llmError"),
+            );
         }
         core.emit_runtime();
     }
@@ -3429,13 +3490,12 @@ fn emit_tool_outcome(
             // 前缀。
             // 工具不存在（`is_known` 为假）与权限拒绝都不加。
             let raw = outcome.text();
-            let tool_result_text = if matches!(outcome, ToolOutcome::Error(_))
-                && is_known_tool(tool_name)
-            {
-                format!("Error executing {tool_name}: {raw}")
-            } else {
-                raw.to_string()
-            };
+            let tool_result_text =
+                if matches!(outcome, ToolOutcome::Error(_)) && is_known_tool(tool_name) {
+                    format!("Error executing {tool_name}: {raw}")
+                } else {
+                    raw.to_string()
+                };
             (
                 json!(tools::cap_tool_result(raw, session_id, project, tool_name)),
                 json!(tools::cap_tool_result(
@@ -3548,11 +3608,12 @@ fn classify_injection(text: &str, cwd: &str) -> UserMessageInjection {
     } else {
         None
     };
-    let skill = crate::commands::skill_invocation(text, cwd)
-        .map(|(skill_name, skill_args)| SkillInjection {
+    let skill = crate::commands::skill_invocation(text, cwd).map(|(skill_name, skill_args)| {
+        SkillInjection {
             skill_name,
             skill_args,
-        });
+        }
+    });
     UserMessageInjection {
         mention_reminder,
         skill,
@@ -3647,7 +3708,14 @@ fn inject_skill_tool_use(
     // Skill 的 checkPermissions 恒 allow（见 `permission::base_check`），不会弹确认框；
     // 这里的往返只为让 UI 上架卡片，与授权路径同序。
     let agent_mode = state.lock().unwrap().agent_mode.clone();
-    match core.resolve_permission(session_id, &tool_use_id, "Skill", &input, &agent_mode, project) {
+    match core.resolve_permission(
+        session_id,
+        &tool_use_id,
+        "Skill",
+        &input,
+        &agent_mode,
+        project,
+    ) {
         PermissionOutcome::Allowed { .. } => {
             // 对齐 `executeSingleItem`：执行前再发一次 `toolCall`（卡片转「执行中」）
             core.emit(json!({
@@ -3829,7 +3897,11 @@ fn agent_source_info(agent_id: &str) -> String {
     let hostname = std::env::var("COMPUTERNAME")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok().filter(|value| !value.is_empty()));
+        .or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .filter(|value| !value.is_empty())
+        });
     match hostname {
         Some(hostname) => format!("{hostname}:agent:{agent_id}"),
         None => format!("#{agent_id}"),
@@ -4199,9 +4271,13 @@ fn announce_message_appended(
             None => (None, SessionCreator::User),
         }
     };
-    if let Err(error) =
-        history::touch_metadata(session_id, project, user_initiated, prompt_mode.as_deref(), &creator)
-    {
+    if let Err(error) = history::touch_metadata(
+        session_id,
+        project,
+        user_initiated,
+        prompt_mode.as_deref(),
+        &creator,
+    ) {
         eprintln!("[core] touch metadata failed: {error}");
     }
     core.emit(json!({ "type": "conversationListChanged" }));
@@ -4221,7 +4297,11 @@ fn persist_user_message(
     user_initiated: bool,
 ) -> Result<(), String> {
     let mut stripped = None;
-    if user_message.get("_needsUINotification").and_then(Value::as_bool) == Some(true) {
+    if user_message
+        .get("_needsUINotification")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
         let mut owned = user_message.clone();
         if let Some(object) = owned.as_object_mut() {
             object.remove("_needsUINotification");
@@ -4612,10 +4692,9 @@ fn run_query_loop(
             let state = state.lock().unwrap();
             (
                 state.prompt_mode.clone(),
-                state
-                    .messages
-                    .iter()
-                    .any(|message| message.get("type").and_then(Value::as_str) == Some("assistant")),
+                state.messages.iter().any(|message| {
+                    message.get("type").and_then(Value::as_str) == Some("assistant")
+                }),
             )
         };
         // specs/020 FR-003：非 Master 角色固定 normal 预设（不随 mixed→minimal 切换，
@@ -4795,20 +4874,16 @@ fn run_query_loop(
                 // 只有 thinking / text 块、且块内有内容时才发。
                 LlmEvent::BlockStop => {
                     let finished = match current_block_type {
-                        Some(llm::BlockKind::Thinking) if !streamed_thinking.is_empty() => {
-                            Some((
-                                "thinking",
-                                streamed_thinking.clone(),
-                                current_thinking_stream_id.clone(),
-                            ))
-                        }
-                        Some(llm::BlockKind::Text) if !streamed_text.is_empty() => {
-                            Some((
-                                "assistant",
-                                streamed_text.clone(),
-                                current_text_stream_id.clone(),
-                            ))
-                        }
+                        Some(llm::BlockKind::Thinking) if !streamed_thinking.is_empty() => Some((
+                            "thinking",
+                            streamed_thinking.clone(),
+                            current_thinking_stream_id.clone(),
+                        )),
+                        Some(llm::BlockKind::Text) if !streamed_text.is_empty() => Some((
+                            "assistant",
+                            streamed_text.clone(),
+                            current_text_stream_id.clone(),
+                        )),
                         _ => None,
                     };
                     if let Some((role, accumulated, block_id)) = finished {
@@ -4928,9 +5003,8 @@ fn run_query_loop(
                     current_tool = None;
                     for block in &blocks {
                         match block.get("type").and_then(Value::as_str) {
-                            Some("text") => text.push_str(
-                                block.get("text").and_then(Value::as_str).unwrap_or(""),
-                            ),
+                            Some("text") => text
+                                .push_str(block.get("text").and_then(Value::as_str).unwrap_or("")),
                             Some("thinking") => thinking.push_str(
                                 block.get("thinking").and_then(Value::as_str).unwrap_or(""),
                             ),
@@ -5038,11 +5112,7 @@ fn run_query_loop(
                             &tool_use_id,
                             &tool_name,
                             &json!({ "behavior": "allow" }),
-                            &permission::display_args_for_unknown(
-                                &tool_name,
-                                &raw_input,
-                                project,
-                            ),
+                            &permission::display_args_for_unknown(&tool_name, &raw_input, project),
                             agent_mode,
                         );
                         core.emit(json!({
@@ -5197,14 +5267,9 @@ fn run_query_loop(
                 }
                 // 验证失败时同样先发一次 toolPermissionRequested
                 // （工具实例在场，checkPermissions 会跑；displayArgs 照常展开）。
-                let (perm_result, display_args) =
-                    permission::resolve_tool_permission(
-                        &tool_name,
-                        &input,
-                        agent_mode,
-                        project,
-                        session_id,
-                    );
+                let (perm_result, display_args) = permission::resolve_tool_permission(
+                    &tool_name, &input, agent_mode, project, session_id,
+                );
                 // 同样只是让 UI 上架失败卡片：复用 `request_tool_permission`（发后不等），
                 // 不标记 `waiting`（`docs/core/session-runtime.md` 第 1 节）。
                 core.request_tool_permission(
@@ -5476,15 +5541,16 @@ fn run_query_loop(
             if let Some(task_id) = source_task {
                 let now_ms = util::now_millis();
                 let mut guard = state.lock().unwrap();
-                let entry = guard
-                    .reminder_entries
-                    .entry(task_id)
-                    .or_insert_with(|| ReminderEntry {
-                        clock: bash_task::ReminderClock::default(),
-                        last_tick_ms: now_ms,
-                        last_accessed_ms: now_ms,
-                        fallback_reminded: true,
-                    });
+                let entry =
+                    guard
+                        .reminder_entries
+                        .entry(task_id)
+                        .or_insert_with(|| ReminderEntry {
+                            clock: bash_task::ReminderClock::default(),
+                            last_tick_ms: now_ms,
+                            last_accessed_ms: now_ms,
+                            fallback_reminded: true,
+                        });
                 entry.fallback_reminded = true;
             }
             core.emit(json!({ "type": "aiEnd", "sessionId": session_id }));
@@ -5985,7 +6051,10 @@ fn build_user_message(payload: &Value) -> Value {
         .unwrap_or_else(|| util::unique_id("user"));
     let mut message = Map::new();
     message.insert("type".to_string(), json!("user"));
-    message.insert("message".to_string(), json!({ "role": "user", "content": content }));
+    message.insert(
+        "message".to_string(),
+        json!({ "role": "user", "content": content }),
+    );
     message.insert("uuid".to_string(), json!(uuid));
     message.insert("timestamp".to_string(), json!(util::now_millis()));
     message.insert("_userInitiated".to_string(), json!(true));
@@ -6002,7 +6071,9 @@ fn build_user_message(payload: &Value) -> Value {
     let file_path = file_path_value
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty());
-    let selected_lines = payload.get("fileSelectedLines").filter(|value| !value.is_null());
+    let selected_lines = payload
+        .get("fileSelectedLines")
+        .filter(|value| !value.is_null());
     if history::js_truthy(file_path_value) {
         if let Some(value) = file_path_value {
             message.insert("filePath".to_string(), value.clone());
@@ -6100,7 +6171,10 @@ fn emit_user_message_to_ui(core: &Arc<Core>, session_id: &str, message: &Value) 
     let file_path = if file_hidden {
         None
     } else {
-        object.get("filePath").and_then(Value::as_str).map(str::to_string)
+        object
+            .get("filePath")
+            .and_then(Value::as_str)
+            .map(str::to_string)
     };
     let selected_lines = if file_hidden {
         None
@@ -6309,7 +6383,10 @@ fn record_tool_diff_meta(
 }
 
 fn message_text(message: &Value) -> String {
-    match message.get("message").and_then(|inner| inner.get("content")) {
+    match message
+        .get("message")
+        .and_then(|inner| inner.get("content"))
+    {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(blocks)) => blocks
             .iter()
@@ -6365,7 +6442,10 @@ fn build_raw_api_messages(messages: &[Value]) -> Vec<Value> {
         if kind != "user" && kind != "assistant" {
             continue;
         }
-        let Some(content) = message.get("message").and_then(|inner| inner.get("content")) else {
+        let Some(content) = message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+        else {
             continue;
         };
         let role = if kind == "user" { "user" } else { "assistant" };
@@ -6511,7 +6591,10 @@ fn collect_fence_languages(message: &Value) -> Vec<String> {
     if kind != "user" && kind != "assistant" {
         return Vec::new();
     }
-    let Some(content) = message.get("message").and_then(|inner| inner.get("content")) else {
+    let Some(content) = message
+        .get("message")
+        .and_then(|inner| inner.get("content"))
+    else {
         return Vec::new();
     };
 
@@ -6631,7 +6714,9 @@ fn last_usage_anchor(messages: &[Value]) -> Option<(usize, u64)> {
             if message.get("type").and_then(Value::as_str) != Some("assistant") {
                 return None;
             }
-            let usage = message.get("message").and_then(|inner| inner.get("usage"))?;
+            let usage = message
+                .get("message")
+                .and_then(|inner| inner.get("usage"))?;
             let input = usage.get("input_tokens").and_then(Value::as_u64)?;
             if input == 0 {
                 return None;

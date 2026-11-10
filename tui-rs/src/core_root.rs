@@ -78,7 +78,9 @@ pub fn product_dir_in(prefix: &Path) -> PathBuf {
 /// dead code。
 #[cfg(test)]
 pub(crate) fn shared_ripgrep_in(prefix: &Path) -> PathBuf {
-    product_dir_in(prefix).join("ripgrep").join(ripgrep_file_name())
+    product_dir_in(prefix)
+        .join("ripgrep")
+        .join(ripgrep_file_name())
 }
 
 #[cfg(test)]
@@ -156,7 +158,11 @@ fn core_binary_in(root: &Path) -> Option<PathBuf> {
     }
     // 开发期仓库布局：`<root>/resources/core/<arch-platform>/<core.binaryName>[.exe]`
     let dir = core_platform_dir()?;
-    let path = root.join("resources").join("core").join(dir).join(core_binary_file_name());
+    let path = root
+        .join("resources")
+        .join("core")
+        .join(dir)
+        .join(core_binary_file_name());
     path.is_file().then_some(path)
 }
 

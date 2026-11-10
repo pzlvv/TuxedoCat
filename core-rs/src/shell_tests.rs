@@ -16,7 +16,10 @@ fn strip_suffix_is_case_insensitive() {
     assert_eq!(strip_suffix_ci("bash", "\\git.exe"), None);
     assert_eq!(strip_suffix_ci("", "\\git.exe"), None);
     assert_eq!(strip_suffix_ci("git.exe", "git.exe").as_deref(), Some(""));
-    assert_eq!(strip_suffix_ci("a/b/GIT.EXE", "/git.exe").as_deref(), Some("a/b"));
+    assert_eq!(
+        strip_suffix_ci("a/b/GIT.EXE", "/git.exe").as_deref(),
+        Some("a/b")
+    );
 }
 
 #[test]
@@ -60,7 +63,10 @@ fn where_first_finds_git_and_reports_unknown_binaries() {
 
 #[test]
 fn test_shell_rejects_missing_programs() {
-    assert!(!test_shell("definitely-not-a-real-binary-xyzzy", &["--version"]));
+    assert!(!test_shell(
+        "definitely-not-a-real-binary-xyzzy",
+        &["--version"]
+    ));
     assert!(!test_shell("", &[]));
 }
 
@@ -80,11 +86,19 @@ fn bash_detection_returns_a_bash_kind() {
     if !cfg!(windows) {
         return;
     }
-    let candidates = [detect_bash_from_git_dir(), detect_bash_from_common_paths(), detect_bash_from_path()];
+    let candidates = [
+        detect_bash_from_git_dir(),
+        detect_bash_from_common_paths(),
+        detect_bash_from_path(),
+    ];
     for shell in candidates.into_iter().flatten() {
         assert_eq!(shell.kind, "bash");
         assert_eq!(shell.args, vec!["-c".to_string()]);
-        assert!(shell.path.to_lowercase().contains("bash"), "got {}", shell.path);
+        assert!(
+            shell.path.to_lowercase().contains("bash"),
+            "got {}",
+            shell.path
+        );
         assert!(!shell.name.is_empty());
     }
 }

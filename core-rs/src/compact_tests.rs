@@ -188,9 +188,7 @@ mod parity_tests {
                     .as_array()
                     .cloned()
                     .unwrap_or_default(),
-                messages_to_keep: source["messagesToKeep"]
-                    .as_array()
-                    .cloned(),
+                messages_to_keep: source["messagesToKeep"].as_array().cloned(),
                 post_compact_tokens: 0,
             };
             assert_eq!(
@@ -237,7 +235,10 @@ mod unit_tests {
 
     #[test]
     fn sanitize_keeps_paired_tools_untouched() {
-        let messages = vec![assistant_with_tool_use("call_1"), user_with_tool_result("call_1", false)];
+        let messages = vec![
+            assistant_with_tool_use("call_1"),
+            user_with_tool_result("call_1", false),
+        ];
         assert_eq!(sanitize_tool_pairing(&messages), messages);
     }
 
@@ -308,12 +309,14 @@ mod unit_tests {
 
     #[test]
     fn boundary_content_matches_shape() {
-        let text = generate_compact_boundary_content("auto", 0, Some("u-9"), "2024-01-02T03:04:05.006Z");
+        let text =
+            generate_compact_boundary_content("auto", 0, Some("u-9"), "2024-01-02T03:04:05.006Z");
         assert_eq!(
             text,
             "[Auto compaction boundary] 2024-01-02T03:04:05.006Z | ~0 tokens before compaction | last message: u-9"
         );
-        let manual = generate_compact_boundary_content("manual", 1234, None, "2024-01-02T03:04:05.006Z");
+        let manual =
+            generate_compact_boundary_content("manual", 1234, None, "2024-01-02T03:04:05.006Z");
         assert_eq!(manual, "[Manual compaction boundary] 2024-01-02T03:04:05.006Z | ~1234 tokens before compaction");
     }
 
@@ -334,8 +337,16 @@ mod unit_tests {
         let output = 384 * 1024;
         let threshold = get_auto_compact_threshold(context, output) as u64;
 
-        assert!(!should_auto_compact(None, None, context, output), "缺 token 数不触发");
-        assert!(!should_auto_compact(None, Some(threshold - 1), context, output));
+        assert!(
+            !should_auto_compact(None, None, context, output),
+            "缺 token 数不触发"
+        );
+        assert!(!should_auto_compact(
+            None,
+            Some(threshold - 1),
+            context,
+            output
+        ));
         assert!(should_auto_compact(None, Some(threshold), context, output));
 
         let broken = AutoCompactTracking {
@@ -349,7 +360,12 @@ mod unit_tests {
 
         std::env::set_var("DISABLE_AUTO_COMPACT", "true");
         assert!(!is_auto_compact_enabled());
-        assert!(!should_auto_compact(None, Some(threshold + 1), context, output));
+        assert!(!should_auto_compact(
+            None,
+            Some(threshold + 1),
+            context,
+            output
+        ));
         std::env::remove_var("DISABLE_AUTO_COMPACT");
         assert!(is_auto_compact_enabled());
     }

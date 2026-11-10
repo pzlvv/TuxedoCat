@@ -21,11 +21,17 @@ fn host_frames_decode_with_camel_case_fields() {
 
     let close: HostToDaemonFrame =
         serde_json::from_value(json!({ "kind": "closeWorkspace", "channel": 3 })).unwrap();
-    assert!(matches!(close, HostToDaemonFrame::CloseWorkspace { channel: 3 }));
+    assert!(matches!(
+        close,
+        HostToDaemonFrame::CloseWorkspace { channel: 3 }
+    ));
 
     let detach: HostToDaemonFrame =
         serde_json::from_value(json!({ "kind": "detachWorkspace", "channel": 5 })).unwrap();
-    assert!(matches!(detach, HostToDaemonFrame::DetachWorkspace { channel: 5 }));
+    assert!(matches!(
+        detach,
+        HostToDaemonFrame::DetachWorkspace { channel: 5 }
+    ));
 
     let frame: HostToDaemonFrame = serde_json::from_value(json!({
         "kind": "frame",

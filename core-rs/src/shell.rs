@@ -257,7 +257,6 @@ fn strip_suffix_ci(value: &str, suffix: &str) -> Option<String> {
     }
 }
 
-
 #[cfg(test)]
 #[path = "shell_tests.rs"]
 mod tests;

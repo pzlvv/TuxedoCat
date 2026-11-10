@@ -128,7 +128,10 @@ impl<W: Write> CoreBus<W> {
     /// 处理一条 `UiEvent`（统计 + 诊断）。
     pub fn handle_ui_event(&mut self, event: &Value) -> Option<String> {
         let event_type = event.get("type").and_then(Value::as_str)?;
-        *self.ui_event_counts.entry(event_type.to_string()).or_insert(0) += 1;
+        *self
+            .ui_event_counts
+            .entry(event_type.to_string())
+            .or_insert(0) += 1;
         Some(event_type.to_string())
     }
 
@@ -148,7 +151,6 @@ impl<W: Write> CoreBus<W> {
 pub fn wait_response(receiver: Receiver<Value>, timeout: Duration) -> Option<Value> {
     receiver.recv_timeout(timeout).ok()
 }
-
 
 #[cfg(test)]
 #[path = "bus_tests.rs"]

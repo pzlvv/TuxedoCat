@@ -119,14 +119,12 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                             }
                             Some("text") => {
                                 if let Some(text) = object.get("text").and_then(Value::as_str) {
-                                    user_parts
-                                        .push(json!({ "type": "input_text", "text": text }));
+                                    user_parts.push(json!({ "type": "input_text", "text": text }));
                                 }
                             }
                             Some("input_text") => {
                                 if let Some(text) = object.get("text").and_then(Value::as_str) {
-                                    user_parts
-                                        .push(json!({ "type": "input_text", "text": text }));
+                                    user_parts.push(json!({ "type": "input_text", "text": text }));
                                 }
                             }
                             Some("image") => {
@@ -165,8 +163,7 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                         match object.get("type").and_then(Value::as_str) {
                             Some("text") => {
                                 if let Some(text) = object.get("text").and_then(Value::as_str) {
-                                    text_parts
-                                        .push(json!({ "type": "output_text", "text": text }));
+                                    text_parts.push(json!({ "type": "output_text", "text": text }));
                                 }
                             }
                             Some("thinking") => {
@@ -328,10 +325,7 @@ pub fn estimate_local_input_tokens(
     responses_tools: &[Value],
 ) -> u64 {
     let mut image_count = 0u64;
-    let stripped = replace_data_urls(
-        &Value::Array(responses_input.to_vec()),
-        &mut image_count,
-    );
+    let stripped = replace_data_urls(&Value::Array(responses_input.to_vec()), &mut image_count);
     // 与 `JSON.stringify` 逐字对齐：数字走 JS 口径（`1.0` 写 `1`），长度按 **UTF-16
     // code unit** 计（TS 的 `.length`），不能用 UTF-8 字节数——system prompt 含中文时
     // 两者会差出整倍数。
@@ -415,9 +409,7 @@ pub fn sync_content_blocks_from_output(output: Option<&Value>) -> Vec<Value> {
                             .filter(|part| {
                                 part.get("type").and_then(Value::as_str) == Some("reasoning_text")
                             })
-                            .map(|part| {
-                                part.get("text").and_then(Value::as_str).unwrap_or("")
-                            })
+                            .map(|part| part.get("text").and_then(Value::as_str).unwrap_or(""))
                             .collect::<Vec<_>>()
                             .join("")
                     })
@@ -662,21 +654,13 @@ pub fn stream_responses(
                 }
                 "response.output_text.delta" => {
                     let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
-                    crate::llm::check_repetition(
-                        &mut text_repetition,
-                        delta,
-                        "text",
-                    )?;
+                    crate::llm::check_repetition(&mut text_repetition, delta, "text")?;
                     text.push_str(delta);
                     emit(LlmEvent::TextDelta(delta.to_string()));
                 }
                 "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                     let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
-                    crate::llm::check_repetition(
-                        &mut thinking_repetition,
-                        delta,
-                        "thinking",
-                    )?;
+                    crate::llm::check_repetition(&mut thinking_repetition, delta, "thinking")?;
                     thinking.push_str(delta);
                     emit(LlmEvent::ThinkingDelta(delta.to_string()));
                 }
@@ -817,8 +801,7 @@ pub fn stream_responses(
                         }
                         usage = Some(parsed);
                     }
-                    let authoritative =
-                        sync_content_blocks_from_output(response.get("output"));
+                    let authoritative = sync_content_blocks_from_output(response.get("output"));
                     if !authoritative.is_empty() {
                         emit(LlmEvent::AuthoritativeBlocks(authoritative));
                     }

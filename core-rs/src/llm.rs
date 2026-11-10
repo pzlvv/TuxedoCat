@@ -319,7 +319,10 @@ pub fn stream(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), St
         req
     } else {
         filtered = strip_images(req.messages);
-        filtered_req = LlmRequest { messages: &filtered, ..*req };
+        filtered_req = LlmRequest {
+            messages: &filtered,
+            ..*req
+        };
         &filtered_req
     };
     // 网络 / 重复重试共用的次数（对齐 `executeRequest(retryCount)`）
@@ -532,7 +535,9 @@ pub(crate) fn read_sse(
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(());
                 }
-                return Err(StreamFailure::Retryable(format!("read stream failed: {err}")));
+                return Err(StreamFailure::Retryable(format!(
+                    "read stream failed: {err}"
+                )));
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // 切片内没有新帧：回到循环顶查 cancel 与看门狗 deadline
@@ -579,10 +584,7 @@ pub(crate) fn api_error_message(status: reqwest::StatusCode, detail: &str) -> St
 
 // ==================== Anthropic ====================
 
-fn stream_anthropic(
-    req: &LlmRequest,
-    emit: &mut dyn FnMut(LlmEvent),
-) -> Result<(), StreamFailure> {
+fn stream_anthropic(req: &LlmRequest, emit: &mut dyn FnMut(LlmEvent)) -> Result<(), StreamFailure> {
     let provider = req.provider;
     let mut body = Map::new();
     body.insert("model".to_string(), json!(provider.model));
@@ -659,180 +661,194 @@ fn stream_anthropic(
     // usage 累计值
     let mut accumulated_input_tokens: u64 = 0;
     let mut accumulated_output_tokens: u64 = 0;
-    read_sse(response, cancel, first_byte_deadline, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
-        let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload)) else {
-            return Ok(false);
-        };
-        // 对齐 `isProgressEvent(event, '')`：有非空 type 且不是心跳 `ping` 才算进展
-        let progress = event
-            .get("type")
-            .and_then(Value::as_str)
-            .map(|value| !value.is_empty() && value != "ping")
-            .unwrap_or(false);
-        match event.get("type").and_then(Value::as_str).unwrap_or("") {
-            "message_start" => {
-                let usage = event
-                    .get("message")
-                    .and_then(|message| message.get("usage"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let cache_read = usage
-                    .get("cache_read_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                let cache_creation = usage
-                    .get("cache_creation_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                // DeepSeek 风格网关的
-                // `input_tokens` 不含缓存命中部分，必须把两个 cache 计数加回，
-                // 否则 `totalContextTokens` 偏小、缓存命中率显示为负增长。
-                accumulated_input_tokens =
-                    usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0)
+    read_sse(
+        response,
+        cancel,
+        first_byte_deadline,
+        req.first_byte_timeout_ms,
+        req.idle_timeout_ms,
+        &mut |payload| {
+            let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload))
+            else {
+                return Ok(false);
+            };
+            // 对齐 `isProgressEvent(event, '')`：有非空 type 且不是心跳 `ping` 才算进展
+            let progress = event
+                .get("type")
+                .and_then(Value::as_str)
+                .map(|value| !value.is_empty() && value != "ping")
+                .unwrap_or(false);
+            match event.get("type").and_then(Value::as_str).unwrap_or("") {
+                "message_start" => {
+                    let usage = event
+                        .get("message")
+                        .and_then(|message| message.get("usage"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    let cache_read = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let cache_creation = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    // DeepSeek 风格网关的
+                    // `input_tokens` 不含缓存命中部分，必须把两个 cache 计数加回，
+                    // 否则 `totalContextTokens` 偏小、缓存命中率显示为负增长。
+                    accumulated_input_tokens = usage
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
                         + cache_read
                         + cache_creation;
-                accumulated_output_tokens =
-                    usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-                emit(LlmEvent::Usage(Usage {
-                    input_tokens: accumulated_input_tokens,
-                    output_tokens: accumulated_output_tokens,
-                    cache_read_input_tokens: Some(cache_read),
-                    cache_creation_input_tokens: Some(cache_creation),
-                    reasoning_tokens: None,
-                }));
-            }
-            "content_block_start" => {
-                let block = event.get("content_block").cloned().unwrap_or(Value::Null);
-                match block.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "tool_use" => {
-                        tool_index = event.get("index").and_then(Value::as_u64);
-                        // 先发
-                        // `block_start`（引擎据此把当前块切到 tool_use），再发
-                        // `tool_use` 起始事件。
-                        emit(LlmEvent::BlockStart(BlockKind::ToolUse));
-                        // 假值（null / 0 /
-                        // 空串 / false）都退化成 `{}`，对象 / 数组原样保留。
-                        let input = block
-                            .get("input")
-                            .filter(|value| crate::history::js_truthy(Some(value)))
-                            .cloned()
-                            .unwrap_or_else(|| json!({}));
-                        emit(LlmEvent::ToolUseStart {
-                            id: block
-                                .get("id")
+                    accumulated_output_tokens = usage
+                        .get("output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    emit(LlmEvent::Usage(Usage {
+                        input_tokens: accumulated_input_tokens,
+                        output_tokens: accumulated_output_tokens,
+                        cache_read_input_tokens: Some(cache_read),
+                        cache_creation_input_tokens: Some(cache_creation),
+                        reasoning_tokens: None,
+                    }));
+                }
+                "content_block_start" => {
+                    let block = event.get("content_block").cloned().unwrap_or(Value::Null);
+                    match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                        "tool_use" => {
+                            tool_index = event.get("index").and_then(Value::as_u64);
+                            // 先发
+                            // `block_start`（引擎据此把当前块切到 tool_use），再发
+                            // `tool_use` 起始事件。
+                            emit(LlmEvent::BlockStart(BlockKind::ToolUse));
+                            // 假值（null / 0 /
+                            // 空串 / false）都退化成 `{}`，对象 / 数组原样保留。
+                            let input = block
+                                .get("input")
+                                .filter(|value| crate::history::js_truthy(Some(value)))
+                                .cloned()
+                                .unwrap_or_else(|| json!({}));
+                            emit(LlmEvent::ToolUseStart {
+                                id: block
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                name: block
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                input,
+                            });
+                        }
+                        // thinking 块
+                        // 自带非空 signature 时先记下来（部分网关只在这一帧给完整签名）。
+                        "thinking" => {
+                            emit(LlmEvent::BlockStart(BlockKind::Thinking));
+                            if let Some(signature) = block
+                                .get("signature")
                                 .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            name: block
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            input,
-                        });
-                    }
-                    // thinking 块
-                    // 自带非空 signature 时先记下来（部分网关只在这一帧给完整签名）。
-                    "thinking" => {
-                        emit(LlmEvent::BlockStart(BlockKind::Thinking));
-                        if let Some(signature) = block
-                            .get("signature")
-                            .and_then(Value::as_str)
-                            .filter(|value| !value.is_empty())
-                        {
-                            emit(LlmEvent::ThinkingSignatureStart(signature.to_string()));
+                                .filter(|value| !value.is_empty())
+                            {
+                                emit(LlmEvent::ThinkingSignatureStart(signature.to_string()));
+                            }
                         }
+                        "text" => emit(LlmEvent::BlockStart(BlockKind::Text)),
+                        _ => {}
                     }
-                    "text" => emit(LlmEvent::BlockStart(BlockKind::Text)),
-                    _ => {}
                 }
+                // 每个块结束都发
+                // `block_stop`（引擎据此立刻给该块补一条 `usage` 缺省的 `streamEnd`）。
+                "content_block_stop" => emit(LlmEvent::BlockStop),
+                "content_block_delta" => {
+                    let delta = event.get("delta").cloned().unwrap_or(Value::Null);
+                    match delta.get("type").and_then(Value::as_str).unwrap_or("") {
+                        "text_delta" => {
+                            if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                                check_repetition(&mut text_repetition, text, "text")?;
+                                emit(LlmEvent::TextDelta(text.to_string()));
+                            }
+                        }
+                        "thinking_delta" => {
+                            if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
+                                check_repetition(&mut thinking_repetition, text, "thinking")?;
+                                emit(LlmEvent::ThinkingDelta(text.to_string()));
+                            }
+                        }
+                        "signature_delta" => {
+                            if let Some(signature) = delta.get("signature").and_then(Value::as_str)
+                            {
+                                emit(LlmEvent::ThinkingSignatureDelta(signature.to_string()));
+                            }
+                        }
+                        "input_json_delta" => {
+                            let _ = tool_index;
+                            if let Some(partial) = delta.get("partial_json").and_then(Value::as_str)
+                            {
+                                emit(LlmEvent::ToolUseInputDelta(partial.to_string()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                "message_delta" => {
+                    // input 沿用 message_start 的累计值
+                    // （缺省时保留原值），cache 取本次 delta 的值（缺省 0），
+                    // 最终 input = 累计 input + delta 的两个 cache 计数。
+                    let usage = event.get("usage").cloned().unwrap_or(Value::Null);
+                    if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
+                        accumulated_input_tokens = value;
+                    }
+                    if let Some(value) = usage.get("output_tokens").and_then(Value::as_u64) {
+                        accumulated_output_tokens = value;
+                    }
+                    let cache_read = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let cache_creation = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    emit(LlmEvent::Usage(Usage {
+                        input_tokens: accumulated_input_tokens + cache_read + cache_creation,
+                        output_tokens: accumulated_output_tokens,
+                        cache_read_input_tokens: Some(cache_read),
+                        cache_creation_input_tokens: Some(cache_creation),
+                        reasoning_tokens: None,
+                    }));
+                    // `stopReason = msgDelta.stop_reason as string || stopReason`：
+                    // 空串是假值，**不能**覆盖已经收到的 stop_reason（否则流里
+                    // 先回 `tool_use` 再回一帧空 `stop_reason` 时，落盘的 assistant
+                    // 会丢掉结束原因，工具轮次判定随之出错）。
+                    if let Some(reason) = event
+                        .get("delta")
+                        .and_then(|delta| delta.get("stop_reason"))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                    {
+                        emit(LlmEvent::StopReason(reason.to_string()));
+                    }
+                    // `applyMessageDelta` 一定会给 `usage` 赋对象，
+                    // 因此紧随其后的 `message_delta` StreamEvent 上 `event.usage` 恒为真值。
+                    emit(LlmEvent::MessageDelta);
+                }
+                "error" => {
+                    let message = event
+                        .get("error")
+                        .and_then(|error| error.get("message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown error");
+                    return Err(StreamFailure::Fatal(format!("LLM stream error: {message}")));
+                }
+                _ => {}
             }
-            // 每个块结束都发
-            // `block_stop`（引擎据此立刻给该块补一条 `usage` 缺省的 `streamEnd`）。
-            "content_block_stop" => emit(LlmEvent::BlockStop),
-            "content_block_delta" => {
-                let delta = event.get("delta").cloned().unwrap_or(Value::Null);
-                match delta.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "text_delta" => {
-                        if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                            check_repetition(&mut text_repetition, text, "text")?;
-                            emit(LlmEvent::TextDelta(text.to_string()));
-                        }
-                    }
-                    "thinking_delta" => {
-                        if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
-                            check_repetition(&mut thinking_repetition, text, "thinking")?;
-                            emit(LlmEvent::ThinkingDelta(text.to_string()));
-                        }
-                    }
-                    "signature_delta" => {
-                        if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
-                            emit(LlmEvent::ThinkingSignatureDelta(signature.to_string()));
-                        }
-                    }
-                    "input_json_delta" => {
-                        let _ = tool_index;
-                        if let Some(partial) = delta.get("partial_json").and_then(Value::as_str) {
-                            emit(LlmEvent::ToolUseInputDelta(partial.to_string()));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            "message_delta" => {
-                // input 沿用 message_start 的累计值
-                // （缺省时保留原值），cache 取本次 delta 的值（缺省 0），
-                // 最终 input = 累计 input + delta 的两个 cache 计数。
-                let usage = event.get("usage").cloned().unwrap_or(Value::Null);
-                if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
-                    accumulated_input_tokens = value;
-                }
-                if let Some(value) = usage.get("output_tokens").and_then(Value::as_u64) {
-                    accumulated_output_tokens = value;
-                }
-                let cache_read = usage
-                    .get("cache_read_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                let cache_creation = usage
-                    .get("cache_creation_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                emit(LlmEvent::Usage(Usage {
-                    input_tokens: accumulated_input_tokens + cache_read + cache_creation,
-                    output_tokens: accumulated_output_tokens,
-                    cache_read_input_tokens: Some(cache_read),
-                    cache_creation_input_tokens: Some(cache_creation),
-                    reasoning_tokens: None,
-                }));
-                // `stopReason = msgDelta.stop_reason as string || stopReason`：
-                // 空串是假值，**不能**覆盖已经收到的 stop_reason（否则流里
-                // 先回 `tool_use` 再回一帧空 `stop_reason` 时，落盘的 assistant
-                // 会丢掉结束原因，工具轮次判定随之出错）。
-                if let Some(reason) = event
-                    .get("delta")
-                    .and_then(|delta| delta.get("stop_reason"))
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                {
-                    emit(LlmEvent::StopReason(reason.to_string()));
-                }
-                // `applyMessageDelta` 一定会给 `usage` 赋对象，
-                // 因此紧随其后的 `message_delta` StreamEvent 上 `event.usage` 恒为真值。
-                emit(LlmEvent::MessageDelta);
-            }
-            "error" => {
-                let message = event
-                    .get("error")
-                    .and_then(|error| error.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error");
-                return Err(StreamFailure::Fatal(format!("LLM stream error: {message}")));
-            }
-            _ => {}
-        }
-        Ok(progress)
-    })
+            Ok(progress)
+        },
+    )
 }
 
 // ==================== OpenAI Chat Completions ====================
@@ -1250,7 +1266,10 @@ fn stream_openai(
     body.insert("top_p".to_string(), json!(0.95));
     if *include_stream_usage {
         // 让服务商在流末尾补一帧 usage（OpenAI / 多数兼容网关支持）
-        body.insert("stream_options".to_string(), json!({ "include_usage": true }));
+        body.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
     }
     // 思考开启时用 `reasoning_effort`
     if req.thinking_enabled {
@@ -1259,7 +1278,10 @@ fn stream_openai(
             json!(provider.thinking_effort),
         );
     }
-    body.insert("messages".to_string(), Value::Array(to_chat_messages(req.messages)));
+    body.insert(
+        "messages".to_string(),
+        Value::Array(to_chat_messages(req.messages)),
+    );
     if !req.system_prompt.is_empty() {
         let mut messages = vec![json!({ "role": "system", "content": req.system_prompt })];
         if let Some(Value::Array(rest)) = body.get("messages") {
@@ -1272,25 +1294,30 @@ fn stream_openai(
     }
 
     let client = http_client().map_err(StreamFailure::Fatal)?;
-    let build_request = |body: &Map<String, Value>| -> Result<reqwest::blocking::Request, reqwest::Error> {
-        client
-            .post(chat_completions_url(&provider.base_url))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", provider.api_key))
-            // 部分网关（如 opencode.ai/zen/go）要求 x-opencode-session 才会路由请求
-            .header("x-api-key", &provider.api_key)
-            .header("x-opencode-session", req.session_id)
-            .header("x-session-id", req.session_id)
-            // JS `JSON.stringify` 口径（见 Anthropic 分支的同款说明）
-            .body(crate::util::js_json_stringify(&Value::Object(body.clone())))
-            .build()
-    };
+    let build_request =
+        |body: &Map<String, Value>| -> Result<reqwest::blocking::Request, reqwest::Error> {
+            client
+                .post(chat_completions_url(&provider.base_url))
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {}", provider.api_key))
+                // 部分网关（如 opencode.ai/zen/go）要求 x-opencode-session 才会路由请求
+                .header("x-api-key", &provider.api_key)
+                .header("x-opencode-session", req.session_id)
+                .header("x-session-id", req.session_id)
+                // JS `JSON.stringify` 口径（见 Anthropic 分支的同款说明）
+                .body(crate::util::js_json_stringify(&Value::Object(body.clone())))
+                .build()
+        };
 
     let request = build_request(&body)
         .map_err(|err| StreamFailure::Fatal(format!("request build failed: {err}")))?;
     // 等待响应头期间也可取消 / 受首字节超时约束（见 send_cancellable）
-    let (mut response, mut first_byte_deadline) =
-        send_cancellable(client.clone(), request, req.cancel, req.first_byte_timeout_ms)?;
+    let (mut response, mut first_byte_deadline) = send_cancellable(
+        client.clone(),
+        request,
+        req.cancel,
+        req.first_byte_timeout_ms,
+    )?;
     // 服务商不认识 stream_options：去掉该字段重试一次
     // （对齐 `OpenAiApi`：占用一次重试预算、先等 `RETRY_DELAY_MS`，并在本次调用内持续省略该字段）
     if !response.status().is_success() && response.status().as_u16() == 400 {
@@ -1355,153 +1382,159 @@ fn stream_openai(
     // 必须按 index 累积，
     // 流结束后再按「首次出现顺序」补发，避免把后一个调用的参数拼进前一个。
     let mut tool_calls_by_index: Vec<(u64, String, String, String)> = Vec::new();
-    read_sse(response, cancel, first_byte_deadline, req.first_byte_timeout_ms, req.idle_timeout_ms, &mut |payload| {
-        let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload)) else {
-            return Ok(false);
-        };
-        // `if (parsed.error)`：`null` / `false` / `0` / 空串 视为没有错误
-        if let Some(error) = event
-            .get("error")
-            .filter(|value| crate::history::js_truthy(Some(value)))
-        {
-            return Err(StreamFailure::Fatal(format!(
-                "Chat Completions failed: {}",
-                stream_error_message(error)
-            )));
-        }
-        if let Some(usage) = event.get("usage").filter(|value| !value.is_null()) {
-            emit(LlmEvent::Usage(Usage {
-                input_tokens: usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
-                output_tokens: usage
-                    .get("completion_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                cache_read_input_tokens: usage
-                    .get("prompt_tokens_details")
-                    .and_then(|details| details.get("cached_tokens"))
-                    .and_then(Value::as_u64),
-                cache_creation_input_tokens: None,
-                reasoning_tokens: usage
-                    .get("completion_tokens_details")
-                    .and_then(|details| details.get("reasoning_tokens"))
-                    .and_then(Value::as_u64),
-            }));
-        }
-        let Some(choices) = event.get("choices").and_then(Value::as_array) else {
-            // usage-only / 空 choices 帧也算进展（对齐 `parsedEvents.length > 0`）
-            return Ok(true);
-        };
-        for choice in choices {
-            let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
-            // `reasoning_content` 只有非空时才优先，空串回退到 `reasoning`
-            let reasoning = delta
-                .get("reasoning_content")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .or_else(|| delta.get("reasoning").and_then(Value::as_str))
-                .unwrap_or("");
-            if !reasoning.is_empty() {
-                // 角色切换时先关上一个块、再开新块
-                // （`emitBlockStop()` 只在确实有打开的块时才发 `block_stop`）。
-                if open_kind != Some(BlockKind::Thinking) {
-                    if open_kind.is_some() {
-                        emit(LlmEvent::BlockStop);
-                    }
-                    emit(LlmEvent::BlockStart(BlockKind::Thinking));
-                    open_kind = Some(BlockKind::Thinking);
-                }
-                check_repetition(&mut thinking_repetition, reasoning, "thinking")?;
-                saw_content = true;
-                emit(LlmEvent::ThinkingDelta(reasoning.to_string()));
+    read_sse(
+        response,
+        cancel,
+        first_byte_deadline,
+        req.first_byte_timeout_ms,
+        req.idle_timeout_ms,
+        &mut |payload| {
+            let Ok(event) = serde_json::from_str::<Value>(&sanitize_json_surrogates(payload))
+            else {
+                return Ok(false);
+            };
+            // `if (parsed.error)`：`null` / `false` / `0` / 空串 视为没有错误
+            if let Some(error) = event
+                .get("error")
+                .filter(|value| crate::history::js_truthy(Some(value)))
+            {
+                return Err(StreamFailure::Fatal(format!(
+                    "Chat Completions failed: {}",
+                    stream_error_message(error)
+                )));
             }
-            if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                if !content.is_empty() {
-                    if open_kind != Some(BlockKind::Text) {
+            if let Some(usage) = event.get("usage").filter(|value| !value.is_null()) {
+                emit(LlmEvent::Usage(Usage {
+                    input_tokens: usage
+                        .get("prompt_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    output_tokens: usage
+                        .get("completion_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    cache_read_input_tokens: usage
+                        .get("prompt_tokens_details")
+                        .and_then(|details| details.get("cached_tokens"))
+                        .and_then(Value::as_u64),
+                    cache_creation_input_tokens: None,
+                    reasoning_tokens: usage
+                        .get("completion_tokens_details")
+                        .and_then(|details| details.get("reasoning_tokens"))
+                        .and_then(Value::as_u64),
+                }));
+            }
+            let Some(choices) = event.get("choices").and_then(Value::as_array) else {
+                // usage-only / 空 choices 帧也算进展（对齐 `parsedEvents.length > 0`）
+                return Ok(true);
+            };
+            for choice in choices {
+                let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+                // `reasoning_content` 只有非空时才优先，空串回退到 `reasoning`
+                let reasoning = delta
+                    .get("reasoning_content")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| delta.get("reasoning").and_then(Value::as_str))
+                    .unwrap_or("");
+                if !reasoning.is_empty() {
+                    // 角色切换时先关上一个块、再开新块
+                    // （`emitBlockStop()` 只在确实有打开的块时才发 `block_stop`）。
+                    if open_kind != Some(BlockKind::Thinking) {
                         if open_kind.is_some() {
                             emit(LlmEvent::BlockStop);
                         }
-                        emit(LlmEvent::BlockStart(BlockKind::Text));
-                        open_kind = Some(BlockKind::Text);
+                        emit(LlmEvent::BlockStart(BlockKind::Thinking));
+                        open_kind = Some(BlockKind::Thinking);
                     }
-                    check_repetition(&mut text_repetition, content, "text")?;
+                    check_repetition(&mut thinking_repetition, reasoning, "thinking")?;
                     saw_content = true;
-                    emit(LlmEvent::TextDelta(content.to_string()));
+                    emit(LlmEvent::ThinkingDelta(reasoning.to_string()));
                 }
-            }
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for call in tool_calls {
-                    // `if (!tc) continue`：null / false / 0 / 空串
-                    // 这类假值直接跳过（否则会产出一个空的 tool_use block）。
-                    if !crate::history::js_truthy(Some(call)) {
-                        continue;
-                    }
-                    saw_content = true;
-                    // 缺省 index=0
-                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
-                    let position = match tool_calls_by_index
-                        .iter()
-                        .position(|entry| entry.0 == index)
-                    {
-                        Some(position) => position,
-                        None => {
-                            // 新 index 首次出现时先关掉
-                            // 当前块、再开一个 tool_use 块（多个并行工具调用之间
-                            // 同样会成对出现 block_stop / block_start）。
+                if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                    if !content.is_empty() {
+                        if open_kind != Some(BlockKind::Text) {
                             if open_kind.is_some() {
                                 emit(LlmEvent::BlockStop);
                             }
-                            emit(LlmEvent::BlockStart(BlockKind::ToolUse));
-                            open_kind = Some(BlockKind::ToolUse);
-                            // id 在 block **创建时**定死
-                            // （`id: tc.id || \`call_${streamMessageId}_${idx}\``）。
-                            // 后续分片即使补上 id 也不会替换：
-                            // block.id 此时已经是兜底 id（真值）。
-                            let id = call
-                                .get("id")
+                            emit(LlmEvent::BlockStart(BlockKind::Text));
+                            open_kind = Some(BlockKind::Text);
+                        }
+                        check_repetition(&mut text_repetition, content, "text")?;
+                        saw_content = true;
+                        emit(LlmEvent::TextDelta(content.to_string()));
+                    }
+                }
+                if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for call in tool_calls {
+                        // `if (!tc) continue`：null / false / 0 / 空串
+                        // 这类假值直接跳过（否则会产出一个空的 tool_use block）。
+                        if !crate::history::js_truthy(Some(call)) {
+                            continue;
+                        }
+                        saw_content = true;
+                        // 缺省 index=0
+                        let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+                        let position = match tool_calls_by_index
+                            .iter()
+                            .position(|entry| entry.0 == index)
+                        {
+                            Some(position) => position,
+                            None => {
+                                // 新 index 首次出现时先关掉
+                                // 当前块、再开一个 tool_use 块（多个并行工具调用之间
+                                // 同样会成对出现 block_stop / block_start）。
+                                if open_kind.is_some() {
+                                    emit(LlmEvent::BlockStop);
+                                }
+                                emit(LlmEvent::BlockStart(BlockKind::ToolUse));
+                                open_kind = Some(BlockKind::ToolUse);
+                                // id 在 block **创建时**定死
+                                // （`id: tc.id || \`call_${streamMessageId}_${idx}\``）。
+                                // 后续分片即使补上 id 也不会替换：
+                                // block.id 此时已经是兜底 id（真值）。
+                                let id = call
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .filter(|value| !value.is_empty())
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_else(|| format!("call_{stream_message_id}_{index}"));
+                                tool_calls_by_index.push((index, id, String::new(), String::new()));
+                                tool_calls_by_index.len() - 1
+                            }
+                        };
+                        let entry = &mut tool_calls_by_index[position];
+                        if entry.2.is_empty() {
+                            if let Some(name) = call
+                                .get("function")
+                                .and_then(|function| function.get("name"))
                                 .and_then(Value::as_str)
                                 .filter(|value| !value.is_empty())
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| format!("call_{stream_message_id}_{index}"));
-                            tool_calls_by_index.push((
-                                index,
-                                id,
-                                String::new(),
-                                String::new(),
-                            ));
-                            tool_calls_by_index.len() - 1
+                            {
+                                entry.2 = name.to_string();
+                            }
                         }
-                    };
-                    let entry = &mut tool_calls_by_index[position];
-                    if entry.2.is_empty() {
-                        if let Some(name) = call
+                        if let Some(arguments) = call
                             .get("function")
-                            .and_then(|function| function.get("name"))
+                            .and_then(|function| function.get("arguments"))
                             .and_then(Value::as_str)
-                            .filter(|value| !value.is_empty())
                         {
-                            entry.2 = name.to_string();
+                            entry.3.push_str(arguments);
                         }
                     }
-                    if let Some(arguments) = call
-                        .get("function")
-                        .and_then(|function| function.get("arguments"))
-                        .and_then(Value::as_str)
-                    {
-                        entry.3.push_str(arguments);
+                }
+                if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                    if !reason.is_empty() {
+                        saw_stop_reason = true;
+                        emit(LlmEvent::StopReason(map_finish_reason(reason)));
                     }
                 }
             }
-            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-                if !reason.is_empty() {
-                    saw_stop_reason = true;
-                    emit(LlmEvent::StopReason(map_finish_reason(reason)));
-                }
-            }
-        }
-        // Chat Completions 的 SSE 没有统一 type：能解析出 JSON 的数据帧都算进展
-        // （对齐 `OpenAiApi` 的 `parsedEvents.length > 0 → watchdog.noteProgress()`）。
-        Ok(true)
-    })?;
+            // Chat Completions 的 SSE 没有统一 type：能解析出 JSON 的数据帧都算进展
+            // （对齐 `OpenAiApi` 的 `parsedEvents.length > 0 → watchdog.noteProgress()`）。
+            Ok(true)
+        },
+    )?;
 
     // 收尾：关闭仍打开的块。
     // 块边界只影响引擎的「当前块类型」与 block_stop 时的 `streamEnd`
@@ -1543,7 +1576,6 @@ fn stream_openai(
     emit(LlmEvent::MessageDelta);
     Ok(())
 }
-
 
 // ==================== 退化重复检测（对齐 repetitionDetector.ts） ====================
 
@@ -1701,7 +1733,11 @@ pub(crate) fn check_repetition(
     stream: &str,
 ) -> Result<(), StreamFailure> {
     if let Some(hit) = detector.append(delta) {
-        let label = if stream == "thinking" { "思考" } else { "正文" };
+        let label = if stream == "thinking" {
+            "思考"
+        } else {
+            "正文"
+        };
         return Err(StreamFailure::Repetition(format!(
             "检测到模型循环输出：{label}中长度 {} 的片段连续重复 {} 次（共 {} 字符），判定为服务端异常",
             hit.unit_length, hit.repeat_count, hit.span_length
