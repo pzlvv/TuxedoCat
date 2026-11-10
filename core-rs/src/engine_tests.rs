@@ -7015,6 +7015,102 @@ fn sub_agent_inherits_parent_agent_mode() {
     }
 }
 
+/// 本地子代理继承主对话的 thinking effort / 联网搜索，并**落盘**进子会话
+/// meta.json 的 context（重启后重开子会话仍显示继承值）。
+#[test]
+fn sub_agent_inherits_and_persists_thinking_effort() {
+    let sandbox = Sandbox::new("engine-sub-agent-inherit-thinking");
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = Arc::clone(&bodies);
+    let llm = FakeLlm::start(move |_index, body| {
+        captured.lock().unwrap().push(body.clone());
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"子代理已完成任务"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    // settings 默认 high：子代理取到的应是父会话的 low，而不是全局默认
+    prepare(&sandbox, &llm.base_url, "risk");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-inherit-thinking";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+    {
+        let parent = harness.core.session(creator);
+        let mut parent = parent.lock().unwrap();
+        parent.thinking_effort = Some("low".to_string());
+        parent.web_search = Some(false);
+    }
+
+    acquire_slot_for_test(creator);
+    let sub_id = harness
+        .core
+        .create_sub_agent(tools::SubAgentRequest {
+            creator_session_id: creator.to_string(),
+            prompt: "任务".to_string(),
+            description: "inherit thinking".to_string(),
+            role: "Master".to_string(),
+            target: None,
+        })
+        .expect("create sub agent");
+
+    {
+        let state = harness.core.session(&sub_id);
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.thinking_effort.as_deref(),
+            Some("low"),
+            "子代理应当继承父会话的 thinking effort"
+        );
+    }
+    // 请求侧：子代理的 LLM 请求按继承的 thinking effort 组装（settings 默认是 high）
+    assert!(
+        harness.wait_for(
+            |_| bodies.lock().unwrap().iter().any(|body| {
+                is_sub_agent_request(body)
+                    && body.get("reasoning_effort").and_then(Value::as_str) == Some("low")
+            }),
+            Duration::from_secs(30),
+        ),
+        "子代理请求应带继承的 reasoning_effort=low: {:?}",
+        bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|body| body.get("reasoning_effort").cloned())
+            .collect::<Vec<_>>()
+    );
+
+    // 落盘：重启后重开子会话仍能恢复继承值
+    let metadata = history::load_metadata(&sub_id, &project).expect("子会话 meta.json");
+    assert_eq!(
+        metadata["context"]["thinkingMode"], "low",
+        "继承来的 thinking effort 应当落盘到子会话 meta.json"
+    );
+    assert_eq!(
+        metadata["context"]["webSearch"], false,
+        "继承来的联网搜索开关应当落盘到子会话 meta.json"
+    );
+    assert_eq!(metadata["context"]["agentMode"], "risk");
+
+    // 模拟 Core 重启后重开子会话：thinking effort 仍是继承值而不是全局默认 high
+    drop(harness);
+    let harness = EngineHarness::allow_all();
+    harness.core.ensure_loaded(&sub_id).unwrap();
+    let state = harness.core.session(&sub_id);
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state.thinking_effort.as_deref(),
+        Some("low"),
+        "重开子会话后 thinking effort 仍应是继承来的 low"
+    );
+    assert_eq!(state.web_search, Some(false));
+}
+
 /// 子代理继承主对话的提示词预设：system prompt = 主对话同款（按继承的预设组装）+
 /// 开头 `## Communication` 段；预设仍决定工具白名单（minimal 只有 Bash / Edit）。
 #[test]
@@ -8243,6 +8339,29 @@ fn explorer_fixes_session_config_while_master_inherits() {
             "Master 维持继承父会话联网开关"
         );
     }
+
+    // 落盘：继承与固定值都必须进子会话 meta.json 的 context（与内存同一处来源），
+    // 否则重开子会话时按配置默认值补齐，继承值被静默改掉。
+    let explorer_meta =
+        history::load_metadata(&explorer_id, &project).expect("Explorer 子会话 meta.json");
+    assert_eq!(
+        explorer_meta["context"]["promptMode"], "normal",
+        "Explorer 固定的提示词模式应当落盘"
+    );
+    assert_eq!(
+        explorer_meta["context"]["webSearch"], false,
+        "Explorer 固定的联网搜索开关应当落盘"
+    );
+    let master_meta =
+        history::load_metadata(&master_id, &project).expect("Master 子会话 meta.json");
+    assert_eq!(
+        master_meta["context"]["promptMode"], "minimal",
+        "Master 继承的提示词模式应当落盘"
+    );
+    assert_eq!(
+        master_meta["context"]["webSearch"], true,
+        "Master 继承的联网搜索开关应当落盘"
+    );
 
     // LLM 请求侧：explorer = normal 口径（含核心身份段）+ 五件套；Master = minimal 口径 + Bash / Edit
     assert!(
