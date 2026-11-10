@@ -22,23 +22,20 @@ with open(_PROJECT_JSON, encoding="utf-8") as _f:
 
 CORE_BINARY_NAME = _PROJECT["core"]["binaryName"]
 
-# 两份 ripgrep 按 Core 变体互斥存在（scripts/copy-assets.mjs 按变体清理 dist）：
-#   embedded   → 只有 dist/resources/ripgrep/（TS 侧 Grep / Glob 的 rg）
-#   standalone → 只有 dist/resources/core/**/ripgrep/（Core 自带的 rg）
-# 这里列两者的并集；本变体里不存在的条目匹配不到，静默跳过。
+# 内置工具（rg / fd）随 Core 产物落位，打包只带 dist/resources/core/**/<tool>/：
+# 两份工具（与 Core 可执行文件同级，Grep / Glob 与工具 shell 的 PATH 前置靠它们）在
+# x64-linux 与 arm64-linux 各一份（build-core.mjs 的 PACKAGE_DIRS）。
+# 本变体里不存在的条目匹配不到，静默跳过。
 TARGET_FILES = [
-    # 打包时仅包含 dist/resources（.vscodeignore 已排除顶层 resources/）
-    "extension/dist/resources/ripgrep/x64-linux/rg",
-    # Core 自带的 ripgrep（与 Core 可执行文件同级，Grep / Glob 靠它）
-    "extension/dist/resources/core/x64-linux/ripgrep/rg",
     f"extension/dist/resources/core/x64-linux/{CORE_BINARY_NAME}",
+    "extension/dist/resources/core/x64-linux/ripgrep/rg",
+    "extension/dist/resources/core/x64-linux/fd/fd",
     # arm64 Linux 与 x64 同为打包要携带的平台（build-core.mjs 的 PACKAGE_DIRS）
-    "extension/dist/resources/ripgrep/arm64-linux/rg",
     f"extension/dist/resources/core/arm64-linux/{CORE_BINARY_NAME}",
     "extension/dist/resources/core/arm64-linux/ripgrep/rg",
+    "extension/dist/resources/core/arm64-linux/fd/fd",
     # Add more linux/macos binaries here if needed
-    # "extension/dist/resources/ripgrep/x64-darwin/rg",
-    # "extension/dist/resources/ripgrep/arm64-darwin/rg",
+    # "extension/dist/resources/core/x64-darwin/ripgrep/rg",
 ]
 
 

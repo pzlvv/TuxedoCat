@@ -6,7 +6,7 @@ last_reviewed: 2026-10-11
 # 规格：TUI 安装程序
 
 本规格界定 TUI 版的分发与 Core 部署程序：单个自解压可执行文件，内嵌 Standalone Core、
-捆绑 ripgrep 与 TUI 原生二进制（tui-rs），安装时提取到本机部署布局。TUI 自身不承担
+捆绑内置工具（rg / fd）与 TUI 原生二进制（tui-rs），安装时提取到本机部署布局。TUI 自身不承担
 部署（[docs/hosts/tui.md 第 2.4 节](../hosts/tui.md#24-core-产物定位tui-rssrccore_rootrs)的产物定位是它的消费方）。
 
 交叉引用：Core 产物矩阵与指纹见 [docs/core/standalone-core.md 第 3 节](../core/standalone-core.md#3-core-形态)；
@@ -15,11 +15,11 @@ last_reviewed: 2026-10-11
 ## 1. 用户场景与验收标准
 
 - 场景 1：构建安装器
-  - **AC-1**（FR-001）：GIVEN 目标平台的 Core 产物与 TUI 二进制就位 WHEN 构建该目标 THEN 产出单个自解压安装器，内嵌本平台 Core、ripgrep 与 TUI 二进制
+  - **AC-1**（FR-001）：GIVEN 目标平台的 Core 产物与 TUI 二进制就位 WHEN 构建该目标 THEN 产出单个自解压安装器，内嵌本平台 Core、内置工具（rg / fd）与 TUI 二进制
   - **AC-2**（FR-001）：GIVEN 载荷产物缺失 WHEN 构建 THEN 构建失败并给出补救命令
   - **AC-3**（FR-002）：GIVEN 产物自带的 `fingerprint` 文件内容不是 64 位小写 hex WHEN 构建 THEN 构建失败
 - 场景 2：安装与布局
-  - **AC-4**（FR-002）：GIVEN 安装完成 WHEN 检查部署布局 THEN 指纹槽位内的 Core 二进制与 `fingerprint`、槽位间共享的 ripgrep、产品目录里的 TUI 二进制按布局落位
+  - **AC-4**（FR-002）：GIVEN 安装完成 WHEN 检查部署布局 THEN 指纹槽位内的 Core 二进制与 `fingerprint`、槽位间共享的 `ripgrep/rg` 与 `fd/fd`、产品目录里的 TUI 二进制按布局落位
   - **AC-5**（FR-003）：GIVEN unix WHEN 安装到默认前缀 THEN `<prefix>/bin/<产品名>` 软链接可用，且升级换指纹槽位后链接目标不变、不断链
   - **AC-6**（FR-004）：GIVEN 文件内容未变 WHEN 重复安装 THEN 该文件跳过（保留可执行位）；写盘中断不留半个文件
 - 场景 3：CLI
@@ -44,12 +44,13 @@ last_reviewed: 2026-10-11
 <prefix>/share/<core.deployPrefix>/<指纹>/<core.binaryName>[.exe] + fingerprint
 <prefix>/share/<core.deployPrefix>/<指纹>/clang_rt.asan_dynamic-<arch>.dll  # 仅 asan 变体的 Windows 产物
 <prefix>/share/<core.deployPrefix>/ripgrep/rg[.exe]      # 全部指纹槽位共享一份
+<prefix>/share/<core.deployPrefix>/fd/fd[.exe]           # 同上（内置工具登记表）
 <prefix>/share/<core.deployPrefix>/tui[.exe]             # TUI 原生二进制（无需 Node.js）
 ```
 
-指纹槽位按 Core 构建指纹隔离（多版本并存互不覆盖），ripgrep 与指纹无关、
-全部槽位共享；Core 以「所在槽位的上一级目录里的 `ripgrep`」定位共享位
-（core-rs/src/tools.rs 的 `ripgrep_candidates`），TUI 按同一布局定位 Core 槽位
+指纹槽位按 Core 构建指纹隔离（多版本并存互不覆盖），内置工具与指纹无关、
+全部槽位共享；Core 以「所在槽位的上一级目录里的 `<tool.dir>`」定位共享位
+（core-rs/src/bundled_tools.rs 的 `tool_candidates`），TUI 按同一布局定位 Core 槽位
 （tui-rs/src/core_root.rs）。产品名取 `src/config/project.json` 的
 `core.deployPrefix`，指纹读自产物自带的 `fingerprint` 文件（构建期校验 64 位
 小写 hex，不合法直接构建失败）。

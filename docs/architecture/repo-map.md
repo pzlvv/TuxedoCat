@@ -22,13 +22,13 @@ last_reviewed: 2026-10-18
 | `src/host/Connection.ts` | 宿主与一个 Core 的一对一连接：持有总线、就绪状态机（`connecting → ready → closed`）、该工作区的会话集合；未就绪时排队 `UiEvent` / 挂起 `requestCore` |
 | `src/host/workspaceRef.ts` | 工作区引用 `{ scheme, path, endpoint }` 与去重键；本地 / 远程同构，Core 只见 `path` |
 | `src/host/standalone/protocol.ts` | Core 帧协议：帧类型、编解码、换行分隔 JSON 解码器 |
-| `src/host/standalone/coreBinary.ts` | Core 产物定位：平台 / 架构 → `resources/core/<arch>-<platform>/` |
+| `src/host/standalone/coreBinary.ts` | Core 产物定位：平台 / 架构 → `resources/core/<arch>-<platform>/`；内置工具登记表 `BUNDLED_TOOLS`（`ripgrep/rg`、`fd/fd`）与本地 / 部署两条路径派生 |
 | `src/host/standalone/CoreProcess.ts` | 单进程形态的 Core 进程管理：启动 / 握手 / 帧收发 / 背压 / 崩溃重启 / 关闭；实现 `CoreChannelTransport` |
 | `src/host/standalone/CoreDaemon.ts` | Host 侧 daemon 客户端：一个 endpoint 一个 daemon，每个工作区一条 channel；Core 的重启与终止由 daemon 承担；把 `channelReset` 翻译成重新握手；链路就绪后定期发 `ping` 心跳（daemon 据此回收死连接，[docs/core/core-remote.md 第 2.5 节](../core/core-remote.md#25-连接与生命周期)） |
 | `src/host/standalone/daemonProtocol.ts` | daemon 控制通道协议：帧类型、`ChannelDescriptor`、编解码与校验 |
 | `src/host/standalone/StandaloneEventBus.ts` | `AssistantEventBus` 的帧通道实现（在 `CoreChannelTransport` 之上）：就绪前排队、连接态重放、`CoreRequest` 应答；传输层可以是单进程或 daemon channel |
 | `core-rs/` | Core 的 Rust 实现（唯一一套 Core：引擎 / 工具 / 技能 / 权限 / 提示词 / 压缩 / MCP / 会话落盘 / 帧协议、进程入口、daemon 模式；测试对照表数据在 `core-rs/fixtures/`） |
-| `scripts/build-core.mjs` | Core 构建脚本：按目标三元组 `cargo build` 并落到 `resources/core/` |
+| `scripts/build-core.mjs` | Core 构建脚本：按目标三元组 `cargo build` 并落到 `resources/core/`；`copyBundledTools` 把 `resources/{ripgrep,fd}/<arch>-<platform>/` 复制成 Core 自带工具 |
 | `src/shared/sessionRuntime.ts` | 会话忙闲的宿主侧单一派生（`sessionBusyLevel`：waiting > running > idle）；运行时事实的 owner 是 Core，经 `sessionRuntimeChanged` 全量推送（[docs/core/session-runtime.md](../core/session-runtime.md)） |
 | `src/host/WebViewUI.ts` | 唯一的 UI 实现；订阅总线、处理事件、发送 `UiEvent`；实现 `WebViewUiPort` |
 | `src/host/UIHost.ts` | 契约 1：对话 webview 的宿主能力（interface，成员全部必选） |

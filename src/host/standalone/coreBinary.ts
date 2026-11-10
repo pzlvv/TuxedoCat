@@ -40,13 +40,43 @@ export function coreBinaryFileName(platform: NodeJS.Platform = process.platform)
 }
 
 /**
+ * 一件随 Core 分发的内置工具（与 `core-rs/src/bundled_tools.rs` 的 `BUNDLED_TOOLS` 同源登记表）。
+ *
+ * 目录名只在两处登记表里出现：这份 TS 侧（宿主定位、SSH 上传、打包校验消费）与 Rust 侧
+ * （Core 自己解析 Grep / Glob 的 `rg` 与工具 shell 前置的 `rg` / `fd`）。派生路径一律经
+ * `bundledToolPath` / `coreDeployToolPath`，不散落目录名字符串。
+ */
+export interface BundledTool {
+  /** 产物目录名：`resources/<dir>/<arch>-<platform>/`、`<Core exe 目录>/<dir>/`、`share/<产品名>/<dir>/` */
+  dir: string;
+  /** 可执行名（不含平台扩展名） */
+  stem: string;
+}
+
+/** 全部内置工具，顺序即 Core 侧 PATH 前置顺序（`rg` 在前，它是 Grep / Glob 的运行时依赖） */
+export const BUNDLED_TOOLS: readonly BundledTool[] = [
+  { dir: 'ripgrep', stem: 'rg' },
+  { dir: 'fd', stem: 'fd' },
+];
+
+/** 按目录名取登记项；未登记的名字直接抛错（不猜） */
+function requireTool(dir: string): BundledTool {
+  const tool = BUNDLED_TOOLS.find((item) => item.dir === dir);
+  if (!tool) throw new Error(`bundled tool "${dir}" is not registered in BUNDLED_TOOLS`);
+  return tool;
+}
+
+/**
  * Core 自带工具的目录名（与 Core 可执行文件同级）。
  *
- * Core 以**自己的可执行文件所在目录**为基准定位自带资源（`core-rs/src/tools.rs` 的
- * `ripgrep_path`，见 `docs/core/standalone-core.md` 第 4 节）：Grep / Glob 用的 `rg` 就放在
- * 这个目录里，本地由 `npm run build:core` 落位，远端由 SSH 引导原样上传。
+ * Core 以**自己的可执行文件所在目录**为基准定位自带资源（`core-rs/src/bundled_tools.rs` 的
+ * `tool_candidates`，见 `docs/core/standalone-core.md` 第 3.1 节）：Grep / Glob 用的 `rg` 与
+ * 工具 shell 前置的 `fd` 都放在这个目录里，本地由 `npm run build:core` 落位，远端由 SSH 引导原样上传。
  */
-export const CORE_RIPGREP_DIR = 'ripgrep';
+export const CORE_RIPGREP_DIR = requireTool('ripgrep').dir;
+
+/** Core 自带 `fd` 的目录名 */
+export const CORE_FD_DIR = requireTool('fd').dir;
 
 /**
  * 构建指纹文件名（与可执行文件同级，`build-core.mjs` 落位）。
@@ -82,19 +112,52 @@ export function coreDeployDirPath(fingerprint: string): string {
 }
 
 /**
- * 共享 ripgrep 的部署路径（相对部署前缀）：`share/<产品名>/ripgrep`。
+ * 共享内置工具的部署路径（相对部署前缀）：`share/<产品名>/<tool.dir>`。
  *
- * ripgrep 与指纹无关（Grep / Glob 的行为不随 Core 版本变），全部指纹槽位共享同一份；
- * Core 侧按「自己所在槽位的上一级目录里的 `ripgrep`」定位它（core-rs/src/tools.rs 的
- * `ripgrep_candidates`）。远端只支持 Linux，文件名不带 `.exe`。
+ * 内置工具与指纹无关（`rg` 的搜索行为、`fd` 的遍历行为都不随 Core 版本变），全部指纹槽位
+ * 共享同一份；Core 侧按「自己所在槽位的上一级目录里的 `<tool.dir>`」定位它
+ * （`core-rs/src/bundled_tools.rs` 的 `tool_candidates`）。远端只支持 Linux，文件名不带 `.exe`。
  */
+export function coreDeployToolPath(dir: string): string {
+  return `${coreDeployShareDirName()}/${requireTool(dir).dir}`;
+}
+
+/** 共享 ripgrep 的部署路径（相对部署前缀）：`share/<产品名>/ripgrep` */
 export function coreDeployRipgrepPath(): string {
-  return `${coreDeployShareDirName()}/ripgrep`;
+  return coreDeployToolPath(CORE_RIPGREP_DIR);
+}
+
+/** 共享 fd 的部署路径（相对部署前缀）：`share/<产品名>/fd` */
+export function coreDeployFdPath(): string {
+  return coreDeployToolPath(CORE_FD_DIR);
+}
+
+/** 内置工具的可执行文件名；Windows 带 `.exe` */
+export function bundledToolFileName(
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const stem = requireTool(dir).stem;
+  return platform === 'win32' ? `${stem}.exe` : stem;
 }
 
 /** 自带 ripgrep 的文件名；Windows 带 `.exe` */
 export function bundledRipgrepFileName(platform: NodeJS.Platform = process.platform): string {
-  return platform === 'win32' ? 'rg.exe' : 'rg';
+  return bundledToolFileName(CORE_RIPGREP_DIR, platform);
+}
+
+/** 自带 fd 的文件名；Windows 带 `.exe` */
+export function bundledFdFileName(platform: NodeJS.Platform = process.platform): string {
+  return bundledToolFileName(CORE_FD_DIR, platform);
+}
+
+/** 内置工具的本地路径（给定 Core 可执行文件路径）：`<dir>/<tool>/<exe>` */
+export function bundledToolPath(
+  coreBinary: string,
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return path.join(path.dirname(coreBinary), requireTool(dir).dir, bundledToolFileName(dir, platform));
 }
 
 /** 自带 ripgrep 的本地路径（给定 Core 可执行文件路径） */
@@ -102,11 +165,15 @@ export function bundledRipgrepPath(
   coreBinary: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  return path.join(
-    path.dirname(coreBinary),
-    CORE_RIPGREP_DIR,
-    bundledRipgrepFileName(platform),
-  );
+  return bundledToolPath(coreBinary, CORE_RIPGREP_DIR, platform);
+}
+
+/** 自带 fd 的本地路径（给定 Core 可执行文件路径） */
+export function bundledFdPath(
+  coreBinary: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return bundledToolPath(coreBinary, CORE_FD_DIR, platform);
 }
 
 /**

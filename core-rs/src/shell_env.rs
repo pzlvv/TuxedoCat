@@ -91,6 +91,13 @@ static RESOLVED: OnceLock<Result<ShellPath, String>> = OnceLock::new();
 #[cfg(test)]
 static TEST_FORCED: Mutex<Option<ShellPath>> = Mutex::new(None);
 
+/// 测试钉的内置工具目录（`force_bundled_dirs_for_test` 写入，`apply` 系列优先于真实解析）。
+///
+/// 与 `TEST_FORCED` 同一套存亡口径：沙箱钉空表、销毁即清除，用例不会因为开发机刚好
+/// 构建过产物而得到不同结果。
+#[cfg(test)]
+static TEST_BUNDLED_DIRS: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
+
 /// 当前生效的 PATH：测试覆盖优先，其后是探测缓存。
 fn current() -> Result<ShellPath, String> {
     #[cfg(test)]
@@ -110,7 +117,10 @@ fn current() -> Result<ShellPath, String> {
 
 /// 把解析出的 PATH 注入 shell 子进程（`$SHELL -c` 拉起的工具命令 / 后台任务）。
 pub fn apply(command: &mut Command) -> Result<(), String> {
-    apply_value(command, current()?.shell());
+    let user = current()?.shell().to_os_string();
+    let dirs = search_path_dirs_for_test_or_now();
+    let prefixed = prepend_bundled_dirs(&user, &dirs, shell_form_of(&user));
+    apply_value(command, &prefixed);
     Ok(())
 }
 
@@ -121,8 +131,144 @@ pub fn apply(command: &mut Command) -> Result<(), String> {
 pub fn apply_native(command: &mut Command) -> Result<(), String> {
     let native = current()?.native().to_os_string();
     let normalized = native_path_from(&native).unwrap_or(native);
-    apply_value(command, &normalized);
+    let dirs = search_path_dirs_for_test_or_now();
+    let prefixed = prepend_bundled_dirs(&normalized, &dirs, Form::Windows);
+    apply_value(command, &prefixed);
     Ok(())
+}
+
+/// PATH 的形式：决定内置目录怎么表达、分隔符怎么取。
+///
+/// Windows 上两条注入路径的形式可能不同：Git Bash / MSYS2 / Cygwin 的 shell 形式是 POSIX
+/// 列表（`:` 分隔、`/c/...` 条目），而 PowerShell / cmd 的 shell 形式是 Windows 列表
+/// （`;` 分隔、`C:\...` 条目）。因此不能按「注入目标」猜形式，要按**用户 PATH 本身**的形态定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// POSIX 列表：`:` 分隔，条目是 `/c/...` 这样的形式
+    Posix,
+    /// Windows 列表：`;` 分隔，条目是 `C:\...` 这样的形式
+    Windows,
+}
+
+/// 按一份 PATH 的实际形态判定它属于哪种形式（非 Windows 恒 POSIX）。
+///
+/// 判据：含分号即为 Windows 列表（PowerShell / cmd 与原生形式的进程环境）；Git Bash 的
+/// shell 形式用 `:` 分隔且条目是 `/c/...`，落在 POSIX 分支。
+fn shell_form_of(user: &OsStr) -> Form {
+    if !cfg!(windows) {
+        return Form::Posix;
+    }
+    match user.to_str() {
+        Some(text) if text.contains(';') => Form::Windows,
+        _ => Form::Posix,
+    }
+}
+
+/// 内置工具目录的来源（生产路径读进程环境，测试路径读覆盖槽）。
+fn search_path_dirs_for_test_or_now() -> Vec<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(forced) = TEST_BUNDLED_DIRS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
+        return forced;
+    }
+    crate::bundled_tools::search_path_dirs_now()
+}
+
+/// 把内置工具目录前置到一份 PATH 前面（`docs/core/standalone-core.md` 第 3.2.1 节）。
+///
+/// 三条规则：
+/// 1. **前置**：内置目录排在用户 PATH 之前，同名命令（用户自己装的 `rg` / `fd`）被遮蔽——
+///    模型在工具 shell 里跑到的恒是随产品分发的那一份，行为不随目标机器漂移；
+/// 2. **去重但保持前置**：用户 PATH 里已有的同一条目从原位删掉，只保留前置的那一份；
+/// 3. **跳过坏条目**：某目录无法表达成目标形式（Windows 上既不是盘符也不是 UNC）时跳过它，
+///    不把坏条目注入 PATH。
+///
+/// 内置目录为空（产物缺失 / 未构建）时原样返回用户 PATH：缺工具的失败信号由命令本身发出
+/// （`rg: command not found` 进工具结果），注入侧不报错——注入报错会让整条 `Bash` 命令
+/// 失败，把上百条与搜索无关的命令一起挡掉，真正的问题反而被埋在后面。
+fn prepend_bundled_dirs(user: &OsStr, dirs: &[std::path::PathBuf], form: Form) -> OsString {
+    // 分隔符跟形式走（见 [`Form`] 的说明）
+    let separator = match form {
+        Form::Posix => ':',
+        Form::Windows => ';',
+    };
+    let mut front: Vec<String> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    for dir in dirs {
+        let rendered = match form {
+            Form::Posix => crate::bundled_tools::shell_form(dir),
+            Form::Windows => crate::bundled_tools::native_form(dir),
+        };
+        let Some(rendered) = rendered else {
+            continue;
+        };
+        if rendered.is_empty() {
+            continue;
+        }
+        let key = path_key(&rendered);
+        if keys.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        keys.push(key);
+        front.push(rendered);
+    }
+    if front.is_empty() {
+        return user.to_os_string();
+    }
+    let mut parts: Vec<String> = front;
+    // 用户 PATH 里已在 pref 出现过的条目跳过（去重；顺序仍是「内置在前」）
+    if let Some(text) = user.to_str() {
+        for entry in text.split(separator) {
+            // 空条目（尾随分隔符 / 空串 PATH）原样保留语义上没有意义的段，直接丢弃
+            if entry.is_empty() {
+                continue;
+            }
+            // `native_path_from` 归一后的条目可能是 Windows 形式，与内置目录的 key 同口径比较
+            if keys.iter().any(|existing| existing == &path_key(entry)) {
+                continue;
+            }
+            // Windows 上归一后再比较一次：用户 PATH 可能写着 `/c/...`，内置目录已渲染成 `C:\...`
+            if let Some(normalized_entry) = normalized_entry(entry, form) {
+                if keys
+                    .iter()
+                    .any(|existing| existing == &path_key(&normalized_entry))
+                {
+                    continue;
+                }
+            }
+            parts.push(entry.to_string());
+        }
+    } else {
+        // 非 UTF-8 的 PATH：原样追加（不做去重，保持旧行为的下限），不丢用户目录
+        parts.push(user.to_string_lossy().to_string());
+    }
+    OsString::from(parts.join(&separator.to_string()))
+}
+
+/// 条目的比较键：Windows 上大小写不敏感、正反斜杠视为同一条目；其余平台原样。
+fn path_key(entry: &str) -> String {
+    if !cfg!(windows) {
+        return entry.to_string();
+    }
+    let unified = entry.replace('/', "\\");
+    // 去掉尾随反斜杠（`C:\bin\` 与 `C:\bin` 是同一条目）
+    let trimmed = unified.trim_end_matches('\\');
+    trimmed.to_lowercase()
+}
+
+/// 用户 PATH 的某一条目在另一形式下的写法（用于跨形式比较）；转换不了返回 `None`。
+fn normalized_entry(entry: &str, form: Form) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    match form {
+        // POSIX 列表：用户写着的 `C:\x` 要换成 `/c/x` 才能与内置目录比
+        Form::Posix => crate::bundled_tools::shell_form(std::path::Path::new(entry)),
+        Form::Windows => crate::bundled_tools::native_form(std::path::Path::new(entry)),
+    }
 }
 
 fn apply_value(command: &mut Command, path: &OsStr) {
@@ -216,6 +362,25 @@ pub fn force_path_for_test(shell: OsString, native: OsString) {
 #[cfg(test)]
 pub fn clear_forced_path_for_test() {
     *TEST_FORCED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+/// 测试专用：钉死内置工具目录（`Sandbox::new` 钉空表，`Drop` 清除）。
+///
+/// 与 `TEST_FORCED` 分开存：PATH 探测与产物解析是两件事，用例可以只钉其中一个。
+/// 沙箱钉空表，用例就不会因为开发机刚好构建过产物而得到不同结果。
+#[cfg(test)]
+pub fn force_bundled_dirs_for_test(dirs: Vec<std::path::PathBuf>) {
+    *TEST_BUNDLED_DIRS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dirs);
+}
+
+/// 测试专用：清除内置目录钉定
+#[cfg(test)]
+pub fn clear_bundled_dirs_for_test() {
+    *TEST_BUNDLED_DIRS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }

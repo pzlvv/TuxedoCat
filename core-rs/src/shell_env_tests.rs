@@ -340,3 +340,87 @@ fn windows_bash_probe_keeps_the_environment_path() {
         "原生形式就是进程环境里的 Windows PATH"
     );
 }
+
+// ==================== 内置工具目录前置（specs/044 FR-004） ====================
+
+/// 前置顺序：内置目录在前、用户 PATH 在后。
+#[test]
+fn bundled_dirs_are_prepended() {
+    let sandbox = crate::test_support::Sandbox::new("shell-env-prepend");
+    let bundled = sandbox.root.join("bundled").join("ripgrep");
+    crate::shell_env::force_bundled_dirs_for_test(vec![bundled.clone()]);
+
+    let mut shell_command = Command::new("noop");
+    apply(&mut shell_command).expect("PATH 已由 Sandbox 钉死");
+    let shell_path = child_path(&shell_command).expect("apply 应写入 PATH");
+    // 形式跟着用户 PATH 的实际形态走（Windows 上沙箱钉的是进程环境的
+    // `;` 分隔列表，因此这里期望 Windows 形式）
+    let expected = match shell_form_of(OsStr::new(&shell_path)) {
+        Form::Posix => crate::bundled_tools::shell_form(&bundled),
+        Form::Windows => crate::bundled_tools::native_form(&bundled),
+    }
+    .expect("内置目录应可表达");
+    assert!(
+        shell_path.starts_with(&expected),
+        "内置目录应置顶：{shell_path}"
+    );
+
+    // 用户 PATH 的沙箱标记仍在（只是排在内置目录之后）
+    let bin_prefix = sandbox.root.join("bin").to_string_lossy().to_string();
+    assert!(
+        shell_path.contains(&bin_prefix),
+        "用户 PATH 不能丢：{shell_path}"
+    );
+}
+
+/// 原生子进程同样前置（Windows 上是 Windows 形式）。
+#[test]
+fn bundled_dirs_are_prepended_for_native_children() {
+    let sandbox = crate::test_support::Sandbox::new("shell-env-prepend-native");
+    let bundled = sandbox.root.join("bundled").join("fd");
+    crate::shell_env::force_bundled_dirs_for_test(vec![bundled.clone()]);
+
+    let mut native_command = Command::new("noop");
+    apply_native(&mut native_command).expect("PATH 已由 Sandbox 钉死");
+    let native_path = child_path(&native_command).expect("apply_native 应写入 PATH");
+    let expected = crate::bundled_tools::native_form(&bundled).expect("内置目录应可表达");
+    assert!(
+        native_path.starts_with(&expected),
+        "内置目录应置顶：{native_path}"
+    );
+}
+
+/// 用户 PATH 里已有同一条目时只保留前置的那一份（不重复、顺序仍是内置在前）。
+#[test]
+fn bundled_dirs_deduplicate_against_user_path() {
+    let _sandbox = crate::test_support::Sandbox::new("shell-env-dedupe");
+    let dir = std::env::temp_dir().join("tc-shell-env-dedupe");
+    // 用户 PATH 用一个 POSIX 列表（Windows 上也合法：Git Bash 的 shell 形式就是这样），
+    // 与内置目录的渲染形式对齐后断言去重
+    let rendered = crate::bundled_tools::shell_form(&dir).expect("目录可表达");
+    let user = OsString::from(format!("{rendered}:/after/bin"));
+    crate::shell_env::force_path_for_test(user.clone(), user);
+    crate::shell_env::force_bundled_dirs_for_test(vec![dir.clone()]);
+
+    let mut command = Command::new("noop");
+    apply(&mut command).expect("PATH 已由覆盖槽钉死");
+    let path = child_path(&command).expect("apply 应写入 PATH");
+    let hits = path.matches(&rendered).count();
+    assert_eq!(hits, 1, "同一条目只应出现一次：{path}");
+    assert!(path.starts_with(&rendered), "内置目录仍在前：{path}");
+    assert!(path.ends_with("/after/bin"), "用户目录保留在后：{path}");
+}
+
+/// 内置目录为空（产物缺失 / 未构建）时原样返回用户 PATH：注入侧不报错。
+#[test]
+fn empty_bundled_dirs_leave_user_path_untouched() {
+    let _sandbox = crate::test_support::Sandbox::new("shell-env-empty-bundled");
+    let user = OsString::from(sample_path());
+    crate::shell_env::force_path_for_test(user.clone(), user.clone());
+    crate::shell_env::force_bundled_dirs_for_test(Vec::new());
+
+    let mut command = Command::new("noop");
+    apply(&mut command).expect("PATH 已由覆盖槽位钉死");
+    let path = child_path(&command).expect("apply 应写入 PATH");
+    assert_eq!(path, user.to_string_lossy(), "空内置表不应改动 PATH");
+}

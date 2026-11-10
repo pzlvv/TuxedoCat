@@ -18,6 +18,10 @@
 | [0009](0009-todo-state-owned-by-core.md) | Todo 状态由 Core 持有，宿主按需索取、变更推送 | 已采纳 |
 | [0010](0010-ask-user-question-dsh-schema.md) | AskUserQuestion 入参对齐 dsh 的 questions 形状 | 已采纳 |
 | [0011](0011-agents-shared-skills-discovery.md) | 技能发现面转向 `.agents` 共享目录（产品目录降为兼容层） | 已采纳 |
+| [0012](0012-daemon-frame-peek.md) | daemon 对内层帧的两类只读窥探 | 已采纳 |
+| [0013](0013-session-advisory-file-lock.md) | 会话独占锁用 OS 建议性文件锁 | 已采纳 |
+| [0014](0014-bash-detach-escape-hatch.md) | Bash 的 detach 定位为管辖豁免开关而非执行模式 | 已采纳 |
+| [0015](0015-pycharm-plugin-host.md) | 第四宿主以 PyCharm 插件直连帧通道并复用 webview 渲染 | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

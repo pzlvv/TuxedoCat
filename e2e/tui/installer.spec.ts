@@ -19,7 +19,8 @@ import {
  * 非 TTY 守卫两条路径，后者同时验证「从部署前缀解析指纹槽位」的候选链）。
  *
  * 部署布局：`<prefix>/share/<产品名>/<指纹>/core + fingerprint`、
- * `<prefix>/share/<产品名>/ripgrep/rg`、`<prefix>/share/<产品名>/tui`。
+ * `<prefix>/share/<产品名>/ripgrep/rg`、`<prefix>/share/<产品名>/fd/fd`、
+ * `<prefix>/share/<产品名>/tui`。
  *
  * 前置产物：`npm run build:core`（宿主平台）；TUI 二进制由构建脚本自动补建。
  * workers=1 顺序执行，安装前缀在 beforeAll 建一次、全部用例共用。
@@ -126,12 +127,13 @@ test.beforeAll(async () => {
   }
 });
 
-test('部署布局完整（TUI + 指纹槽位 + 共享 ripgrep）', () => {
+test('部署布局完整（TUI + 指纹槽位 + 共享内置工具）', () => {
   const layout = [
     path.join(prefix, 'share', PRODUCT, `tui${ext}`),
     path.join(slotDir, `${CORE_BINARY_NAME}${ext}`),
     path.join(slotDir, 'fingerprint'),
     path.join(prefix, 'share', PRODUCT, 'ripgrep', `rg${ext}`),
+    path.join(prefix, 'share', PRODUCT, 'fd', `fd${ext}`),
   ];
   for (const file of layout) expect(existsSync(file), file).toBe(true);
 

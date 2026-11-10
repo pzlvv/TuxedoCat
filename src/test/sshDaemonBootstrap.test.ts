@@ -29,7 +29,7 @@ import {
   splitEndpoint,
   type RemoteSsh,
 } from '../host/standalone/sshDaemonBootstrap';
-import { coreBinaryFileName, coreDeployDirPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
+import { CORE_FD_DIR, coreBinaryFileName, coreDeployDirPath, coreDeployFdPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
 import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 
@@ -40,10 +40,13 @@ const FINGERPRINT = 'f'.repeat(64);
 const DEPLOY_DIR = coreDeployDirPath(FINGERPRINT);
 /** 远端共享 ripgrep 路径：`share/<core.deployPrefix>/ripgrep`（同一份派生纯函数） */
 const RIPGREP_DIR = coreDeployRipgrepPath();
+const FD_DIR = coreDeployFdPath();
 const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/run/core-daemon-${FINGERPRINT}.json`;
 const BINARY_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
-/** Core 自带的 ripgrep：产品目录根的共享位，全部指纹槽位共用（`docs/core/standalone-core.md` 第 4 节） */
+/** Core 自带的 ripgrep：产品目录根的共享位，全部指纹槽位共用（`docs/core/standalone-core.md` 第 3.1 节） */
 const RIPGREP_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${RIPGREP_DIR}/rg`;
+/** Core 自带的 fd：与 ripgrep 同级的共享位 */
+const FD_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${FD_DIR}/fd`;
 /**
  * 引导执行的启动命令：daemon 恒绑回环（转发连接从远端本机发起，端口不出机器）；
  * 端口交给内核分配——多版本 daemon 并存互不抢固定端口，实际端口随状态文件读回；
@@ -147,7 +150,7 @@ class FakeSsh implements RemoteSsh {
 }
 
 /** 建一份带 Linux 产物目录（含构建指纹）的临时 extensionPath，并返回产物路径 */
-function makeExtensionPath(): { root: string; binary: string; ripgrep: string } {
+function makeExtensionPath(): { root: string; binary: string; ripgrep: string; fd: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-bootstrap-'));
   const binary = path.join(
     root, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
@@ -160,7 +163,11 @@ function makeExtensionPath(): { root: string; binary: string; ripgrep: string } 
   const ripgrep = path.join(path.dirname(binary), 'ripgrep', 'rg');
   fs.mkdirSync(path.dirname(ripgrep), { recursive: true });
   fs.writeFileSync(ripgrep, 'fake-rg-binary');
-  return { root, binary, ripgrep };
+  // fd 与 ripgrep 同级（同一个 BUNDLED_TOOLS 登记表，见 src/host/standalone/coreBinary.ts）
+  const fd = path.join(path.dirname(binary), CORE_FD_DIR, 'fd');
+  fs.mkdirSync(path.dirname(fd), { recursive: true });
+  fs.writeFileSync(fd, 'fake-fd-binary');
+  return { root, binary, ripgrep, fd };
 }
 
 function cleanup(root: string): void {
@@ -169,7 +176,7 @@ function cleanup(root: string): void {
 
 runTests('sshDaemonBootstrap', async () => {
   const { check, finish } = createChecker();
-  const { root, binary, ripgrep } = makeExtensionPath();
+  const { root, binary, ripgrep, fd } = makeExtensionPath();
   const options = { extensionPath: root, log: () => undefined };
 
   // ---------- endpoint 解析 ----------
@@ -227,6 +234,7 @@ runTests('sshDaemonBootstrap', async () => {
     fake.reachable.add('127.0.0.1:10975');
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(FD_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('复用运行中的 daemon（回环地址）', daemon.host === '127.0.0.1' && daemon.port === 10975);
     check('复用运行中的 daemon（端口取自状态文件）', daemon.port === 10975);
@@ -234,7 +242,7 @@ runTests('sshDaemonBootstrap', async () => {
     check('复用时不部署产物', fake.uploads.length === 0);
   }
 
-  // ---------- 在跑但缺自带 ripgrep：补 rg，不重启 daemon ----------
+  // ---------- 在跑但缺内置工具：补 rg 与 fd，不重启 daemon ----------
 
   {
     const fake = new FakeSsh();
@@ -242,12 +250,18 @@ runTests('sshDaemonBootstrap', async () => {
     fake.reachable.add('127.0.0.1:10975');
     fake.executables.add(BINARY_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
-    check('补 rg 后仍复用同一个 daemon', daemon.port === 10975 && fake.startCount === 0);
-    const rgStaging = fake.uploads[0]?.remote;
+    check('补内置工具后仍复用同一个 daemon', daemon.port === 10975 && fake.startCount === 0);
+    const rgStaging = fake.uploads.find((upload) => upload.local === ripgrep)?.remote;
     const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
-    check('已在跑时补传自带 ripgrep（经唯一暂存名 + mv）', fake.uploads.length === 1
-      && isUniqueStagingOf(rgStaging, RIPGREP_PATH) && fake.uploads[0]?.local === ripgrep
-      && rgMv !== undefined && fake.commands.includes(rgMv));
+    check('已在跑时补传自带 ripgrep（经唯一暂存名 + mv）',
+      isUniqueStagingOf(rgStaging, RIPGREP_PATH) && rgMv !== undefined
+      && fake.commands.includes(rgMv));
+    const fdStaging = fake.uploads.find((upload) => upload.local === fd)?.remote;
+    const fdMv = mvCommand(fdStaging, FD_PATH);
+    check('已在跑时补传 fd 到共享位（同样经唯一暂存名 + mv）',
+      isUniqueStagingOf(fdStaging, FD_PATH) && fdMv !== undefined
+      && fake.commands.includes(fdMv));
+    check('两份内置工具各占一次上传', fake.uploads.length === 2);
     check('已在跑时不重跑 start', !fake.commands.includes(START_COMMAND));
   }
 
@@ -268,10 +282,60 @@ runTests('sshDaemonBootstrap', async () => {
     check('补传的自带 ripgrep 落在产品共享位（最终路径由 mv 到位）',
       isUniqueStagingOf(rgStaging, RIPGREP_PATH) && rgMv !== undefined
       && fake.commands.includes(rgMv));
+    const fdStaging = fake.uploads.find((upload) => upload.local === fd)?.remote;
+    const fdMv = mvCommand(fdStaging, FD_PATH);
+    check('补传的 fd 同样落在产品共享位', isUniqueStagingOf(fdStaging, FD_PATH)
+      && fdMv !== undefined && fake.commands.includes(fdMv));
     check('补传后仍复用运行中的 daemon', daemon.port === 10975
       && !fake.commands.includes(START_COMMAND));
     check('目标文件本身永不直接覆盖写（执行中的 daemon 是 ETXTBSY）',
       !fake.uploads.some((upload) => upload.remote === BINARY_PATH));
+  }
+
+  // ---------- 在跑、rg 在但缺 fd：只补 fd ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.writeState('127.0.0.1:10975');
+    fake.reachable.add('127.0.0.1:10975');
+    fake.executables.add(BINARY_PATH);
+    fake.executables.add(RIPGREP_PATH);
+    const daemon = await ensureRemoteDaemon(fake, options);
+    const fdStaging = fake.uploads[0]?.remote;
+    const fdMv = mvCommand(fdStaging, FD_PATH);
+    check('只缺 fd 时只补 fd（rg 不重复上传）', fake.uploads.length === 1
+      && isUniqueStagingOf(fdStaging, FD_PATH) && fake.uploads[0]?.local === fd
+      && fdMv !== undefined && fake.commands.includes(fdMv));
+    check('只补 fd 后仍复用同一个 daemon', daemon.port === 10975 && fake.startCount === 0);
+  }
+
+  // ---------- 本机产物缺 fd：直接报错，不静默跳过 ----------
+
+  {
+    const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-missing-fd-'));
+    const missingBinary = path.join(
+      missingRoot, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
+    );
+    fs.mkdirSync(path.dirname(missingBinary), { recursive: true });
+    fs.writeFileSync(missingBinary, 'fake-core-binary');
+    fs.writeFileSync(path.join(path.dirname(missingBinary), 'fingerprint'), `${FINGERPRINT}
+`);
+    const onlyRg = path.join(path.dirname(missingBinary), 'ripgrep', 'rg');
+    fs.mkdirSync(path.dirname(onlyRg), { recursive: true });
+    fs.writeFileSync(onlyRg, 'fake-rg-binary');
+
+    const fake = new FakeSsh();
+    let message = '';
+    try {
+      await ensureRemoteDaemon(fake, { extensionPath: missingRoot, log: () => undefined });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    check('本机缺 fd 产物时引导报错并点名工具',
+      message.includes('bundled tool "fd" is missing') && message.includes('npm run build:core'));
+    check('缺 fd 时不把 fd 的半截产物传上去',
+      !fake.uploads.some((upload) => upload.remote.includes(FD_DIR)));
+    cleanup(missingRoot);
   }
 
   // ---------- 已部署未启动：只跑 start，产物在就不重传 ----------
@@ -280,6 +344,7 @@ runTests('sshDaemonBootstrap', async () => {
     const fake = new FakeSsh();
     fake.executables.add(BINARY_PATH);
     fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(FD_PATH);
     const daemon = await ensureRemoteDaemon(fake, options);
     check('已部署时返回状态文件里的端口', daemon.port === 10976);
     check('指纹槽位存在时不重新上传（不做字节比对）', fake.uploads.length === 0);
@@ -295,18 +360,24 @@ runTests('sshDaemonBootstrap', async () => {
     const daemon = await ensureRemoteDaemon(fake, options);
     const binaryStaging = fake.uploads[0]?.remote;
     const binaryMv = mvCommand(binaryStaging, BINARY_PATH);
-    const rgStaging = fake.uploads[1]?.remote;
+    const rgStaging = fake.uploads.find((upload) => upload.local === ripgrep)?.remote;
     const rgMv = mvCommand(rgStaging, RIPGREP_PATH);
-    check('未部署时上传到 ~/.local/share/<产品名>/<指纹>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 2
+    check('未部署时上传到 ~/.local/share/<产品名>/<指纹>/（经唯一暂存名 + mv 原子换名）', fake.uploads.length === 3
       && isUniqueStagingOf(binaryStaging, BINARY_PATH)
       && binaryMv !== undefined && fake.commands.includes(binaryMv));
     check('上传的是本机携带的对应平台产物', fake.uploads[0]?.local === binary);
     check('上传后置可执行权限', fake.uploads[0]?.mode === 0o755);
     check('未部署时一并上传自带 ripgrep 到共享位（同样经唯一暂存名 + mv）',
-      isUniqueStagingOf(rgStaging, RIPGREP_PATH) && fake.uploads[1]?.local === ripgrep
-      && rgMv !== undefined && fake.commands.includes(rgMv));
+      isUniqueStagingOf(rgStaging, RIPGREP_PATH) && rgMv !== undefined
+      && fake.commands.includes(rgMv));
+    const fdStaging = fake.uploads.find((upload) => upload.local === fd)?.remote;
+    const fdMv = mvCommand(fdStaging, FD_PATH);
+    check('未部署时一并上传 fd 到共享位（同样经唯一暂存名 + mv）',
+      isUniqueStagingOf(fdStaging, FD_PATH) && fdMv !== undefined
+      && fake.commands.includes(fdMv));
     check('上传前建好指纹槽位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}'`));
     check('上传前建好 ripgrep 共享位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_DEPLOY_ROOT}/${RIPGREP_DIR}'`));
+    check('上传前建好 fd 共享位目录', fake.commands.includes(`mkdir -p '${HOME}/${REMOTE_DEPLOY_ROOT}/${FD_DIR}'`));
     check('上传后执行 start（绑回环，端口交给内核分配）', fake.commands.includes(START_COMMAND));
     check('返回 daemon endpoint', daemon.host === '127.0.0.1' && daemon.port === 10976);
   }
@@ -427,28 +498,6 @@ runTests('sshDaemonBootstrap', async () => {
     check('指纹格式非法时报错', message.includes('malformed'));
     check('指纹非法时不启动远端 daemon', !fake.commands.includes(START_COMMAND));
     cleanup(broken);
-  }
-
-  // ---------- 本机产物缺自带 ripgrep：报错，不静默降级 ----------
-
-  {
-    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-bootstrap-bare-'));
-    const bareBinary = path.join(
-      bare, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux', coreBinaryFileName('linux'),
-    );
-    fs.mkdirSync(path.dirname(bareBinary), { recursive: true });
-    fs.writeFileSync(bareBinary, 'fake-core-binary');
-    fs.writeFileSync(path.join(path.dirname(bareBinary), 'fingerprint'), `${FINGERPRINT}\n`);
-    const fake = new FakeSsh();
-    let message = '';
-    try {
-      await ensureRemoteDaemon(fake, { extensionPath: bare, log: () => undefined });
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    check('本机产物缺自带 ripgrep 时报错', message.includes('bundled ripgrep'));
-    check('缺 ripgrep 时不启动远端 daemon', !fake.commands.includes(START_COMMAND));
-    cleanup(bare);
   }
 
   cleanup(root);

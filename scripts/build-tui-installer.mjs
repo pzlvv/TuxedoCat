@@ -153,11 +153,16 @@ function resolveTargets(options) {
   return targets;
 }
 
-/** Core 产物三件套是否齐（二进制 / ripgrep / 指纹） */
+/**
+ * Core 产物四件套是否齐（二进制 / 内置工具 rg 与 fd / 指纹）。
+ *
+ * 工具目录名与 build-core.mjs 的 BUNDLED_TOOLS 同源（这里只关心存在性，不复制）。
+ */
 function coreArtifactsReady(target) {
   const dir = join(repoRoot, 'resources', project.core.resourceDir, target.dir);
   return existsSync(join(dir, `${project.core.binaryName}${target.ext}`))
     && existsSync(join(dir, 'ripgrep', `rg${target.ext}`))
+    && existsSync(join(dir, 'fd', `fd${target.ext}`))
     && existsSync(join(dir, FINGERPRINT_FILE_NAME));
 }
 

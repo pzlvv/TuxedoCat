@@ -583,3 +583,90 @@ fn local_sub_agent_prompt_keeps_brief_form() {
     assert!(prompt.contains("only after a cross-workspace ToolAgent"));
     assert!(!prompt.contains("creator workspace"));
 }
+
+/// 提示词里不再有 `never use the Bash tool with` 式禁令（specs/044 FR-006）。
+///
+/// 代码里没有任何拦截，写成禁令只会让模型在需要管道组合时无所适从——工具优先与
+/// Bash `rg` / `fd` 是分工而非对立。
+#[test]
+fn tool_details_do_not_ban_bash_rg() {
+    let details = tool_usage_section(&crate::tools::definitions(), None);
+    assert!(
+        !details.contains("never use the Bash tool with"),
+        "提示词不应再有禁令式措辞"
+    );
+    // 分工的两侧都要写明：单个搜索用工具、需要组合时用 Bash
+    assert!(
+        details.contains("Prefer this tool for a single search"),
+        "缺少工具优先措辞"
+    );
+    assert!(
+        details.contains("use Bash `rg`"),
+        "Grep 段缺少 Bash rg 的适用场景"
+    );
+    assert!(
+        details.contains("use Bash `fd`"),
+        "Glob 段缺少 Bash fd 的适用场景"
+    );
+}
+
+/// 提示词只写使用规则，不写实现事实（specs/044 AC-18）。
+#[test]
+fn tool_details_describe_rules_not_mechanism() {
+    let details = tool_usage_section(&crate::tools::definitions(), None);
+    for banned in [
+        "ship with",
+        "bundled",
+        "first on this shell",
+        "this shell's PATH",
+    ] {
+        assert!(
+            !details.contains(banned),
+            "提示词不应出现实现细节「{banned}」"
+        );
+    }
+    // 正例：规则本身在
+    assert!(
+        details.contains("**Prefer ripgrep and fd**"),
+        "缺少内置工具优先规则"
+    );
+    assert!(
+        details.contains("use `rg` instead of `grep`"),
+        "缺少 rg 代替 grep 的规则"
+    );
+    assert!(
+        details.contains("`fd` instead of `find`"),
+        "缺少 fd 代替 find 的规则"
+    );
+}
+
+/// `fd` 的三条易踩规则写进提示词（specs/044 FR-006）。
+///
+/// 三条都指向「看似正常的输出」：把搜索根当 pattern、pattern 里带路径分隔符、把空输出
+/// 当成文件不存在。
+#[test]
+fn tool_details_warn_about_fd_silent_pitfalls() {
+    let details = tool_usage_section(&crate::tools::definitions(), None);
+    assert!(
+        details.contains("The first argument is the pattern, not a path"),
+        "缺少「第一个参数是 pattern 不是路径」的规则"
+    );
+    assert!(
+        details.contains("`fd -e ts . src`, not `fd -e ts src`"),
+        "缺少用占位 pattern 指定搜索根的示例"
+    );
+    assert!(
+        details.contains("No `/` inside the pattern"),
+        "缺少「pattern 不带 `/`」的规则"
+    );
+    assert!(
+        details.contains("Empty output is not absence"),
+        "缺少「空输出不等于文件不存在」的规则"
+    );
+    for ignored in ["`.gitignore`", "`-I`", "`-H`"] {
+        assert!(
+            details.contains(ignored),
+            "空输出那条缺少忽略来源「{ignored}」"
+        );
+    }
+}

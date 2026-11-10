@@ -101,7 +101,8 @@ notice 提示后退出。
 ### 2.4 Core 产物定位（`tui-rs/src/core_root.rs`）
 
 部署布局（[docs/features/tui-installer.md 第 2 节](../features/tui-installer.md#2-功能需求)）：`<前缀>/share/<产品名>/<指纹>/` 放
-Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 是全部槽位共享的 rg，TUI 二进制在
+Core 槽位，`<前缀>/share/<产品名>/ripgrep/` 与 `<前缀>/share/<产品名>/fd/` 是全部槽位共享的
+内置工具，TUI 二进制在
 `<前缀>/share/<产品名>/tui[.exe]`（unix 上另有软链接 `<前缀>/bin/<产品名>` 指向它）。
 
 候选根顺序（每个根先按部署布局、再按开发期仓库布局解析；第一个能解析出 Core

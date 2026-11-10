@@ -33,10 +33,12 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
 import {
-  bundledRipgrepPath,
+  BUNDLED_TOOLS,
+  bundledToolFileName,
+  bundledToolPath,
   coreBinaryFileName,
   coreDeployDirPath,
-  coreDeployRipgrepPath,
+  coreDeployToolPath,
   readCoreFingerprint,
   resolveCoreBinary,
 } from './coreBinary.js';
@@ -127,8 +129,7 @@ export async function ensureRemoteDaemon(
   if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
-  const remoteRipgrep = posixJoin(home, REMOTE_DEPLOY_ROOT, coreDeployRipgrepPath(), 'rg');
-  await ensureRemoteRipgrep(ssh, options, localBinary, remoteRipgrep, target);
+  await ensureRemoteBundledTools(ssh, options, localBinary, home, target);
 
   // 3. 在跑的 daemon 原样返回；否则 start（幂等：已在跑就只打印就绪信息）。启动前
   //    不结束别的 daemon：daemon 恒绑回环、端口交给内核分配，多版本 daemon 并存时
@@ -205,34 +206,43 @@ async function uploadAtomically(ssh: RemoteSsh, localPath: string, remotePath: s
 }
 
 /**
- * 确保远端有 Core 自带的 ripgrep（产品目录根的共享位，全部指纹槽位共用）。
+ * 确保远端有全部内置工具（产品目录根的共享位，全部指纹槽位共用）。
  *
- * 远端机器不一定装过 `rg`，而 Grep / Glob 是核心工具：缺了它，远端的工具只能
- * `spawn rg ENOENT`。ripgrep 与指纹无关（Grep / Glob 的行为不随 Core 版本变），
- * 放 `share/<core.deployPrefix>/ripgrep`——与 Core 侧「自己所在槽位的上一级目录里
- * 找 `ripgrep`」的定位口径配对（core-rs/src/tools.rs）。**缺了才传**；本机产物里
- * 没有这份 rg 属于构建不完整，直接报错（``docs/architecture/principles.md`）。
+ * 远端机器不一定装过 `rg` / `fd`，而 Grep / Glob 与工具 shell 的 PATH 前置都要用它们：
+ * 缺了它，远端只能 `spawn rg ENOENT`、模型在工具 shell 里跑的 `fd` 也不存在。两份工具都
+ * 与指纹无关（行为不随 Core 版本变），放 `share/<core.deployPrefix>/<tool.dir>/`——与 Core
+ * 侧「自己所在槽位的上一级目录里找 `<tool.dir>`」的定位口径配对
+ * （core-rs/src/bundled_tools.rs 的 `tool_candidates`）。**缺了才传**；本机产物里没有这份
+ * 工具属于构建不完整，直接报错（``docs/architecture/principles.md`）。
  */
-async function ensureRemoteRipgrep(
+async function ensureRemoteBundledTools(
   ssh: RemoteSsh,
   options: RemoteBootstrapOptions,
   localBinary: string,
-  remoteRipgrep: string,
+  home: string,
   target: RemoteTarget,
 ): Promise<void> {
-  if ((await ssh.stat(remoteRipgrep)).exists) return;
-
-  const localRipgrep = bundledRipgrepPath(localBinary, target.platform);
-  if (!existsSync(localRipgrep)) {
-    throw new Error(
-      `bundled ripgrep is missing from the local Core product: ${localRipgrep}; `
-        + 'run "npm run build:core" first.',
+  for (const tool of BUNDLED_TOOLS) {
+    const remote = posixJoin(
+      home,
+      REMOTE_DEPLOY_ROOT,
+      coreDeployToolPath(tool.dir),
+      bundledToolFileName(tool.dir, 'linux'),
     );
+    if ((await ssh.stat(remote)).exists) continue;
+
+    const local = bundledToolPath(localBinary, tool.dir, target.platform);
+    if (!existsSync(local)) {
+      throw new Error(
+        `bundled tool "${tool.stem}" is missing from the local Core product: ${local}; `
+          + 'run "npm run build:core" first.',
+      );
+    }
+    await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remote))}`);
+    // 工具与 daemon 二进制同样可能正被执行（Grep/Glob 每次 spawn、工具 shell 直接调用）：走原子上传
+    await uploadAtomically(ssh, local, remote);
+    options.log(`[ssh] deployed ${remote} (${target.platform}-${target.arch})`);
   }
-  await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteRipgrep))}`);
-  // rg 与 daemon 二进制同样可能正被执行（Grep/Glob 每次 spawn）：同样走原子上传
-  await uploadAtomically(ssh, localRipgrep, remoteRipgrep);
-  options.log(`[ssh] deployed ${remoteRipgrep} (${target.platform}-${target.arch})`);
 }
 
 /** 读远端状态文件；缺失 / 内容不合法 / endpoint 解析不出都返回 null（由调用方决定怎么办） */

@@ -75,6 +75,10 @@ impl Sandbox {
         }
         crate::shell_env::force_path_for_test(forced_path.clone(), forced_path);
 
+        // 内置工具目录（随 Core 分发的 `rg` / `fd`）钉成空表：用例不依赖开发机是否构建过
+        // 产物。需要断言 PATH 前置的用例自己调 `force_bundled_dirs_for_test` 钉目录。
+        crate::shell_env::force_bundled_dirs_for_test(Vec::new());
+
         let config_dir_name = ".test-core".to_string();
         config::set_host_environment(HostEnvironment {
             extension_path: root.join("extension").to_string_lossy().to_string(),
@@ -255,6 +259,7 @@ impl Drop for Sandbox {
         // PATH 钉定只随沙箱存亡：不清理的话覆盖槽粘住本沙箱的目录，
         // 沙箱外跑 apply 的用例（如 shell_env 的探测用例）会读到它
         crate::shell_env::clear_forced_path_for_test();
+        crate::shell_env::clear_bundled_dirs_for_test();
         settings::reset_settings_snapshot();
         config::set_active_workspace(None);
         config::reset_session_workspaces();

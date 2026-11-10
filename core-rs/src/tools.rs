@@ -4249,90 +4249,15 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
 // ==================== ripgrep ====================
 
-/// 当前平台 / 架构的产物目录名（`<arch>-<platform>`，与 `resources/ripgrep/` 一致）
-fn platform_dir() -> String {
-    let platform = if cfg!(windows) { "win32" } else { "linux" };
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "x64"
-    };
-    format!("{arch}-{platform}")
-}
-
-/// 可执行文件名（Windows 加 `.exe`）
-fn exe_name(stem: &str) -> String {
-    if cfg!(windows) {
-        format!("{stem}.exe")
-    } else {
-        stem.to_string()
-    }
-}
-
-/// Core 可执行文件所在目录：部署槽位（自带共享资源的定位基准）。
+/// 解析随 Core 分发的 ripgrep 产物；缺失时回退到 PATH 里的 `rg`。
 ///
-/// 部署单元是「指纹槽位里的 Core 可执行文件 + 产品目录里与全部槽位共享的
-/// `ripgrep/`」——安装器 / SSH 引导把 rg 落在 `share/<产品名>/ripgrep/`，Core 从
-/// 自己所在槽位的上一级目录定位它（`docs/core/standalone-core.md` 第 4 节）。Core 因此
-/// 不依赖宿主的 `extensionPath` 定位自己的产物。
-fn core_executable_dir() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-}
-
-/// ripgrep 的候选路径，按优先级排列（纯函数，便于用例锁死顺序）：
-/// 1. Core 自己槽位里的自带位（`<Core 可执行文件目录>/ripgrep/`）：本地打包布局，
-///    构建脚本把 rg 与可执行文件落在一起（`resources/<core.resourceDir>/<dir>/ripgrep/`，
-///    打包后随 asarUnpack 解包，Rust 的 `Path::exists` 看不进 asar，只有这条能用）；
-/// 2. 部署布局的共享位（`<Core 可执行文件目录>/../ripgrep/`：槽位上一级的产品
-///    目录里，全部指纹槽位共享一份）；
-/// 3. 宿主 `extensionPath`（本机开发期兜底：直接用 `cargo run` / `cargo test`
-///    的 Core 进程、或从仓库里跑宿主时，产物在 `resources/` / `dist/resources/`）。
-fn ripgrep_candidates(core_dir: Option<&Path>, extension_path: Option<&str>) -> Vec<PathBuf> {
-    let exe = exe_name("rg");
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = core_dir {
-        // 本地打包布局：rg 与 Core 可执行文件同目录下的 `ripgrep/` 子目录
-        candidates.push(dir.join("ripgrep").join(&exe));
-        // 槽位上一级：`share/<产品名>/<指纹>/` 的上一级是产品目录，共享 rg 在那里
-        if let Some(parent) = dir.parent() {
-            candidates.push(parent.join("ripgrep").join(&exe));
-        }
-    }
-    if let Some(extension_path) = extension_path {
-        // 逐段 join（不要用 `"dist/resources/ripgrep"` 这种含 `/` 的单段字符串）：
-        // Windows 上 `path.join` 产出的是反斜杠，错误文案里的命令行才能与
-        // 与 `path.join(...)` 的产物完全一致。
-        let sub_dir = platform_dir();
-        let base = Path::new(extension_path);
-        candidates.push(
-            base.join("dist")
-                .join("resources")
-                .join("ripgrep")
-                .join(&sub_dir)
-                .join(&exe),
-        );
-        candidates.push(
-            base.join("resources")
-                .join("ripgrep")
-                .join(&sub_dir)
-                .join(&exe),
-        );
-    }
-    candidates
-}
-
-/// 解析随 Core 分发的 ripgrep 产物；缺失时回退到宿主产物与 PATH 中的 `rg`。
+/// 定位逻辑只有一份（`bundled_tools::resolve`）：与工具 shell 的 PATH 前置消费同一份结果，
+/// 避免「Grep 找得到 rg、PATH 里却没有」的幽灵状态（specs/044 FR-005）。
 pub fn ripgrep_path() -> String {
-    let core_dir = core_executable_dir();
-    let extension_path = config::extension_path().ok();
-    for candidate in ripgrep_candidates(core_dir.as_deref(), extension_path.as_deref()) {
-        if candidate.exists() {
-            return candidate.to_string_lossy().to_string();
-        }
+    match crate::bundled_tools::resolve(crate::bundled_tools::BUNDLED_TOOLS[0]) {
+        Some(path) => path.to_string_lossy().to_string(),
+        None => "rg".to_string(),
     }
-    "rg".to_string()
 }
 
 /// ripgrep 单次搜索上限

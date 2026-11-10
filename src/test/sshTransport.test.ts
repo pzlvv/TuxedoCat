@@ -20,7 +20,7 @@ import { ensureRemoteDaemonShared } from '../host/standalone/sshTransport';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 import type { RemoteSsh } from '../host/standalone/sshDaemonBootstrap';
 import { REMOTE_DEPLOY_ROOT } from '../host/standalone/sshDaemonBootstrap';
-import { coreBinaryFileName, coreDeployDirPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
+import { coreBinaryFileName, coreDeployDirPath, coreDeployFdPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
 import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
 
 const HOME = '/home/dev';
@@ -30,6 +30,7 @@ const DEPLOY_DIR = coreDeployDirPath(FINGERPRINT);
 const STATE_PATH = `${HOME}/${CONFIG_DIR_NAME}/run/core-daemon-${FINGERPRINT}.json`;
 const BINARY_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/${coreBinaryFileName('linux')}`;
 const RIPGREP_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${coreDeployRipgrepPath()}/rg`;
+const FD_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${coreDeployFdPath()}/fd`;
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
 const TARGET = { host: '203.0.113.7', port: 22, user: 'dev', password: 'secret' };
 
@@ -97,14 +98,16 @@ class FakeSsh implements RemoteSsh {
   }
 }
 
-/** 建一份带 Linux 产物目录（含构建指纹与自带 ripgrep）的临时 extensionPath */
+/** 建一份带 Linux 产物目录（含构建指纹与两份内置工具）的临时 extensionPath */
 function makeExtensionPath(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tuxedo-ssh-transport-'));
   const productDir = path.join(root, 'dist', 'resources', CORE_RESOURCE_DIR, 'x64-linux');
   fs.mkdirSync(path.join(productDir, 'ripgrep'), { recursive: true });
+  fs.mkdirSync(path.join(productDir, 'fd'), { recursive: true });
   fs.writeFileSync(path.join(productDir, coreBinaryFileName('linux')), 'fake-core-binary');
   fs.writeFileSync(path.join(productDir, 'fingerprint'), `${FINGERPRINT}\n`);
   fs.writeFileSync(path.join(productDir, 'ripgrep', 'rg'), 'fake-rg-binary');
+  fs.writeFileSync(path.join(productDir, 'fd', 'fd'), 'fake-fd-binary');
   return root;
 }
 
@@ -143,6 +146,7 @@ runTests('sshTransport', async () => {
     warm.reachable.add('127.0.0.1:10999');
     warm.executables.add(BINARY_PATH);
     warm.executables.add(RIPGREP_PATH);
+    warm.executables.add(FD_PATH);
     const daemon = await ensureRemoteDaemonShared(TARGET, warm, options);
     check('settle 后的新调用复用在跑的 daemon', daemon.host === '127.0.0.1' && daemon.port === 10999);
     check('warm 路径不重复部署（零上传、零 start）', warm.uploadCount === 0 && warm.startCount === 0);

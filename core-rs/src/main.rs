@@ -20,6 +20,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // `util::hide_console`），因此不会出现窗口闪烁。
 mod balance;
 mod bash_task;
+mod bundled_tools;
 mod bus;
 mod cli;
 mod commands;

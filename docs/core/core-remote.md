@@ -221,15 +221,15 @@ last_reviewed: 2026-10-17
 
 | 情况 | 判据 | 行为 |
 | --- | --- | --- |
-| 该指纹的 daemon 在跑 | 该指纹的状态文件 `core-daemon-<指纹>.json` 里的 endpoint 探得通 | 直接复用：不重启 daemon、不覆盖产物；槽位缺可执行文件或共享位缺 `ripgrep` 时补传（「在跑」不等于产物齐全——槽位被外部清过时进程仍在跑） |
-| 已部署未启动 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的自带 `ripgrep`（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
+| 该指纹的 daemon 在跑 | 该指纹的状态文件 `core-daemon-<指纹>.json` 里的 endpoint 探得通 | 直接复用：不重启 daemon、不覆盖产物；槽位缺可执行文件或共享位缺内置工具（`ripgrep` / `fd`）时补传（「在跑」不等于产物齐全——槽位被外部清过时进程仍在跑） |
+| 已部署未启动 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里有可执行文件、探测不通 | 补齐缺的内置工具（若缺），执行 `<可执行文件> start --idle-exit 30`（幂等），再读状态文件 |
 | 未部署 | `~/.local/share/<core.deployPrefix>/<指纹>/` 里没有可执行文件 | 上传本机携带的对应平台产物（按远端 `uname -sm` 选平台）后 `start --idle-exit 30` |
 
 - 部署槽位由本机携带产物的**构建指纹**决定（[docs/core/standalone-core.md 第 3.4 节](standalone-core.md#34-构建指纹)）：
   产物落远端部署槽位 `~/.local/share/<core.deployPrefix>/<指纹>/`
-  （`coreDeployDirPath`：产品目录取 `core.deployPrefix`，槽位用完整指纹；自带的
-  `ripgrep` 提升为产品目录根的共享位 `share/<core.deployPrefix>/ripgrep`，Core 以
-  所在槽位的上一级目录定位它，远端机器不需要预装 `rg`），状态 / 日志文件按
+  （`coreDeployDirPath`：产品目录取 `core.deployPrefix`，槽位用完整指纹；内置工具
+  `ripgrep` / `fd` 提升为产品目录根的共享位 `share/<core.deployPrefix>/<tool.dir>`，Core 以
+  所在槽位的上一级目录定位它们，远端机器不需要预装 `rg` / `fd`），状态 / 日志文件按
   完整指纹命名（第 2.3 节）。多版本 Core 在同一台远端机器上各占一个槽位、各跑
   一个 daemon——不同版本的客户端同时接入互不干扰：新版本天然落在新槽位，旧 daemon
   原样留给旧版本的客户端。
@@ -253,7 +253,8 @@ last_reviewed: 2026-10-17
   `kill` 清理（`/proc` 兜底按可执行文件路径精确匹配，只命中本指纹的 daemon）。
 - 指纹槽位**不做磁盘回收**：多版本累积（每个槽位约 11MB）是接受的语义，需要清理时
   在远端手工删除——先确认该指纹的 daemon 不在跑（状态文件探得通的就是在跑的）。
-- 本机产物里没有指纹文件或缺自带的 ripgrep 属于构建不完整，直接报错，不静默降级。
+- 本机产物里没有指纹文件或缺任一内置工具（`ripgrep` / `fd`）属于构建不完整，直接报错
+  并点名缺的工具，不静默降级。
 - daemon 的端口 **以远端状态文件为准**（第 2.3 节）：Host 读
   `~/<configDir>/run/core-daemon-<指纹>.json`，按里面的 `127.0.0.1:<端口>` 开转发通道。
 - 状态文件缺失 / 损坏 / 连不上都按「没有在跑」处理，与 `start` 自己的判据同口径。

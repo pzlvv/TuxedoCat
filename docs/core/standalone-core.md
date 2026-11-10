@@ -137,30 +137,33 @@ Electron 打包后产物落在 `app.asar` 内的 `dist/resources/`，但可执�
 
 **调试符号不随分发包走**：Windows（MSVC）的行号表在 `<core.binaryName>.pdb` 里，`build-core.mjs::copyDebugSymbols` 把它落在 `resources/core/<dir>/`，`copy-assets` 照常带进 `dist/resources/` 供本地崩溃诊断，但 vsix 白名单与 electron-builder 的默认规则（`includePdb` 未打开时排除 `**/*.pdb`）都把它挡在分发物之外（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
 
-**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与自带工具目录（当前只有 `ripgrep/rg[.exe]`）同级：
+**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与内置工具目录同级
+（`BUNDLED_TOOLS` 登记表：`ripgrep/rg[.exe]` 与 `fd/fd[.exe]`）：
 
 ```
 resources/core/x64-win32/<core.binaryName>.exe
 resources/core/x64-win32/ripgrep/rg.exe
+resources/core/x64-win32/fd/fd.exe
 ```
 
-部署到 `~/.local/share/<core.deployPrefix>/` 时按指纹落槽位，ripgrep 提升为产品
-目录里全部槽位共享的一份（rg 与指纹无关，Grep / Glob 的行为不随 Core 版本变）：
+部署到 `~/.local/share/<core.deployPrefix>/` 时按指纹落槽位，内置工具提升为产品
+目录里全部槽位共享的一份（工具与指纹无关，Grep / Glob 与工具 shell 的行为不随 Core 版本变）：
 
 ```
 ~/.local/share/<core.deployPrefix>/<指纹>/<core.binaryName>[.exe] + fingerprint
 ~/.local/share/<core.deployPrefix>/ripgrep/rg[.exe]
+~/.local/share/<core.deployPrefix>/fd/fd[.exe]
 ~/.local/share/<core.deployPrefix>/tui[.exe]                    # TUI 版安装器附带
 ```
 
-Core 定位自带 ripgrep 时**以自己的可执行文件为基准**（`tools.rs::ripgrep_path`，按优先级
-取第一个存在的）：可执行文件同目录下的 `ripgrep/`（仓库产物与 Electron 打包布局——
-`asarUnpack` 解包后 rg 与 Core 在同一层，而 Rust 的 `Path::exists` 看不进 asar 内的
-`dist/resources/core/<平台>/ripgrep/`），以及槽位上一级产品目录里的 `ripgrep/`（远端部署
+Core 定位内置工具时**以自己的可执行文件为基准**（`bundled_tools.rs::tool_candidates`，按优先级
+取第一个存在的）：可执行文件同目录下的 `<tool.dir>/`（仓库产物与 Electron 打包布局——
+`asarUnpack` 解包后工具与 Core 在同一层，而 Rust 的 `Path::exists` 看不进 asar 内的
+`dist/resources/core/<平台>/<tool.dir>/`），以及槽位上一级产品目录里的 `<tool.dir>/`（远端部署
 的共享位）。本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供
-`extensionPath`。`resources/ripgrep/<dir>/` 是构建源目录（`build-core.mjs::copyBundledRipgrep`
-拿它复制成 Core 自带 rg），不随分发包走：`scripts/copy-assets.mjs` 把 `resources/` 复制进
-`dist/` 后会清掉 `dist/resources/ripgrep/`（无读取方，约 18M）。
+`extensionPath`。`resources/<tool.dir>/<dir>/` 是构建源目录（`build-core.mjs::copyBundledTools`
+拿它复制成 Core 自带工具），不随分发包走：`scripts/copy-assets.mjs` 把 `resources/` 复制进
+`dist/` 后会清掉 `dist/resources/ripgrep/` 与 `dist/resources/fd/`（无读取方）。
 
 **产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
 （`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
@@ -187,7 +190,7 @@ project.json 与各 crate 的包名，不改逻辑代码。
 | 路径处理 | `util.rs` 的 `normalize_path` / `expand_path`、`config.rs` 的 `encodeURIComponent` 等价物 | 盘符与 UNC 的换算都在 `cfg!(windows)` 分支内；非 Windows 走 POSIX 分支，多字节路径按字节比较 |
 | shell 探测 | `shell.rs::detect` | 非 Windows 直接用 `$SHELL`（缺省 `/bin/bash`）；Windows 才走 Git Bash → PowerShell → cmd.exe 的优先级 |
 | 工具 shell 的 PATH | `shell_env.rs` | 抓用户终端里的 PATH：非 Windows 用 `$SHELL -l -i -c`，Windows 上只用 `$SHELL -c`（启动文件会按 `MSYS2_PATH_TYPE` 重建 PATH，把用户环境变量里的目录挤掉）。shell 子进程用 shell 自己的形式（Windows 的 Git Bash 是 POSIX 列表），原生子进程用 Windows 形式（Windows 上就是进程环境里的 PATH）；PowerShell 读 `$env:PATH`，cmd.exe 没有启动文件、沿用进程环境 |
-| 资源定位 | `tools.rs::ripgrep_path`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]` 本地打包布局优先，`<exe 目录>/../ripgrep/rg[.exe]` 部署布局的共享位次之——Rust 的 `Path::exists` 看不进 asar），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
+| 资源定位 | `bundled_tools.rs::tool_candidates`、`config.rs::extension_path` | Core 自带产物以**自己的可执行文件目录**为基准（`<exe 目录>/ripgrep/rg[.exe]` 本地打包布局优先，`<exe 目录>/../ripgrep/rg[.exe]` 部署布局的共享位次之——Rust 的 `Path::exists` 看不进 asar），宿主 `extensionPath` 只作本机开发期的兜底、最后回退 PATH；可执行名按 `cfg!(windows)` 加 `.exe`；产物目录按 `<arch>-<platform>` 解析，矩阵外直接拒绝而不是猜一个目录 |
 | 主目录 | `config.rs::home_dir` | `USERPROFILE` 优先、`HOME` 兜底，两者都缺才报错 |
 | 系统语言 | 宿主：`src/host/i18n.ts::getSystemLocale`（不在 Core 侧） | 仅 Windows 查 PowerShell `Get-UICulture`；其余平台读 `LANG` / `LC_ALL` |
 | 控制台窗口 | `util.rs::hide_console` | 仅 Windows 设 `CREATE_NO_WINDOW`，非 Windows 是空操作 |
@@ -205,8 +208,9 @@ macOS 从 launchd 启动时只有最小 PATH，远端 daemon 经 SSH exec 拉起
 缺的只是 bash 看到的那份 POSIX 形式。
 
 `shell_env.rs` 在首次需要时抓一次这份 PATH（非 Windows 用「登录 + 交互」shell，Windows 上只取
-进程环境，见下表），缓存后按子进程类型注入两种形式之一——`shell_env::apply` 给 `$SHELL -c`
-拉起的 shell 子进程，`shell_env::apply_native` 给原生进程。这两个函数是 PATH 的唯一写入点：
+进程环境，见下表），把内置工具目录（`rg` / `fd`）前置到它前面，再按子进程类型注入两种形式之一
+——`shell_env::apply` 给 `$SHELL -c` 拉起的 shell 子进程，`shell_env::apply_native` 给原生进程。
+这两个函数是 PATH 的唯一写入点：
 
 | 项 | 口径 |
 | --- | --- |
@@ -219,6 +223,7 @@ macOS 从 launchd 启动时只有最小 PATH，远端 daemon 经 SSH exec 拉起
 | 失败口径 | 直接报错，不退回继承环境：`Bash` 工具把错误作为工具结果返回，后台任务与 MCP server 启动失败，系统提示的环境段让整轮查询失败 |
 | pty | 不分配：`-c` 不进入交互循环，探测与工具命令都走管道 |
 | 注入目标 | shell 子进程（`Bash` 前台工具、后台任务）用 shell 自己的形式；原生子进程（`rg`、`git`、`where`、`cmd`、MCP stdio server）用原生形式——Windows 上的 `cmd /c` 与原生 exe 不认 POSIX 列表 |
+| 内置工具前置 | `bundled_tools::search_path_dirs` 的结果（`ripgrep/`、`fd/` 两个已解析到的目录）前置到注入的 PATH 之前，同名系统命令被遮蔽。缺失的工具整条跳过：失败由命令自身报 `command not found`，注入侧不报错（否则整条 `Bash` 命令失败会把无关命令一起挡掉） |
 | 原生形式归一 | Windows：进程环境 PATH 可能是 Git Bash / MSYS2 的混合形态（后半段整段塞着一个 `/mingw64/bin:...` POSIX 列表），`shell_env::native_path_from` 把 `/c/foo` 提成 `C:\foo`、丢弃纯 POSIX 目录、去重后注入；只有 shell 形式需要 bash 把 Windows PATH 换算成 POSIX 列表，不经过 `cygpath` |
 
 需要 tty 的命令（要 sudo 密码提示、vim 这类全屏编辑器、依赖终端判断才有颜色的工具）不在本机制范围内：工具命令的 stdin 接空设备，stdout / stderr 是管道。
@@ -294,9 +299,10 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 `build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust
 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
 
-预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep 官方发布物
-（15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256` 逐份校验。
-`build-core.mjs::copyBundledRipgrep` 把它复制成 Core 自带 rg（`resources/core/<dir>/ripgrep/`）。
+预编译内置工具四个平台取自各自官方发布物的同一版本：ripgrep（`resources/ripgrep/<arch>-<platform>/`，
+15.2.0，入库前按官方 `.sha256` 逐份校验）与 fd（`resources/fd/<arch>-<platform>/`，10.5.2）；
+Linux 两份均取 `unknown-linux-musl` 静态链接目标。
+`build-core.mjs::copyBundledTools` 把两份复制成 Core 自带工具（`resources/core/<dir>/<tool.dir>/`）。
 Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACKAGE_DIRS`，单独重建用
 `npm run build:core:win32-arm64`；TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标
 仍按需补建 Core，兜住单目标场景。
@@ -484,7 +490,7 @@ Standalone Core 下，core 侧事实的归属与 [docs/architecture/core-ui-sepa
 | 会话工作目录表 | Core | 单目录宿主（VS Code）在会话首次解析目录前经 `UiEvent.sessionWorkspaceAssigned` 登记；多工作目录宿主（Electron）按来源视图登记；加载对话后由 `meta.json` 的 `project` 校正 |
 | 工具执行 | Core | 在 Core 所在机器操作文件系统 |
 | MCP 子进程 | Core | 生命周期由 Core 管理 |
-| ripgrep | Core | 随 Core 分发：与可执行文件同级（`<exe 目录>/ripgrep/`），本地与远端上传是同一目录 |
+| 内置工具（rg / fd） | Core | 随 Core 分发：与可执行文件同级（`<exe 目录>/<tool.dir>/`），本地与远端上传是同一目录 |
 | 宿主环境（extensionPath / logToConsole / configDirName） | UI 提供，Core 消费 | 经 `UiEvent.hostEnvironmentProvided` |
 | 会话工作目录 | UI 提供，Core 消费 | 经 `UiEvent.sessionWorkspaceAssigned` |
 | 日志行 | Core 产生 | 经 `CoreEvent.log` 上报；stderr 仅诊断 |

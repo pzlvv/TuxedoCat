@@ -16,7 +16,7 @@
  *
  * 产物落位：resources/<core.resourceDir>/<arch>-<platform>/<core.binaryName>[.exe]
  * 目录命名与 resources/ripgrep/ 一致；copy-assets 会把它带进 dist/resources。
- * 同一目录下还会落一份自带的 `ripgrep/rg[.exe]`（Grep / Glob 用的 rg）：
+ * 同一目录下还会落各内置工具的目录（`ripgrep/rg[.exe]`、`fd/fd[.exe]`）：
  * Core 以**自己的可执行文件目录**为基准定位自带资源，本地与远端都是这一个位置。
  * 同目录还有一份 `fingerprint` 构建指纹（见 computeFingerprint 与
  * docs/core/standalone-core.md 第 3.4 节）：SSH 部署按指纹落位远端部署目录
@@ -719,7 +719,7 @@ function buildTarget(target, options) {
   writeFileSync(fingerprintPath, `${fingerprint}\n`);
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
 
-  copyBundledRipgrep(target, outDir);
+  copyBundledTools(target, outDir);
 
   // asan 变体额外带 MSVC 的动态 ASAN 运行库（非 win32 目标内为 no-op）
   if (options.asan) copyAsanRuntime(outDir, target);
@@ -803,27 +803,43 @@ function copyDebugSymbols(built, outDir, target) {
 }
 
 /**
- * 把 ripgrep 可执行文件复制到 Core 可执行文件同级。
+ * 内置工具登记表（与 `core-rs/src/bundled_tools.rs` 的 `BUNDLED_TOOLS`、
+ * `src/host/standalone/coreBinary.ts` 的 `BUNDLED_TOOLS` 同源）。
  *
- * Core 自带资源的定位基准是**自己的可执行文件所在目录**（`tools.rs::ripgrep_path`）：
- * 本地由宿主从 `resources/<core.resourceDir>/<dir>/` 起进程，远端由 Host 的 SSH 引导
- * 上传同一个位置（`src/host/standalone/sshDaemonBootstrap.ts`）。因此 Core 与它的
- * `ripgrep/rg[.exe]` 必须落在一起——少了它 Grep / Glob 只能靠目标机器 PATH 上的 `rg`。
+ * 目录名按 `<dir>/<stem>[.exe]` 落位：仓库源目录是 `resources/<dir>/<arch>-<platform>/`，
+ * Core 产物里是 `resources/core/<arch>-<platform>/<dir>/`。
  */
-function copyBundledRipgrep(target, outDir) {
-  const name = target.platform === 'win32' ? 'rg.exe' : 'rg';
-  const source = join(repoRoot, 'resources', 'ripgrep', target.dir, name);
-  if (!existsSync(source)) {
-    console.error(
-      `[build-core] 缺少该平台的 ripgrep 产物：${source}\n` +
-        `             Core 自带的 ripgrep 必须与可执行文件一起落位（docs/core/standalone-core.md 第 3.1 节：部署单元与共享位）。`,
-    );
-    process.exit(1);
+export const BUNDLED_TOOLS = [
+  { dir: 'ripgrep', stem: 'rg' },
+  { dir: 'fd', stem: 'fd' },
+];
+
+/**
+ * 把内置工具复制到 Core 可执行文件同级。
+ *
+ * Core 自带资源的定位基准是**自己的可执行文件所在目录**（`bundled_tools.rs::tool_candidates`）：
+ * 本地由宿主从 `resources/<core.resourceDir>/<dir>/` 起进程，远端由 Host 的 SSH 引导上传同一个
+ * 位置（`src/host/standalone/sshDaemonBootstrap.ts`）。因此 Core 与它的 `<tool>/<exe>` 必须
+ * 落在一起——少了 `rg` 的 Grep / Glob 只能靠目标机器 PATH 上的 `rg`，少了 `fd` 的工具 shell
+ * 就没有内置 fd。
+ */
+function copyBundledTools(target, outDir) {
+  for (const tool of BUNDLED_TOOLS) {
+    const name = target.platform === 'win32' ? `${tool.stem}.exe` : tool.stem;
+    const source = join(repoRoot, 'resources', tool.dir, target.dir, name);
+    if (!existsSync(source)) {
+      console.error(
+        `[build-core] 缺少该平台的内置工具 ${tool.stem}：${source}
+` +
+          `             内置工具必须与可执行文件一起落位（docs/core/standalone-core.md 第 3.1 节：部署单元与共享位）。`,
+      );
+      process.exit(1);
+    }
+    const dest = join(outDir, tool.dir);
+    mkdirSync(dest, { recursive: true });
+    copyFileSync(source, join(dest, name));
+    console.log(`[build-core] ${target.dir} 内置 ${tool.stem} → ${join(dest, name)}`);
   }
-  const dest = join(outDir, 'ripgrep');
-  mkdirSync(dest, { recursive: true });
-  copyFileSync(source, join(dest, name));
-  console.log(`[build-core] ${target.dir} 自带 ripgrep → ${join(dest, name)}`);
 }
 
 /**

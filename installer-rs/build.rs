@@ -13,6 +13,7 @@
 //! <prefix>/share/<产品名>/<指纹>/fingerprint
 //! <prefix>/share/<产品名>/<指纹>/clang_rt.asan_dynamic-<arch>.dll  # 仅 asan 变体的 Windows 产物
 //! <prefix>/share/<产品名>/ripgrep/rg[.exe]                 # 全部槽位共享一份
+//! <prefix>/share/<产品名>/fd/fd[.exe]                      # 同上（内置工具登记表）
 //! <prefix>/share/<产品名>/tui[.exe]                        # TUI 二进制
 //! ```
 //!
@@ -192,6 +193,13 @@ fn main() {
         (
             format!("{product_dir}/ripgrep/rg{ext}"),
             pkg_dir_path.join("ripgrep").join(format!("rg{ext}")),
+            true,
+        ),
+        // fd 与 rg 同属内置工具登记表（core-rs/src/bundled_tools.rs 的 BUNDLED_TOOLS）：
+        // 工具 shell 的 PATH 前置靠它，装出来的机器才有内置 fd。
+        (
+            format!("{product_dir}/fd/fd{ext}"),
+            pkg_dir_path.join("fd").join(format!("fd{ext}")),
             true,
         ),
     ];

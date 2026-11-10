@@ -89,6 +89,20 @@ last_reviewed: 2026-11-10
    加任意命令」的写法。前台 / `run_in_background` / `detach` 三种形态一致，且不弹权限确认框。
 2. 放行写法照常执行：`echo anything; sleep 10`、`npm run build && sleep 5`、单条
    `sleep 5`、以及引号里的 sleep 字样。
+### US-77 工具 shell 自带 rg / fd 并优先使用
+
+作为用户，我希望助手在工具 shell 里直接用随产品分发的 `rg` / `fd`，并按规则优先用它们
+代替 `grep` / `find`，以便搜索行为不随目标机器装了什么而漂移。
+
+验收标准：
+
+1. `Bash` 工具 shell 的 PATH 前置内置 `rg` 与 `fd` 所在目录：模型执行 `command -v rg` /
+   `command -v fd` 均命中产物目录内的那一份；用户自己装的同名命令在工具 shell 里被遮蔽。
+2. 远端工作区经 SSH 引导后同样具备两份工具（落在 `~/.local/share/<core.deployPrefix>/`
+   的共享位），远端工具 shell 里 `rg` / `fd` 可用。
+3. 系统提示词写明优先 `rg` 代替 `grep`、`fd` 代替 `find`；单个搜索优先用 `Grep` / `Glob`
+   工具，需要与其它命令组合时用 Bash 的 `rg` / `fd`。
+4. 内置工具缺失时命令由 shell 自身报 `command not found`，普通命令照常执行。
 
 ## 联网搜索（客户端工具）
 

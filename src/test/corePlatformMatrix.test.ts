@@ -14,7 +14,22 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { CORE_FINGERPRINT_FILE_NAME, bundledRipgrepFileName, bundledRipgrepPath, coreBinaryCandidates, coreBinaryFileName, corePlatformDir } from '../host/standalone/coreBinary';
+import {
+  BUNDLED_TOOLS,
+  CORE_FINGERPRINT_FILE_NAME,
+  bundledFdFileName,
+  bundledFdPath,
+  bundledRipgrepFileName,
+  bundledRipgrepPath,
+  bundledToolFileName,
+  bundledToolPath,
+  coreBinaryCandidates,
+  coreBinaryFileName,
+  coreDeployFdPath,
+  coreDeployRipgrepPath,
+  coreDeployToolPath,
+  corePlatformDir,
+} from '../host/standalone/coreBinary';
 import { CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 
@@ -130,12 +145,68 @@ async function run(): Promise<void> {
       candidates[1] ===
         path.join('/ext', 'resources', CORE_RESOURCE_DIR, `${expected.arch}-${expected.platform}`, name),
     );
-    // Core 自带的 ripgrep 与可执行文件同级：`<产物目录>/ripgrep/<rg 名>`
+    // Core 自带的内置工具与可执行文件同级：`<产物目录>/<tool>/<exe>`
     const productDir = path.join('/ext', 'resources', CORE_RESOURCE_DIR, `${expected.arch}-${expected.platform}`);
+    const platform = expected.platform as NodeJS.Platform;
     check(
       `${label} 自带 ripgrep 落在 <产物目录>/ripgrep/ 下`,
-      bundledRipgrepPath(path.join(productDir, name), expected.platform as NodeJS.Platform) ===
-        path.join(productDir, 'ripgrep', bundledRipgrepFileName(expected.platform as NodeJS.Platform)),
+      bundledRipgrepPath(path.join(productDir, name), platform) ===
+        path.join(productDir, 'ripgrep', bundledRipgrepFileName(platform)),
+    );
+    check(
+      `${label} 自带 fd 落在 <产物目录>/fd/ 下`,
+      bundledFdPath(path.join(productDir, name), platform) ===
+        path.join(productDir, 'fd', bundledFdFileName(platform)),
+    );
+    // 登记表驱动：两件工具各自路径都能从登记表算出（不是第二份列表）
+    for (const tool of BUNDLED_TOOLS) {
+      check(
+        `${label} 登记表里的 ${tool.dir} 路径可派生`,
+        bundledToolPath(path.join(productDir, name), tool.dir, platform) ===
+          path.join(productDir, tool.dir, bundledToolFileName(tool.dir, platform)),
+      );
+    }
+  }
+
+  // ---------- 内置工具登记表：TS 侧与 Rust 侧同源（目录名 / 可执行名） ----------
+  {
+    check('登记表登记了 ripgrep 与 fd', BUNDLED_TOOLS.length === 2);
+    check(
+      '登记表顺序是 ripgrep → fd（与 Core 侧 PATH 前置顺序一致）',
+      BUNDLED_TOOLS[0]?.dir === 'ripgrep' && BUNDLED_TOOLS[1]?.dir === 'fd',
+    );
+    // 与 core-rs/src/bundled_tools.rs 的 BUNDLED_TOOLS 逐项对照（目录名 + 可执行名）
+    const rustSource = fs.readFileSync(path.join(repoRoot(), 'core-rs', 'src', 'bundled_tools.rs'), 'utf8');
+    for (const tool of BUNDLED_TOOLS) {
+      check(
+        `Rust 侧登记了 ${tool.dir}/${tool.stem}`,
+        rustSource.includes(`dir: "${tool.dir}"`) && rustSource.includes(`stem: "${tool.stem}"`),
+      );
+    }
+    // 共享位路径同样由登记表派生
+    check('共享位 ripgrep 路径由登记表派生', coreDeployRipgrepPath() === coreDeployToolPath('ripgrep'));
+    check('共享位 fd 路径由登记表派生', coreDeployFdPath() === coreDeployToolPath('fd'));
+  }
+
+  // ---------- 分发链上的工具清单都由登记表派生（specs/044 AC-13 / AC-14） ----------
+  // 两个脚本各有一个「按工具逐个处理」的清单：copy-assets 清掉构建源目录、verify-core-artifacts
+  // 逐份校验产物。写成第二份手抄列表就会漏掉新登记的工具，所以断言它们从 BUNDLED_TOOLS 派生。
+  {
+    const copyAssets = fs.readFileSync(path.join(repoRoot(), 'scripts', 'copy-assets.mjs'), 'utf8');
+    check(
+      'copy-assets 的清理清单由 BUNDLED_TOOLS 派生（不手抄目录名）',
+      copyAssets.includes('BUNDLED_TOOLS') && copyAssets.includes('staleToolDirs'),
+    );
+
+    const verifier = fs.readFileSync(path.join(repoRoot(), 'scripts', 'verify-core-artifacts.mjs'), 'utf8');
+    check(
+      'verify-core-artifacts 的每目标工具清单由 BUNDLED_TOOLS 派生',
+      verifier.includes('BUNDLED_TOOLS'),
+    );
+    // AC-13：缺产物时报错并给出该目标的重建命令（不是静默跳过）
+    check(
+      'verify-core-artifacts 缺内置工具时点明工具并给出重建命令',
+      verifier.includes('missingBuiltTool') && verifier.includes('core.rebuild'),
     );
   }
 
@@ -192,13 +263,16 @@ async function run(): Promise<void> {
   for (const entry of targets) {
     const dir = path.join(repoRoot(), 'resources', CORE_RESOURCE_DIR, entry.dir);
     const binary = path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`);
-    // Core 自带的 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
-    const ripgrep = bundledRipgrepPath(binary, entry.platform as NodeJS.Platform);
+    // Core 自带的内置工具：与可执行文件同级（`bundled_tools.rs::tool_candidates` 的定位基准）
+    const tools = BUNDLED_TOOLS.map((tool) =>
+      bundledToolPath(binary, tool.dir, entry.platform as NodeJS.Platform));
     // 构建指纹：与可执行文件同级（`build-core.mjs` 落位，docs/core/standalone-core.md 第 3.4 节）
     const fingerprint = path.join(dir, CORE_FINGERPRINT_FILE_NAME);
     if (alwaysBuilt.has(entry.dir)) {
       check(`${entry.dir} 已产出 ${CORE_BINARY_NAME}${entry.ext}`, fs.existsSync(binary));
-      check(`${entry.dir} 已产出自带的 ripgrep`, fs.existsSync(ripgrep));
+      for (const tool of tools) {
+        check(`${entry.dir} 已产出内置工具 ${path.basename(tool)}`, fs.existsSync(tool));
+      }
       check(`${entry.dir} 已产出构建指纹`, fs.existsSync(fingerprint));
       // pdb 只在 Windows（MSVC）产物有（行号表在 pdb 里）；缺失即部署缺陷
       // specs/defects/core-pdb-not-deployed.md 的 RT-1，Linux 宿主不检查
@@ -211,7 +285,8 @@ async function run(): Promise<void> {
       const hasDir = fs.existsSync(dir);
       check(
         `${entry.dir}（按需构建）没有半成品产物`,
-        !hasDir || (fs.existsSync(binary) && fs.existsSync(ripgrep) && fs.existsSync(fingerprint)),
+        !hasDir
+          || (fs.existsSync(binary) && tools.every((tool) => fs.existsSync(tool)) && fs.existsSync(fingerprint)),
       );
     }
   }

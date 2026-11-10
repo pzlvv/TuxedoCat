@@ -22,7 +22,7 @@ last_reviewed: 2026-11-10
 | [对话与输入](user-stories/dialog-core.md) | EP-1 对话核心、EP-2 输入区与会话配置、EP-13 会话交互增强 | US-1～11、US-46～49、US-51～52、US-73、US-75 |
 | [消息呈现与确认](user-stories/messages.md) | EP-3 消息呈现、EP-4 权限与用户确认、EP-11 通知与国际化 | US-12～18、US-40～41 |
 | [会话管理与 LLM 配置](user-stories/sessions-and-llm.md) | EP-5 会话管理、EP-6 LLM 配置 | US-19～26 |
-| [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50、US-67、US-74、US-76 |
+| [工具与技能](user-stories/tools.md) | EP-7 工具与技能、US-50 联网搜索（客户端工具） | US-27～29、US-45、US-50、US-67、US-74、US-76～77 |
 | [桌面端](user-stories/desktop.md) | EP-8 桌面端窗口与标题栏、EP-9 多工作区、EP-10 预览与 Spin、EP-12 侧栏文件浏览器、EP-14 远程终端（桌面端） | US-30～39、US-42～44、US-53～57、US-61～65 |
 | [PyCharm 宿主](user-stories/pycharm-plugin.md) | EP-15 PyCharm 插件宿主 | US-68～72 |
 | 附录：US | [与 e2e 场景用例映射](#附录us-与-e2e-场景用例映射) | — |
@@ -112,6 +112,9 @@ US-66 的双实例争用——双实例场景依赖两个宿主进程（electron
 e2e 用例；US-76 的 sleep 等待闸门——判定只看命令文本（分隔符、换行、引号、纯注释段），
 由 core-rs 单测（`tools_tests` 的 `sleep_wait_gate_detects_leading_sleep_with_trailing_commands`
 与 `permission_tests` 的四条 `sleep_wait_gate_*`）锁定三档模式一致与放行范围，e2e 车道
-不为纯文本判定新增用例）。
+不为纯文本判定新增用例）；US-77 的工具 shell PATH 前置与远端部署——端到端验证要真实
+LLM 轮次与四平台产物，由 core-rs 的 `shell_env_tests`（前置顺序 / 去重 / 空表不改 PATH）、
+`prompt_tests`（提示词规则与对照表）、`sshDaemonBootstrap.test.ts`（两份工具补齐）与
+`e2e/tui/installer.spec.ts`（安装布局）分侧锁定，不新增 e2e 用例）。
 
 运行方式与前置构建见 `e2e/README.md`。

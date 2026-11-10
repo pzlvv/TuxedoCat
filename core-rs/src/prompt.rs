@@ -25,16 +25,24 @@ Execute shell commands.
 
 **IMPORTANT**: Always use bash/POSIX syntax for commands, regardless of the actual shell. This ensures commands work across bash, PowerShell, and cmd.exe.
 
+**Prefer ripgrep and fd**: use `rg` instead of `grep`, and `fd` instead of `find`:
+- Content search: `rg -n 'pattern' src` instead of `grep -rn 'pattern' src`
+- File search: `fd -e ts util` instead of `find . -name '*util*.ts'`
+- Use `grep` / `find` only when the command must run outside this environment.
+- The first argument is the pattern, not a path: write `fd -e ts . src`, not `fd -e ts src`.
+- No `/` inside the pattern: use `-p` with a glob, e.g. `fd -p -g '**/i18n/*.ts' src`.
+- Empty output is not absence: `.gitignore` and hidden entries are skipped (`-I` / `-H`), and no match exits 0.
+
 **Syntax Guidelines**:
 - Use forward slashes for paths
-- Use unix-style commands: ls, cat, rm, cp, mv, mkdir, touch, sort, grep, find, head, tail, wc, awk, sed, cut, tr, uniq, diff, tar, zip, unzip, curl, wget
+- Use unix-style commands: ls, cat, rm, cp, mv, mkdir, touch, sort, rg, fd, head, tail, wc, awk, sed, cut, tr, uniq, diff, tar, zip, unzip, curl, wget
 - Use pipes and redirection: |, >, >>, <
 - Use command chains: &&, ||, ;
 - Environment variables: $VAR (not %VAR%)
 - Quote handling: Use single quotes for strings with spaces
 
 **Pipes & Command Chains**:
-- `|` pipes the output of one command into the next: `grep pattern file.txt | sort | uniq`
+- `|` pipes the output of one command into the next: `rg -l 'pattern' src | sort`
 - `&&` runs the next command only if the previous succeeded: `npm run build && npm test`
 - `||` runs the next command only if the previous failed: `cd dist || mkdir dist`
 - `;` runs commands sequentially regardless of success: `cd src; ls -la`
@@ -44,7 +52,8 @@ Execute shell commands.
 - Run tests: npm test
 - Build: npm run build or make build
 - List files: ls -la
-- Search: grep 'pattern' file.txt
+- Search file contents: rg 'pattern' file.txt
+- Search file names: fd -e ts pattern
 - Sort lines: sort file.txt
 - Count lines/words: wc -l file.txt
 
@@ -151,8 +160,8 @@ Searches for patterns in file contents using ripgrep (rg).
 
 **When to use:**
 - Use this tool when you need to find files containing specific text or patterns
-- Prefer this tool over Bash with grep/ripgrep commands
-- ALWAYS use this tool for content searching - never use the Bash tool with grep/rg commands
+- Prefer this tool for a single search; use Bash `rg` when the result feeds another command
+  (e.g. `rg -l 'TODO' src | xargs wc -l`) or you need a ripgrep flag this tool does not expose
 
 **Parameters:**
 - pattern (required): The regular expression pattern to search for
@@ -185,8 +194,8 @@ Finds files by name pattern or wildcard using ripgrep.
 
 **When to use:**
 - Use this tool when you need to find files matching a specific pattern
-- Prefer this tool over Bash with find commands
-- ALWAYS use this tool for file pattern matching - never use the Bash tool with find commands
+- Prefer this tool for a single search; use Bash `fd` when the file list feeds another command
+  (e.g. `fd -e ts . src | xargs rg 'TODO'`) or you need an fd flag this tool does not expose
 
 **Parameters:**
 - pattern (required): The glob pattern to match files against (e.g. "**/*.js", "src/**/*.ts")

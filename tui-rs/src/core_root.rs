@@ -7,6 +7,7 @@
 //! ```text
 //! <prefix>/share/<产品名>/<core.binaryName>[.exe] + fingerprint   # 按指纹的槽位
 //! <prefix>/share/<产品名>/ripgrep/rg[.exe]                        # 全部槽位共享
+//! <prefix>/share/<产品名>/fd/fd[.exe]                             # 同上（内置工具登记表）
 //! <prefix>/share/<产品名>/tui[.exe]                               # 本程序
 //! <prefix>/bin/<产品名> → ../share/<产品名>/tui                   # unix 启动链接
 //! ```
@@ -73,22 +74,33 @@ pub fn product_dir_in(prefix: &Path) -> PathBuf {
 
 /// 部署布局的共享 ripgrep：`<部署前缀>/share/<产品名>/ripgrep/rg[.exe]`。
 ///
-/// Core 自己按「所在槽位的上一级目录里的 `ripgrep`」定位（core-rs/src/tools.rs），
+/// Core 自己按「所在槽位的上一级目录里的 `ripgrep`」定位（core-rs/src/bundled_tools.rs），
 /// TUI 运行时不消费这份路径，只在测试里断言布局；`#[cfg(test)]` 免得正常构建报
 /// dead code。
 #[cfg(test)]
 pub(crate) fn shared_ripgrep_in(prefix: &Path) -> PathBuf {
     product_dir_in(prefix)
         .join("ripgrep")
-        .join(ripgrep_file_name())
+        .join(bundled_tool_file_name("rg"))
+}
+
+/// 部署布局的共享 fd：`<部署前缀>/share/<产品名>/fd/fd[.exe]`。
+///
+/// 与 ripgrep 同级同口径（内置工具登记表 `core-rs/src/bundled_tools.rs` 的
+/// `BUNDLED_TOOLS`），TUI 运行时不消费，只在测试里断言布局。
+#[cfg(test)]
+pub(crate) fn shared_fd_in(prefix: &Path) -> PathBuf {
+    product_dir_in(prefix)
+        .join("fd")
+        .join(bundled_tool_file_name("fd"))
 }
 
 #[cfg(test)]
-fn ripgrep_file_name() -> &'static str {
+fn bundled_tool_file_name(stem: &str) -> String {
     if cfg!(windows) {
-        "rg.exe"
+        format!("{stem}.exe")
     } else {
-        "rg"
+        stem.to_string()
     }
 }
 

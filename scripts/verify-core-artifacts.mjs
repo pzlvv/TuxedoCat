@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import {
   ASAN_PROFILE,
+  BUNDLED_TOOLS,
   PACKAGE_DIRS,
   TARGETS,
   asanDefaultTargets,
@@ -93,8 +94,11 @@ const REQUIRED_CORES = (ASAN ? asanDefaultTargets().map((target) => target.dir) 
       dir,
       triple,
       file: `${project.core.binaryName}${target.ext}`,
-      // 自带 ripgrep：与可执行文件同级（`tools.rs::ripgrep_path` 的定位基准）
-      ripgrep: `ripgrep/${target.platform === 'win32' ? 'rg.exe' : 'rg'}`,
+      // 内置工具：与可执行文件同级（`bundled_tools.rs::tool_candidates` 的定位基准）
+      tools: BUNDLED_TOOLS.map((tool) => ({
+        label: tool.stem,
+        rel: `${tool.dir}/${target.platform === 'win32' ? `${tool.stem}.exe` : tool.stem}`,
+      })),
       // asan 变体的 win32 产物：exe 同级必须带动态 ASAN 运行库（copyAsanRuntime 落位），
       // 少了它打包出去的 asan Core 一启动就报缺 DLL；release 变体没有这份文件
       asanRuntime: ASAN ? asanRuntimeFileName(triple) : null,
@@ -190,10 +194,13 @@ async function main() {
       );
       continue;
     }
-    // Core 自带的 ripgrep：与可执行文件同级（Grep / Glob 在本地与远端都靠它）
-    const builtRipgrep = join(builtDir, core.ripgrep);
-    if (!existsSync(builtRipgrep)) {
-      problems.push(`${show(builtRipgrep)} 不存在（Core 自带 ripgrep）；重新构建：${core.rebuild}`);
+    // 内置工具：与可执行文件同级（Grep / Glob 与工具 shell 的 PATH 前置都靠它们）
+    const builtTools = core.tools.map((tool) => ({ ...tool, path: join(builtDir, tool.rel) }));
+    const missingBuiltTool = builtTools.find((tool) => !existsSync(tool.path));
+    if (missingBuiltTool) {
+      problems.push(
+        `${show(missingBuiltTool.path)} 不存在（Core 自带 ${missingBuiltTool.label}）；重新构建：${core.rebuild}`,
+      );
       continue;
     }
     // 构建指纹：缺失说明是老脚本产的产物；与重算值不一致说明产物之后源码又改了。
@@ -222,15 +229,21 @@ async function main() {
       );
       continue;
     }
-    const shippedRipgrep = join(shippedDir, core.ripgrep);
-    if (!existsSync(shippedRipgrep)) {
-      problems.push(`${show(shippedRipgrep)} 不存在；先跑：npm run copy-assets`);
-      continue;
+    let toolProblem = null;
+    for (const tool of builtTools) {
+      const shippedTool = join(shippedDir, tool.rel);
+      if (!existsSync(shippedTool)) {
+        toolProblem = `${show(shippedTool)} 不存在；先跑：npm run copy-assets`;
+        break;
+      }
+      if (fileDigest(shippedTool) !== fileDigest(tool.path)) {
+        toolProblem =
+          `${show(shippedTool)} 与 ${show(tool.path)} 内容不一致；先跑：npm run copy-assets`;
+        break;
+      }
     }
-    if (fileDigest(shippedRipgrep) !== fileDigest(builtRipgrep)) {
-      problems.push(
-        `${show(shippedRipgrep)} 与 ${show(builtRipgrep)} 内容不一致；先跑：npm run copy-assets`,
-      );
+    if (toolProblem) {
+      problems.push(toolProblem);
       continue;
     }
     const shippedFingerprint = join(shippedDir, FINGERPRINT_FILE_NAME);

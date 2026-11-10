@@ -134,6 +134,19 @@ fn shared_ripgrep_lives_beside_slots() {
 }
 
 #[test]
+fn shared_fd_lives_beside_slots() {
+    let prefix = Path::new("/usr/local/bin");
+    let fd = shared_fd_in(prefix);
+    assert!(fd.starts_with(product_dir_in(prefix)));
+    assert!(fd.to_string_lossy().contains("fd"));
+    // 与 ripgrep 同级：都在产品目录下，只差子目录名
+    assert_eq!(
+        fd.parent().map(|p| p.parent()),
+        shared_ripgrep_in(prefix).parent().and_then(|p| p.parent())
+    );
+}
+
+#[test]
 fn resolve_reports_all_candidates_on_failure() {
     // 指向一个不存在的根：报错要列出候选与指引，不静默降级
     std::env::set_var(TUI_ROOT_ENV, "/definitely/not/here");
