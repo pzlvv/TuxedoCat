@@ -463,6 +463,71 @@ pub fn build_background_reminder_text(
     lines.join("\n")
 }
 
+// ==================== 运行中清单（压缩携带） ====================
+
+/// 清单章节标题。构建（[`build_running_tasks_section`]）与剥离
+/// （`compact::strip_running_tasks_section`，把上一次的摘要再喂给摘要模型前去掉
+/// 这段陈旧快照）共用这一个字面量——两处各写一份，标题一改就会静默漏剥。
+pub const RUNNING_TASKS_HEADING: &str = "### 后台任务";
+
+/// 清单最多列出的任务数：超出的只报条数。
+///
+/// 每行约 60 字符，10 条约 600 字符——够覆盖实际并发度，又不至于让摘要消息膨胀。
+const COMPACT_TASKS_MAX: usize = 10;
+
+/// 构造「压缩开始时仍在运行的后台任务」章节；空集返回 `None`（调用方不追加）。
+///
+/// 存在理由：后台任务的提示文字寄生在 `tool_result` 正文里，压缩会把它摊平成摘要输入、
+/// 按条数截断或替换成合成的取消结果，任务仍在跑而模型那一侧的事实已经消失
+/// （`docs/features/compaction.md` FR-006）。压缩是唯一能一次性销毁这条事实的时机，
+/// 因此在压缩产物里按注册表**现算**一份写进摘要消息。
+///
+/// 口径：
+/// - 只陈述「压缩开始时」的**时点事实**，不是持续承诺：之后完成的任务由完成通知更新，
+///   顺序上通知总在这条摘要之后进入上下文。
+/// - 不含已运行时长 / pid / 输出尾部：每秒都变的文本会让这条消息在重放与后续估算里
+///   反复抖动，而它对模型的决策没有增量信息。
+/// - 每条只给 `task_id` 与 description；命令与 description 不同时补命令（与
+///   [`build_background_reminder_text`] 同一口径）。
+/// - 注册序（`running_tasks_for_session` 的原序），与运行时快照的 `backgroundTasks`
+///   一致，不另立排序。
+pub fn build_running_tasks_section(tasks: &[RunningTask]) -> Option<String> {
+    if tasks.is_empty() {
+        return None;
+    }
+    let mut lines = vec![
+        RUNNING_TASKS_HEADING.to_string(),
+        String::new(),
+        "压缩开始时以下后台 Bash 任务仍在运行：".to_string(),
+        String::new(),
+    ];
+    for task in tasks.iter().take(COMPACT_TASKS_MAX) {
+        let command_part = if !task.command.is_empty() && task.command != task.description {
+            format!("（命令：`{}`）", task.command)
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "- {}：{}{}",
+            task.task_id, task.description, command_part
+        ));
+    }
+    let hidden = tasks.len().saturating_sub(COMPACT_TASKS_MAX);
+    if hidden > 0 {
+        lines.push(String::new());
+        lines.push(format!(
+            "另有 {hidden} 个运行中任务未列出（本清单最多列 {COMPACT_TASKS_MAX} 个）。"
+        ));
+    }
+    lines.push(String::new());
+    lines.push(
+        "这些任务结束时会向本会话注入完成通知并接续本轮。不要用 sleep / ps / pgrep 轮询，\
+         也不要反复读输出文件确认进度——通知会自己到达；没有其它事情可做时结束本轮。"
+            .to_string(),
+    );
+    Some(lines.join("\n"))
+}
+
 // ==================== 进程 ====================
 
 /// 启动后台命令（对齐 `Exec.execBackground`）：

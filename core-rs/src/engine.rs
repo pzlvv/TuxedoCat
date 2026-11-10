@@ -1074,6 +1074,11 @@ impl Core {
     ///
     /// 消费循环空闲时立刻起一个（`queryBegin` → 消息进上下文 → LLM 回应 → `queryEnd`）；
     /// 正在跑时只入队，由当前循环在轮次边界取用。
+    ///
+    /// 压缩中只入队（`compacting`）：压缩会整体替换消息数组，此刻起消费循环会把通知
+    /// 落盘进即将被整文件重写丢掉的旧数组。收尾由 `resume_after_compact` 统一唤醒，
+    /// 与 `on_user_message` / `deliver_background_reminder` 同一口径
+    /// （`docs/features/compaction.md` FR-006）。
     pub fn enqueue_agent_message(
         self: &Arc<Self>,
         session_id: &str,
@@ -1098,7 +1103,7 @@ impl Core {
                 origin: origin.to_string(),
                 from_session_id: from_session_id.to_string(),
             });
-            if state.running {
+            if state.running || state.compacting {
                 false
             } else {
                 state.running = true;

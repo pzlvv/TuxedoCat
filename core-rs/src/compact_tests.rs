@@ -139,6 +139,7 @@ mod parity_tests {
                     case["summary"].as_str().unwrap(),
                     case["transcriptPath"].as_str(),
                     case["userInputHistory"].as_str(),
+                    case["runningTasks"].as_str(),
                 ),
                 case["result"].as_str().unwrap(),
                 "压缩后 user 消息不一致: {}",
@@ -424,5 +425,59 @@ mod unit_tests {
         assert_eq!(extract_user_content(&message), "");
         let message = json!({ "message": {} });
         assert_eq!(extract_user_content(&message), "");
+    }
+}
+
+// ==================== 运行中任务章节的剥离 ====================
+
+mod strip_running_tasks_tests {
+    use super::*;
+
+    /// 章节从「用户输入历史」之后、固定尾注之前剥掉，其余正文逐字保留。
+    #[test]
+    fn strips_the_section_between_history_and_the_trailer() {
+        let section =
+            crate::bash_task::build_running_tasks_section(&[crate::bash_task::RunningTask {
+                task_id: "bg-1".to_string(),
+                description: "跑测试".to_string(),
+                command: "npm test".to_string(),
+                pid: 1,
+                start_time: 0,
+            }])
+            .expect("非空集应有章节");
+        let summary = generate_compact_user_message("SUM", None, Some("1. hi"), Some(&section));
+
+        let stripped = strip_running_tasks_section(&summary);
+        assert!(!stripped.contains("### 后台任务"), "{stripped}");
+        assert!(
+            !stripped.contains("bg-1"),
+            "陈旧 taskId 不应留下: {stripped}"
+        );
+        // 摘要正文、用户输入历史、固定尾注都还在
+        assert!(stripped.contains("SUM"), "{stripped}");
+        assert!(stripped.contains("### 用户输入历史"), "{stripped}");
+        assert!(stripped.contains("1. hi"), "{stripped}");
+        assert!(stripped.contains("请基于以上摘要继续工作"), "{stripped}");
+    }
+
+    #[test]
+    fn leaves_text_without_the_section_unchanged() {
+        let plain = generate_compact_user_message("SUM", None, Some("1. hi"), None);
+        assert_eq!(strip_running_tasks_section(&plain), plain);
+    }
+
+    /// 只有章节、没有其它正文时剥成空串，不留孤立的空行。
+    #[test]
+    fn strips_the_section_when_it_is_the_whole_body() {
+        let section =
+            crate::bash_task::build_running_tasks_section(&[crate::bash_task::RunningTask {
+                task_id: "bg-1".to_string(),
+                description: "跑测试".to_string(),
+                command: "跑测试".to_string(),
+                pid: 1,
+                start_time: 0,
+            }])
+            .expect("非空集应有章节");
+        assert_eq!(strip_running_tasks_section(&section), "");
     }
 }

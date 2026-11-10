@@ -3,6 +3,34 @@
 
 use super::*;
 use crate::test_support::{openai_text_sse, EngineHarness, FakeLlm, Sandbox};
+use std::path::Path;
+
+/// 把 `TMPDIR` 指到沙箱里，让后台任务的输出文件落进临时目录。
+///
+/// 用 `Drop` 还原而不是手工配对：用例中途 panic 时 `TMPDIR` 会永久指向
+/// `Sandbox::drop` 已删掉的目录，污染同进程后续用例（`Sandbox` 的 `env_backup`
+/// 只管 `USERPROFILE` / `HOME`）。`bash_task_tests.rs` 有同款守卫。
+struct TmpDirGuard {
+    previous: Option<String>,
+}
+
+impl TmpDirGuard {
+    fn set(path: &Path) -> TmpDirGuard {
+        let previous = std::env::var("TMPDIR").ok();
+        std::fs::create_dir_all(path).expect("create tmp dir");
+        std::env::set_var("TMPDIR", path);
+        TmpDirGuard { previous }
+    }
+}
+
+impl Drop for TmpDirGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var("TMPDIR", value),
+            None => std::env::remove_var("TMPDIR"),
+        }
+    }
+}
 
 /// 让 `resolve_provider` 指向假 LLM，并登记活动工作目录
 fn prepare(sandbox: &Sandbox, base_url: &str, agent_mode: &str) {
@@ -1034,5 +1062,97 @@ fn todo_table_survives_auto_compact() {
     );
 
     crate::tools::clear_session_todos("s1");
+    crate::compact::reset_for_test();
+}
+
+/// 压缩携带运行中后台任务清单（`docs/features/compaction.md` FR-006）。
+///
+/// 场景：后台任务的提示文字原本寄生在 `tool_result` 正文里，压缩会把归档区的
+/// `tool_result` 摊平成摘要输入，保留区的又可能被 `sanitize_tool_pairing` 换成合成结果。
+/// 清单是压缩时按注册表现算写进摘要消息的，因此这条用例直接断言压缩产物的正文里
+/// 有 taskId——不依赖任何一条 tool_result 活下来。
+#[test]
+fn compact_carries_the_running_background_tasks_into_the_summary_message() {
+    let sandbox = Sandbox::new("engine-compact-running-tasks");
+    crate::compact::reset_for_test();
+    crate::bash_task::reset_for_test();
+    let _tmpdir = TmpDirGuard::set(&sandbox.root.join("tmp"));
+
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    let task_id = crate::bash_task::spawn_background("sleep 30", &project, "跑长测试", "s1", None)
+        .expect("spawn background");
+    assert_eq!(crate::bash_task::running_count_for_session("s1"), 1);
+
+    harness.core.request_compact("s1");
+
+    let messages = crate::history::load_messages("s1", &project);
+    assert_eq!(messages[0]["subtype"], json!("compact_boundary"));
+    let summary = messages[1]["message"]["content"]
+        .as_str()
+        .expect("摘要消息正文");
+    assert!(
+        summary.contains("### 后台任务"),
+        "压缩产物应带运行中任务章节: {summary}"
+    );
+    assert!(
+        summary.contains(&task_id),
+        "章节应点名仍在运行的任务 {task_id}: {summary}"
+    );
+    assert!(summary.contains("跑长测试"), "章节应带任务描述: {summary}");
+    // 压缩产物仍是 [边界, 摘要, ...保留区] 三段形态：清单并进摘要消息，不另开一条
+    assert_eq!(messages[2]["message"]["content"], json!("消息 10"));
+
+    // 任务结束之后清单不再更新：它是压缩那一刻的时点事实，之后由完成通知接续
+    crate::bash_task::abort_tasks_for_session("s1");
+    let messages = crate::history::load_messages("s1", &project);
+    assert!(
+        messages[1]["message"]["content"]
+            .as_str()
+            .expect("摘要消息正文")
+            .contains(&task_id),
+        "已完成任务的清单留在压缩产物里，不回写"
+    );
+
+    crate::bash_task::reset_for_test();
+    crate::compact::reset_for_test();
+}
+
+/// 无运行中任务时压缩产物不带该章节（零额外内容）。
+#[test]
+fn compact_without_running_tasks_adds_no_section() {
+    let sandbox = Sandbox::new("engine-compact-no-running-tasks");
+    crate::compact::reset_for_test();
+    crate::bash_task::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    harness.core.request_compact("s1");
+
+    let messages = crate::history::load_messages("s1", &project);
+    // 正向对照：先证明压缩真的发生了。缺这一行时，压缩彻底不执行
+    // （`compact_and_apply_messages` 提前 return false）也能让下面的负向断言通过。
+    assert_eq!(
+        messages[0]["subtype"],
+        json!("compact_boundary"),
+        "压缩应当发生"
+    );
+    let summary = messages[1]["message"]["content"]
+        .as_str()
+        .expect("摘要消息正文");
+    assert!(
+        !summary.contains("### 后台任务"),
+        "空清单不应产出章节: {summary}"
+    );
+
     crate::compact::reset_for_test();
 }

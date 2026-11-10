@@ -9381,3 +9381,36 @@ fn transfer_hook_roundtrip_and_cancel() {
     );
     assert!(outcome.is_err(), "取消后应当立即失败，不悬挂");
 }
+
+/// 压缩中到达的自动消息只入队，不另起消费循环
+/// （`docs/features/compaction.md` FR-006）。
+///
+/// 压缩会整体替换消息数组：此刻起消费循环会把通知落盘进即将被整文件重写丢掉的
+/// 旧数组，任务已跑完而模型永久以为它还在跑。收尾由 `resume_after_compact` 统一唤醒，
+/// 与 `on_user_message` / `deliver_background_reminder` 同一口径。
+#[test]
+fn agent_message_during_compaction_is_queued_without_starting_the_consumer() {
+    let harness = EngineHarness::allow_all();
+    let state = harness.core.session("s-compacting");
+
+    {
+        let mut guard = state.lock().unwrap();
+        guard.compacting = true;
+        guard.running = false;
+    }
+
+    harness
+        .core
+        .enqueue_agent_message("s-compacting", "后台任务完成", "bash", "");
+
+    let guard = state.lock().unwrap();
+    assert_eq!(
+        guard.agent_messages.len(),
+        1,
+        "消息应当入队，等压缩收尾后一起消费"
+    );
+    assert!(
+        !guard.running,
+        "压缩中不应起消费循环（起了会把通知落进即将被替换的旧数组）"
+    );
+}
