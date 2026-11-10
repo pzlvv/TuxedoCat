@@ -40,45 +40,6 @@ function toolNames(req: RecordedRequest): string[] {
   return (req.body.tools ?? []).map((tool) => tool.function?.name ?? '');
 }
 
-/**
- * 按会话 id 确定性等待聊天视图页面（App 在会话切换时写 `__currentSessionId`）。
- * 多视图宿主下 `app.chatPage()` 在新视图尚未完成启动时可能解析回旧视图，
- * 侧栏切换后要用本函数拿到子会话自己的视图。
- *
- * 额外要求 rAF 活着：会话 id 可能先落在尚未挂载的视图上（宿主还没把它 setBounds
- * 进窗口），未挂载视图的 rAF 暂停但仍报 visible，Playwright 点击的 stable 检查
- * 要两帧 rAF、永远等不到（CI 慢机上挂满 120s 的机制）。rAF 活着的才是已挂载、
- * 可交互的那个视图。
- */
-async function waitForSessionPage(sessionId: string): Promise<import('@playwright/test').Page> {
-  let found: import('@playwright/test').Page | null = null;
-  const rafAlive = (page: import('@playwright/test').Page): Promise<boolean> =>
-    Promise.race([
-      page.evaluate(() => new Promise<boolean>((resolve) => {
-        requestAnimationFrame(() => resolve(true));
-      })),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
-    ]).catch(() => false);
-  await expect
-    .poll(async () => {
-      for (const page of app.context.pages()) {
-        if (!page.url().includes('dist/webview/index.html')) continue;
-        try {
-          const sid = await page.evaluate(() => (window as any).__currentSessionId ?? null);
-          if (sid === sessionId && await rafAlive(page)) {
-            found = page;
-            return true;
-          }
-        } catch {
-          /* 页面正在销毁 */
-        }
-      }
-      return false;
-    }, { timeout: 30_000 })
-    .toBe(true);
-  return found!;
-}
-
 /** 从子代理请求里找带指定文案的 tool_result（Bash 拒绝文案断言用） */
 function findToolResultText(fragment: string): boolean {
   for (const req of mockLlm.requests) {
@@ -177,7 +138,7 @@ test('US-51 explorer：只读五件套、白名单外被拒、选项菜单置灰
   // 父视图，这里按侧栏条目的 data-session-id 确定性等待子视图页面。
   const subSessionId = await sb.locator(SIDEBAR_ITEM).last().getAttribute('data-session-id');
   await sb.locator(SIDEBAR_ITEM).last().click();
-  const subPage = await waitForSessionPage(subSessionId!);
+  const subPage = await app.sessionPage(subSessionId!);
   const menuButton = subPage.locator('button[title="功能开关"]');
   await expect(menuButton).toBeVisible();
   await menuButton.click();
@@ -252,7 +213,7 @@ test('US-51 Master 子代理与普通会话：选项菜单照常可操作（不�
   // Master 子代理视图：同样不置灰（specs/020 FR-005 只锁非 Master 角色）
   const masterSubSessionId = await sb.locator(SIDEBAR_ITEM).last().getAttribute('data-session-id');
   await sb.locator(SIDEBAR_ITEM).last().click();
-  const subPage = await waitForSessionPage(masterSubSessionId!);
+  const subPage = await app.sessionPage(masterSubSessionId!);
   const subMenuButton = subPage.locator('button[title="功能开关"]');
   await expect(subMenuButton).toBeVisible();
   await subMenuButton.click();

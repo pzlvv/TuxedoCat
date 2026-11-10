@@ -1516,6 +1516,14 @@ impl Core {
         } else {
             (prompt_mode, web_search)
         };
+        // 落盘值取「会话生效值」：内存里的 `None`（创建者未显式设置）在查询路径上按配置
+        // 默认值生效（`run_turn` 的会话级覆盖只在有值时才盖掉 provider 配置），落盘的
+        // `context.*` 因此也写那份默认值——否则重开子会话时按默认值补齐会得到另一个数。
+        let persisted_prompt_mode = prompt::normalize_prompt_mode(prompt_mode.as_deref());
+        let persisted_web_search = web_search.unwrap_or_else(config::default_web_search);
+        let persisted_thinking_effort = thinking_effort
+            .clone()
+            .unwrap_or_else(config::default_thinking_effort);
 
         let sub_state = self.session(&sub_session_id);
         {
@@ -1563,12 +1571,30 @@ impl Core {
             provider.as_deref(),
         )
         .map_err(|error| format!("create sub agent metadata: {error}"))?;
-        // 同步把继承来的 agent mode 落进子会话 meta.json 的 context：
-        // 重启后重新打开子会话，UI 仍显示继承自主对话的模式。
-        self.persist_context(
+        // 同步把继承来的会话级设置落进子会话 meta.json 的 context：
+        // 重启后重新打开子会话，UI 仍显示继承自主对话的配置，而不是按配置默认值补齐
+        // （specs/defects/subagent-thinking-effort-not-inherited）。四个键的取值就是上面
+        // 写进 `SessionState` 的那份（同一处来源）：非 Master 角色的 promptMode / webSearch
+        // 是固定值（提示词预设恒 normal、联网恒关，specs/020 FR-003），落盘照写固定值，
+        // 与内存一致。写入失败按创建失败上报（铁律 1，不静默降级）——否则子会话会带着
+        // 一套与主对话不一致的配置存活，且没有任何错误可查。
+        history::update_context(
             &sub_session_id,
-            json!({ "key": "agentMode", "value": agent_mode }),
-        );
+            &project,
+            &[
+                json!({ "key": "agentMode", "value": agent_mode }),
+                json!({
+                    "key": "thinkingMode",
+                    "value": persisted_thinking_effort,
+                }),
+                json!({
+                    "key": "promptMode",
+                    "value": persisted_prompt_mode,
+                }),
+                json!({ "key": "webSearch", "value": persisted_web_search }),
+            ],
+        )
+        .map_err(|error| format!("create sub agent context: {error}"))?;
 
         crate::subagent::register(&sub_session_id, &creator);
         self.emit_runtime();

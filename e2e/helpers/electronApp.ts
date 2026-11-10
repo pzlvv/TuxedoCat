@@ -56,6 +56,18 @@ export interface AppHandle {
    * 工作区 / 新建对话后应重新获取。
    */
   chatPage(opts?: ChatPageOptions, timeoutMs?: number): Promise<Page>;
+  /**
+   * 按会话 id 确定性等待聊天视图（`window.__currentSessionId` 匹配且 rAF 活着）。
+   *
+   * 多视图宿主下 `chatPage()` 在新视图尚未完成启动时会竞态解析回旧视图；侧栏切换
+   * 后要拿子会话自己的视图就用本方法。
+   *
+   * 额外要求 rAF 活着：会话 id 可能先落在尚未挂载的视图上（宿主还没把它 setBounds
+   * 进窗口），未挂载视图的 rAF 暂停但仍报 visible，Playwright 点击的 stable 检查
+   * 要两帧 rAF、永远等不到（CI 慢机上挂满用例超时的机制）。rAF 活着的才是已挂载、
+   * 可交互的那个视图。
+   */
+  sessionPage(sessionId: string): Promise<Page>;
   /** 标题栏视图 */
   titlebarPage(): Promise<Page>;
   /** 侧栏视图（悬浮窗模式下被移除，可能等待超时） */
@@ -425,6 +437,39 @@ export async function launchApp(options: {
   const chatPage = await waitForChatPage();
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
 
+  /** 按会话 id 等视图（`sessionPage`；判据见接口注释） */
+  const waitForSessionPage = (sessionId: string, timeoutMs = 30_000): Promise<Page> =>
+    new Promise<Page>((resolve, reject) => {
+      const started = Date.now();
+      const rafAlive = (page: Page): Promise<boolean> =>
+        Promise.race([
+          page.evaluate(() => new Promise<boolean>((res) => {
+            requestAnimationFrame(() => res(true));
+          })),
+          new Promise<boolean>((res) => setTimeout(() => res(false), 1_000)),
+        ]).catch(() => false);
+      const poll = async (): Promise<void> => {
+        for (const page of context.pages()) {
+          if (!page.url().includes('dist/webview/index.html')) continue;
+          try {
+            const sid = await page.evaluate(() => (window as any).__currentSessionId ?? null);
+            if (sid === sessionId && await rafAlive(page)) {
+              resolve(page);
+              return;
+            }
+          } catch {
+            /* 页面正在销毁 */
+          }
+        }
+        if (Date.now() - started > timeoutMs) {
+          reject(new Error(`等待会话视图超时（sessionId=${sessionId}）`));
+          return;
+        }
+        setTimeout(() => { void poll(); }, 200);
+      };
+      void poll();
+    });
+
   const close = async (): Promise<void> => {
     try {
       await browser.close().catch(() => undefined);
@@ -467,6 +512,7 @@ export async function launchApp(options: {
      * `timeoutMs` 缺省 45s（慢机器余量）；远程工作区冷部署（SSH 引导上传产物）时给更长的预算。
      */
     chatPage: (opts?: ChatPageOptions, timeoutMs?: number) => waitForChatPage(opts ?? {}, timeoutMs),
+    sessionPage: (sessionId: string) => waitForSessionPage(sessionId),
     titlebarPage: () => waitForPage('dist/titlebar/index.html'),
     sidebarPage: () => waitForPage('dist/sidebar/index.html'),
     waitForPage,
