@@ -74,7 +74,10 @@ pub fn truncate_index(messages: &[Value], target_uuid: &str) -> Option<usize> {
                     })
         })?,
     };
-    let kind = messages[index].get("type").and_then(Value::as_str).unwrap_or("");
+    let kind = messages[index]
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let mut cut = match kind {
         // 用户消息保留自身：重来时这条输入仍在输入框的语义位
         "user" => index + 1,
@@ -106,12 +109,14 @@ fn has_tool_use(message: &Value) -> bool {
             })
 }
 
-
 /// 区间 `[cut, ..)` 内出现过的 Edit / Write 调用：按路径取**最早**那次修改前的备份。
 ///
 /// 多个 tool_use 改同一文件时只用最早的 before（spec FR-004 第 3 条）：那次之前的内容
 /// 才是「回退到该节点时刻」的状态。
-fn collect_restores(messages: &[Value], cut: usize) -> (HashMap<String, Option<String>>, Vec<String>, bool) {
+fn collect_restores(
+    messages: &[Value],
+    cut: usize,
+) -> (HashMap<String, Option<String>>, Vec<String>, bool) {
     // tool_result 里的 beforeContent 按 tool_use_id 索引（`_meta` 可能因写入时序未持久化）
     let mut result_before: HashMap<String, Option<String>> = HashMap::new();
     for message in messages {
@@ -131,7 +136,11 @@ fn collect_restores(messages: &[Value], cut: usize) -> (HashMap<String, Option<S
             }
             if let Some(before) = content_or_null(block.get("beforeContent")) {
                 result_before.insert(
-                    block.get("tool_use_id").and_then(Value::as_str).unwrap_or("").to_string(),
+                    block
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     before,
                 );
             }
@@ -178,7 +187,11 @@ fn collect_restores(messages: &[Value], cut: usize) -> (HashMap<String, Option<S
                 continue;
             }
             let id = block.get("id").and_then(Value::as_str).unwrap_or("");
-            let from_meta = content_or_null(block.get("_meta").and_then(|meta| meta.get("beforeContent")));
+            let from_meta = content_or_null(
+                block
+                    .get("_meta")
+                    .and_then(|meta| meta.get("beforeContent")),
+            );
             let before = match from_meta {
                 Some(value) => Some(value),
                 None => result_before.get(id).cloned(),
@@ -224,13 +237,19 @@ pub fn receipt_text(outcome: &RewindOutcome) -> String {
         lines.push("No files needed to be rolled back.".to_string());
     } else {
         if !restored.is_empty() {
-            lines.push(format!("Restored {} file(s): {}", restored.len(), restored.join(", ")));
+            lines.push(format!(
+                "Restored {} file(s): {}",
+                restored.len(),
+                restored.join(", ")
+            ));
         }
         for file in failed {
             lines.push(format!(
                 "Failed to restore {}: {}",
                 file.path,
-                file.error.clone().unwrap_or_else(|| "unknown error".to_string())
+                file.error
+                    .clone()
+                    .unwrap_or_else(|| "unknown error".to_string())
             ));
         }
     }
@@ -242,7 +261,10 @@ pub fn receipt_text(outcome: &RewindOutcome) -> String {
         ));
     }
     if outcome.had_bash {
-        lines.push("Note: Bash changed files in this range; those changes were not rolled back.".to_string());
+        lines.push(
+            "Note: Bash changed files in this range; those changes were not rolled back."
+                .to_string(),
+        );
     }
     lines.join("\n")
 }
@@ -283,8 +305,16 @@ pub fn rewind(
     let mut files: Vec<RewindFile> = Vec::new();
     for (path, before) in restores {
         match rollback::restore_before(&project, &path, before.as_deref()) {
-            Ok(()) => files.push(RewindFile { path, ok: true, error: None }),
-            Err(error) => files.push(RewindFile { path, ok: false, error: Some(error) }),
+            Ok(()) => files.push(RewindFile {
+                path,
+                ok: true,
+                error: None,
+            }),
+            Err(error) => files.push(RewindFile {
+                path,
+                ok: false,
+                error: Some(error),
+            }),
         }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));

@@ -18,7 +18,10 @@ fn write_mcp_json(servers: Value) {
 
 #[test]
 fn normalize_command_accepts_string_or_array() {
-    assert_eq!(normalize_command(&json!("  uvx  ")), vec!["uvx".to_string()]);
+    assert_eq!(
+        normalize_command(&json!("  uvx  ")),
+        vec!["uvx".to_string()]
+    );
     assert_eq!(normalize_command(&json!("   ")), Vec::<String>::new());
     assert_eq!(
         normalize_command(&json!(["npx", 3, "tool"])),
@@ -48,8 +51,14 @@ fn normalize_string_map_uses_js_string_and_skips_nulls() {
             ("F".to_string(), "[object Object]".to_string()),
         ]
     );
-    assert_eq!(normalize_string_map(&json!(["a"])), Vec::<(String, String)>::new());
-    assert_eq!(normalize_string_map(&json!("x")), Vec::<(String, String)>::new());
+    assert_eq!(
+        normalize_string_map(&json!(["a"])),
+        Vec::<(String, String)>::new()
+    );
+    assert_eq!(
+        normalize_string_map(&json!("x")),
+        Vec::<(String, String)>::new()
+    );
 }
 
 #[test]
@@ -82,7 +91,11 @@ fn is_remote_type_is_case_insensitive() {
 fn is_remote_server_tolerates_mislabeled_local() {
     assert!(is_remote_server("remote", "", &[]));
     assert!(is_remote_server("local", "https://x", &[]));
-    assert!(!is_remote_server("local", "https://x", &["npx".to_string()]));
+    assert!(!is_remote_server(
+        "local",
+        "https://x",
+        &["npx".to_string()]
+    ));
     assert!(!is_remote_server("local", "", &["npx".to_string()]));
 }
 
@@ -92,9 +105,15 @@ fn extract_enabled_list_only_accepts_arrays() {
         extract_enabled_list(&json!({ "mcp": { "enabled": ["a", 3, "b"] } })),
         Some(vec!["a".to_string(), "b".to_string()])
     );
-    assert_eq!(extract_enabled_list(&json!({ "mcp": { "enabled": [] } })), Some(vec![]));
+    assert_eq!(
+        extract_enabled_list(&json!({ "mcp": { "enabled": [] } })),
+        Some(vec![])
+    );
     assert_eq!(extract_enabled_list(&json!({ "mcp": {} })), None);
-    assert_eq!(extract_enabled_list(&json!({ "mcp": { "enabled": "a" } })), None);
+    assert_eq!(
+        extract_enabled_list(&json!({ "mcp": { "enabled": "a" } })),
+        None
+    );
     assert_eq!(extract_enabled_list(&json!(null)), None);
 }
 
@@ -108,10 +127,7 @@ fn extract_server_map_prefers_wrapper_then_root() {
         extract_server_map(&json!({ "mcpServers": { "a": {} } })),
         &json!({ "a": {} })
     );
-    assert_eq!(
-        extract_server_map(&json!({ "a": {} })),
-        &json!({ "a": {} })
-    );
+    assert_eq!(extract_server_map(&json!({ "a": {} })), &json!({ "a": {} }));
     // 包裹层不是对象时回退到根对象
     assert_eq!(
         extract_server_map(&json!({ "mcp": "nope", "a": {} })),
@@ -161,7 +177,10 @@ fn parse_server_definitions_handles_fallbacks_and_skips() {
     assert_eq!(servers[2].url, "https://b");
     assert_eq!(servers[3].url, "https://c");
     assert_eq!(servers[4].r#type, "local");
-    assert_eq!(servers[4].environment, vec![("B".to_string(), "2".to_string())]);
+    assert_eq!(
+        servers[4].environment,
+        vec![("B".to_string(), "2".to_string())]
+    );
     assert_eq!(servers[5].url, "https://d");
 
     // 根对象不是普通对象 → 空
@@ -290,11 +309,13 @@ fn flush_skips_when_no_override_and_falls_back_when_no_meta() {
     set_session_mcp_enabled(Some(session), "a", true);
     flush_session_mcp_to_meta(session);
     let dir = config::project_conversation_dir(&sandbox.workspace.to_string_lossy()).unwrap();
-    let metadata =
-        crate::history::load_metadata(session, &project).expect("兜底建档的 meta.json");
+    let metadata = crate::history::load_metadata(session, &project).expect("兜底建档的 meta.json");
     assert_eq!(metadata["context"]["mcpEnabled"], json!(["a"]));
     assert_eq!(metadata["creator"], json!({ "kind": "user" }));
-    assert!(!dir.join(format!("{session}.meta.json.lock")).exists(), "不留锁文件");
+    assert!(
+        !dir.join(format!("{session}.meta.json.lock")).exists(),
+        "不留锁文件"
+    );
     reset_session_overrides();
 }
 

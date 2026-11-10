@@ -71,7 +71,9 @@ pub fn run_web_fetch(input: &Value) -> ToolOutcome {
     let url = match input_get_string(input, "url") {
         Some(url) if !url.is_empty() => url,
         _ => {
-            return ToolOutcome::Error("WebFetch: \"url\" is required and must be a string".to_string())
+            return ToolOutcome::Error(
+                "WebFetch: \"url\" is required and must be a string".to_string(),
+            )
         }
     };
     if let Err(message) = validate_fetch_url(&url) {
@@ -143,9 +145,8 @@ fn validate_fetch_url(url: &str) -> Result<(), String> {
             "WebFetch: \"url\" must be at most {MAX_URL_CHARS} characters"
         ));
     }
-    let parsed = reqwest::Url::parse(url).map_err(|err| {
-        format!("WebFetch: invalid url ({err})")
-    })?;
+    let parsed =
+        reqwest::Url::parse(url).map_err(|err| format!("WebFetch: invalid url ({err})"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("WebFetch: \"url\" must be an http or https url".to_string());
     }
@@ -217,12 +218,10 @@ fn post_tool_request(
             message: api_message,
         });
     }
-    response
-        .json::<Value>()
-        .map_err(|err| HttpToolError {
-            status: None,
-            message: err.to_string(),
-        })
+    response.json::<Value>().map_err(|err| HttpToolError {
+        status: None,
+        message: err.to_string(),
+    })
 }
 
 /// 错误映射：402 专述、可重试类附提示；key 不出现在文本里（本函数只拿状态与消息）。
@@ -250,7 +249,10 @@ fn map_http_error(error: &HttpToolError) -> String {
 
 /// 拼装搜索结果文本：逐条一行元信息 + summary；空结果给「无结果」。
 fn format_search_results(data: &Value) -> String {
-    let results = data.get("results").and_then(|value| value.as_array().cloned()).unwrap_or_default();
+    let results = data
+        .get("results")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
     if results.is_empty() {
         return "No results found.".to_string();
     }
@@ -263,8 +265,10 @@ fn format_search_results(data: &Value) -> String {
         let date = entry.get("date").and_then(Value::as_str);
         let meta: Vec<String> = [
             score.map(|value| format!("score {value}")),
-            site.filter(|text| !text.is_empty()).map(|text| text.to_string()),
-            date.filter(|text| !text.is_empty()).map(|text| text.to_string()),
+            site.filter(|text| !text.is_empty())
+                .map(|text| text.to_string()),
+            date.filter(|text| !text.is_empty())
+                .map(|text| text.to_string()),
         ]
         .into_iter()
         .flatten()

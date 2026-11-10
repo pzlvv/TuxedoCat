@@ -20,13 +20,17 @@ fn json_string_field(text: &str, key: &str) -> String {
         panic!("src/config/project.json 缺字段 {needle}");
     });
     let rest = &text[start + needle.len()..];
-    let colon = rest.find(':').unwrap_or_else(|| panic!("{needle} 后没有冒号"));
+    let colon = rest
+        .find(':')
+        .unwrap_or_else(|| panic!("{needle} 后没有冒号"));
     let after = rest[colon + 1..].trim_start();
     if !after.starts_with('"') {
         panic!("{needle} 的值不是字符串");
     }
     let value_start = 1;
-    let value_len = after[value_start..].find('"').unwrap_or_else(|| panic!("{needle} 的字符串没有闭合引号"));
+    let value_len = after[value_start..]
+        .find('"')
+        .unwrap_or_else(|| panic!("{needle} 的字符串没有闭合引号"));
     after[value_start..value_start + value_len].to_string()
 }
 
@@ -40,7 +44,10 @@ fn main() {
         ("TC_CONFIG_DIR", "configDir"),
         ("TC_ENV_PREFIX", "envPrefix"),
     ] {
-        println!("cargo:rustc-env={env_key}={}", json_string_field(&project_text, field));
+        println!(
+            "cargo:rustc-env={env_key}={}",
+            json_string_field(&project_text, field)
+        );
     }
     println!("cargo:rerun-if-changed=../src/config/project.json");
 }

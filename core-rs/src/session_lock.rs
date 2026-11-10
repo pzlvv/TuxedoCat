@@ -66,8 +66,7 @@ impl std::fmt::Display for LockError {
 pub fn lock_path(project: &str, session_id: &str) -> Result<PathBuf, LockError> {
     crate::history::validate_session_id(session_id)
         .map_err(|error| LockError::Io(error.to_string()))?;
-    let dir = crate::config::project_conversation_dir(project)
-        .map_err(LockError::Io)?;
+    let dir = crate::config::project_conversation_dir(project).map_err(LockError::Io)?;
     Ok(dir.join(format!("{session_id}.session.lock")))
 }
 
@@ -106,7 +105,11 @@ fn windows_process_start_time(pid: u32) -> Option<u64> {
     }
     #[link(name = "kernel32")]
     extern "system" {
-        fn OpenProcess(desired_access: u32, inherit_handle: i32, pid: u32) -> *mut core::ffi::c_void;
+        fn OpenProcess(
+            desired_access: u32,
+            inherit_handle: i32,
+            pid: u32,
+        ) -> *mut core::ffi::c_void;
         fn GetProcessTimes(
             process: *mut core::ffi::c_void,
             creation: *mut FileTime,
@@ -145,7 +148,9 @@ pub struct SessionLockHandle {
 
 impl std::fmt::Debug for SessionLockHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionLockHandle").field("path", &self.path).finish()
+        f.debug_struct("SessionLockHandle")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
@@ -212,8 +217,9 @@ impl Drop for SessionLockHandle {
 /// （spec 边界：互斥在内核锁，不依赖文件内容）。
 pub fn acquire(path: &Path) -> Result<SessionLockHandle, LockError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| LockError::Io(format!("mkdir {} failed: {error}", parent.display())))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            LockError::Io(format!("mkdir {} failed: {error}", parent.display()))
+        })?;
     }
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -233,8 +239,7 @@ pub fn acquire(path: &Path) -> Result<SessionLockHandle, LockError> {
     // 经持锁句柄读取（Windows 上 LockFileEx 锁住的字节范围会挡住其他句柄的读取，
     // 另开句柄读只会得到空；同一句柄不受自己的锁影响）
     let existing = read_via_handle(&file);
-    let parsed: Option<serde_json::Value> =
-        serde_json::from_str(existing.trim()).ok();
+    let parsed: Option<serde_json::Value> = serde_json::from_str(existing.trim()).ok();
     match parsed {
         Some(value) => {
             let version = value.get("version").and_then(serde_json::Value::as_i64);
@@ -246,7 +251,10 @@ pub fn acquire(path: &Path) -> Result<SessionLockHandle, LockError> {
                         .and_then(serde_json::Value::as_u64)
                         .map(|pid| pid.to_string())
                         .unwrap_or_else(|| "unknown".to_string());
-                    return Err(LockError::UnsupportedVersion { version: other, pid });
+                    return Err(LockError::UnsupportedVersion {
+                        version: other,
+                        pid,
+                    });
                 }
                 None => {
                     diag!(
@@ -280,7 +288,10 @@ pub fn acquire(path: &Path) -> Result<SessionLockHandle, LockError> {
     if let Err(error) = write() {
         // 写不进内容：锁已持有但诊断缺失。释放并报错，不留「锁着但没名分」的句柄
         unlock_file(&file);
-        return Err(LockError::Io(format!("write {} failed: {error}", path.display())));
+        return Err(LockError::Io(format!(
+            "write {} failed: {error}",
+            path.display()
+        )));
     }
     Ok(SessionLockHandle {
         file,

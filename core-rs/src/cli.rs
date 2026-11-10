@@ -59,7 +59,12 @@ pub fn program_name() -> String {
 /// 手工排查「这是哪个版本」时，指纹是版本身份的唯一凭据（`--version` 由
 /// `remote.rs::build_fingerprint` 同源的编译期环境提供）。
 pub fn version() -> String {
-    format!("{} {} (fingerprint {})", program_name(), env!("CARGO_PKG_VERSION"), super::remote::build_fingerprint())
+    format!(
+        "{} {} (fingerprint {})",
+        program_name(),
+        env!("CARGO_PKG_VERSION"),
+        super::remote::build_fingerprint()
+    )
 }
 
 /// 帮助文本。

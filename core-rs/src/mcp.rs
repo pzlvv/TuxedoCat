@@ -107,7 +107,12 @@ pub fn normalize_mcp_call_result(result: &Value) -> McpCallResult {
         let item = block;
         match item.get("type").and_then(Value::as_str) {
             Some("text") if item.get("text").map(Value::is_string).unwrap_or(false) => {
-                parts.push(item.get("text").and_then(Value::as_str).unwrap_or("").to_string());
+                parts.push(
+                    item.get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                );
             }
             Some("image") => {
                 let mime = item
@@ -138,7 +143,11 @@ pub fn normalize_mcp_call_result(result: &Value) -> McpCallResult {
 
     // 没有标准 content 时兜底序列化整个结果，避免返回空内容触发上游 "empty content" 报错
     let text = if parts.is_empty() {
-        js_json_stringify(if result.is_null() { &Value::Null } else { result })
+        js_json_stringify(if result.is_null() {
+            &Value::Null
+        } else {
+            result
+        })
     } else {
         parts.join("\n")
     };
@@ -193,7 +202,10 @@ where
                     .get("description")
                     .and_then(Value::as_str)
                     .map(|text| text.to_string()),
-                input_schema: raw.get("inputSchema").filter(|value| is_js_object(value)).cloned(),
+                input_schema: raw
+                    .get("inputSchema")
+                    .filter(|value| is_js_object(value))
+                    .cloned(),
                 annotations: raw
                     .get("annotations")
                     .filter(|value| is_js_object(value))
@@ -223,7 +235,8 @@ pub fn quote_windows_arg(value: &str) -> String {
     // Rust 的 `char::is_whitespace()` 含 U+0085 却不含 U+FEFF，与 `quoteWindowsArg`
     // 的 `/[\s"&|<>^()]/` 恰好相反。
     let needs_quote = value.chars().any(|ch| {
-        crate::util::is_js_whitespace(ch) || matches!(ch, '"' | '&' | '|' | '<' | '>' | '^' | '(' | ')')
+        crate::util::is_js_whitespace(ch)
+            || matches!(ch, '"' | '&' | '|' | '<' | '>' | '^' | '(' | ')')
     });
     if !needs_quote {
         return value.to_string();
@@ -342,10 +355,9 @@ impl McpStdioClient {
                     self.name()
                 ))
             }
-            Err(RecvTimeoutError::Disconnected) => Err(format!(
-                "MCP server \"{}\" 进程已退出",
-                self.name()
-            )),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err(format!("MCP server \"{}\" 进程已退出", self.name()))
+            }
         }
     }
 
@@ -484,7 +496,10 @@ impl McpClient for McpStdioClient {
             state.stdin = None;
             state.child.take()
         };
-        reject_all_pending(&self.shared, &format!("MCP server \"{}\" 已停止", self.name()));
+        reject_all_pending(
+            &self.shared,
+            &format!("MCP server \"{}\" 已停止", self.name()),
+        );
 
         let Some(mut child) = child else {
             return;
@@ -511,7 +526,9 @@ impl McpClient for McpStdioClient {
             return Err(format!(
                 "MCP server \"{}\" 未运行{}",
                 self.name(),
-                reason.map(|reason| format!("（{reason}）")).unwrap_or_default()
+                reason
+                    .map(|reason| format!("（{reason}）"))
+                    .unwrap_or_default()
             ));
         }
         let result = self.send_request(
@@ -677,7 +694,10 @@ fn handle_exit(shared: &Arc<StdioShared>) {
 
     let reason = reap_exit_reason(child);
     shared.state.lock().unwrap().exit_reason = Some(reason.clone());
-    reject_all_pending(shared, &format!("MCP server \"{}\" 进程已退出", shared.name));
+    reject_all_pending(
+        shared,
+        &format!("MCP server \"{}\" 进程已退出", shared.name),
+    );
     if let Some(callback) = callback {
         callback(Some(reason));
     }
@@ -873,9 +893,7 @@ impl ManagerState {
     }
 
     fn server_mut(&mut self, name: &str) -> Option<&mut ServerRuntime> {
-        self.servers
-            .iter_mut()
-            .find(|runtime| runtime.name == name)
+        self.servers.iter_mut().find(|runtime| runtime.name == name)
     }
 
     fn remove_server(&mut self, name: &str) -> Option<ServerRuntime> {
@@ -1004,7 +1022,8 @@ impl McpManager {
     pub fn sync_all_sessions(&self) {
         let state = Arc::clone(&self.state);
         self.enqueue(move || {
-            let sessions: Vec<String> = state.lock().unwrap().session_refs.keys().cloned().collect();
+            let sessions: Vec<String> =
+                state.lock().unwrap().session_refs.keys().cloned().collect();
             for session_id in sessions {
                 sync_session_internal(&state, &session_id);
             }
@@ -1061,7 +1080,9 @@ impl McpManager {
             };
             return Err(format!(
                 "MCP server \"{server_name}\" 未运行{}",
-                error.map(|error| format!("（{error}）")).unwrap_or_default()
+                error
+                    .map(|error| format!("（{error}）"))
+                    .unwrap_or_default()
             ));
         };
         if !client.is_running() {
@@ -1073,7 +1094,9 @@ impl McpManager {
             };
             return Err(format!(
                 "MCP server \"{server_name}\" 未运行{}",
-                error.map(|error| format!("（{error}）")).unwrap_or_default()
+                error
+                    .map(|error| format!("（{error}）"))
+                    .unwrap_or_default()
             ));
         }
         client.call_tool(tool_name, args)
@@ -1236,7 +1259,10 @@ fn sync_session_internal(state: &Arc<Mutex<ManagerState>>, session_id: &str) {
     }
 
     let servers = mcp_config::read_mcp_servers(Some(session_id));
-    let enabled: Vec<McpServerInfo> = servers.into_iter().filter(|server| server.enabled).collect();
+    let enabled: Vec<McpServerInfo> = servers
+        .into_iter()
+        .filter(|server| server.enabled)
+        .collect();
     let desired: HashMap<String, McpServerInfo> = enabled
         .iter()
         .map(|server| (server.name.clone(), server.clone()))
@@ -1302,7 +1328,12 @@ fn release_internal(state: &Arc<Mutex<ManagerState>>, session_id: &str) {
 }
 
 /// 给某会话增加对某个 server 的引用，并更新期望配置（对齐 `attachRef`）
-fn attach_ref(state: &Arc<Mutex<ManagerState>>, name: &str, session_id: &str, info: &McpServerInfo) {
+fn attach_ref(
+    state: &Arc<Mutex<ManagerState>>,
+    name: &str,
+    session_id: &str,
+    info: &McpServerInfo,
+) {
     let remote = info.is_remote();
     let signature = build_signature(
         remote,
@@ -1369,7 +1400,10 @@ fn schedule_reclaim(state: &Arc<Mutex<ManagerState>>, name: &str) {
         return;
     };
     runtime.reclaim_deadline = Some(Instant::now() + Duration::from_millis(reclaim_grace_ms()));
-    eprintln!("[core] mcp: MCP \"{name}\" 引用归零，{}ms 后回收", reclaim_grace_ms());
+    eprintln!(
+        "[core] mcp: MCP \"{name}\" 引用归零，{}ms 后回收",
+        reclaim_grace_ms()
+    );
 }
 
 /// 真正停止引用归零的 server 进程（对齐 `reclaimInternal`）
@@ -1470,7 +1504,9 @@ fn start_runtime(state: &Arc<Mutex<ManagerState>>, name: &str) {
                 .unwrap_or(0);
             eprintln!(
                 "[core] mcp: MCP \"{name_for_exit}\" 连接已断开{}，保留 {count} 个引用",
-                reason.map(|reason| format!("（{reason}）")).unwrap_or_default()
+                reason
+                    .map(|reason| format!("（{reason}）"))
+                    .unwrap_or_default()
             );
         }));
     }
@@ -1737,8 +1773,7 @@ pub fn read_servers(session_id: Option<&str>) -> Vec<McpServerInfo> {
 /// `running=false / toolCount=0 / error=null / refCount=0`。
 /// 经 `UiRequest.mcpServersRequested` 应答宿主。
 pub fn servers_with_runtime(session_id: Option<&str>) -> Vec<Value> {
-    let status: HashMap<String, McpServerRuntimeStatus> =
-        get_server_status().into_iter().collect();
+    let status: HashMap<String, McpServerRuntimeStatus> = get_server_status().into_iter().collect();
     read_servers(session_id)
         .into_iter()
         .map(|server| {

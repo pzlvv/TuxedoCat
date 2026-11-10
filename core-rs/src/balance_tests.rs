@@ -11,8 +11,14 @@ use crate::test_support::Sandbox;
 
 #[test]
 fn base_url_hostname_lowercases_and_strips_paths() {
-    assert_eq!(base_url_hostname(&json!("https://API.DeepSeek.com/v1")), "api.deepseek.com");
-    assert_eq!(base_url_hostname(&json!("  https://api.deepseek.com  ")), "api.deepseek.com");
+    assert_eq!(
+        base_url_hostname(&json!("https://API.DeepSeek.com/v1")),
+        "api.deepseek.com"
+    );
+    assert_eq!(
+        base_url_hostname(&json!("  https://api.deepseek.com  ")),
+        "api.deepseek.com"
+    );
     assert_eq!(base_url_hostname(&json!("not a url")), "");
     assert_eq!(base_url_hostname(&json!("")), "");
     assert_eq!(base_url_hostname(&json!(null)), "");
@@ -27,7 +33,10 @@ fn base_url_hostname_trims_with_js_whitespace() {
         "api.deepseek.com",
     );
     // U+0085 不被 JS trim 去掉，URL 解析失败 → 空串
-    assert_eq!(base_url_hostname(&json!("\u{0085}https://api.deepseek.com")), "");
+    assert_eq!(
+        base_url_hostname(&json!("\u{0085}https://api.deepseek.com")),
+        ""
+    );
 }
 
 #[test]
@@ -42,7 +51,10 @@ fn provider_key_and_api_key_trim_with_js_whitespace() {
         },
     }));
     // apiKey 也必须用 JS 口径 trim（Rust `str::trim` 不去 U+FEFF）
-    assert_eq!(deepseek_provider_api_key(), Some("deepseek-key".to_string()));
+    assert_eq!(
+        deepseek_provider_api_key(),
+        Some("deepseek-key".to_string())
+    );
 }
 
 #[test]
@@ -64,7 +76,10 @@ fn finds_the_deepseek_provider_by_hostname() {
             },
         },
     }));
-    assert_eq!(deepseek_provider_api_key(), Some("deepseek-key".to_string()));
+    assert_eq!(
+        deepseek_provider_api_key(),
+        Some("deepseek-key".to_string())
+    );
 }
 
 #[test]
@@ -78,7 +93,10 @@ fn finds_the_deepseek_provider_by_key_name() {
             },
         },
     }));
-    assert_eq!(deepseek_provider_api_key(), Some("key-from-name".to_string()));
+    assert_eq!(
+        deepseek_provider_api_key(),
+        Some("key-from-name".to_string())
+    );
 }
 
 #[test]
@@ -108,7 +126,10 @@ fn active_provider_is_ignored() {
         },
     }));
     // 只认域名，不认 activeProvider（activeProvider 是网关时不能拿它的 Key）
-    assert_eq!(deepseek_provider_api_key(), Some("deepseek-key".to_string()));
+    assert_eq!(
+        deepseek_provider_api_key(),
+        Some("deepseek-key".to_string())
+    );
 }
 
 #[test]
@@ -160,7 +181,8 @@ fn fetch_balance_returns_none_when_the_server_fails() {
         },
     }));
     // 非 2xx：按失败处理（宿主清空旧余额）
-    let base = serve_once("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let base =
+        serve_once("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     set_base_url_for_test(Some(&base));
     assert!(fetch_balance().is_none());
     set_base_url_for_test(None);

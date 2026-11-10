@@ -98,8 +98,8 @@ pub fn home_dir() -> Result<PathBuf, String> {
 
 /// 配置目录：`~/<configDirName>`
 pub fn config_home() -> Result<PathBuf, String> {
-    let env = host_environment()
-        .ok_or_else(|| "host environment is not provided yet".to_string())?;
+    let env =
+        host_environment().ok_or_else(|| "host environment is not provided yet".to_string())?;
     Ok(home_dir()?.join(env.config_dir_name))
 }
 
@@ -179,7 +179,8 @@ pub fn project_conversation_dir(project_path: &str) -> Result<PathBuf, String> {
 /// 创建与写入，宿主不参与写盘。
 pub fn ensure_project_conversation_dir(project_path: &str) -> Result<PathBuf, String> {
     let dir = project_conversation_dir(project_path)?;
-    std::fs::create_dir_all(&dir).map_err(|err| format!("mkdir {} failed: {err}", dir.display()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("mkdir {} failed: {err}", dir.display()))?;
     write_project_meta_once(project_path, &dir);
     Ok(dir)
 }
@@ -306,15 +307,11 @@ pub fn project_root(session_id: &str) -> Result<String, String> {
     if let Some(path) = session_workspace(session_id) {
         return Ok(path);
     }
-    ACTIVE_WORKSPACE
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| {
-            "Project root is not configured. The active workspace is written by \
+    ACTIVE_WORKSPACE.lock().unwrap().clone().ok_or_else(|| {
+        "Project root is not configured. The active workspace is written by \
              UiEvent.workspaceChanged."
-                .to_string()
-        })
+            .to_string()
+    })
 }
 
 /// 读取文件为 JSON 对象（缺失 / 解析失败 / 非对象一律返回空对象）
@@ -332,7 +329,10 @@ fn read_settings_file(path: &std::path::Path) -> Value {
 ///
 /// 目录与清单都由 Core 创建与写入（`docs/architecture/core-ui-separation.md` 第 4.1 节）；
 /// `workspacePath` 未变化时不重写（幂等）。
-pub fn write_workspace_meta(project_dir: &std::path::Path, workspace_path: &str) -> Result<(), String> {
+pub fn write_workspace_meta(
+    project_dir: &std::path::Path,
+    workspace_path: &str,
+) -> Result<(), String> {
     let path = project_dir.join("workspace.meta.json");
     let mut settings = read_settings_file(&path);
     if settings.get("workspacePath").and_then(Value::as_str) == Some(workspace_path) {
@@ -486,7 +486,10 @@ fn acquire_meta_lock(project_dir: &std::path::Path) -> Result<Option<MetaLockGua
                 .open(&lock_path)
             {
                 Ok(file) => {
-                    return Ok(Some(MetaLockGuard { file: Some(file), path: lock_path }));
+                    return Ok(Some(MetaLockGuard {
+                        file: Some(file),
+                        path: lock_path,
+                    }));
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     std::thread::sleep(std::time::Duration::from_millis(20));

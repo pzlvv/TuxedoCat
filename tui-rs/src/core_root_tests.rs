@@ -9,7 +9,10 @@ fn temp_root(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "tuxedo-core-root-{tag}-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -93,20 +96,32 @@ fn deployment_layout_wins_over_repo_layout() {
     // 同一根下两种形态都布好：部署布局（share/<产品名>/<指纹>）优先
     let product_dir = product_dir_in(&root);
     write_slot(&product_dir, "9d7e480b");
-    let repo_dir = root.join("resources").join("core").join(core_platform_dir().unwrap());
+    let repo_dir = root
+        .join("resources")
+        .join("core")
+        .join(core_platform_dir().unwrap());
     std::fs::create_dir_all(&repo_dir).unwrap();
     std::fs::write(repo_dir.join(core_binary_file_name()), "fake-core").unwrap();
-    assert_eq!(core_binary_in(&root).unwrap(), product_dir.join("9d7e480b").join(core_binary_file_name()));
+    assert_eq!(
+        core_binary_in(&root).unwrap(),
+        product_dir.join("9d7e480b").join(core_binary_file_name())
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
 fn repo_layout_resolves_for_development() {
     let root = temp_root("repo");
-    let repo_dir = root.join("resources").join("core").join(core_platform_dir().unwrap());
+    let repo_dir = root
+        .join("resources")
+        .join("core")
+        .join(core_platform_dir().unwrap());
     std::fs::create_dir_all(&repo_dir).unwrap();
     std::fs::write(repo_dir.join(core_binary_file_name()), "fake-core").unwrap();
-    assert_eq!(core_binary_in(&root).unwrap(), repo_dir.join(core_binary_file_name()));
+    assert_eq!(
+        core_binary_in(&root).unwrap(),
+        repo_dir.join(core_binary_file_name())
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }
 

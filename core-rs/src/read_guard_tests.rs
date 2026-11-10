@@ -13,7 +13,12 @@ fn equal_fingerprint_passes() {
     let sandbox = Sandbox::new("read-guard-equal");
     reset_for_test();
     let path = sandbox.write_file("a.ts", "hello\n");
-    record_read("s-guard", &sandbox.workspace.to_string_lossy(), &path, b"hello\n");
+    record_read(
+        "s-guard",
+        &sandbox.workspace.to_string_lossy(),
+        &path,
+        b"hello\n",
+    );
 
     let outcome = verify(
         "s-guard",
@@ -30,7 +35,12 @@ fn changed_fingerprint_is_rejected() {
     let sandbox = Sandbox::new("read-guard-stale");
     reset_for_test();
     let path = sandbox.write_file("a.ts", "hello\n");
-    record_read("s-guard", &sandbox.workspace.to_string_lossy(), &path, b"hello\n");
+    record_read(
+        "s-guard",
+        &sandbox.workspace.to_string_lossy(),
+        &path,
+        b"hello\n",
+    );
 
     let outcome = verify(
         "s-guard",

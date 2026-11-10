@@ -114,6 +114,8 @@ npm run build:all     # TS + Rust core + electron
 npm run test:all      # 最大测试入口：单测 + e2e 本地车道（真实 SSH 远端另跑 test:e2e:ssh）
 npm run test:unit     # 只跑单测（docs-lint 等过滤式跑法用它：test:unit -- docs-lint）
 npm run test:core     # cargo test（core-rs）
+npm run fmt:rust      # rustfmt 三个 crate（core-rs / tui-rs / installer-rs）
+npm run fmt:rust:check # 校验格式基线（CI 同口径，任何时刻应为绿）
 npm run build:core:host # 只重建当前平台 Core（真实双端测试的本地前置）
 npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electron:debug）
 ```
@@ -142,9 +144,9 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   （`docs/architecture/events.md` 事件表、对应 `docs/<topic>.md`），`npm run test:unit -- docs-lint` 必须绿。
   新增 / 移动文档要更新 `docs/README.md` 的地图；守卫进 CI（`.github/workflows/smoke.yml`
   的冒烟闸门，docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节
-  引用，tests job 跑 check-types / lint / `test:unit` / `test:core` / `check-types:e2e`，
-  并先构建 Linux Core 让 `standalone*` 系列测试驱动真实二进制而不是 skip）。MR 必须冒烟
-  全绿才可合入：分支保护里把 docs-lint / tests 设为必填 check。
+  引用，tests job 跑 check-types / lint / `fmt:rust:check` / `test:unit` / `test:core` /
+  `check-types:e2e`，并先构建 Linux Core 让 `standalone*` 系列测试驱动真实二进制而不是 skip）。
+  MR 必须冒烟全绿才可合入：分支保护里把 docs-lint / tests 设为必填 check。
 - **全量回归进 CI**（`.github/workflows/all.yml`）：main 整点定时（每小时）+ 手动
   dispatch，复用 smoke.yml 的两个 job，另跑 e2e 三车道：`prepare` 构建产物，之后
   `ui` / `electron` / `tui` 并行（electron 车道跑在 `xvfb-run` 里）。
@@ -161,6 +163,10 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   产物文件名与 tag 名都由它派生——本地打包与 CI 发布是同一条链。
 - 提交前至少跑 `npm run check-types && npm run lint`，涉及 core 的改动加 `npm run test:core`
   （CI 会再跑一遍，本地跑只是提前暴露）。
+- **Rust 代码格式由 rustfmt 统一**：三个 crate（`core-rs` / `tui-rs` / `installer-rs`）
+  的格式基线已整体对齐，改完 Rust 代码跑 `npm run fmt:rust` 落格式，`npm run fmt:rust:check`
+  验证（CI 与本地同口径）。不要再手写换行绕过 rustfmt——基线的意义就是任何时刻
+  `cargo fmt --check` 都为绿。
 - **涉及 core 的改动先 `npm run build:core:host` 再跑 `npm run test:all`**：`standalone*`
   系列测试直接驱动真实 Core 二进制，产物缺失时走 `markSkipped()`——runner 单列「跳过」并
   打印原因，不再算通过（CI 的 tests job 先 `build:core:linux-x64` 所以真实在跑；本地 Windows

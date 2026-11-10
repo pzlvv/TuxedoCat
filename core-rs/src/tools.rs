@@ -73,7 +73,10 @@ fn persist_large_output(
     let dir = config::project_conversation_dir(project)?.join("tool-results");
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("mkdir {} failed: {err}", dir.display()))?;
-    let task_id = format!("tool-{tool_name}-{}", util::unique_id("").trim_start_matches('_'));
+    let task_id = format!(
+        "tool-{tool_name}-{}",
+        util::unique_id("").trim_start_matches('_')
+    );
     let filepath = dir.join(format!("{session_id}__{task_id}.txt"));
 
     // `originalSize = stdout.length`（UTF-16）。
@@ -183,12 +186,11 @@ fn register_manual_bg(tool_use_id: &str) -> std::sync::Arc<std::sync::atomic::At
 }
 
 fn unregister_manual_bg(tool_use_id: Option<&str>) {
-    let Some(tool_use_id) = tool_use_id else { return };
+    let Some(tool_use_id) = tool_use_id else {
+        return;
+    };
     let mut registry = MANUAL_BG.lock().unwrap();
-    if let Some(position) = registry
-        .iter()
-        .position(|(id, _)| id == tool_use_id)
-    {
+    if let Some(position) = registry.iter().position(|(id, _)| id == tool_use_id) {
         registry.remove(position);
     }
 }
@@ -257,8 +259,7 @@ pub struct SubAgentHooks {
             + Sync,
     >,
     /// 把回复投递给目标会话：`(target, content, from)`
-    pub deliver:
-        std::sync::Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>,
+    pub deliver: std::sync::Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>,
 }
 
 /// `Transfer` 的传输请求（specs/028 FR-002）：经
@@ -346,7 +347,10 @@ pub enum ToolOutcome {
     ///
     /// UI 的 `toolResult` 状态是 `error`，但 tool_result block
     /// 不带 `is_error`，而是携带真实的 `exit_code`。
-    CommandFailed { text: String, exit_code: i32 },
+    CommandFailed {
+        text: String,
+        exit_code: i32,
+    },
     /// 排队等待期间被中止（specs/005 的 Agent 并发槽位）。
     ///
     /// 排队调用随父会话前台中止而取消——UI `toolResult` 状态
@@ -366,7 +370,10 @@ pub enum ToolOutcome {
     ///
     /// engine 在 `emit_tool_outcome` 里据此推送 `todosChanged`——「哪个工具改 Todo」只在
     /// 本模块决定，engine 只负责把它翻译成事件（`docs/features/todo-list.md` FR-002）。
-    SuccessWithTodos { text: String, todos: Value },
+    SuccessWithTodos {
+        text: String,
+        todos: Value,
+    },
 }
 
 impl ToolOutcome {
@@ -817,9 +824,7 @@ pub fn validate_input(name: &str, input: &Value, cwd: &str) -> Option<String> {
         "WebSearch" => return web_search::validate_search_input(input).err(),
         "WebFetch" => return web_search::validate_fetch_input(input).err(),
         "Skill" => {
-            let trimmed = util::js_trim(
-                input.get("skill").and_then(Value::as_str).unwrap_or(""),
-            );
+            let trimmed = util::js_trim(input.get("skill").and_then(Value::as_str).unwrap_or(""));
             if trimmed.is_empty() {
                 return Some(format!("Invalid skill format: {trimmed}"));
             }
@@ -863,7 +868,10 @@ pub fn validate_input(name: &str, input: &Value, cwd: &str) -> Option<String> {
                 return Some("Questions cannot be empty".to_string());
             };
             for question in questions {
-                let text = question.get("question").and_then(Value::as_str).unwrap_or("");
+                let text = question
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 if util::js_trim(text).is_empty() {
                     return Some("Question cannot be empty".to_string());
                 }
@@ -1026,7 +1034,11 @@ fn wsl_mnt_path(path: &str) -> Option<String> {
 #[cfg(windows)]
 fn drive_slash_path(path: &str) -> Option<String> {
     let bytes = path.as_bytes();
-    if bytes.len() < 3 || bytes[0] != b'/' || !(bytes[1] as char).is_ascii_alphabetic() || bytes[2] != b'/' {
+    if bytes.len() < 3
+        || bytes[0] != b'/'
+        || !(bytes[1] as char).is_ascii_alphabetic()
+        || bytes[2] != b'/'
+    {
         return None;
     }
     Some(format!(
@@ -1094,9 +1106,9 @@ fn input_u64(input: &Value, key: &str) -> Option<u64> {
 fn input_bool(input: &Value, key: &str) -> Option<bool> {
     input.get(key).and_then(|value| match value {
         Value::Bool(value) => Some(*value),
-        Value::String(text) => Some(
-            text == "true" || (text != "false" && !crate::util::js_trim(text).is_empty()),
-        ),
+        Value::String(text) => {
+            Some(text == "true" || (text != "false" && !crate::util::js_trim(text).is_empty()))
+        }
         _ => None,
     })
 }
@@ -1144,9 +1156,14 @@ fn strip_env_prefixes(segment: &str) -> &str {
         } else if let Some(inner) = rest.strip_prefix('\'') {
             inner.find('\'').map(|offset| offset + 2)
         } else {
-            Some(rest.find(crate::util::is_js_whitespace).unwrap_or(rest.len()))
+            Some(
+                rest.find(crate::util::is_js_whitespace)
+                    .unwrap_or(rest.len()),
+            )
         };
-        let Some(after_value) = after_value else { break };
+        let Some(after_value) = after_value else {
+            break;
+        };
         let tail = &rest[after_value..];
         let trimmed_tail = tail.trim_start_matches(crate::util::is_js_whitespace);
         if trimmed_tail.len() == tail.len() {
@@ -1162,13 +1179,22 @@ fn strip_env_prefixes(segment: &str) -> &str {
 /// 先去掉 `FOO=1` 形式的环境变量前缀，再取第一个空白分隔的词，最后去掉包裹引号。
 fn extract_command_name(segment: &str) -> String {
     let text = strip_env_prefixes(segment);
-    let word = text.split(crate::util::is_js_whitespace).next().unwrap_or("");
+    let word = text
+        .split(crate::util::is_js_whitespace)
+        .next()
+        .unwrap_or("");
     // 对齐 JS 的 `replace(/^["']|["']$/g, '')`：首尾各最多去掉**一个**引号
     let mut result = word;
-    if let Some(rest) = result.strip_prefix('"').or_else(|| result.strip_prefix('\'')) {
+    if let Some(rest) = result
+        .strip_prefix('"')
+        .or_else(|| result.strip_prefix('\''))
+    {
         result = rest;
     }
-    if let Some(rest) = result.strip_suffix('"').or_else(|| result.strip_suffix('\'')) {
+    if let Some(rest) = result
+        .strip_suffix('"')
+        .or_else(|| result.strip_suffix('\''))
+    {
         result = rest;
     }
     result.to_string()
@@ -1231,7 +1257,9 @@ fn is_comment_segment(segment: &str) -> bool {
 /// `max(DEFAULT_BASH_TIMEOUT_MS, sleep 时长总和)`——sleep 只把死线后移，
 /// 不注销死线；解析不出时长（变量、算术、非法参数）回退默认值。
 fn default_bash_timeout_ms(command: &str) -> u64 {
-    sleep_duration_ms(command).unwrap_or(0).max(DEFAULT_BASH_TIMEOUT_MS)
+    sleep_duration_ms(command)
+        .unwrap_or(0)
+        .max(DEFAULT_BASH_TIMEOUT_MS)
 }
 
 /// 命令中所有 `sleep` 子命令的时长总和（毫秒）；没有一个可解析的 sleep 时长时
@@ -1444,7 +1472,9 @@ fn parse_heredoc_operator(chars: &[char], mut i: usize) -> Option<(String, bool,
             i = end;
             continue;
         }
-        if crate::util::is_js_whitespace(ch) || matches!(ch, ';' | '&' | '|' | '<' | '>' | '(' | ')') {
+        if crate::util::is_js_whitespace(ch)
+            || matches!(ch, ';' | '&' | '|' | '<' | '>' | '(' | ')')
+        {
             break;
         }
         delimiter.push(ch);
@@ -1649,8 +1679,8 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 死线后移到 sleep 时长总和（`default_bash_timeout_ms`）——sleep 自然完成
     // 不被转后台，但后续命令仍受死线保护。`timeout` 不在对外 schema 里，仅保留
     // 内部覆盖（测试用），显式给出时优先。
-    let timeout_ms = input_u64(input, "timeout")
-        .unwrap_or_else(|| default_bash_timeout_ms(&command));
+    let timeout_ms =
+        input_u64(input, "timeout").unwrap_or_else(|| default_bash_timeout_ms(&command));
 
     // 后台化构造闸门（specs/034-bash-detach-field FR-001）：`detach` 缺省 / false 时，
     // 命令中出现会让进程脱离追踪的写法直接失败。闸门在 `run_in_background` 分支之前：
@@ -1675,7 +1705,9 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             &ctx.session_id,
             ctx.background.clone(),
         ) {
-            Ok(task_id) => ToolOutcome::Success(background_result_text(&task_id, "", "", false, None)),
+            Ok(task_id) => {
+                ToolOutcome::Success(background_result_text(&task_id, "", "", false, None))
+            }
             // spawn / 打开输出文件失败时 stdout 为空、退出码 1，
             // 错误文本走普通拼接路径（`Result.ts` 会再补一行 `Exit code: 1`）。
             Err(error) => ToolOutcome::CommandFailed {
@@ -1839,7 +1871,11 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     crate::subagent::off_reply_delivered(reply_subscription);
     unregister_manual_bg(ctx.tool_use_id.as_deref());
 
-    let status = child.wait().ok().and_then(|value| value.code()).unwrap_or(-1);
+    let status = child
+        .wait()
+        .ok()
+        .and_then(|value| value.code())
+        .unwrap_or(-1);
     // 排水宽限：正常命令的读线程在 shell 退出后微秒级完成（收割已缓冲输出与
     // EOF），宽限不生效；孙进程仍持有管道写端时读线程不会结束，停掉读线程、
     // 用已累积快照收尾（与 abort 同口径：迟到的字节照常计入快照，见
@@ -2252,10 +2288,7 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(prompt) = input.get("prompt").and_then(Value::as_str) else {
         return ToolOutcome::Error("prompt is required and must be a string".to_string());
     };
-    let role = input
-        .get("agentRole")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let role = input.get("agentRole").and_then(Value::as_str).unwrap_or("");
     // 对齐 `isValidRole`：合法名单见 `SUB_AGENT_ROLES`
     if !SUB_AGENT_ROLES.contains(&role) {
         return ToolOutcome::Error(format!(
@@ -2350,9 +2383,7 @@ fn run_agent(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             );
             ToolOutcome::Success(text)
         }
-        Ok(SubAgentDispatch::Canceled) => {
-            ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string())
-        }
+        Ok(SubAgentDispatch::Canceled) => ToolOutcome::Canceled(CANCEL_RESULT_MESSAGE.to_string()),
         // `call()` 抛错：由引擎补 `Error executing Agent: ` 前缀（对齐 `executeSingleTool`）。
         // spawn 失败时后台任务不会启动，槽位已由引擎侧归还
         Err(error) => ToolOutcome::Error(error),
@@ -2755,7 +2786,10 @@ fn format_file_size(bytes: u64) -> String {
     } else if bytes < 1024 * 1024 {
         format!("{} KB", util::js_to_fixed_1(bytes as f64 / 1024.0))
     } else {
-        format!("{} MB", util::js_to_fixed_1(bytes as f64 / (1024.0 * 1024.0)))
+        format!(
+            "{} MB",
+            util::js_to_fixed_1(bytes as f64 / (1024.0 * 1024.0))
+        )
     }
 }
 
@@ -2803,7 +2837,11 @@ fn is_text_with_encoding_hint(buffer: &[u8], bytes_read: usize, encoding: &str) 
         let mut index = 0usize;
         while index < scan {
             let byte1 = buffer[index];
-            let byte2 = if index + 1 < scan { buffer[index + 1] } else { 0 };
+            let byte2 = if index + 1 < scan {
+                buffer[index + 1]
+            } else {
+                0
+            };
             if encoding == "utf-16le" || encoding == "utf-16" {
                 if byte2 == 0
                     && byte1 < 0x20
@@ -2934,7 +2972,9 @@ fn is_binary_content(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    let bytes_read = bytes.len().min(BINARY_MAX_BYTES + BINARY_UTF8_BOUNDARY_RESERVE);
+    let bytes_read = bytes
+        .len()
+        .min(BINARY_MAX_BYTES + BINARY_UTF8_BOUNDARY_RESERVE);
     let buffer = &bytes[..bytes_read];
     let total_bytes = bytes_read;
     let scan_bytes = total_bytes.min(BINARY_MAX_BYTES);
@@ -3087,7 +3127,11 @@ fn format_read_output(
     let last_shown_line = start_line + line_count;
     let mut result = numbered;
     if line_count > 0 && last_shown_line < total_lines {
-        let cap_note = if truncated_by_bytes { "Output capped. " } else { "" };
+        let cap_note = if truncated_by_bytes {
+            "Output capped. "
+        } else {
+            ""
+        };
         result.push_str(&format!(
             "\n({cap_note}Showing lines {}-{last_shown_line} of {total_lines}. Use offset={} to continue.)",
             start_line + 1,
@@ -3203,7 +3247,9 @@ fn format_xlsx_data(
         .collect();
 
     // offset 为 1-based 行号（0/1 都映射到第一行）；limit 受 XLSX_MAX_LINES 约束
-    let first_line = offset.map(|value| value.saturating_sub(1) as usize).unwrap_or(0);
+    let first_line = offset
+        .map(|value| value.saturating_sub(1) as usize)
+        .unwrap_or(0);
     let effective_limit = limit
         .map(|value| (value as usize).min(XLSX_MAX_LINES))
         .unwrap_or(XLSX_MAX_LINES);
@@ -3243,7 +3289,13 @@ fn format_xlsx_data(
 
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     let (content, line_count, truncated_by_bytes) = build_bounded_window(&refs);
-    (content, line_count, first_line, total_lines, truncated_by_bytes)
+    (
+        content,
+        line_count,
+        first_line,
+        total_lines,
+        truncated_by_bytes,
+    )
 }
 
 /// 读取 xlsx/xlsm。
@@ -3428,7 +3480,9 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let file_content = String::from_utf8_lossy(&bytes).to_string();
     let lines: Vec<&str> = file_content.split('\n').collect();
     let total_lines = lines.len();
-    let first_line = offset.map(|value| value.saturating_sub(1) as usize).unwrap_or(0);
+    let first_line = offset
+        .map(|value| value.saturating_sub(1) as usize)
+        .unwrap_or(0);
     let end_line = limit
         .map(|value| (first_line + value as usize).min(total_lines))
         .unwrap_or(total_lines);
@@ -3525,7 +3579,11 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             }
             let line_count = content.split('\n').count();
             let bytes_written = content.len();
-            let verb = if action == "create" { "Created" } else { "Updated" };
+            let verb = if action == "create" {
+                "Created"
+            } else {
+                "Updated"
+            };
             let mut extra = Map::new();
             extra.insert(
                 "beforeContent".to_string(),
@@ -3772,11 +3830,8 @@ pub fn edit_permission_preview(
         new_content
     };
     let context_before = get_context_lines_before(&normalized, first_match_index, 4);
-    let context_after = get_context_lines_after(
-        &normalized,
-        first_match_index + old_string.len(),
-        4,
-    );
+    let context_after =
+        get_context_lines_after(&normalized, first_match_index + old_string.len(), 4);
 
     Ok(EditPermissionPreview {
         before_content: normalized,
@@ -3915,7 +3970,9 @@ fn edit_search_window(content: &str, offset: Option<u64>, limit: Option<u64>) ->
         return (0, content.len());
     }
     let line_count = count_lines(content);
-    let start_line = offset.map(|value| value.saturating_sub(1) as usize).unwrap_or(0);
+    let start_line = offset
+        .map(|value| value.saturating_sub(1) as usize)
+        .unwrap_or(0);
     let end_line = limit
         .map(|value| start_line + value as usize)
         .unwrap_or(line_count)
@@ -4121,7 +4178,8 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             window.rfind(&old_string).unwrap_or(0)
         };
         let last_match_index = window_start + last_match_local;
-        let last_end_line = line_range_from_index(&normalized, last_match_index, old_string.len()).1;
+        let last_end_line =
+            line_range_from_index(&normalized, last_match_index, old_string.len()).1;
         (
             last_end_line,
             (last_end_line as i64 + line_delta * replacements_made as i64).max(0) as usize,
@@ -4158,7 +4216,11 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             if let Ok(written) = std::fs::read(&path) {
                 crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
             }
-            let replacement = if replacements_made == 1 { "replacement" } else { "replacements" };
+            let replacement = if replacements_made == 1 {
+                "replacement"
+            } else {
+                "replacements"
+            };
             let line_note = if start_line == end_line {
                 format!("Edited line {start_line}")
             } else {
@@ -4190,7 +4252,11 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 /// 当前平台 / 架构的产物目录名（`<arch>-<platform>`，与 `resources/ripgrep/` 一致）
 fn platform_dir() -> String {
     let platform = if cfg!(windows) { "win32" } else { "linux" };
-    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
     format!("{arch}-{platform}")
 }
 
@@ -4335,15 +4401,22 @@ fn run_ripgrep(args: &[String]) -> Result<String, String> {
     }
     let code = child.wait().ok().and_then(|status| status.code());
     let stdout = String::from_utf8_lossy(
-        &stdout_handle.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default(),
+        &stdout_handle
+            .map(|handle| handle.join().unwrap_or_default())
+            .unwrap_or_default(),
     )
     .to_string();
     let stderr = String::from_utf8_lossy(
-        &stderr_handle.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default(),
+        &stderr_handle
+            .map(|handle| handle.join().unwrap_or_default())
+            .unwrap_or_default(),
     )
     .to_string();
     if timed_out {
-        return Err(format!("ripgrep timed out after {}s", RIPGREP_TIMEOUT.as_secs()));
+        return Err(format!(
+            "ripgrep timed out after {}s",
+            RIPGREP_TIMEOUT.as_secs()
+        ));
     }
     // 退出码 1 = 无匹配，不是错误
     if code == Some(1) {
@@ -4588,7 +4661,11 @@ fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
                     } else {
                         content
                     };
-                    let occurrence = if total_matches == 1 { "occurrence" } else { "occurrences" };
+                    let occurrence = if total_matches == 1 {
+                        "occurrence"
+                    } else {
+                        "occurrences"
+                    };
                     let file_word = if file_count == 1 { "file" } else { "files" };
                     text.push_str(&format!(
                         "\n\nFound {total_matches} total {occurrence} across {file_count} {file_word}."
@@ -4645,7 +4722,11 @@ fn extract_glob_base_directory(pattern: &str) -> (String, String) {
                 Some(sep) => {
                     let base = &static_prefix[..sep];
                     let rel = &pattern[sep + 1..];
-                    let base = if base.is_empty() && sep == 0 { "/" } else { base };
+                    let base = if base.is_empty() && sep == 0 {
+                        "/"
+                    } else {
+                        base
+                    };
                     (base.to_string(), rel.to_string())
                 }
             }
@@ -4741,7 +4822,9 @@ static TODOS: std::sync::Mutex<Option<HashMap<String, Vec<TodoEntry>>>> =
 
 /// 取表锁；锁中毒（持锁线程 panic）时沿用内部数据继续，不让后续每次调用都 panic。
 fn lock_todos() -> std::sync::MutexGuard<'static, Option<HashMap<String, Vec<TodoEntry>>>> {
-    TODOS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    TODOS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 会话关闭 / 删除时清掉该会话的 Todo 表，避免全局表无界增长。
@@ -4943,12 +5026,23 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
     let stored = store_session_todos(session_id, entries);
 
     fn status_of(item: &Value) -> &str {
-        item.get("status").and_then(Value::as_str).unwrap_or("pending")
+        item.get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
     }
     let total = items.len();
-    let completed = items.iter().filter(|item| status_of(item) == "completed").count();
-    let in_progress = items.iter().filter(|item| status_of(item) == "in_progress").count();
-    let pending = items.iter().filter(|item| status_of(item) == "pending").count();
+    let completed = items
+        .iter()
+        .filter(|item| status_of(item) == "completed")
+        .count();
+    let in_progress = items
+        .iter()
+        .filter(|item| status_of(item) == "in_progress")
+        .count();
+    let pending = items
+        .iter()
+        .filter(|item| status_of(item) == "pending")
+        .count();
 
     let mut text = "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable".to_string();
     text.push_str(&format!(
@@ -4970,7 +5064,10 @@ fn run_todo_write(input: &Value, session_id: &str) -> ToolOutcome {
         }
     }
     // 带上新清单：engine 据此推送 `todosChanged`（`docs/features/todo-list.md` FR-002）
-    ToolOutcome::SuccessWithTodos { text, todos: stored }
+    ToolOutcome::SuccessWithTodos {
+        text,
+        todos: stored,
+    }
 }
 
 // ==================== AskUserQuestion ====================
@@ -4998,7 +5095,10 @@ fn run_ask_user_question(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         return ToolOutcome::Error("Failed to request user choice".to_string());
     };
 
-    let answers = response.get("answers").cloned().unwrap_or_else(|| json!([]));
+    let answers = response
+        .get("answers")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
     ToolOutcome::Success(
         serde_json::to_string(&json!({ "answers": answers }))
             .unwrap_or_else(|_| "{\"answers\":[]}".to_string()),

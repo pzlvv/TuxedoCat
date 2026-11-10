@@ -74,7 +74,10 @@ fn builtin_command_alias_and_args_parsing() {
 
     let (context, events) = make_context(".");
     // 别名 `sprint` 命中，且参数保留内部空白 / 换行
-    assert_eq!(dispatch("/sprint   auto  now", &context), DispatchOutcome::Handled);
+    assert_eq!(
+        dispatch("/sprint   auto  now", &context),
+        DispatchOutcome::Handled
+    );
     {
         let events = events.lock().unwrap();
         assert_eq!(events[0]["commandName"], "spin");
@@ -189,7 +192,10 @@ fn unknown_slash_command_passes_through() {
     crate::skills::reset_registries();
 
     let (context, _events) = make_context(&sandbox.workspace.to_string_lossy());
-    assert_eq!(dispatch("/nope args", &context), DispatchOutcome::Passthrough);
+    assert_eq!(
+        dispatch("/nope args", &context),
+        DispatchOutcome::Passthrough
+    );
     crate::skills::reset_registries();
 }
 
@@ -240,7 +246,10 @@ fn command_result_becomes_system_message() {
         aliases: Vec::new(),
         execute: Arc::new(|_args, _context| Some(String::new())),
     });
-    assert_eq!(dispatch("/silent", &silent_context), DispatchOutcome::Handled);
+    assert_eq!(
+        dispatch("/silent", &silent_context),
+        DispatchOutcome::Handled
+    );
     assert_eq!(silent_events.lock().unwrap().len(), 1);
 
     clear_builtin_commands();
@@ -287,7 +296,10 @@ fn spin_description_is_the_shared_text_key() {
     let _guard = serial();
     let definition = spin_command_definition();
     // Core 只产出文案键，翻译在 UI（`docs/architecture/core-ui-separation.md` 第 4.8 节）。
-    assert_eq!(definition.description, crate::core_text::SPIN_COMMAND_DESCRIPTION);
+    assert_eq!(
+        definition.description,
+        crate::core_text::SPIN_COMMAND_DESCRIPTION
+    );
 }
 
 #[test]

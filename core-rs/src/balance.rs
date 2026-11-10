@@ -44,8 +44,9 @@ fn balance_url() -> String {
 /// 测试钩子：临时改余额接口基地址（`None` 恢复官方地址）
 #[cfg(test)]
 pub fn set_base_url_for_test(base_url: Option<&str>) {
-    *BASE_URL_OVERRIDE.lock().unwrap_or_else(|err| err.into_inner()) =
-        base_url.map(|value| value.to_string());
+    *BASE_URL_OVERRIDE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = base_url.map(|value| value.to_string());
 }
 
 /// 取 baseURL 的 hostname（小写）；解析失败或为空返回空串

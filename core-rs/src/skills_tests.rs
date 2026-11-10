@@ -121,9 +121,9 @@ mod parity_tests {
         let fixture = fixture();
         for case in fixture["paths"].as_array().unwrap() {
             let value = &case["value"];
-            let expected = case["result"].as_array().map(|items| {
-                items.iter().map(util::js_string).collect::<Vec<_>>()
-            });
+            let expected = case["result"]
+                .as_array()
+                .map(|items| items.iter().map(util::js_string).collect::<Vec<_>>());
             assert_eq!(
                 parse_skill_paths(Some(value)),
                 expected,
@@ -294,7 +294,10 @@ mod unit_tests {
 
         // 纯空白参数不追加
         let blank = (commit_skill_definition().get_prompt_for_command)("   ");
-        assert!(!blank[0]["text"].as_str().unwrap().contains("Additional instructions"));
+        assert!(!blank[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Additional instructions"));
     }
 
     #[test]
@@ -346,10 +349,7 @@ mod unit_tests {
         });
         assert!(!command.user_invocable);
         assert!(command.model_invocable);
-        assert_eq!(
-            format_skill_listing(&[command]),
-            "- internal: Internal"
-        );
+        assert_eq!(format_skill_listing(&[command]), "- internal: Internal");
     }
 
     /// `disable-model-invocation: true` 只关模型侧：名单不列它，`user_invocable` 不受影响。
@@ -457,7 +457,9 @@ mod unit_tests {
         let blocks = skill.prompt_for_command("");
         let text = blocks[0]["text"].as_str().unwrap();
         assert!(
-            text.starts_with(&format!("Base directory for this skill: {extract_dir}\n\nBody")),
+            text.starts_with(&format!(
+                "Base directory for this skill: {extract_dir}\n\nBody"
+            )),
             "实际: {text:?}"
         );
         assert_eq!(
@@ -482,7 +484,11 @@ mod unit_tests {
         reset_registries();
 
         // 用户级 `<configHome>/skills/<name>/SKILL.md`
-        let user_skill_dir = sandbox.home.join(&sandbox.config_dir_name).join("skills").join("user-skill");
+        let user_skill_dir = sandbox
+            .home
+            .join(&sandbox.config_dir_name)
+            .join("skills")
+            .join("user-skill");
         std::fs::create_dir_all(&user_skill_dir).unwrap();
         std::fs::write(
             user_skill_dir.join("SKILL.md"),
@@ -497,16 +503,23 @@ mod unit_tests {
             .join("skills")
             .join("proj-skill");
         std::fs::create_dir_all(&project_skill_dir).unwrap();
-        std::fs::write(
-            project_skill_dir.join("SKILL.md"),
-            "Project body only\n",
-        )
-        .unwrap();
+        std::fs::write(project_skill_dir.join("SKILL.md"), "Project body only\n").unwrap();
 
         // 没有 SKILL.md 的目录被跳过；非目录项被跳过
-        std::fs::create_dir_all(sandbox.home.join(&sandbox.config_dir_name).join("skills").join("empty")).unwrap();
+        std::fs::create_dir_all(
+            sandbox
+                .home
+                .join(&sandbox.config_dir_name)
+                .join("skills")
+                .join("empty"),
+        )
+        .unwrap();
         std::fs::write(
-            sandbox.home.join(&sandbox.config_dir_name).join("skills").join("loose.md"),
+            sandbox
+                .home
+                .join(&sandbox.config_dir_name)
+                .join("skills")
+                .join("loose.md"),
             "not a dir",
         )
         .unwrap();
@@ -553,12 +566,14 @@ mod unit_tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            format!("---
+            format!(
+                "---
 description: {description}
 ---
 
 Body of {name}
-"),
+"
+            ),
         )
         .unwrap();
     }
@@ -594,7 +609,11 @@ Body of {name}
         let sandbox = Sandbox::new("skills-agents-project");
         reset_registries();
         let project = sandbox.root.join("project");
-        write_skill(&project.join(".agents").join("skills"), "shared-skill", "From agents");
+        write_skill(
+            &project.join(".agents").join("skills"),
+            "shared-skill",
+            "From agents",
+        );
 
         let skills = get_skill_dir_commands(&project.to_string_lossy());
         let found = skills.iter().find(|skill| skill.name == "shared-skill");
@@ -616,7 +635,9 @@ Body of {name}
         );
 
         let skills = get_skill_dir_commands(&sandbox.workspace.to_string_lossy());
-        let found = skills.iter().find(|skill| skill.name == "user-agents-skill");
+        let found = skills
+            .iter()
+            .find(|skill| skill.name == "user-agents-skill");
         let found = found.expect("`~/.agents/skills` 下的技能应被发现");
         assert_eq!(found.source, SkillSource::User);
 
@@ -629,7 +650,11 @@ Body of {name}
         reset_registries();
         let project = sandbox.root.join("project");
         // 项目级与用户级的 `.claude/skills` 都不读
-        write_skill(&project.join(".claude").join("skills"), "claude-project", "From claude");
+        write_skill(
+            &project.join(".claude").join("skills"),
+            "claude-project",
+            "From claude",
+        );
         write_skill(
             &sandbox.home.join(".claude").join("skills"),
             "claude-user",
@@ -651,7 +676,11 @@ Body of {name}
         let sandbox = Sandbox::new("skills-agents-over-product");
         reset_registries();
         let project = sandbox.root.join("project");
-        write_skill(&project.join(".agents").join("skills"), "dup", "From agents");
+        write_skill(
+            &project.join(".agents").join("skills"),
+            "dup",
+            "From agents",
+        );
         write_skill(
             &project.join(&sandbox.config_dir_name).join("skills"),
             "dup",
@@ -671,8 +700,16 @@ Body of {name}
         let sandbox = Sandbox::new("skills-project-over-user");
         reset_registries();
         let project = sandbox.root.join("project");
-        write_skill(&project.join(".agents").join("skills"), "dup", "Project one");
-        write_skill(&sandbox.home.join(".agents").join("skills"), "dup", "User one");
+        write_skill(
+            &project.join(".agents").join("skills"),
+            "dup",
+            "Project one",
+        );
+        write_skill(
+            &sandbox.home.join(".agents").join("skills"),
+            "dup",
+            "User one",
+        );
 
         let skills = get_skill_dir_commands(&project.to_string_lossy());
         assert_eq!(description_of(&skills, "dup"), Some("Project one"));
@@ -690,12 +727,19 @@ Body of {name}
         let sandbox = Sandbox::new("skills-shadow-bundled");
         reset_registries();
         let project = sandbox.root.join("project");
-        write_skill(&project.join(".agents").join("skills"), "commit", "Project commit");
+        write_skill(
+            &project.join(".agents").join("skills"),
+            "commit",
+            "Project commit",
+        );
 
         let all = get_all_skills(&project.to_string_lossy());
         let hits: Vec<&SkillCommand> = all.iter().filter(|skill| skill.name == "commit").collect();
         assert_eq!(hits.len(), 1, "bundled 与文件技能同名时只留一条");
-        assert_eq!(hits[0].description, "Project commit", "文件技能遮蔽 bundled");
+        assert_eq!(
+            hits[0].description, "Project commit",
+            "文件技能遮蔽 bundled"
+        );
 
         reset_registries();
     }
@@ -718,8 +762,14 @@ Body of {name}
         assert_eq!(kept[0].description, "Winner");
         assert_eq!(warnings.len(), 1, "一条冲突一条 WARNING");
         let warning = &warnings[0];
-        assert!(warning.contains("/proj/.agents/skills/dup/SKILL.md"), "{warning}");
-        assert!(warning.contains("/home/.agents/skills/dup/SKILL.md"), "{warning}");
+        assert!(
+            warning.contains("/proj/.agents/skills/dup/SKILL.md"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("/home/.agents/skills/dup/SKILL.md"),
+            "{warning}"
+        );
         assert!(warning.contains("ignored"), "{warning}");
     }
 

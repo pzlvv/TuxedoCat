@@ -42,9 +42,9 @@ mod power;
 mod prompt;
 mod read_guard;
 mod remote;
-mod rewind;
 mod replay;
 mod responses;
+mod rewind;
 mod rollback;
 mod session_lock;
 mod settings;
@@ -52,7 +52,6 @@ mod shell;
 mod shell_env;
 mod skills;
 mod smart_naming;
-mod web_search;
 mod spin;
 mod spin_host;
 mod subagent;
@@ -60,11 +59,12 @@ mod text_decode;
 mod tool_input;
 mod tools;
 mod util;
+mod web_search;
 
 #[cfg(test)]
-mod test_support;
-#[cfg(test)]
 mod file_watch_tests;
+#[cfg(test)]
+mod test_support;
 
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
@@ -95,9 +95,7 @@ fn main() {
             std::process::exit(2);
         }
         cli::Command::Start(options) => std::process::exit(remote::run_start(options)),
-        cli::Command::StartDaemon(options) => {
-            std::process::exit(remote::run_start_daemon(options))
-        }
+        cli::Command::StartDaemon(options) => std::process::exit(remote::run_start_daemon(options)),
         cli::Command::Kill => std::process::exit(remote::run_kill()),
         cli::Command::Stdio => run_core(),
     }
@@ -301,12 +299,7 @@ fn handle_orphan_completions(control: Value) {
 /// 帧循环不为 HTTP 等待（specs/defects/balance-fetch-blocks-frame-loop）：
 /// 余额是状态条装饰性信息，3 秒超时即按失败回 `null`，宿主清空显示（既有语义）。
 /// 线程只借 `&Core` 的只读事实（provider 查找读配置快照），不触碰会话状态。
-fn spawn_balance_request(
-    core: Arc<Core>,
-    shared_bus: engine::SharedBus,
-    id: u64,
-    request: Value,
-) {
+fn spawn_balance_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64, request: Value) {
     std::thread::spawn(move || {
         let response = match dispatch_ui_request(&core, &request) {
             Ok(result) => CoreToUiFrame::response(id, result),
@@ -391,8 +384,8 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .map(Ok)
                 .unwrap_or_else(|| core.project_of(session_id));
             if let Ok(project) = project_dir {
-                crate::session_lock::acquire_for_core(core, session_id, &project)
-                    .map_err(|error| {
+                crate::session_lock::acquire_for_core(core, session_id, &project).map_err(
+                    |error| {
                         lock_rejection_notice(
                             core,
                             session_id,
@@ -400,7 +393,8 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                             crate::core_text::SESSION_LOCKED_OPEN,
                         );
                         format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error)
-                    })?;
+                    },
+                )?;
                 // 打开对话即视为阅读（US-65 验收第 4 条）：未读完成清零；锁被拒时
                 // 走 error_response，不算阅读、不清零
                 if let Err(err) = history::clear_unread_completions(session_id, &project) {
@@ -467,12 +461,8 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "watchWorkspaceFileRequested without path".to_string())?;
-            core.file_watch.watch(
-                core.bus.clone(),
-                watch_id.to_string(),
-                workspace_path,
-                path,
-            )?;
+            core.file_watch
+                .watch(core.bus.clone(), watch_id.to_string(), workspace_path, path)?;
             Ok(json!({ "ok": true }))
         }
         "unwatchWorkspaceFileRequested" => {
@@ -618,7 +608,12 @@ fn spin_design_save_payload(session_id: &str, data: &Value) -> Value {
 /// - 归档里没有摘要（旧格式）→ `归档 + 主 JSONL 里的摘要 + 当前保留区`。
 /// specs/032：锁拒绝的占用通知只对「他持 / 版本拒外」发——Io 失败（目录解析 /
 /// 磁盘错误）不是占用，发占用文案会误导；按技术错误原样上报。
-fn lock_rejection_notice(core: &Core, session_id: &str, error: &crate::session_lock::LockError, key: &str) {
+fn lock_rejection_notice(
+    core: &Core,
+    session_id: &str,
+    error: &crate::session_lock::LockError,
+    key: &str,
+) {
     if error.is_rejection() {
         core.emit_locked_notice(session_id, key, &error.to_string());
     } else {
@@ -626,8 +621,17 @@ fn lock_rejection_notice(core: &Core, session_id: &str, error: &crate::session_l
     }
 }
 
-fn lock_change_rejection_notice(core: &Core, session_id: &str, error: &crate::session_lock::LockError) {
-    lock_rejection_notice(core, session_id, error, crate::core_text::SESSION_LOCKED_CHANGE);
+fn lock_change_rejection_notice(
+    core: &Core,
+    session_id: &str,
+    error: &crate::session_lock::LockError,
+) {
+    lock_rejection_notice(
+        core,
+        session_id,
+        error,
+        crate::core_text::SESSION_LOCKED_CHANGE,
+    );
 }
 
 /// specs/032 FR-002：整空间删除前逐会话取变更锁验证。已装载（Registered）放行；
@@ -662,7 +666,10 @@ fn compact_archive_display(session_id: &str) -> Value {
         message.get("type").and_then(Value::as_str) == Some("user")
             && message.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
     };
-    let summary_count = archived.iter().filter(|message| is_summary(message)).count();
+    let summary_count = archived
+        .iter()
+        .filter(|message| is_summary(message))
+        .count();
 
     let current = history::load_messages(session_id, &project);
     let compressed_summaries: Vec<Value> = current
@@ -856,7 +863,11 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                         crate::core_text::SESSION_LOCKED_CHANGE,
                         &error,
                     );
-                    Err(format!("{}{}", crate::session_lock::LOCK_REJECT_PREFIX, error))
+                    Err(format!(
+                        "{}{}",
+                        crate::session_lock::LOCK_REJECT_PREFIX,
+                        error
+                    ))
                 }
                 Ok(()) if mode == "remove" => history::remove_conversation_space(&dir_name),
                 Ok(()) => history::clear_conversation_space(&dir_name),
@@ -942,7 +953,10 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             // `sessionConfigChanged(mcpEnabled)`，UI 据此把「连接中」刷新为最终状态，
             // 因此这里不再单独广播（否则会多发一次未收敛的列表）。
             let name = event.get("name").and_then(Value::as_str).unwrap_or("");
-            let enabled = event.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            let enabled = event
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             crate::mcp_config::set_session_mcp_enabled(Some(session_id.as_str()), name, enabled);
             crate::mcp::on_session_enabled_changed(&session_id);
         }
@@ -970,7 +984,10 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         // 宿主上报「该会话的用户选择框是否在 webview 里等待应答」
         // （弹出 / 应答 / 视图销毁时各一次），对齐 `markSessionWaiting`。
         "userChoicePendingChanged" => {
-            let pending = event.get("pending").and_then(Value::as_bool).unwrap_or(false);
+            let pending = event
+                .get("pending")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             core.on_user_choice_pending(&session_id, pending);
         }
 
@@ -988,10 +1005,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         // 用户把正在前台运行的 Bash 命令转入后台（Bash 卡片「转后台」按钮）：
         // 触发转换 + 暂停下一轮 LLM 请求（见 `tools.rs` 的手工转后台注册表）。
         "bashBackgroundRequested" => {
-            let tool_use_id = event
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let tool_use_id = event.get("toolUseId").and_then(Value::as_str).unwrap_or("");
             core.on_bash_background_requested(&session_id, tool_use_id);
         }
         "queuedMessageDiscarded" => {
@@ -1017,10 +1031,7 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             // 按会话历史里的
             // `_meta` / `tool_result.beforeContent` 备份恢复磁盘文件，结果作为一条
             // system 消息回传 webview。
-            let tool_use_id = event
-                .get("toolUseId")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let tool_use_id = event.get("toolUseId").and_then(Value::as_str).unwrap_or("");
             let direction = event
                 .get("direction")
                 .and_then(Value::as_str)
@@ -1064,7 +1075,12 @@ fn handle_conversation_rewind(core: &Arc<Core>, session_id: &str, target_uuid: &
     // 判据与运行时快照的 `idle` 同源（`Core::is_session_idle`：自身与全部子代理都空闲），
     // 因此 UI 侧置灰与这里的裁决口径一致，不会出现「UI 说可以、core 拒绝」。
     if !core.is_session_idle(session_id) {
-        emit_rewind_done(core, session_id, target_uuid, Err("conversation is busy; retry when it is idle".to_string()));
+        emit_rewind_done(
+            core,
+            session_id,
+            target_uuid,
+            Err("conversation is busy; retry when it is idle".to_string()),
+        );
         return;
     }
     let outcome = rewind::rewind(session_id, target_uuid, &state);
@@ -1085,23 +1101,29 @@ fn handle_conversation_rewind(core: &Arc<Core>, session_id: &str, target_uuid: &
                 eprintln!("[core] rewind receipt not persisted: {error}");
             }
             let messages = history::load_messages(session_id, &project);
-            emit(core, json!({
-                "type": "messagesReplaced",
-                "sessionId": session_id,
-                "messages": replay::build_replay_message_data(&messages),
-            }));
-            emit(core, json!({
-                "type": "conversationRewoundDone",
-                "sessionId": session_id,
-                "targetUuid": target_uuid,
-                "removed": outcome.removed,
-                "files": outcome.files.iter().map(|file| json!({
-                    "path": file.path, "ok": file.ok, "error": file.error,
-                })).collect::<Vec<_>>(),
-                "skipped": outcome.skipped,
-                "hadBash": outcome.had_bash,
-                "error": Value::Null,
-            }));
+            emit(
+                core,
+                json!({
+                    "type": "messagesReplaced",
+                    "sessionId": session_id,
+                    "messages": replay::build_replay_message_data(&messages),
+                }),
+            );
+            emit(
+                core,
+                json!({
+                    "type": "conversationRewoundDone",
+                    "sessionId": session_id,
+                    "targetUuid": target_uuid,
+                    "removed": outcome.removed,
+                    "files": outcome.files.iter().map(|file| json!({
+                        "path": file.path, "ok": file.ok, "error": file.error,
+                    })).collect::<Vec<_>>(),
+                    "skipped": outcome.skipped,
+                    "hadBash": outcome.had_bash,
+                    "error": Value::Null,
+                }),
+            );
         }
         Err(error) => emit_rewind_done(core, session_id, target_uuid, Err(error)),
     }
@@ -1115,16 +1137,19 @@ fn emit_rewind_done(
     outcome: Result<(), String>,
 ) {
     let error = outcome.err().unwrap_or_default();
-    emit(core, json!({
-        "type": "conversationRewoundDone",
-        "sessionId": session_id,
-        "targetUuid": target_uuid,
-        "removed": 0,
-        "files": [],
-        "skipped": [],
-        "hadBash": false,
-        "error": error,
-    }));
+    emit(
+        core,
+        json!({
+            "type": "conversationRewoundDone",
+            "sessionId": session_id,
+            "targetUuid": target_uuid,
+            "removed": 0,
+            "files": [],
+            "skipped": [],
+            "hadBash": false,
+            "error": error,
+        }),
+    );
 }
 
 /// 回退回执落盘：走与普通消息相同的追加路径（`_meta.excludeFromContext` 让它不进上下文）。
@@ -1182,9 +1207,7 @@ fn start_conversation(core: &Arc<Core>, session_id: &str, _event: &Value) {
     }
     // 会话工作目录的登记入口是 `sessionWorkspaceAssigned`（事件载荷不携带目录，
     // 只按会话解析）。
-    let project = config::project_root(session_id)
-        .ok()
-        .unwrap_or_default();
+    let project = config::project_root(session_id).ok().unwrap_or_default();
     if project.is_empty() {
         return;
     }

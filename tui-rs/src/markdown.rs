@@ -44,7 +44,12 @@ pub struct MdLine {
 
 impl MdLine {
     fn single(text: impl Into<String>, style: MdStyle) -> MdLine {
-        MdLine { spans: vec![MdSpan { text: text.into(), style }] }
+        MdLine {
+            spans: vec![MdSpan {
+                text: text.into(),
+                style,
+            }],
+        }
     }
     #[allow(dead_code)] // 测试辅助（markdown_tests 的 text_of）
     pub fn plain_text(&self) -> String {
@@ -89,7 +94,13 @@ pub fn render(text: &str) -> Vec<MdLine> {
 
         // 分隔线
         if is_horizontal_rule(trimmed) {
-            lines.push(MdLine::single("─".repeat(40), MdStyle { color: MdColor::Gray, ..Default::default() }));
+            lines.push(MdLine::single(
+                "─".repeat(40),
+                MdStyle {
+                    color: MdColor::Gray,
+                    ..Default::default()
+                },
+            ));
             index += 1;
             continue;
         }
@@ -101,8 +112,14 @@ pub fn render(text: &str) -> Vec<MdLine> {
                 2 => MdColor::Cyan,
                 _ => MdColor::White,
             };
-            let style = MdStyle { bold: true, color, ..Default::default() };
-            lines.push(MdLine { spans: inline(trimmed[depth..].trim_start(), style) });
+            let style = MdStyle {
+                bold: true,
+                color,
+                ..Default::default()
+            };
+            lines.push(MdLine {
+                spans: inline(trimmed[depth..].trim_start(), style),
+            });
             index += 1;
             continue;
         }
@@ -110,7 +127,13 @@ pub fn render(text: &str) -> Vec<MdLine> {
         // 引用
         if let Some(rest) = trimmed.strip_prefix('>') {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
-            let mut spans = vec![MdSpan { text: "▏ ".into(), style: MdStyle { color: MdColor::Gray, ..Default::default() } }];
+            let mut spans = vec![MdSpan {
+                text: "▏ ".into(),
+                style: MdStyle {
+                    color: MdColor::Gray,
+                    ..Default::default()
+                },
+            }];
             spans.extend(inline(rest, MdStyle::default()));
             lines.push(MdLine { spans });
             index += 1;
@@ -120,7 +143,10 @@ pub fn render(text: &str) -> Vec<MdLine> {
         // 列表（支持两级缩进嵌套；有序列表的序号沿用原文）
         if let Some((indent, marker)) = list_marker(line) {
             let item_text = line[indent + marker.len()..].trim_start();
-            let bullet_style = MdStyle { color: MdColor::Yellow, ..Default::default() };
+            let bullet_style = MdStyle {
+                color: MdColor::Yellow,
+                ..Default::default()
+            };
             let bullet = match marker.as_str() {
                 "-" | "*" | "+" => "• ".to_string(),
                 _ => format!("{marker} "),
@@ -143,21 +169,35 @@ pub fn render(text: &str) -> Vec<MdLine> {
         }
 
         // 段落（含行内样式）
-        lines.push(MdLine { spans: inline(line, MdStyle::default()) });
+        lines.push(MdLine {
+            spans: inline(line, MdStyle::default()),
+        });
         index += 1;
     }
     lines
 }
 
 fn code_line(text: &str) -> MdLine {
-    let style = MdStyle { color: MdColor::Cyan, ..Default::default() };
-    let mut spans = vec![MdSpan { text: "│ ".into(), style }];
-    spans.push(MdSpan { text: text.to_string(), style });
+    let style = MdStyle {
+        color: MdColor::Cyan,
+        ..Default::default()
+    };
+    let mut spans = vec![MdSpan {
+        text: "│ ".into(),
+        style,
+    }];
+    spans.push(MdSpan {
+        text: text.to_string(),
+        style,
+    });
     MdLine { spans }
 }
 
 fn heading_depth(line: &str) -> Option<usize> {
-    let depth = line.chars().take_while(|character| *character == '#').count();
+    let depth = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
     if (1..=6).contains(&depth) && line[depth..].starts_with(' ') {
         Some(depth)
     } else {
@@ -166,7 +206,10 @@ fn heading_depth(line: &str) -> Option<usize> {
 }
 
 fn is_horizontal_rule(line: &str) -> bool {
-    let compact: String = line.chars().filter(|character| !character.is_whitespace()).collect();
+    let compact: String = line
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
     (compact.starts_with("---") && compact.chars().all(|c| c == '-'))
         || (compact.starts_with("***") && compact.chars().all(|c| c == '*'))
 }
@@ -180,7 +223,10 @@ fn list_marker(line: &str) -> Option<(usize, String)> {
         }
     }
     // 有序列表：`12. `
-    let digits = rest.chars().take_while(|character| character.is_ascii_digit()).count();
+    let digits = rest
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .count();
     if digits > 0 {
         let after = &rest[digits..];
         if after.starts_with(". ") {
@@ -191,7 +237,10 @@ fn list_marker(line: &str) -> Option<(usize, String)> {
 }
 
 fn parse_table_row(row: &str) -> Vec<&str> {
-    row[1..row.len() - 1].split('|').map(|cell| cell.trim()).collect()
+    row[1..row.len() - 1]
+        .split('|')
+        .map(|cell| cell.trim())
+        .collect()
 }
 
 fn push_table(lines: &mut Vec<MdLine>, rows: &[Vec<&str>]) {
@@ -203,18 +252,36 @@ fn push_table(lines: &mut Vec<MdLine>, rows: &[Vec<&str>]) {
         let text: Vec<String> = (0..width)
             .map(|index| format!("{:<14}", cells.get(index).copied().unwrap_or("")))
             .collect();
-        MdLine { spans: vec![MdSpan { text: text.join(" │ "), style }] }
+        MdLine {
+            spans: vec![MdSpan {
+                text: text.join(" │ "),
+                style,
+            }],
+        }
     };
     let mut data_rows = rows;
     // 首行是表头；紧随的 `---` 分隔行跳过
-    let header_style = MdStyle { bold: true, ..Default::default() };
+    let header_style = MdStyle {
+        bold: true,
+        ..Default::default()
+    };
     let header = data_rows.first().cloned().unwrap_or_default();
     lines.push(render_row(&header, header_style));
     data_rows = &data_rows[1..];
-    if data_rows.first().map(|row| row.iter().all(|cell| cell.chars().all(|c| c == '-' || c == ':'))).unwrap_or(false) {
+    if data_rows
+        .first()
+        .map(|row| {
+            row.iter()
+                .all(|cell| cell.chars().all(|c| c == '-' || c == ':'))
+        })
+        .unwrap_or(false)
+    {
         lines.push(MdLine::single(
             "─".repeat(width * 16),
-            MdStyle { color: MdColor::Gray, ..Default::default() },
+            MdStyle {
+                color: MdColor::Gray,
+                ..Default::default()
+            },
         ));
         data_rows = &data_rows[1..];
     }
@@ -238,47 +305,89 @@ pub fn inline(text: &str, base: MdStyle) -> Vec<MdSpan> {
         match next_token(&rest) {
             Some(Token::Code(content, consumed)) => {
                 if !plain.is_empty() {
-                    spans.push(MdSpan { text: std::mem::take(&mut plain), style: base });
+                    spans.push(MdSpan {
+                        text: std::mem::take(&mut plain),
+                        style: base,
+                    });
                 }
-                spans.push(MdSpan { text: content, style: MdStyle { color: MdColor::Cyan, ..base } });
+                spans.push(MdSpan {
+                    text: content,
+                    style: MdStyle {
+                        color: MdColor::Cyan,
+                        ..base
+                    },
+                });
                 position += consumed;
             }
             Some(Token::Delimited(marker, content, consumed)) => {
                 if !plain.is_empty() {
-                    spans.push(MdSpan { text: std::mem::take(&mut plain), style: base });
+                    spans.push(MdSpan {
+                        text: std::mem::take(&mut plain),
+                        style: base,
+                    });
                 }
                 let style = match marker {
                     "**" => MdStyle { bold: true, ..base },
-                    "~~" => MdStyle { strikethrough: true, dim: true, ..base },
-                    _ => MdStyle { italic: true, ..base },
+                    "~~" => MdStyle {
+                        strikethrough: true,
+                        dim: true,
+                        ..base
+                    },
+                    _ => MdStyle {
+                        italic: true,
+                        ..base
+                    },
                 };
                 spans.extend(inline(&content, style));
                 position += consumed;
             }
             Some(Token::Image(href, consumed)) => {
                 if !plain.is_empty() {
-                    spans.push(MdSpan { text: std::mem::take(&mut plain), style: base });
+                    spans.push(MdSpan {
+                        text: std::mem::take(&mut plain),
+                        style: base,
+                    });
                 }
                 spans.push(MdSpan {
                     text: format!("[img] {href}"),
-                    style: MdStyle { color: MdColor::Blue, underline: true, ..base },
+                    style: MdStyle {
+                        color: MdColor::Blue,
+                        underline: true,
+                        ..base
+                    },
                 });
                 position += consumed;
             }
             Some(Token::Link(label, href, consumed)) => {
                 if !plain.is_empty() {
-                    spans.push(MdSpan { text: std::mem::take(&mut plain), style: base });
+                    spans.push(MdSpan {
+                        text: std::mem::take(&mut plain),
+                        style: base,
+                    });
                 }
-                let style = MdStyle { color: MdColor::Blue, underline: true, ..base };
+                let style = MdStyle {
+                    color: MdColor::Blue,
+                    underline: true,
+                    ..base
+                };
                 spans.extend(inline(&label, style));
-                spans.push(MdSpan { text: format!(" ({href})"), style });
+                spans.push(MdSpan {
+                    text: format!(" ({href})"),
+                    style,
+                });
                 position += consumed;
             }
             Some(Token::Html(tag, consumed)) => {
                 if !plain.is_empty() {
-                    spans.push(MdSpan { text: std::mem::take(&mut plain), style: base });
+                    spans.push(MdSpan {
+                        text: std::mem::take(&mut plain),
+                        style: base,
+                    });
                 }
-                spans.push(MdSpan { text: tag, style: MdStyle { dim: true, ..base } });
+                spans.push(MdSpan {
+                    text: tag,
+                    style: MdStyle { dim: true, ..base },
+                });
                 position += consumed;
             }
             Some(Token::Escaped(character, consumed)) => {
@@ -292,7 +401,10 @@ pub fn inline(text: &str, base: MdStyle) -> Vec<MdSpan> {
         }
     }
     if !plain.is_empty() {
-        spans.push(MdSpan { text: plain, style: base });
+        spans.push(MdSpan {
+            text: plain,
+            style: base,
+        });
     }
     spans
 }
@@ -337,7 +449,10 @@ fn next_token(rest: &str) -> Option<Token> {
     }
     if rest.starts_with('<') {
         if let Some(end) = rest.find('>') {
-            return Some(Token::Html(rest[..=end].to_string(), rest[..=end].chars().count()));
+            return Some(Token::Html(
+                rest[..=end].to_string(),
+                rest[..=end].chars().count(),
+            ));
         }
     }
     None
@@ -369,7 +484,10 @@ fn delimited(text: &str, marker: &str) -> Option<(String, usize)> {
         // 空内容不是强调（"**" 后紧跟同名标记应按字面处理）
         return None;
     }
-    Some((rest[..end].to_string(), marker.chars().count() * 2 + rest[..end].chars().count()))
+    Some((
+        rest[..end].to_string(),
+        marker.chars().count() * 2 + rest[..end].chars().count(),
+    ))
 }
 
 /// `[text](href)`；返回 (label, href, 消耗 char 数)。

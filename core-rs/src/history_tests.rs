@@ -19,7 +19,10 @@ fn user_message(text: &str, uuid: &str) -> Value {
 fn session_paths_live_in_the_project_directory() {
     let sandbox = Sandbox::new("history-paths");
     let dir = sandbox.conversation_dir(PROJECT);
-    assert_eq!(metadata_path("s1", PROJECT).unwrap(), dir.join("s1.meta.json"));
+    assert_eq!(
+        metadata_path("s1", PROJECT).unwrap(),
+        dir.join("s1.meta.json")
+    );
     assert_eq!(messages_path("s1", PROJECT).unwrap(), dir.join("s1.jsonl"));
 }
 
@@ -61,7 +64,11 @@ fn load_metadata_returns_none_for_missing_or_broken_files() {
     std::fs::write(dir.join("broken.meta.json"), "{ not json").unwrap();
     assert!(load_metadata("broken", PROJECT).is_none());
 
-    std::fs::write(dir.join("ok.meta.json"), json!({ "sessionId": "ok" }).to_string()).unwrap();
+    std::fs::write(
+        dir.join("ok.meta.json"),
+        json!({ "sessionId": "ok" }).to_string(),
+    )
+    .unwrap();
     assert_eq!(load_metadata("ok", PROJECT).unwrap()["sessionId"], "ok");
 }
 
@@ -100,8 +107,16 @@ fn create_conversation_writes_meta_and_keeps_existing_messages() {
     assert_eq!(std::fs::read_to_string(dir.join("s1.jsonl")).unwrap(), "");
 
     std::fs::write(dir.join("s1.jsonl"), "existing\n").unwrap();
-    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "title": "again" })).unwrap();
-    assert_eq!(std::fs::read_to_string(dir.join("s1.jsonl")).unwrap(), "existing\n");
+    create_conversation(
+        "s1",
+        PROJECT,
+        json!({ "sessionId": "s1", "title": "again" }),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("s1.jsonl")).unwrap(),
+        "existing\n"
+    );
     assert_eq!(load_metadata("s1", PROJECT).unwrap()["title"], "again");
 }
 
@@ -144,8 +159,14 @@ fn delete_conversation_also_removes_sub_conversations() {
     delete_conversation("root", PROJECT).unwrap();
 
     for id in ["root", "child", "grandchild"] {
-        assert!(!dir.join(format!("{id}.meta.json")).exists(), "{id} meta 未删除");
-        assert!(!dir.join(format!("{id}.jsonl")).exists(), "{id} jsonl 未删除");
+        assert!(
+            !dir.join(format!("{id}.meta.json")).exists(),
+            "{id} meta 未删除"
+        );
+        assert!(
+            !dir.join(format!("{id}.jsonl")).exists(),
+            "{id} jsonl 未删除"
+        );
     }
     // 与 root 无父子关系的会话必须保留
     assert!(dir.join("unrelated.meta.json").exists());
@@ -202,7 +223,9 @@ fn append_message_generates_a_uuid_when_absent() {
     assert!(uuid.starts_with("s1_"), "got {uuid}");
     // 生成的 uuid 落在信封上；入参没有 uuid 时内部消息本体不带
     let raw: Value = serde_json::from_str(
-        std::fs::read_to_string(messages_path("s1", PROJECT).unwrap()).unwrap().trim(),
+        std::fs::read_to_string(messages_path("s1", PROJECT).unwrap())
+            .unwrap()
+            .trim(),
     )
     .unwrap();
     assert_eq!(raw["uuid"], uuid);
@@ -507,7 +530,11 @@ fn tool_use_update_without_id_is_ignored() {
     let dir = sandbox.conversation_dir(PROJECT);
     std::fs::write(
         dir.join("s1.jsonl"),
-        format!("{}\n{}\n", json!({ "type": "tool_use_update", "input": {} }), json!({ "type": "tool_use_update" })),
+        format!(
+            "{}\n{}\n",
+            json!({ "type": "tool_use_update", "input": {} }),
+            json!({ "type": "tool_use_update" })
+        ),
     )
     .unwrap();
     assert!(load_messages("s1", PROJECT).is_empty());
@@ -537,7 +564,10 @@ fn ensure_tool_results_backfills_missing_tool_results_in_memory() {
     let recovered = &messages[2];
     assert_eq!(recovered["type"], "user");
     assert_eq!(recovered["parentUuid"], "a1");
-    assert!(recovered["uuid"].as_str().unwrap().starts_with("tool_recovered_"));
+    assert!(recovered["uuid"]
+        .as_str()
+        .unwrap()
+        .starts_with("tool_recovered_"));
     let block = &recovered["message"]["content"][0];
     assert_eq!(block["type"], "tool_result");
     assert_eq!(block["tool_use_id"], "call_1");
@@ -611,8 +641,14 @@ fn ensure_tool_results_dedupes_repeated_tool_use_ids() {
 }
 
 #[test]
-fn touch_metadata_refreshes_timestamp_and_count() {    let _sandbox = Sandbox::new("history-touch");
-    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "messageCount": 0 })).unwrap();
+fn touch_metadata_refreshes_timestamp_and_count() {
+    let _sandbox = Sandbox::new("history-touch");
+    create_conversation(
+        "s1",
+        PROJECT,
+        json!({ "sessionId": "s1", "messageCount": 0 }),
+    )
+    .unwrap();
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     append_message("s1", PROJECT, &user_message("again", "u2"), None).unwrap();
 
@@ -649,10 +685,25 @@ fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
     // 一个对话至多一条一次性通知：后到的覆盖先到的；新消息落盘即清空
     // （`docs/hosts/webview-ui.md` 第 2 节）。
     let _sandbox = Sandbox::new("history-once-slot");
-    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "messageCount": 0 })).unwrap();
+    create_conversation(
+        "s1",
+        PROJECT,
+        json!({ "sessionId": "s1", "messageCount": 0 }),
+    )
+    .unwrap();
 
-    save_once_message("s1", PROJECT, &json!({ "role": "system", "content": "第一条" })).unwrap();
-    save_once_message("s1", PROJECT, &json!({ "role": "system", "content": "第二条" })).unwrap();
+    save_once_message(
+        "s1",
+        PROJECT,
+        &json!({ "role": "system", "content": "第一条" }),
+    )
+    .unwrap();
+    save_once_message(
+        "s1",
+        PROJECT,
+        &json!({ "role": "system", "content": "第二条" }),
+    )
+    .unwrap();
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata[ONCE_MESSAGE_KEY]["content"], "第二条");
     assert_eq!(metadata[ONCE_MESSAGE_KEY]["role"], "system");
@@ -660,7 +711,10 @@ fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
     assert!(
-        load_metadata("s1", PROJECT).unwrap().get(ONCE_MESSAGE_KEY).is_none(),
+        load_metadata("s1", PROJECT)
+            .unwrap()
+            .get(ONCE_MESSAGE_KEY)
+            .is_none(),
         "新消息落盘后 once 槽位必须清空"
     );
 }
@@ -669,13 +723,26 @@ fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
 fn replace_messages_clears_once_message() {
     // 压缩 / 清空整批替换时间线：末位提示一并消失（`docs/features/compaction.md` FR-002）
     let _sandbox = Sandbox::new("history-once-replace");
-    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "messageCount": 0 })).unwrap();
-    save_once_message("s1", PROJECT, &json!({ "role": "system", "content": "压缩已排队" })).unwrap();
+    create_conversation(
+        "s1",
+        PROJECT,
+        json!({ "sessionId": "s1", "messageCount": 0 }),
+    )
+    .unwrap();
+    save_once_message(
+        "s1",
+        PROJECT,
+        &json!({ "role": "system", "content": "压缩已排队" }),
+    )
+    .unwrap();
 
     replace_messages("s1", PROJECT, &[user_message("hi", "u1")]).unwrap();
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 1);
-    assert!(metadata.get(ONCE_MESSAGE_KEY).is_none(), "整批替换后 once 槽位必须清空");
+    assert!(
+        metadata.get(ONCE_MESSAGE_KEY).is_none(),
+        "整批替换后 once 槽位必须清空"
+    );
 }
 
 #[test]
@@ -703,7 +770,9 @@ fn derive_title_joins_text_blocks_and_skips_empty_candidates() {
     ];
     assert_eq!(derive_title(&messages).as_deref(), Some("第一段\n第二段"));
     assert!(derive_title(&[]).is_none());
-    assert!(derive_title(&[json!({ "type": "assistant", "message": { "content": "x" } })]).is_none());
+    assert!(
+        derive_title(&[json!({ "type": "assistant", "message": { "content": "x" } })]).is_none()
+    );
 }
 
 #[test]
@@ -798,7 +867,9 @@ fn derive_title_never_splits_a_surrogate_pair() {
     let messages = vec![json!({ "type": "user", "message": { "content": text } })];
     let title = derive_title(&messages).unwrap();
     assert_eq!(title, "a".repeat(49));
-    assert!(!title.chars().any(|ch| (0xD800..=0xDFFF).contains(&(ch as u32))));
+    assert!(!title
+        .chars()
+        .any(|ch| (0xD800..=0xDFFF).contains(&(ch as u32))));
 
     // 48 个 ASCII + 同一个字符：整对放得下 → 完整保留
     let fits = format!("{}😀 tail", "a".repeat(48));
@@ -828,7 +899,12 @@ fn project_of_session_scans_the_conversation_directories() {
     let sandbox = Sandbox::new("history-project-of");
     assert!(project_of_session("s1").is_none());
 
-    create_conversation("s1", PROJECT, json!({ "sessionId": "s1", "project": PROJECT })).unwrap();
+    create_conversation(
+        "s1",
+        PROJECT,
+        json!({ "sessionId": "s1", "project": PROJECT }),
+    )
+    .unwrap();
     assert_eq!(project_of_session("s1").as_deref(), Some(PROJECT));
 
     // meta 存在但没有 project 字段
@@ -911,7 +987,12 @@ fn update_context_writes_nested_context_and_flattens_model_identity() {
     let _sandbox = Sandbox::new("history-update-context");
     // 没有 meta.json 时兜底建档（specs/defects/session-config-lost-before-first-message）：
     // 首条消息前切配置也要能从对话恢复；建档带 user 归属（specs/025 FR-002）
-    update_context("missing", PROJECT, &[json!({ "key": "model", "value": "m" })]).unwrap();
+    update_context(
+        "missing",
+        PROJECT,
+        &[json!({ "key": "model", "value": "m" })],
+    )
+    .unwrap();
     let fallback = load_metadata("missing", PROJECT).expect("配置更新应兜底建档");
     assert_eq!(fallback["creator"], json!({ "kind": "user" }));
     assert_eq!(fallback["context"]["model"], "m");
@@ -946,8 +1027,16 @@ fn update_context_writes_nested_context_and_flattens_model_identity() {
 fn update_context_creates_the_context_object_when_absent() {
     let _sandbox = Sandbox::new("history-update-context-new");
     create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
-    update_context("s1", PROJECT, &[json!({ "key": "currentFile", "value": "a.ts" })]).unwrap();
-    assert_eq!(load_metadata("s1", PROJECT).unwrap()["context"]["currentFile"], "a.ts");
+    update_context(
+        "s1",
+        PROJECT,
+        &[json!({ "key": "currentFile", "value": "a.ts" })],
+    )
+    .unwrap();
+    assert_eq!(
+        load_metadata("s1", PROJECT).unwrap()["context"]["currentFile"],
+        "a.ts"
+    );
 }
 
 /// 宿主（TS）用 JS 的 `String.slice` 截断工具输出预览时可能切开代理对，
@@ -1020,7 +1109,11 @@ fn load_messages_replaces_invalid_utf8_bytes_instead_of_dropping_the_file() {
     assert!(String::from_utf8(raw).is_err());
 
     let messages = load_messages("s1", PROJECT);
-    assert_eq!(messages.len(), 2, "无效字节只损失一个替换字符，不该丢整个会话：{messages:?}");
+    assert_eq!(
+        messages.len(),
+        2,
+        "无效字节只损失一个替换字符，不该丢整个会话：{messages:?}"
+    );
     assert_eq!(messages[0]["message"]["content"], "ok");
     assert_eq!(messages[1]["message"]["content"], "a\u{FFFD}b");
 }
@@ -1110,10 +1203,16 @@ fn metadata_writes_land_both_timestamps() {
     };
 
     // (a) 首条消息前的配置兜底建档（update_context 的 fallback 只写 sessionId / project / creator）
-    update_context("bootstrap", PROJECT, &[json!({ "key": "webSearch", "value": false })]).unwrap();
+    update_context(
+        "bootstrap",
+        PROJECT,
+        &[json!({ "key": "webSearch", "value": false })],
+    )
+    .unwrap();
     let bootstrapped = read_raw("bootstrap");
     assert!(
-        bootstrapped["createdAt"].as_u64().is_some() && bootstrapped["updatedAt"].as_u64().is_some(),
+        bootstrapped["createdAt"].as_u64().is_some()
+            && bootstrapped["updatedAt"].as_u64().is_some(),
         "配置兜底建档必须带两个时间戳：{bootstrapped}"
     );
 
@@ -1138,7 +1237,10 @@ fn metadata_writes_land_both_timestamps() {
         legacy["createdAt"].as_u64().is_some(),
         "存量档案的 createdAt 必须补齐：{legacy}"
     );
-    assert_eq!(legacy["updatedAt"], 111, "后台消息不得改写 updatedAt：{legacy}");
+    assert_eq!(
+        legacy["updatedAt"], 111,
+        "后台消息不得改写 updatedAt：{legacy}"
+    );
 }
 
 #[test]
@@ -1152,5 +1254,8 @@ fn delete_conversation_keeps_workspace_manifest() {
 
     delete_conversation("s1", PROJECT).unwrap();
     assert!(!dir.join("s1.meta.json").exists());
-    assert!(dir.join("workspace.meta.json").exists(), "清单不是会话，不能被删");
+    assert!(
+        dir.join("workspace.meta.json").exists(),
+        "清单不是会话，不能被删"
+    );
 }

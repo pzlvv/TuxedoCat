@@ -88,90 +88,250 @@ pub fn parse_input(tool: &str, input: &Value) -> Result<Value, String> {
 
 fn read_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "file_path", required: true, kind: Kind::Str(None) },
-        Field { name: "offset", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "limit", required: false, kind: Kind::CoerceInt(Range::Positive) },
-        Field { name: "sheet", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "file_path",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "offset",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "limit",
+            required: false,
+            kind: Kind::CoerceInt(Range::Positive),
+        },
+        Field {
+            name: "sheet",
+            required: false,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
 fn write_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "file_path", required: true, kind: Kind::Str(None) },
-        Field { name: "content", required: true, kind: Kind::Str(None) },
+        Field {
+            name: "file_path",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "content",
+            required: true,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
 fn edit_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "file_path", required: true, kind: Kind::Str(None) },
-        Field { name: "old_string", required: true, kind: Kind::Str(None) },
-        Field { name: "new_string", required: true, kind: Kind::Str(None) },
-        Field { name: "replace_all", required: false, kind: Kind::ReplaceAll },
-        Field { name: "offset", required: false, kind: Kind::CoerceInt(Range::Positive) },
-        Field { name: "limit", required: false, kind: Kind::CoerceInt(Range::Positive) },
+        Field {
+            name: "file_path",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "old_string",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "new_string",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "replace_all",
+            required: false,
+            kind: Kind::ReplaceAll,
+        },
+        Field {
+            name: "offset",
+            required: false,
+            kind: Kind::CoerceInt(Range::Positive),
+        },
+        Field {
+            name: "limit",
+            required: false,
+            kind: Kind::CoerceInt(Range::Positive),
+        },
     ]
 }
 
 fn bash_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "command", required: true, kind: Kind::Str(None) },
-        Field { name: "description", required: false, kind: Kind::Str(None) },
-        Field { name: "cwd", required: false, kind: Kind::Str(None) },
-        Field { name: "run_in_background", required: false, kind: Kind::CoerceBool },
+        Field {
+            name: "command",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "description",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "cwd",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "run_in_background",
+            required: false,
+            kind: Kind::CoerceBool,
+        },
     ]
 }
 
 fn glob_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "pattern", required: true, kind: Kind::Str(None) },
-        Field { name: "path", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "pattern",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "path",
+            required: false,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
 fn grep_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "pattern", required: true, kind: Kind::Str(None) },
-        Field { name: "path", required: false, kind: Kind::Str(None) },
-        Field { name: "glob", required: false, kind: Kind::Str(None) },
-        Field { name: "output_mode", required: false, kind: Kind::Enum(&["content", "files_with_matches", "count"]) },
-        Field { name: "-B", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "-A", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "-C", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "context", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "-n", required: false, kind: Kind::CoerceBool },
-        Field { name: "-i", required: false, kind: Kind::CoerceBool },
-        Field { name: "type", required: false, kind: Kind::Str(None) },
-        Field { name: "head_limit", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "offset", required: false, kind: Kind::CoerceInt(Range::NonNegative) },
-        Field { name: "multiline", required: false, kind: Kind::CoerceBool },
+        Field {
+            name: "pattern",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "path",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "glob",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "output_mode",
+            required: false,
+            kind: Kind::Enum(&["content", "files_with_matches", "count"]),
+        },
+        Field {
+            name: "-B",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "-A",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "-C",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "context",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "-n",
+            required: false,
+            kind: Kind::CoerceBool,
+        },
+        Field {
+            name: "-i",
+            required: false,
+            kind: Kind::CoerceBool,
+        },
+        Field {
+            name: "type",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "head_limit",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "offset",
+            required: false,
+            kind: Kind::CoerceInt(Range::NonNegative),
+        },
+        Field {
+            name: "multiline",
+            required: false,
+            kind: Kind::CoerceBool,
+        },
     ]
 }
 
 fn todo_fields() -> Vec<Field<'static>> {
-    vec![Field { name: "todos", required: true, kind: Kind::TodoArray }]
+    vec![Field {
+        name: "todos",
+        required: true,
+        kind: Kind::TodoArray,
+    }]
 }
 
 fn ask_user_fields() -> Vec<Field<'static>> {
-    vec![Field { name: "questions", required: true, kind: Kind::QuestionArray }]
+    vec![Field {
+        name: "questions",
+        required: true,
+        kind: Kind::QuestionArray,
+    }]
 }
 
 fn agent_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "prompt", required: true, kind: Kind::Str(None) },
-        Field { name: "description", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "prompt",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "description",
+            required: false,
+            kind: Kind::Str(None),
+        },
         // 合法名单单一落点在 `tools::SUB_AGENT_ROLES`（specs/020 FR-001）；
         // 多值后 zod 对齐文案走 `Invalid option: expected one of ...` 分支
-        Field { name: "agentRole", required: true, kind: Kind::Enum(crate::tools::SUB_AGENT_ROLES) },
+        Field {
+            name: "agentRole",
+            required: true,
+            kind: Kind::Enum(crate::tools::SUB_AGENT_ROLES),
+        },
         // specs/023：目标工作区代理身份；缺省 = 当前策略。空串在 run_agent 里拒绝。
-        Field { name: "target", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "target",
+            required: false,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
 fn reply_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "message", required: true, kind: Kind::Str(None) },
-        Field { name: "targetSessionId", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "message",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "targetSessionId",
+            required: false,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
@@ -179,29 +339,73 @@ fn reply_fields() -> Vec<Field<'static>> {
 /// 两端 target 可选，空串是执行侧错误（与 `Agent.target` 同口径），schema 不拦。
 fn transfer_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "sourcePath", required: true, kind: Kind::Str(None) },
-        Field { name: "targetPath", required: true, kind: Kind::Str(None) },
-        Field { name: "sourceTarget", required: false, kind: Kind::Str(None) },
-        Field { name: "destTarget", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "sourcePath",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "targetPath",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "sourceTarget",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "destTarget",
+            required: false,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
 /// AskUserQuestion 单题：`z.strictObject({ id, question, header?, options?, multi_select? })`
 fn question_item_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "id", required: true, kind: Kind::Str(None) },
-        Field { name: "question", required: true, kind: Kind::Str(None) },
-        Field { name: "header", required: false, kind: Kind::Str(None) },
-        Field { name: "options", required: false, kind: Kind::OptionsArray },
-        Field { name: "multi_select", required: false, kind: Kind::Bool },
+        Field {
+            name: "id",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "question",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "header",
+            required: false,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "options",
+            required: false,
+            kind: Kind::OptionsArray,
+        },
+        Field {
+            name: "multi_select",
+            required: false,
+            kind: Kind::Bool,
+        },
     ]
 }
 
 /// AskUserQuestion 选项项：`z.strictObject({ label: z.string(), description: z.string().optional() })`
 fn choice_item_fields() -> Vec<Field<'static>> {
     vec![
-        Field { name: "label", required: true, kind: Kind::Str(None) },
-        Field { name: "description", required: false, kind: Kind::Str(None) },
+        Field {
+            name: "label",
+            required: true,
+            kind: Kind::Str(None),
+        },
+        Field {
+            name: "description",
+            required: false,
+            kind: Kind::Str(None),
+        },
     ]
 }
 
@@ -322,7 +526,11 @@ fn coerce_int(value: &Value, range: Range, path: &Value) -> Result<Value, Vec<Va
     }
     if number.is_infinite() {
         // zod：message 用 `parsedType(input)`（Infinity 仍是 number），但 `received` 记 "Infinity"。
-        let received = if number > 0.0 { "Infinity" } else { "-Infinity" };
+        let received = if number > 0.0 {
+            "Infinity"
+        } else {
+            "-Infinity"
+        };
         return Err(vec![invalid_type(
             "number",
             None,
@@ -540,8 +748,18 @@ fn validate_todo_item(item: &Value, path: &Value) -> Result<Value, Vec<Value>> {
     // content：必填 string().min(1, 'Content cannot be empty')
     let content_path = path_push(path, "content");
     match map.get("content") {
-        None => issues.push(invalid_type("string", None, "undefined", None, content_path)),
-        Some(value) => match validate_kind(&Kind::Str(Some((1, "Content cannot be empty"))), value, &content_path) {
+        None => issues.push(invalid_type(
+            "string",
+            None,
+            "undefined",
+            None,
+            content_path,
+        )),
+        Some(value) => match validate_kind(
+            &Kind::Str(Some((1, "Content cannot be empty"))),
+            value,
+            &content_path,
+        ) {
             Ok(value) => {
                 out.insert("content".to_string(), value);
             }
@@ -556,7 +774,11 @@ fn validate_todo_item(item: &Value, path: &Value) -> Result<Value, Vec<Value>> {
             out.insert("status".to_string(), json!("pending"));
         }
         Some(value) => {
-            match check_enum(value, &["pending", "in_progress", "completed"], &status_path) {
+            match check_enum(
+                value,
+                &["pending", "in_progress", "completed"],
+                &status_path,
+            ) {
                 Ok(value) => {
                     out.insert("status".to_string(), value);
                 }
@@ -799,11 +1021,17 @@ fn too_small_int(minimum: i64, path: &Value) -> Value {
     issue(vec![
         ("code", json!("too_small")),
         ("minimum", json!(minimum)),
-        ("note", json!("Integers must be within the safe integer range.")),
+        (
+            "note",
+            json!("Integers must be within the safe integer range."),
+        ),
         ("origin", json!("int")),
         ("inclusive", json!(true)),
         ("path", path.clone()),
-        ("message", json!(format!("Too small: expected int to be >={minimum}"))),
+        (
+            "message",
+            json!(format!("Too small: expected int to be >={minimum}")),
+        ),
     ])
 }
 
@@ -811,11 +1039,17 @@ fn too_big_int(maximum: i64, path: &Value) -> Value {
     issue(vec![
         ("code", json!("too_big")),
         ("maximum", json!(maximum)),
-        ("note", json!("Integers must be within the safe integer range.")),
+        (
+            "note",
+            json!("Integers must be within the safe integer range."),
+        ),
         ("origin", json!("int")),
         ("inclusive", json!(true)),
         ("path", path.clone()),
-        ("message", json!(format!("Too big: expected int to be <={maximum}"))),
+        (
+            "message",
+            json!(format!("Too big: expected int to be <={maximum}")),
+        ),
     ])
 }
 
@@ -838,7 +1072,12 @@ fn too_small_array(minimum: usize, path: Value) -> Value {
         ("minimum", json!(minimum)),
         ("inclusive", json!(true)),
         ("path", path),
-        ("message", json!(format!("Too small: expected array to have >={minimum} items"))),
+        (
+            "message",
+            json!(format!(
+                "Too small: expected array to have >={minimum} items"
+            )),
+        ),
     ])
 }
 
@@ -850,7 +1089,10 @@ fn too_big_array(maximum: usize, path: Value) -> Value {
         ("maximum", json!(maximum)),
         ("inclusive", json!(true)),
         ("path", path),
-        ("message", json!(format!("Too big: expected array to have <={maximum} items"))),
+        (
+            "message",
+            json!(format!("Too big: expected array to have <={maximum} items")),
+        ),
     ])
 }
 
@@ -911,5 +1153,6 @@ fn unrecognized_keys_issue(keys: &[String], base_path: &[Value]) -> Value {
 
 /// 与 `JSON.stringify(issues, null, 2)` 一致（serde_json 的 pretty 缩进同为 2 空格）
 fn pretty_issues(issues: &[Value]) -> String {
-    serde_json::to_string_pretty(&Value::Array(issues.to_vec())).unwrap_or_else(|_| "[]".to_string())
+    serde_json::to_string_pretty(&Value::Array(issues.to_vec()))
+        .unwrap_or_else(|_| "[]".to_string())
 }

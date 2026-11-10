@@ -107,7 +107,11 @@ pub fn clear_builtin_commands() {
 
 /// 指定名称是否与已注册的内置命令冲突
 pub fn is_builtin_command_name(name: &str) -> bool {
-    REGISTERED_NAMES.lock().unwrap().iter().any(|item| item == name)
+    REGISTERED_NAMES
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|item| item == name)
 }
 
 /// 所有内置命令名称（含别名）
@@ -140,7 +144,10 @@ pub enum DispatchOutcome {
     /// 内置命令已就地执行（消息不进 LLM 上下文）
     Handled,
     /// 命中 Skill：调用方据此注入 Skill tool_use
-    Skill { skill_name: String, skill_args: String },
+    Skill {
+        skill_name: String,
+        skill_args: String,
+    },
     /// 不是内置命令也不是 Skill，走正常 LLM 流程
     Passthrough,
 }
@@ -187,9 +194,9 @@ fn parse_invocation(prompt: &str) -> Option<(String, String)> {
 pub fn builtin_invocation(prompt: &str) -> Option<BuiltinInvocation> {
     let (name, args) = parse_invocation(prompt)?;
     let commands = builtin_commands();
-    let matched = commands
-        .iter()
-        .find(|command| command.name == name || command.aliases.iter().any(|alias| *alias == name))?;
+    let matched = commands.iter().find(|command| {
+        command.name == name || command.aliases.iter().any(|alias| *alias == name)
+    })?;
     Some(BuiltinInvocation {
         name: matched.name.clone(),
         args,

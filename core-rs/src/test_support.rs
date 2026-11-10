@@ -30,7 +30,9 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 pub fn serial() -> MutexGuard<'static, ()> {
     // 前一个用例 panic 时锁会被污染，这里恢复而不是继续 panic
-    SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ==================== 沙箱 ====================
@@ -48,7 +50,8 @@ pub struct Sandbox {
 impl Sandbox {
     pub fn new(name: &str) -> Sandbox {
         let guard = serial();
-        let root = std::env::temp_dir().join(format!("standalone-core-{name}-{}", util::unique_id("t")));
+        let root =
+            std::env::temp_dir().join(format!("standalone-core-{name}-{}", util::unique_id("t")));
         let home = root.join("home");
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&home).expect("create home");
@@ -113,7 +116,8 @@ impl Sandbox {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create config dir");
         }
-        std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).expect("write settings");
+        std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap())
+            .expect("write settings");
         self.refresh_settings_snapshot();
     }
 
@@ -152,7 +156,9 @@ impl Sandbox {
     /// 生产代码里这个路径归宿主（Core 不感知），测试沙箱里由本函数按沙箱 HOME 现算：
     /// 测试自己扮演 Host，需要知道往哪写。
     pub fn settings_path(&self) -> std::path::PathBuf {
-        config::config_home().expect("config home").join("settings.json")
+        config::config_home()
+            .expect("config home")
+            .join("settings.json")
     }
 
     /// 读回 `settings.json`（不存在时返回空对象），用于在原配置上打补丁
@@ -170,7 +176,12 @@ impl Sandbox {
     }
 
     /// 同上，但指定 `apiType`（`OpenAI` / `Anthropic`）
-    pub fn write_llm_settings_with_api_type(&self, base_url: &str, agent_mode: &str, api_type: &str) {
+    pub fn write_llm_settings_with_api_type(
+        &self,
+        base_url: &str,
+        agent_mode: &str,
+        api_type: &str,
+    ) {
         self.write_settings(json!({
             "defaultAgentMode": agent_mode,
             "llm": {
@@ -365,7 +376,10 @@ fn build_test_snapshot(raw: &Value) -> SettingsSnapshot {
         }
     }
 
-    let active_raw = llm.get("activeProvider").and_then(Value::as_str).unwrap_or("");
+    let active_raw = llm
+        .get("activeProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let active_provider = if providers
         .get(active_raw)
         .and_then(|provider| provider.get("baseURL"))
@@ -442,12 +456,19 @@ pub fn repo_root() -> PathBuf {
 /// 视为缺失，避免「is_file 为真 → spawn 桩 → Exec format error」的困惑失败。
 pub fn bundled_ripgrep() -> Option<PathBuf> {
     let platform = if cfg!(windows) { "win32" } else { "linux" };
-    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
     let exe = if cfg!(windows) { "rg.exe" } else { "rg" };
     let dir = format!("{arch}-{platform}");
     let candidates = [
         repo_root().join("resources/ripgrep").join(&dir).join(exe),
-        repo_root().join("dist/resources/ripgrep").join(&dir).join(exe),
+        repo_root()
+            .join("dist/resources/ripgrep")
+            .join(&dir)
+            .join(exe),
     ];
     for candidate in &candidates {
         if !candidate.is_file() {
@@ -489,9 +510,8 @@ pub fn ripgrep_available() -> bool {
 /// Read 的图片用例（`tools_tests` / `engine_tests`）共用这一份：hex 只有对照表一处
 /// 来源，不会出现「测试用的假 PNG 与对照表漂移」。
 pub fn minimal_png_bytes() -> Vec<u8> {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../fixtures/imageValidation.json"))
-            .expect("imageValidation.json 必须是合法 JSON");
+    let fixture: Value = serde_json::from_str(include_str!("../fixtures/imageValidation.json"))
+        .expect("imageValidation.json 必须是合法 JSON");
     let hex = fixture["cases"]
         .as_array()
         .and_then(|cases| cases.iter().find(|case| case["name"] == "png-valid"))
@@ -546,7 +566,12 @@ impl Capture {
     pub fn event_types(&self) -> Vec<String> {
         self.events()
             .iter()
-            .filter_map(|event| event.get("type").and_then(Value::as_str).map(str::to_string))
+            .filter_map(|event| {
+                event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .collect()
     }
 
@@ -580,7 +605,9 @@ impl Capture {
     pub fn requests_of(&self, request_type: &str) -> Vec<Value> {
         self.requests()
             .into_iter()
-            .filter(|(_, request)| request.get("type").and_then(Value::as_str) == Some(request_type))
+            .filter(|(_, request)| {
+                request.get("type").and_then(Value::as_str) == Some(request_type)
+            })
             .map(|(_, request)| request)
             .collect()
     }
@@ -817,7 +844,9 @@ fn read_http_request(stream: &mut TcpStream) -> String {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> io::Result<()> {
@@ -908,11 +937,15 @@ pub fn openai_thinking_sse(thinking: &str, text: &str) -> String {
 pub fn responses_text_sse(chunks: &[&str]) -> String {
     let mut out = String::new();
     let mut push = |value: serde_json::Value| {
-        out.push_str(&format!("data: {value}
+        out.push_str(&format!(
+            "data: {value}
 
-"));
+"
+        ));
     };
-    push(json!({ "type": "response.created", "response": { "id": "resp_1", "status": "in_progress" } }));
+    push(
+        json!({ "type": "response.created", "response": { "id": "resp_1", "status": "in_progress" } }),
+    );
     push(json!({
         "type": "response.output_item.added",
         "output_index": 0,
@@ -971,21 +1004,33 @@ pub fn responses_text_sse(chunks: &[&str]) -> String {
             },
         },
     }));
-    out.push_str("data: [DONE]
+    out.push_str(
+        "data: [DONE]
 
-");
+",
+    );
     out
 }
 
 /// Responses API 协议：思考 + 文本 + 一次工具调用（参数分两片）
-pub fn responses_thinking_tool_sse(thinking: &str, text: &str, id: &str, name: &str, arguments: &str) -> String {
+pub fn responses_thinking_tool_sse(
+    thinking: &str,
+    text: &str,
+    id: &str,
+    name: &str,
+    arguments: &str,
+) -> String {
     let mut out = String::new();
     let mut push = |value: serde_json::Value| {
-        out.push_str(&format!("data: {value}
+        out.push_str(&format!(
+            "data: {value}
 
-"));
+"
+        ));
     };
-    push(json!({ "type": "response.created", "response": { "id": "resp_2", "status": "in_progress" } }));
+    push(
+        json!({ "type": "response.created", "response": { "id": "resp_2", "status": "in_progress" } }),
+    );
     // 思考项
     push(json!({
         "type": "response.output_item.added",
@@ -1090,9 +1135,11 @@ pub fn responses_thinking_tool_sse(thinking: &str, text: &str, id: &str, name: &
             "usage": { "input_tokens": 30, "output_tokens": 40 },
         },
     }));
-    out.push_str("data: [DONE]
+    out.push_str(
+        "data: [DONE]
 
-");
+",
+    );
     out
 }
 
@@ -1254,11 +1301,13 @@ impl EngineHarness {
 
     /// 默认应答：权限请求保持 `ask`（触发确认框），确认框选「允许」
     pub fn allow_all() -> EngineHarness {
-        EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
-            Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
-            Some("userChoice") => Some(json!({ "index": 0 })),
-            _ => Some(json!({})),
-        })
+        EngineHarness::start(
+            |request| match request.get("type").and_then(Value::as_str) {
+                Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
+                Some("userChoice") => Some(json!({ "index": 0 })),
+                _ => Some(json!({})),
+            },
+        )
     }
 
     /// 等待条件成立

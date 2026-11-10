@@ -22,7 +22,11 @@ use std::time::{Duration, Instant};
 /// 条目已消失返回 `None`。
 fn process_state_and_start(pid: u32) -> Option<(char, u64)> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields = text.rsplit_once(')')?.1.split_whitespace().collect::<Vec<_>>();
+    let fields = text
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
     let state = fields.first()?.chars().next()?;
     let start: u64 = fields.get(19)?.parse().ok()?;
     Some((state, start))
@@ -84,7 +88,11 @@ fn wait_for_pid(path: &Path, timeout: Duration) -> Option<u32> {
 }
 
 fn temp_file(name: &str, ext: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("standalone-core-{name}-{}.{}", std::process::id(), ext))
+    std::env::temp_dir().join(format!(
+        "standalone-core-{name}-{}.{}",
+        std::process::id(),
+        ext
+    ))
 }
 
 fn kill(pid: u32) {
@@ -140,19 +148,22 @@ fn core_exits_when_parent_process_disappears() {
         .expect("spawn intermediate shell");
     assert!(status.success(), "intermediate shell failed");
 
-    let pid: u32 = wait_for_pid(&pid_file, Duration::from_secs(5))
-        .expect("core pid file was not written");
+    let pid: u32 =
+        wait_for_pid(&pid_file, Duration::from_secs(5)).expect("core pid file was not written");
     let parent_pid: u32 = wait_for_pid(&parent_file, Duration::from_secs(5))
         .expect("parent pid file was not written");
-    let (state, core_start) =
-        process_state_and_start(pid).expect("core exited before arming");
+    let (state, core_start) = process_state_and_start(pid).expect("core exited before arming");
     assert!(state != 'Z', "core did not start (state={state:?})");
 
     // 等「看门狗已武装」诊断（Core 记录父 PID 之后的第一个动作）：它出现前杀父
     // 进程就是在赌启动耗时。满载下 Core 启动可慢于任何固定时钟，宽限给足 60s
     // （父进程 sleep 90 活得更久，先看武装后杀父的顺序不被打破）。
     assert!(
-        wait_for_line(&log_file, "watchdog armed on parent", Duration::from_secs(60)),
+        wait_for_line(
+            &log_file,
+            "watchdog armed on parent",
+            Duration::from_secs(60)
+        ),
         "watchdog never armed; core 日志尾部：\n{}",
         std::fs::read_to_string(&log_file).unwrap_or_default()
     );

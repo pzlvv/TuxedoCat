@@ -28,14 +28,18 @@ impl Locale {
 static LOCALE: Mutex<Option<Locale>> = Mutex::new(None);
 
 pub fn get_locale() -> Locale {
-    let slot = LOCALE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let slot = LOCALE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     slot.unwrap_or(Locale::En)
 }
 
 /// 启动期收敛（`primeHostLocale` 移植）：先记录宿主 locale，再按 `uiLanguage` 收敛。
 /// 顺序不能反——`auto` 的兜底是宿主 locale，显式 zh/en 直接生效。
 pub fn prime_locale(host_locale: &str, ui_language: &str) {
-    let mut slot = LOCALE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut slot = LOCALE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *slot = Some(match Locale::from_setting(ui_language) {
         Some(locale) => locale,
         None => {
@@ -65,17 +69,35 @@ pub fn tt(zh: &str, en: &str) -> String {
 /// 由 `coreTextKeys.json` 锁定的键必须在表里，`src/test/coreTextParity.test.ts` 口径）。
 const DICT_ZH: &[(&str, &str)] = &[
     ("command.spin.description", "执行 Spin 任务"),
-    ("notice.spin.engineNotWired", "Spin 引擎未接线，无法执行 Spin 任务。"),
-    ("notice.spin.designMissing", "未找到 spin.json 设计文件，请先创建并保存 Spin 设计。"),
+    (
+        "notice.spin.engineNotWired",
+        "Spin 引擎未接线，无法执行 Spin 任务。",
+    ),
+    (
+        "notice.spin.designMissing",
+        "未找到 spin.json 设计文件，请先创建并保存 Spin 设计。",
+    ),
     ("notice.spin.cannotRead", "无法读取 spin.json。"),
-    ("notice.spin.emptyNode", "存在空节点（缺少任务描述），请完善节点后重试。"),
-    ("notice.spin.notDag", "流程图不是有效的无环有向图（DAG），请检查连线后重试。"),
-    ("notice.spin.variableNoValue", "存在未赋值的变量，请在 Spin 设计器中填写变量值后重试。"),
+    (
+        "notice.spin.emptyNode",
+        "存在空节点（缺少任务描述），请完善节点后重试。",
+    ),
+    (
+        "notice.spin.notDag",
+        "流程图不是有效的无环有向图（DAG），请检查连线后重试。",
+    ),
+    (
+        "notice.spin.variableNoValue",
+        "存在未赋值的变量，请在 Spin 设计器中填写变量值后重试。",
+    ),
     (
         "notice.spin.variableNoValueWithNames",
         "存在未赋值的变量（{names}），请在 Spin 设计器中填写变量值后重试。",
     ),
-    ("notice.spin.invalid", "spin.json 格式不合法，请检查文件内容。"),
+    (
+        "notice.spin.invalid",
+        "spin.json 格式不合法，请检查文件内容。",
+    ),
     ("notice.spin.allCompleted", "所有任务已完成！"),
 ];
 
@@ -147,7 +169,9 @@ static SYSTEM_LOCALE: Mutex<Option<String>> = Mutex::new(None);
 /// Windows 上 `Intl` 不可用，用 PowerShell 查 UI 语言 / 区域格式；任一是中文即优先
 /// 返回中文 locale。失败退到环境变量。
 pub fn system_locale() -> String {
-    let mut slot = SYSTEM_LOCALE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut slot = SYSTEM_LOCALE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(cached) = slot.as_ref() {
         return cached.clone();
     }
@@ -159,7 +183,12 @@ pub fn system_locale() -> String {
 #[cfg(windows)]
 fn probe_locale() -> String {
     if let Ok(output) = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", "Write-Output (Get-UICulture).Name; Write-Output (Get-Culture).Name"])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Write-Output (Get-UICulture).Name; Write-Output (Get-Culture).Name",
+        ])
         .output()
     {
         let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -167,7 +196,10 @@ fn probe_locale() -> String {
             .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty())
             .collect();
-        if let Some(zh) = lines.iter().find(|line| line.to_lowercase().starts_with("zh")) {
+        if let Some(zh) = lines
+            .iter()
+            .find(|line| line.to_lowercase().starts_with("zh"))
+        {
             return zh.clone();
         }
         if let Some(first) = lines.first() {

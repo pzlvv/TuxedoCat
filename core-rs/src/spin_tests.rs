@@ -105,7 +105,10 @@ impl FakeSpinHost {
 
     /// 脚本一次无 Reply 失败（`run_sub_agent` 返回 Err）
     fn push_failure(&self, error: &str) {
-        self.replies.lock().unwrap().push_back(Err(error.to_string()));
+        self.replies
+            .lock()
+            .unwrap()
+            .push_back(Err(error.to_string()));
     }
 
     fn push_judge(&self, accept: bool) {
@@ -219,7 +222,8 @@ mod parity_tests {
     fn design_issues_parity() {
         let fixture = fixture();
         for case in fixture["designIssues"].as_array().unwrap() {
-            let actual = get_spin_design_issue(&case["config"]).map(|issue| issue.as_str().to_string());
+            let actual =
+                get_spin_design_issue(&case["config"]).map(|issue| issue.as_str().to_string());
             assert_eq!(
                 actual.as_deref(),
                 case["issue"].as_str(),
@@ -467,7 +471,9 @@ fn validate_spin_design_reports_english_messages() {
         )
     );
     assert_eq!(
-        validate_spin_design(&json!({ "nodes": [ { "id": 1, "task": "A", "forEach": "MISSING" } ] })),
+        validate_spin_design(
+            &json!({ "nodes": [ { "id": 1, "task": "A", "forEach": "MISSING" } ] })
+        ),
         Some("Node 1: For Each variable \"MISSING\" does not exist.".to_string())
     );
     assert_eq!(
@@ -480,7 +486,6 @@ fn validate_spin_design_reports_english_messages() {
                 .to_string()
         )
     );
-
 }
 
 #[test]
@@ -507,7 +512,10 @@ fn detect_project_state_covers_all_states() {
         &sandbox,
         json!({ "nodes": [ { "id": 1, "task": "A" } ], "variables": { "K": "" } }),
     );
-    assert_eq!(detect_project_state(&cwd), SpinProjectState::VariableNoValue);
+    assert_eq!(
+        detect_project_state(&cwd),
+        SpinProjectState::VariableNoValue
+    );
 
     write_spin(
         &sandbox,
@@ -600,7 +608,10 @@ fn substitute_spin_variables_escapes_dollar() {
     variables.insert("A".to_string(), json!("x"));
     variables.insert("LONG".to_string(), json!("${A}"));
     assert_eq!(substitute_spin_variables("$${A}", Some(&variables)), "${A}");
-    assert_eq!(substitute_spin_variables("${A}${B}", Some(&variables)), "x${B}");
+    assert_eq!(
+        substitute_spin_variables("${A}${B}", Some(&variables)),
+        "x${B}"
+    );
     assert_eq!(substitute_spin_variables("$", Some(&variables)), "$");
     assert_eq!(substitute_spin_variables("", Some(&variables)), "");
     // 长的键优先：${LONG} 先展开成 ${A}，再被 A 展开成 x
@@ -696,8 +707,11 @@ fn spin_loop_passes_all_nodes() {
     // 每个节点完成后都刷新一次设计器
     assert!(host.event_count("spinDesignDataChanged") >= 2);
     // 全部完成发一条瞬时提示（notice，键 + 参数）
-    assert!(host.events().iter().any(|event| event["type"] == "notice"
-        && event["key"] == crate::core_text::SPIN_ALL_COMPLETED));
+    assert!(host
+        .events()
+        .iter()
+        .any(|event| event["type"] == "notice"
+            && event["key"] == crate::core_text::SPIN_ALL_COMPLETED));
 }
 
 #[test]
@@ -763,7 +777,10 @@ fn spin_loop_for_each_rows() {
     // For Each 时验收标准不参与，也就不调用 LLM 评审
     assert_eq!(host.judge_count(), 0);
     // 迭代标签形如 [row 1/3]
-    assert_eq!(host.labels(), vec![" [row 1/3]", " [row 2/3]", " [row 3/3]"]);
+    assert_eq!(
+        host.labels(),
+        vec![" [row 1/3]", " [row 2/3]", " [row 3/3]"]
+    );
 
     let config = read_spin(&sandbox);
     assert_eq!(config["meta"]["1"]["passed"], json!(true));
@@ -796,7 +813,10 @@ fn spin_loop_rollout_iterations() {
     assert!(prompts[0].contains("run 0"));
     assert!(prompts[1].contains("run 1"));
     assert!(prompts[2].contains("run 2"));
-    assert_eq!(host.labels(), vec![" [rollout 1/3]", " [rollout 2/3]", " [rollout 3/3]"]);
+    assert_eq!(
+        host.labels(),
+        vec![" [rollout 1/3]", " [rollout 2/3]", " [rollout 3/3]"]
+    );
     assert_eq!(host.judge_count(), 0);
 
     let config = read_spin(&sandbox);
@@ -912,7 +932,10 @@ fn spin_loop_stops_only_on_acceptance_failures() {
 
     let config = read_spin(&sandbox);
     assert_eq!(config["meta"]["1"]["passed"], json!(false));
-    assert_eq!(config["meta"]["1"]["note"], json!("failed after 1 attempts"));
+    assert_eq!(
+        config["meta"]["1"]["note"],
+        json!("failed after 1 attempts")
+    );
 }
 
 #[test]
@@ -942,7 +965,10 @@ fn spin_loop_stops_after_max_attempts() {
 
     let config = read_spin(&sandbox);
     assert_eq!(config["meta"]["1"]["passed"], json!(false));
-    assert_eq!(config["meta"]["1"]["note"], json!("failed after 2 attempts"));
+    assert_eq!(
+        config["meta"]["1"]["note"],
+        json!("failed after 2 attempts")
+    );
 }
 
 #[test]

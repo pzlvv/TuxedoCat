@@ -106,7 +106,11 @@ fn utf8_incomplete_tail(bytes: &[u8]) -> usize {
         let available = bytes.len() - index;
         if available < width {
             // 只把「确实是多字节首字节且后续字节都还是续字节」的残段留下
-            if width > 1 && bytes[index + 1..].iter().all(|byte| (0x80..=0xBF).contains(byte)) {
+            if width > 1
+                && bytes[index + 1..]
+                    .iter()
+                    .all(|byte| (0x80..=0xBF).contains(byte))
+            {
                 return available;
             }
             return 0;

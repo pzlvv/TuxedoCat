@@ -7,9 +7,7 @@
 
 use serde_json::{json, Value};
 
-use crate::test_support::{
-    EngineHarness, FakeLlm, Sandbox, openai_text_sse, openai_tool_sse,
-};
+use crate::test_support::{openai_text_sse, openai_tool_sse, EngineHarness, FakeLlm, Sandbox};
 
 use super::*;
 
@@ -114,7 +112,10 @@ fn variable_without_value_names_the_variable() {
     run(&sandbox, &harness, "auto");
     let notices = notices(&harness);
     assert_eq!(notices.len(), 1, "{notices:?}");
-    assert_eq!(notices[0].0, crate::core_text::SPIN_VARIABLE_NO_VALUE_WITH_NAMES);
+    assert_eq!(
+        notices[0].0,
+        crate::core_text::SPIN_VARIABLE_NO_VALUE_WITH_NAMES
+    );
     assert_eq!(notices[0].1["names"], "NAME");
 }
 
@@ -159,7 +160,13 @@ fn ready_design_updates_the_title_and_refreshes_the_designer() {
     // 节点会起一个子代理（Master），没有真 LLM 时它跑不出结果；
     // 这里只断言「进入执行分支」这件事，用 abort 让子代理等待立即结束。
     let workspace = sandbox.workspace.to_string_lossy().to_string();
-    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    harness
+        .core
+        .session("s1")
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, Ordering::Relaxed);
     let result = run_spin_command(&harness.core, "s1", &workspace, "auto");
 
     assert!(result.is_none(), "内置命令不该返回 system 消息");
@@ -189,9 +196,18 @@ fn ready_design_creates_missing_metadata_and_broadcasts_the_list_refresh() {
     // 新会话尚无 meta.json，工作目录只能走活动工作目录兜底（daemon 内由
     // UiEvent.workspaceChanged 写入）
     config::set_active_workspace(Some(project.clone()));
-    assert!(history::load_metadata("s1", &project).is_none(), "测试前提：无 meta.json");
+    assert!(
+        history::load_metadata("s1", &project).is_none(),
+        "测试前提：无 meta.json"
+    );
 
-    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    harness
+        .core
+        .session("s1")
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, Ordering::Relaxed);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     run_spin_command(&harness.core, "s1", &workspace, "auto");
 
@@ -220,7 +236,13 @@ fn spin_ready_bootstraps_list_timestamps() {
         .core
         .on_session_config_changed("s1", &json!({ "key": "webSearch", "value": false }));
 
-    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    harness
+        .core
+        .session("s1")
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, Ordering::Relaxed);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     run_spin_command(&harness.core, "s1", &workspace, "auto");
 
@@ -245,8 +267,14 @@ fn spin_ready_bootstraps_list_timestamps() {
         None,
     )
     .unwrap();
-    history::touch_metadata("s1", &project, false, None, &crate::engine::SessionCreator::User)
-        .unwrap();
+    history::touch_metadata(
+        "s1",
+        &project,
+        false,
+        None,
+        &crate::engine::SessionCreator::User,
+    )
+    .unwrap();
 
     let list = history::load_conversation_list(Some(&project));
     let entry = list
@@ -272,7 +300,13 @@ fn ready_design_emits_the_refresh_even_when_the_loop_fails() {
     )
     .unwrap();
     // 立即中止：主循环会以 Aborted 收尾，但设计器刷新仍要发
-    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    harness
+        .core
+        .session("s1")
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, Ordering::Relaxed);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     run_spin_command(&harness.core, "s1", &workspace, "auto");
     assert_eq!(harness.sink.events_of("spinDesignDataChanged").len(), 1);
@@ -302,14 +336,26 @@ fn entering_spin_clears_queued_auto_messages_and_reminders() {
         state.reminder_driven_run = true;
     }
     // 立即中止，避免子代理等待；进入 spin 的清队列发生在循环启动之前
-    harness.core.session("s1").lock().unwrap().cancel.store(true, Ordering::Relaxed);
+    harness
+        .core
+        .session("s1")
+        .lock()
+        .unwrap()
+        .cancel
+        .store(true, Ordering::Relaxed);
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     run_spin_command(&harness.core, "s1", &workspace, "auto");
 
     let state = harness.core.session("s1");
     let state = state.lock().unwrap();
-    assert!(state.agent_messages.is_empty(), "进入 spin 应清掉排队的自动消息");
-    assert!(state.pending_reminder.is_none(), "进入 spin 应清掉 Reminder");
+    assert!(
+        state.agent_messages.is_empty(),
+        "进入 spin 应清掉排队的自动消息"
+    );
+    assert!(
+        state.pending_reminder.is_none(),
+        "进入 spin 应清掉 Reminder"
+    );
     assert!(!state.reminder_driven_run, "Reminder 驱动标记应复位");
 }
 
@@ -467,7 +513,10 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
     {
         let state = harness.core.session("s1");
         let state = state.lock().unwrap();
-        assert!(state.agent_messages.is_empty(), "重复 Reply 不得进入消费队列");
+        assert!(
+            state.agent_messages.is_empty(),
+            "重复 Reply 不得进入消费队列"
+        );
         assert!(!state.running, "重复 Reply 不得拉起父对话消费循环");
     }
 
@@ -496,9 +545,11 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
     );
     assert!(
         messages.iter().any(|message| message["type"] == "user"
-            && message["message"]["content"].as_array().map_or(false, |blocks| blocks
-                .iter()
-                .any(|block| block["type"] == "tool_result" && block["is_canceled"] == false))),
+            && message["message"]["content"]
+                .as_array()
+                .map_or(false, |blocks| blocks.iter().any(|block| block["type"]
+                    == "tool_result"
+                    && block["is_canceled"] == false))),
         "Agent tool_result 应落盘: {messages:?}"
     );
     // UI 事件：toolCall（授权前 + 执行前各一次）与 toolResult
@@ -550,10 +601,11 @@ fn spin_run_feeds_replies_to_the_loop_not_the_main_llm() {
         sub_messages.iter().any(|message| message["type"] == "user"
             && message["message"]["content"]
                 .as_array()
-                .map_or(false, |blocks| blocks.iter().any(|block| block["type"]
-                    == "tool_result"
-                    && block["tool_use_id"] == "call_1"
-                    && block["is_canceled"] == false))),
+                .map_or(false, |blocks| blocks
+                    .iter()
+                    .any(|block| block["type"] == "tool_result"
+                        && block["tool_use_id"] == "call_1"
+                        && block["is_canceled"] == false))),
         "Reply 的 tool_result 应正常落盘: {sub_messages:?}"
     );
 }

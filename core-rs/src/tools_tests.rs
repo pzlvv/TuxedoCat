@@ -99,7 +99,9 @@ fn definitions_cover_every_builtin_tool() {
     );
     for tool in &definitions {
         assert!(
-            tool.get("description").and_then(Value::as_str).is_some_and(|text| !text.is_empty()),
+            tool.get("description")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()),
             "missing description: {tool}"
         );
         let schema = tool.get("input_schema").expect("input_schema");
@@ -130,10 +132,20 @@ fn execute_dispatches_to_the_right_tool() {
     let ctx = context(&sandbox);
 
     assert!(!execute("Read", &json!({ "file_path": "a.txt" }), &ctx).is_error());
-    assert!(!execute("Write", &json!({ "file_path": "b.txt", "content": "x" }), &ctx).is_error());
-    assert!(!execute("Edit", &json!({
-        "file_path": "b.txt", "old_string": "x", "new_string": "y"
-    }), &ctx).is_error());
+    assert!(!execute(
+        "Write",
+        &json!({ "file_path": "b.txt", "content": "x" }),
+        &ctx
+    )
+    .is_error());
+    assert!(!execute(
+        "Edit",
+        &json!({
+            "file_path": "b.txt", "old_string": "x", "new_string": "y"
+        }),
+        &ctx
+    )
+    .is_error());
     assert!(!execute("Bash", &json!({ "command": "echo ok" }), &ctx).is_error());
     assert!(!execute("TodoWrite", &json!({ "todos": [] }), &ctx).is_error());
 }
@@ -143,8 +155,15 @@ fn execute_dispatches_to_the_right_tool() {
 #[test]
 fn expand_path_keeps_absolute_and_joins_relative() {
     let cwd = "D:/repo";
-    assert_eq!(expand_path(cwd, "a/b.txt"), Path::new("D:/repo").join("a/b.txt"));
-    let absolute = if cfg!(windows) { "C:/tmp/x.txt" } else { "/tmp/x.txt" };
+    assert_eq!(
+        expand_path(cwd, "a/b.txt"),
+        Path::new("D:/repo").join("a/b.txt")
+    );
+    let absolute = if cfg!(windows) {
+        "C:/tmp/x.txt"
+    } else {
+        "/tmp/x.txt"
+    };
     assert_eq!(expand_path(cwd, absolute), PathBuf::from(absolute));
 }
 
@@ -155,15 +174,21 @@ fn expand_path_preserves_the_drive_letter_case_for_slash_paths() {
     // （`path.normalize('c:\\/Users') === 'c:\\Users'`），只有 WSL 的
     // `/mnt/d/...` 才把盘符大写。
     assert_eq!(
-        expand_path("D:/repo", "/c/Users/x").to_string_lossy().to_string(),
+        expand_path("D:/repo", "/c/Users/x")
+            .to_string_lossy()
+            .to_string(),
         "c:\\Users\\x"
     );
     assert_eq!(
-        expand_path("D:/repo", "/C/Users/x").to_string_lossy().to_string(),
+        expand_path("D:/repo", "/C/Users/x")
+            .to_string_lossy()
+            .to_string(),
         "C:\\Users\\x"
     );
     assert_eq!(
-        expand_path("D:/repo", "/mnt/d/git/proj").to_string_lossy().to_string(),
+        expand_path("D:/repo", "/mnt/d/git/proj")
+            .to_string_lossy()
+            .to_string(),
         "D:\\git\\proj"
     );
 }
@@ -174,9 +199,15 @@ fn expand_path_handles_multibyte_paths_without_panicking() {
     // 在第 5 个字节不是字符边界时直接 panic，导致 Core 进程崩溃。
     let cwd = "D:/repo";
     assert_eq!(expand_path(cwd, "你你你"), Path::new(cwd).join("你你你"));
-    assert_eq!(expand_path(cwd, "目录/文件.txt"), Path::new(cwd).join("目录/文件.txt"));
+    assert_eq!(
+        expand_path(cwd, "目录/文件.txt"),
+        Path::new(cwd).join("目录/文件.txt")
+    );
     // 长度够、但不是 /mnt/ 前缀的多字节路径同样不能 panic
-    assert_eq!(expand_path(cwd, "你好世界你好"), Path::new(cwd).join("你好世界你好"));
+    assert_eq!(
+        expand_path(cwd, "你好世界你好"),
+        Path::new(cwd).join("你好世界你好")
+    );
 }
 
 #[test]
@@ -245,13 +276,19 @@ mod path_parity_tests {
                     continue;
                 }
             }
-            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
             let input = case
                 .get("input")
                 .and_then(Value::as_str)
                 .expect("用例缺少 input")
                 .replace("__CWD__", &cwd);
-            let expected = case.get("expected").and_then(Value::as_str).expect("用例缺少 expected");
+            let expected = case
+                .get("expected")
+                .and_then(Value::as_str)
+                .expect("用例缺少 expected");
             let actual = canonicalize(&expand_path(&cwd, &input).to_string_lossy());
             if actual != expected {
                 failures.push(format!(
@@ -270,7 +307,8 @@ mod path_parity_tests {
 
 #[test]
 fn input_helpers_accept_expected_shapes() {
-    let input = json!({ "text": "value", "number": 7, "numberText": "8", "yes": true, "no": "false" });
+    let input =
+        json!({ "text": "value", "number": 7, "numberText": "8", "yes": true, "no": "false" });
     assert_eq!(input_str(&input, "text").as_deref(), Some("value"));
     assert_eq!(input_str(&input, "missing"), None);
     assert_eq!(input_str(&input, "number"), None, "数字不是字符串");
@@ -332,8 +370,16 @@ fn bash_does_not_split_multibyte_chars_across_pipe_chunks() {
     );
     let out = text(&outcome);
     assert!(!outcome.is_error(), "got {out}");
-    assert!(!out.contains('\u{FFFD}'), "分块解码劈了字（{} 个替换字符）", out.matches('\u{FFFD}').count());
-    assert!(out.ends_with("中文"), "尾部应为完整中文: {:?}", &out[out.len().saturating_sub(16)..]);
+    assert!(
+        !out.contains('\u{FFFD}'),
+        "分块解码劈了字（{} 个替换字符）",
+        out.matches('\u{FFFD}').count()
+    );
+    assert!(
+        out.ends_with("中文"),
+        "尾部应为完整中文: {:?}",
+        &out[out.len().saturating_sub(16)..]
+    );
 }
 
 #[test]
@@ -347,7 +393,11 @@ fn bash_requires_a_command() {
 #[test]
 fn bash_returns_stdout_and_hides_trailing_newline() {
     let sandbox = Sandbox::new("tools-bash-stdout");
-    let outcome = execute("Bash", &json!({ "command": "echo hello" }), &context(&sandbox));
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "echo hello" }),
+        &context(&sandbox),
+    );
     assert!(!outcome.is_error());
     assert_eq!(text(&outcome), "hello");
 }
@@ -363,7 +413,11 @@ fn bash_runs_with_the_resolved_path() {
         .expect("sandbox root has a name")
         .to_string_lossy()
         .to_string();
-    let outcome = execute("Bash", &json!({ "command": "printf %s \"$PATH\"" }), &context(&sandbox));
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "printf %s \"$PATH\"" }),
+        &context(&sandbox),
+    );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
     assert!(text(&outcome).contains(&marker), "got {}", text(&outcome));
 }
@@ -427,7 +481,8 @@ fn bash_timeout_moves_the_command_to_the_background() {
     );
     // 完成通知只出现一次（taskId 会随输出路径再出现一次，属正常）
     assert_eq!(
-        body.matches("you will be notified when it completes.").count(),
+        body.matches("you will be notified when it completes.")
+            .count(),
         1,
         "完成通知只应出现一次: {body}"
     );
@@ -442,7 +497,11 @@ fn bash_timeout_moves_the_command_to_the_background() {
         .to_string();
     assert_eq!(crate::bash_task::running_count_for_session("s-tools"), 1);
     crate::bash_task::abort_tasks_for_session("s-tools");
-    assert_eq!(crate::bash_task::task_status(&task_id), None, "被中止后记录已移除");
+    assert_eq!(
+        crate::bash_task::task_status(&task_id),
+        None,
+        "被中止后记录已移除"
+    );
 
     restore_tmpdir(previous);
     crate::bash_task::reset_for_test();
@@ -551,23 +610,41 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
 #[test]
 fn concurrency_safety_matches_spec() {
     // 对齐各工具的 `isConcurrencySafe`（`Tool.ts` 默认 false）
-    assert!(is_concurrency_safe("Read", &json!({ "file_path": "a.txt" })));
+    assert!(is_concurrency_safe(
+        "Read",
+        &json!({ "file_path": "a.txt" })
+    ));
     assert!(is_concurrency_safe("Grep", &json!({ "pattern": "x" })));
     assert!(is_concurrency_safe("Glob", &json!({ "pattern": "*" })));
     // Bash：等同 `isReadOnly(input)`
     assert!(is_concurrency_safe("Bash", &json!({ "command": "ls -la" })));
-    assert!(is_concurrency_safe("Bash", &json!({ "command": "git status --short" })));
-    assert!(!is_concurrency_safe("Bash", &json!({ "command": "touch x" })));
-    assert!(!is_concurrency_safe("Bash", &json!({ "command": "ls && rm -rf build" })));
+    assert!(is_concurrency_safe(
+        "Bash",
+        &json!({ "command": "git status --short" })
+    ));
+    assert!(!is_concurrency_safe(
+        "Bash",
+        &json!({ "command": "touch x" })
+    ));
+    assert!(!is_concurrency_safe(
+        "Bash",
+        &json!({ "command": "ls && rm -rf build" })
+    ));
     // 缺 command / 非字符串：按假值（JS 的 `undefined` 传给 `isReadOnly` 会走空命令分支）
     assert!(!is_concurrency_safe("Bash", &json!({})));
     assert!(!is_concurrency_safe("Bash", &json!({ "command": 3 })));
     // 恒为假 / 未迁入的工具
     // Agent / Reply 恒为真（`AgentTool` / `ReplyTool` 都声明 true）
-    assert!(is_concurrency_safe("Agent", &json!({ "prompt": "x", "agentRole": "Master" })));
+    assert!(is_concurrency_safe(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master" })
+    ));
     assert!(is_concurrency_safe("Reply", &json!({ "message": "x" })));
     for name in ["Edit", "Write", "TodoWrite", "AskUserQuestion"] {
-        assert!(!is_concurrency_safe(name, &json!({})), "{name} 不应并发安全");
+        assert!(
+            !is_concurrency_safe(name, &json!({})),
+            "{name} 不应并发安全"
+        );
     }
 }
 
@@ -684,7 +761,11 @@ fn bash_sleep_timeout_is_the_default_deadline_when_below_the_sleep_duration() {
         transfer: None,
     };
 
-    let outcome = execute("Bash", &json!({ "command": "printf 'go\\n'; sleep 0.2" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "printf 'go\\n'; sleep 0.2" }),
+        &ctx,
+    );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
     assert!(text(&outcome).contains("go"), "got {}", text(&outcome));
     assert!(
@@ -789,7 +870,11 @@ fn bash_abort_kills_a_sleep_command() {
     });
 
     let started = std::time::Instant::now();
-    let outcome = execute("Bash", &json!({ "command": "printf 'go\\n'; sleep 10" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "printf 'go\\n'; sleep 10" }),
+        &ctx,
+    );
     let elapsed = started.elapsed();
 
     assert!(outcome.is_status_error(), "got {}", text(&outcome));
@@ -980,7 +1065,11 @@ fn bash_spawn_failure_is_reported() {
         &context(&sandbox),
     );
     assert!(outcome.is_error());
-    assert!(text(&outcome).contains("Bash: spawn failed"), "got {}", text(&outcome));
+    assert!(
+        text(&outcome).contains("Bash: spawn failed"),
+        "got {}",
+        text(&outcome)
+    );
 }
 
 // ==================== 后台 Bash 任务（`run_in_background`） ====================
@@ -1080,7 +1169,10 @@ fn bash_background_returns_a_task_id_immediately() {
         body.starts_with("Command running in background with ID: bg-"),
         "got {body}"
     );
-    assert!(body.contains("You will be notified automatically when it completes."), "got {body}");
+    assert!(
+        body.contains("You will be notified automatically when it completes."),
+        "got {body}"
+    );
     assert!(
         body.contains("you will get a progress reminder in 5min."),
         "got {body}"
@@ -1093,7 +1185,10 @@ fn bash_background_returns_a_task_id_immediately() {
         .unwrap()
         .to_string();
     assert!(
-        body.contains(&format!("Output is being written to: {}", crate::bash_task::task_output_path(&task_id).to_string_lossy())),
+        body.contains(&format!(
+            "Output is being written to: {}",
+            crate::bash_task::task_output_path(&task_id).to_string_lossy()
+        )),
         "got {body}"
     );
 
@@ -1101,7 +1196,10 @@ fn bash_background_returns_a_task_id_immediately() {
     let (session_id, notification) =
         wait_for_background_notification(&captured, 10_000).expect("完成通知");
     assert_eq!(session_id, "s-bg");
-    assert!(notification.contains("Output (first 500 chars):\nbg"), "{notification}");
+    assert!(
+        notification.contains("Output (first 500 chars):\nbg"),
+        "{notification}"
+    );
     restore_tmpdir(previous);
     crate::bash_task::reset_for_test();
 }
@@ -1251,7 +1349,10 @@ fn bash_background_syncs_the_session_background_fact() {
         &ctx,
     );
     // 注册时同步一次（有运行中的任务），完成后再同步一次（已无运行中任务）
-    assert_eq!(captured.background_syncs.lock().unwrap().as_slice(), ["s-bg"]);
+    assert_eq!(
+        captured.background_syncs.lock().unwrap().as_slice(),
+        ["s-bg"]
+    );
     wait_for_background_notification(&captured, 10_000).expect("完成通知");
     assert_eq!(
         captured.background_syncs.lock().unwrap().as_slice(),
@@ -1277,7 +1378,11 @@ fn bash_drains_output_larger_than_the_pipe_buffer() {
         text(&outcome)
     );
     // 尾部换行会被去掉，因此是 199_999 而不是 200_000
-    assert!(text(&outcome).len() >= 100_000, "len={}", text(&outcome).len());
+    assert!(
+        text(&outcome).len() >= 100_000,
+        "len={}",
+        text(&outcome).len()
+    );
 }
 
 #[test]
@@ -1401,11 +1506,18 @@ fn read_requires_a_path_and_reports_missing_files() {
     let sandbox = Sandbox::new("tools-read-missing");
     let ctx = context(&sandbox);
     let missing_arg = execute("Read", &json!({}), &ctx);
-    assert_eq!(text(&missing_arg), "file_path is required and must be a string");
+    assert_eq!(
+        text(&missing_arg),
+        "file_path is required and must be a string"
+    );
 
     let not_found = execute("Read", &json!({ "file_path": "nope.txt" }), &ctx);
     assert!(not_found.is_error());
-    assert!(text(&not_found).starts_with("File not found:"), "got {}", text(&not_found));
+    assert!(
+        text(&not_found).starts_with("File not found:"),
+        "got {}",
+        text(&not_found)
+    );
 }
 
 #[test]
@@ -1440,7 +1552,11 @@ fn read_supports_offset_and_limit() {
     sandbox.write_file("a.txt", "1\n2\n3\n4\n5\n");
     let ctx = context(&sandbox);
 
-    let window = execute("Read", &json!({ "file_path": "a.txt", "offset": 2, "limit": 2 }), &ctx);
+    let window = execute(
+        "Read",
+        &json!({ "file_path": "a.txt", "offset": 2, "limit": 2 }),
+        &ctx,
+    );
     assert_eq!(
         text(&window),
         "2|2\n3|3\n(Showing lines 2-3 of 6. Use offset=4 to continue.)"
@@ -1451,7 +1567,11 @@ fn read_supports_offset_and_limit() {
     assert_eq!(text(&beyond), "99|");
 
     // offset 下限是 1
-    let clamped = execute("Read", &json!({ "file_path": "a.txt", "offset": 0, "limit": 1 }), &ctx);
+    let clamped = execute(
+        "Read",
+        &json!({ "file_path": "a.txt", "offset": 0, "limit": 1 }),
+        &ctx,
+    );
     assert_eq!(
         text(&clamped),
         "1|1\n(Showing lines 1-1 of 6. Use offset=2 to continue.)"
@@ -1480,7 +1600,11 @@ fn read_returns_images_as_base64() {
     let path = sandbox.workspace.join("pic.png");
     std::fs::write(&path, &bytes).unwrap();
 
-    let outcome = execute("Read", &json!({ "file_path": "pic.png" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "pic.png" }),
+        &context(&sandbox),
+    );
     assert!(!outcome.is_error());
     // 图片以 image content block 返回（不是把 base64 拼成文本）
     assert_eq!(
@@ -1523,7 +1647,11 @@ fn read_rejects_image_content_that_does_not_match_its_extension() {
     let sandbox = Sandbox::new("tools-read-image-mismatch");
     let bytes = decode_hex("ffd8ffe000104a46494600010100000100010000ffd9");
     std::fs::write(sandbox.workspace.join("bad.png"), &bytes).unwrap();
-    let outcome = execute("Read", &json!({ "file_path": "bad.png" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "bad.png" }),
+        &context(&sandbox),
+    );
     assert_eq!(
         text(&outcome),
         "Invalid image file: bad.png. The content is not a valid image/png image (file signature does not match the format)."
@@ -1536,7 +1664,11 @@ fn read_rejects_truncated_images() {
     let sandbox = Sandbox::new("tools-read-image-truncated");
     let bytes = decode_hex("89504e470d0a1a0a0000000d4948445200000001");
     std::fs::write(sandbox.workspace.join("cut.png"), &bytes).unwrap();
-    let outcome = execute("Read", &json!({ "file_path": "cut.png" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "cut.png" }),
+        &context(&sandbox),
+    );
     assert_eq!(
         text(&outcome),
         "Invalid image file: cut.png. The content is not a valid image/png image (declared length exceeds the actual file size)."
@@ -1546,8 +1678,15 @@ fn read_rejects_truncated_images() {
 #[test]
 fn read_truncates_overlong_lines_and_huge_files() {
     let sandbox = Sandbox::new("tools-read-truncate");
-    sandbox.write_file("long.txt", &format!("{}\n", "x".repeat(READ_MAX_LINE_CHARS + 500)));
-    let outcome = execute("Read", &json!({ "file_path": "long.txt" }), &context(&sandbox));
+    sandbox.write_file(
+        "long.txt",
+        &format!("{}\n", "x".repeat(READ_MAX_LINE_CHARS + 500)),
+    );
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "long.txt" }),
+        &context(&sandbox),
+    );
     let rendered = text(&outcome);
     let marker = format!("... (line truncated to {READ_MAX_LINE_CHARS} chars)");
     let truncated = format!("{}{}", "x".repeat(READ_MAX_LINE_CHARS), marker);
@@ -1570,7 +1709,11 @@ fn read_truncates_overlong_lines_and_huge_files() {
         &rendered[rendered.len().saturating_sub(120)..]
     );
     assert!(rendered.ends_with("to continue.)"), "footer 不完整");
-    assert!(rendered.len() < 60 * 1024, "输出应被 50KB 上限截住，实际 {}", rendered.len());
+    assert!(
+        rendered.len() < 60 * 1024,
+        "输出应被 50KB 上限截住，实际 {}",
+        rendered.len()
+    );
 }
 
 // ==================== Read：xlsx ====================
@@ -1698,7 +1841,11 @@ fn read_xlsx_formats_rows_like_spec() {
             ],
         ],
     );
-    let outcome = execute("Read", &json!({ "file_path": "a.xlsx" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "a.xlsx" }),
+        &context(&sandbox),
+    );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
     assert_eq!(
         text(&outcome),
@@ -1769,7 +1916,11 @@ fn read_xlsx_renders_booleans_like_javascript() {
         "Flags",
         &[vec![XlsxCell::Bool(true), XlsxCell::Bool(false)]],
     );
-    let outcome = execute("Read", &json!({ "file_path": "a.xlsx" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "a.xlsx" }),
+        &context(&sandbox),
+    );
     assert_eq!(text(&outcome), "1|Row 1: true | false");
 }
 
@@ -1783,7 +1934,11 @@ fn read_xlsx_keeps_iso_dates_as_text() {
         "S",
         &[vec![XlsxCell::Iso("2024-01-02T03:04:05Z")]],
     );
-    let outcome = execute("Read", &json!({ "file_path": "a.xlsx" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "a.xlsx" }),
+        &context(&sandbox),
+    );
     assert_eq!(text(&outcome), "1|Row 1: 2024-01-02T03:04:05Z");
 }
 
@@ -1837,7 +1992,11 @@ fn write_requires_a_path() {
     let outcome = execute("Write", &json!({ "content": "x" }), &context(&sandbox));
     assert_eq!(text(&outcome), "file_path is required and must be a string");
     // 空串与缺参同义
-    let empty = execute("Write", &json!({ "file_path": "", "content": "x" }), &context(&sandbox));
+    let empty = execute(
+        "Write",
+        &json!({ "file_path": "", "content": "x" }),
+        &context(&sandbox),
+    );
     assert_eq!(text(&empty), "file_path is required and must be a string");
 }
 
@@ -1850,8 +2009,14 @@ fn write_creates_parent_directories_and_reports_size() {
         &context(&sandbox),
     );
     assert!(!outcome.is_error());
-    assert_eq!(std::fs::read_to_string(sandbox.workspace.join("nested/deep/a.txt")).unwrap(), "hello");
-    assert_eq!(text(&outcome), "Created file: nested/deep/a.txt\nLines: 1\nBytes: 5");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("nested/deep/a.txt")).unwrap(),
+        "hello"
+    );
+    assert_eq!(
+        text(&outcome),
+        "Created file: nested/deep/a.txt\nLines: 1\nBytes: 5"
+    );
 }
 
 #[test]
@@ -1864,9 +2029,16 @@ fn write_requires_content_and_overwrites() {
     let missing = execute("Write", &json!({ "file_path": "a.txt" }), &ctx);
     assert_eq!(text(&missing), "content is required");
 
-    let outcome = execute("Write", &json!({ "file_path": "a.txt", "content": "" }), &ctx);
+    let outcome = execute(
+        "Write",
+        &json!({ "file_path": "a.txt", "content": "" }),
+        &ctx,
+    );
     assert!(!outcome.is_error());
-    assert_eq!(std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
+        ""
+    );
     assert_eq!(text(&outcome), "Updated file: a.txt\nLines: 1\nBytes: 0");
 }
 
@@ -1882,7 +2054,11 @@ fn edit_validates_its_arguments() {
     );
     // 空串与缺参同义
     assert_eq!(
-        text(&execute("Edit", &json!({ "file_path": "", "old_string": "a", "new_string": "b" }), &ctx)),
+        text(&execute(
+            "Edit",
+            &json!({ "file_path": "", "old_string": "a", "new_string": "b" }),
+            &ctx
+        )),
         "file_path is required and must be a string"
     );
     assert_eq!(
@@ -1891,7 +2067,11 @@ fn edit_validates_its_arguments() {
     );
 
     // 文件不存在：ENOENT 文案
-    let unreadable = execute("Edit", &json!({ "file_path": "nope.txt", "old_string": "a" }), &ctx);
+    let unreadable = execute(
+        "Edit",
+        &json!({ "file_path": "nope.txt", "old_string": "a" }),
+        &ctx,
+    );
     let expected_path = sandbox.workspace.join("nope.txt");
     assert_eq!(
         text(&unreadable),
@@ -1917,7 +2097,10 @@ fn edit_replaces_a_unique_occurrence() {
         text(&outcome),
         "Edited file: a.txt\nMade 1 replacement\nEdited line 1\nLines: 2 (+1, -1)"
     );
-    assert_eq!(std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(), "alpha BETA gamma\n");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
+        "alpha BETA gamma\n"
+    );
 }
 
 #[test]
@@ -1949,7 +2132,10 @@ fn edit_reports_missing_and_ambiguous_needles() {
         text(&ambiguous)
     );
     // 文件未被改动
-    assert_eq!(std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(), "x\nx\nx\n");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
+        "x\nx\nx\n"
+    );
 }
 
 #[test]
@@ -1966,7 +2152,10 @@ fn edit_replace_all_rewrites_every_occurrence() {
         text(&outcome),
         "Edited file: a.txt\nMade 3 replacements\nEdited line 1\nLines: 4 (+3, -3)"
     );
-    assert_eq!(std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(), "y\ny\ny\n");
+    assert_eq!(
+        std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
+        "y\ny\ny\n"
+    );
 }
 
 #[test]
@@ -2061,7 +2250,10 @@ fn write_carries_before_content_for_rollback() {
 fn grep_sandbox(name: &str) -> Sandbox {
     let sandbox = Sandbox::new(name);
     sandbox.point_extension_at_repo();
-    sandbox.write_file("src/a.ts", "export const alpha = 1;\nexport const beta = 2;\n");
+    sandbox.write_file(
+        "src/a.ts",
+        "export const alpha = 1;\nexport const beta = 2;\n",
+    );
     sandbox.write_file("src/b.ts", "const gamma = 3;\n");
     sandbox.write_file("notes.md", "alpha\n");
     sandbox
@@ -2127,7 +2319,11 @@ fn grep_treats_dash_prefixed_pattern_as_a_pattern_not_an_option() {
         &context(&sandbox),
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
-    assert!(text(&outcome).contains("--pre=boom"), "got {}", text(&outcome));
+    assert!(
+        text(&outcome).contains("--pre=boom"),
+        "got {}",
+        text(&outcome)
+    );
 }
 
 #[test]
@@ -2156,7 +2352,10 @@ fn grep_supports_count_and_file_list_modes() {
         &ctx,
     );
     let listed = text(&files);
-    assert!(listed.contains("a.ts") && listed.contains("notes.md"), "got {listed}");
+    assert!(
+        listed.contains("a.ts") && listed.contains("notes.md"),
+        "got {listed}"
+    );
     assert!(!listed.contains("beta"), "只应列出文件名: {listed}");
 }
 
@@ -2170,7 +2369,11 @@ fn grep_honours_case_insensitive_glob_and_limits() {
 
     let insensitive = execute("Grep", &json!({ "pattern": "ALPHA", "-i": true }), &ctx);
     assert!(!insensitive.is_error());
-    assert!(text(&insensitive).contains("a.ts"), "got {}", text(&insensitive));
+    assert!(
+        text(&insensitive).contains("a.ts"),
+        "got {}",
+        text(&insensitive)
+    );
 
     let sensitive = execute("Grep", &json!({ "pattern": "ALPHA" }), &ctx);
     assert_eq!(text(&sensitive), "No files found");
@@ -2181,7 +2384,11 @@ fn grep_honours_case_insensitive_glob_and_limits() {
     assert!(!scoped_text.contains("a.ts"), "glob 未生效: {scoped_text}");
 
     // 截断时附分页说明（files 模式）
-    let limited = execute("Grep", &json!({ "pattern": "alpha", "head_limit": 1 }), &ctx);
+    let limited = execute(
+        "Grep",
+        &json!({ "pattern": "alpha", "head_limit": 1 }),
+        &ctx,
+    );
     assert!(
         text(&limited).contains("limit: 1, offset: 0"),
         "got {}",
@@ -2197,7 +2404,11 @@ fn grep_reports_no_matches_and_search_path() {
     let sandbox = grep_sandbox("tools-grep-path");
     let ctx = context(&sandbox);
 
-    let none = execute("Grep", &json!({ "pattern": "definitely-absent-token" }), &ctx);
+    let none = execute(
+        "Grep",
+        &json!({ "pattern": "definitely-absent-token" }),
+        &ctx,
+    );
     assert_eq!(text(&none), "No files found");
 
     let scoped = execute(
@@ -2216,7 +2427,10 @@ fn glob_requires_a_pattern_and_lists_sorted_files() {
     let sandbox = grep_sandbox("tools-glob");
     let ctx = context(&sandbox);
 
-    assert_eq!(text(&execute("Glob", &json!({}), &ctx)), "pattern is required and must be a string");
+    assert_eq!(
+        text(&execute("Glob", &json!({}), &ctx)),
+        "pattern is required and must be a string"
+    );
     // 空串与缺参同义
     assert_eq!(
         text(&execute("Glob", &json!({ "pattern": "" }), &ctx)),
@@ -2226,7 +2440,10 @@ fn glob_requires_a_pattern_and_lists_sorted_files() {
     let outcome = execute("Glob", &json!({ "pattern": "*.ts" }), &ctx);
     let output = text(&outcome);
     assert!(output.starts_with("Found 2 files"), "got {output}");
-    assert!(output.contains("a.ts") && output.contains("b.ts"), "got {output}");
+    assert!(
+        output.contains("a.ts") && output.contains("b.ts"),
+        "got {output}"
+    );
     assert!(!output.contains("notes.md"), "glob 未生效: {output}");
 
     let none = execute("Glob", &json!({ "pattern": "*.zzz" }), &ctx);
@@ -2246,9 +2463,14 @@ fn glob_truncates_long_result_sets() {
     let outcome = execute("Glob", &json!({ "pattern": "*.txt" }), &context(&sandbox));
     let output = text(&outcome);
     // 上限 100：只列前 100 个，并附截断提示
-    assert!(output.starts_with("Found 100 files"), "got {}", &output[..40.min(output.len())]);
     assert!(
-        output.ends_with("(Results are truncated. Consider using a more specific path or pattern.)"),
+        output.starts_with("Found 100 files"),
+        "got {}",
+        &output[..40.min(output.len())]
+    );
+    assert!(
+        output
+            .ends_with("(Results are truncated. Consider using a more specific path or pattern.)"),
         "got {}",
         &output[output.len().saturating_sub(120)..]
     );
@@ -2282,20 +2504,12 @@ fn todo_write_renders_the_checklist() {
 fn todo_write_validates_items() {
     let sandbox = Sandbox::new("tools-todo-validate");
     let ctx = context(&sandbox);
-    let empty_content = execute(
-        "TodoWrite",
-        &json!({ "todos": [{ "content": "" }] }),
-        &ctx,
-    );
+    let empty_content = execute("TodoWrite", &json!({ "todos": [{ "content": "" }] }), &ctx);
     assert!(empty_content.is_error());
     assert!(text(&empty_content).contains("Content cannot be empty"));
 
     // 缺 status 的条目合法：运行期补 'pending'（与 tool_input 校验的默认值同口径）
-    let missing_status = execute(
-        "TodoWrite",
-        &json!({ "todos": [{ "content": "a" }] }),
-        &ctx,
-    );
+    let missing_status = execute("TodoWrite", &json!({ "todos": [{ "content": "a" }] }), &ctx);
     assert!(!missing_status.is_error());
 }
 
@@ -2306,11 +2520,15 @@ fn todo_write_clears_on_empty_or_non_array_input() {
     let empty_header = "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable";
     assert_eq!(
         text(&execute("TodoWrite", &json!({ "todos": [] }), &ctx)),
-        format!("{empty_header}\n\nCurrent todo list: 0 items (0 completed, 0 in progress, 0 pending)")
+        format!(
+            "{empty_header}\n\nCurrent todo list: 0 items (0 completed, 0 in progress, 0 pending)"
+        )
     );
     assert_eq!(
         text(&execute("TodoWrite", &json!({}), &ctx)),
-        format!("{empty_header}\n\nCurrent todo list: 0 items (0 completed, 0 in progress, 0 pending)")
+        format!(
+            "{empty_header}\n\nCurrent todo list: 0 items (0 completed, 0 in progress, 0 pending)"
+        )
     );
     let unparseable = execute("TodoWrite", &json!({ "todos": "nope" }), &ctx);
     assert!(unparseable.is_error());
@@ -2407,11 +2625,7 @@ fn todo_write_failure_keeps_the_previous_table() {
         &json!({ "todos": [{ "content": "保留", "status": "pending" }] }),
         &ctx,
     );
-    let failed = execute(
-        "TodoWrite",
-        &json!({ "todos": [{ "content": "" }] }),
-        &ctx,
-    );
+    let failed = execute("TodoWrite", &json!({ "todos": [{ "content": "" }] }), &ctx);
     assert!(failed.is_error());
     // 失败不写表：清单仍是上一次成功调用的内容，也不推送 todos
     assert_eq!(
@@ -2509,9 +2723,15 @@ fn todo_rebuild_skips_failed_call_and_keeps_earlier_success() {
         &sandbox,
         "rb-fail",
         vec![
-            todo_tool_use("t1", json!([{ "content": "成功的那次", "status": "pending" }])),
+            todo_tool_use(
+                "t1",
+                json!([{ "content": "成功的那次", "status": "pending" }]),
+            ),
             todo_tool_result("t1", 0),
-            todo_tool_use("t2", json!([{ "content": "失败的那次", "status": "pending" }])),
+            todo_tool_use(
+                "t2",
+                json!([{ "content": "失败的那次", "status": "pending" }]),
+            ),
             todo_tool_result("t2", -1),
         ],
     );
@@ -2550,10 +2770,7 @@ fn todo_rebuild_returns_empty_when_file_missing() {
     let _sandbox = Sandbox::new("tools-todo-rebuild-missing");
     assert_eq!(crate::tools::ensure_session_todos("rb-missing"), json!([]));
     // 空清单也会写表：后续索取不再重复读盘
-    assert_eq!(
-        crate::tools::session_todos("rb-missing"),
-        Some(json!([]))
-    );
+    assert_eq!(crate::tools::session_todos("rb-missing"), Some(json!([])));
     crate::tools::clear_session_todos("rb-missing");
 }
 
@@ -2758,15 +2975,31 @@ fn ripgrep_candidates_prefer_the_core_bundle() {
     assert_eq!(candidates.len(), 4, "got {candidates:?}");
     // 1. 自带位：可执行文件同目录下的 `ripgrep/rg[.exe]`（本地打包布局，
     //    打包后 asarUnpack 解包出来的就是这一层）
-    assert!(candidates[0].starts_with(core_dir), "got {:?}", candidates[0]);
+    assert!(
+        candidates[0].starts_with(core_dir),
+        "got {:?}",
+        candidates[0]
+    );
     assert!(candidates[0].ends_with(Path::new("ripgrep").join(exe)));
     // 2. 部署布局的共享位：槽位上一级产品目录里的 `ripgrep/rg[.exe]`
-    assert!(candidates[1].starts_with(Path::new("/deploy/share/some-product")), "got {:?}", candidates[1]);
+    assert!(
+        candidates[1].starts_with(Path::new("/deploy/share/some-product")),
+        "got {:?}",
+        candidates[1]
+    );
     assert!(candidates[1].ends_with(Path::new("ripgrep").join(exe)));
     // 3/4. 宿主 extensionPath：`dist/resources` 优先，其次仓库里的 `resources`
-    assert!(candidates[2].starts_with(Path::new("/host/root")), "got {:?}", candidates[2]);
+    assert!(
+        candidates[2].starts_with(Path::new("/host/root")),
+        "got {:?}",
+        candidates[2]
+    );
     assert!(candidates[2].ends_with(Path::new("ripgrep").join(platform_dir()).join(exe)));
-    assert!(candidates[3].starts_with(Path::new("/host/root")), "got {:?}", candidates[3]);
+    assert!(
+        candidates[3].starts_with(Path::new("/host/root")),
+        "got {:?}",
+        candidates[3]
+    );
     assert!(candidates[3].ends_with(Path::new("ripgrep").join(platform_dir()).join(exe)));
     // 宿主环境未下发（独立运行的 Core）时只剩可执行文件相对的两条
     assert_eq!(ripgrep_candidates(Some(core_dir), None).len(), 2);
@@ -2989,10 +3222,16 @@ mod edit_result_parity_tests {
 
         let workspace = sandbox.workspace.to_string_lossy().to_string();
         for case in cases {
-            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
             let content = case.get("content").and_then(Value::as_str).unwrap_or("");
             let relative = case.get("file").and_then(Value::as_str).unwrap_or("a.txt");
-            let missing = case.get("missing").and_then(Value::as_bool).unwrap_or(false);
+            let missing = case
+                .get("missing")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if !missing {
                 sandbox.write_file(relative, content);
                 // 对照表只锁工具输出，不关心读取前置（specs/038）：先 seed 一次，
@@ -3095,7 +3334,10 @@ mod tool_result_parity_tests {
         let mut skipped = 0usize;
 
         for case in cases {
-            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
             let tool = case.get("tool").and_then(Value::as_str).unwrap_or("");
             if !has_ripgrep && (tool == "Grep" || tool == "Glob") {
                 skipped += 1;
@@ -3238,9 +3480,15 @@ mod binary_detection_parity_tests {
         assert!(!cases.is_empty(), "对照表不能为空");
         let mut failures: Vec<String> = Vec::new();
         for case in cases {
-            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
             let hex = case.get("hex").and_then(Value::as_str).unwrap_or("");
-            let expected = case.get("expected").and_then(Value::as_bool).unwrap_or(false);
+            let expected = case
+                .get("expected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let bytes = decode_hex(hex);
             let actual = is_binary_content(&bytes);
             if actual != expected {
@@ -3279,7 +3527,10 @@ mod image_validation_parity_tests {
         assert!(!cases.is_empty(), "对照表不能为空");
         let mut failures: Vec<String> = Vec::new();
         for case in cases {
-            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
             let media_type = case.get("mediaType").and_then(Value::as_str).unwrap_or("");
             let hex = case.get("hex").and_then(Value::as_str).unwrap_or("");
             // expected 为 null 表示通过
@@ -3320,9 +3571,16 @@ mod png_text_chunk_strip_parity_tests {
         assert!(!cases.is_empty(), "对照表不能为空");
         let mut failures: Vec<String> = Vec::new();
         for case in cases {
-            let name = case.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
             let hex = case.get("hex").and_then(Value::as_str).unwrap_or("");
-            let expected = decode_hex(case.get("expectedHex").and_then(Value::as_str).unwrap_or(""));
+            let expected = decode_hex(
+                case.get("expectedHex")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
             match strip_png_text_chunks(&decode_hex(hex)) {
                 Ok(payload) if payload == expected => {}
                 Ok(payload) => failures.push(format!(
@@ -3354,7 +3612,11 @@ mod png_text_chunk_strip_parity_tests {
         assert_ne!(input, expected, "用例本身应含可剥离的文本块");
 
         std::fs::write(sandbox.workspace.join("shot.png"), &input).unwrap();
-        let outcome = execute("Read", &json!({ "file_path": "shot.png" }), &context(&sandbox));
+        let outcome = execute(
+            "Read",
+            &json!({ "file_path": "shot.png" }),
+            &context(&sandbox),
+        );
         assert_eq!(
             outcome.blocks(),
             Some(&json!([{
@@ -3367,7 +3629,10 @@ mod png_text_chunk_strip_parity_tests {
             }]))
         );
         // 磁盘文件不被改写
-        assert_eq!(std::fs::read(sandbox.workspace.join("shot.png")).unwrap(), input);
+        assert_eq!(
+            std::fs::read(sandbox.workspace.join("shot.png")).unwrap(),
+            input
+        );
     }
 
     #[test]
@@ -3393,7 +3658,11 @@ mod png_text_chunk_strip_parity_tests {
                 .expect("对照表缺少样本");
             let bytes = decode_hex(case["hex"].as_str().expect("hex"));
             std::fs::write(sandbox.workspace.join(file_name), &bytes).unwrap();
-            let outcome = execute("Read", &json!({ "file_path": file_name }), &context(&sandbox));
+            let outcome = execute(
+                "Read",
+                &json!({ "file_path": file_name }),
+                &context(&sandbox),
+            );
             assert_eq!(
                 outcome.blocks(),
                 Some(&json!([{
@@ -3415,7 +3684,11 @@ fn read_treats_text_content_with_an_image_extension_as_text() {
     // 图片分支在 `isbinaryfile` 之内——扩展名像图片但内容是文本时按文本读。
     let sandbox = Sandbox::new("tools-read-image-ext-text");
     sandbox.write_file("notes.png", "just text\nsecond line\n");
-    let outcome = execute("Read", &json!({ "file_path": "notes.png" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "notes.png" }),
+        &context(&sandbox),
+    );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
     assert!(outcome.blocks().is_none(), "不应返回 image block");
     assert_eq!(text(&outcome), "1|just text\n2|second line\n3|");
@@ -3426,7 +3699,11 @@ fn read_reports_binary_files_that_are_not_images() {
     let sandbox = Sandbox::new("tools-read-binary");
     let bytes: Vec<u8> = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
     std::fs::write(sandbox.workspace.join("blob.bin"), &bytes).unwrap();
-    let outcome = execute("Read", &json!({ "file_path": "blob.bin" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "blob.bin" }),
+        &context(&sandbox),
+    );
     assert_eq!(
         text(&outcome),
         "Cannot read binary file: blob.bin. This tool only supports text and common image files."
@@ -3440,7 +3717,11 @@ fn read_keeps_the_image_size_guard_inside_the_binary_branch() {
     let mut bytes: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     bytes.resize((READ_MAX_IMAGE_BYTES + 1) as usize, 0x01);
     std::fs::write(sandbox.workspace.join("huge.png"), &bytes).unwrap();
-    let outcome = execute("Read", &json!({ "file_path": "huge.png" }), &context(&sandbox));
+    let outcome = execute(
+        "Read",
+        &json!({ "file_path": "huge.png" }),
+        &context(&sandbox),
+    );
     assert!(
         text(&outcome).starts_with("Image file too large to read: huge.png"),
         "got {}",
@@ -3508,7 +3789,11 @@ fn cap_tool_result_uses_utf16_length_threshold() {
     // 2100 个 emoji = 4200 code unit > 4096 → 落盘并返回预览消息
     let long = "😀".repeat(2100);
     let capped = cap_tool_result(&long, "s1", &project, "Bash");
-    assert!(capped.starts_with("<persisted-output>"), "got {}", &capped[..40.min(capped.len())]);
+    assert!(
+        capped.starts_with("<persisted-output>"),
+        "got {}",
+        &capped[..40.min(capped.len())]
+    );
     assert!(capped.contains("chars omitted"));
 }
 
@@ -3519,8 +3804,8 @@ fn cap_tool_result_uses_utf16_length_threshold() {
 /// 这里用 `tool_input::parse_input` 断言结果（错误文案 + 规范化数据）逐条一致。
 #[test]
 fn tool_input_validation_parity_tests() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures/toolInputValidation.json");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/toolInputValidation.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("读取 {} 失败: {err}", path.display()));
     let fixture: Value = serde_json::from_str(&raw).expect("对照表不是合法 JSON");
@@ -3534,9 +3819,9 @@ fn tool_input_validation_parity_tests() {
         let result = crate::tool_input::parse_input(tool, input);
         match case["error"].as_str() {
             Some(expected) => {
-                let actual = result.err().unwrap_or_else(|| {
-                    panic!("{name}（{tool}）：期望校验失败，实际通过")
-                });
+                let actual = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{name}（{tool}）：期望校验失败，实际通过"));
                 assert_eq!(
                     actual, expected,
                     "{name}（{tool}）：错误文案不一致\n实际:\n{actual}\n期望:\n{expected}"
@@ -3605,7 +3890,9 @@ mod js_parity_tests {
         }
 
         // ---- Bash validateInput：非空 + 长度上限 ----
-        let bash_cases = fixture["bashValidation"].as_array().expect("缺少 bashValidation");
+        let bash_cases = fixture["bashValidation"]
+            .as_array()
+            .expect("缺少 bashValidation");
         assert!(!bash_cases.is_empty(), "bashValidation 不能为空");
         for case in bash_cases {
             let name = case["name"].as_str().unwrap_or("<unnamed>");
@@ -3620,11 +3907,13 @@ mod js_parity_tests {
     }
 }
 
-
 #[test]
 fn bash_validate_input_uses_js_whitespace() {
     // U+0085 不是 JS 空白 → 命令合法；U+FEFF 是 JS 空白 → 空命令
-    assert_eq!(validate_input("Bash", &json!({ "command": "\u{85}" }), "."), None);
+    assert_eq!(
+        validate_input("Bash", &json!({ "command": "\u{85}" }), "."),
+        None
+    );
     assert_eq!(
         validate_input("Bash", &json!({ "command": "\u{feff}" }), "."),
         Some("Command cannot be empty".to_string())
@@ -3667,7 +3956,11 @@ fn bash_abort_kills_the_whole_process_tree() {
     // 1.2s 而不是 200ms：取消死线必须留给 Git Bash 启动的余量
     // （同 bash_interrupted_with_output_appends_the_marker）。
     ctx.cancel = Some(cancel_after(1200));
-    let outcome = execute("Bash", &json!({ "command": "sleep 3 && touch late.marker" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "sleep 3 && touch late.marker" }),
+        &ctx,
+    );
     assert!(
         text(&outcome).contains("Command was interrupted"),
         "got {}",
@@ -3772,14 +4065,22 @@ fn agent_tool_validates_role_against_registry() {
         "got {}",
         text(&outcome)
     );
-    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "explorer" }), &ctx);
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "explorer" }),
+        &ctx,
+    );
     assert!(
         text(&outcome).contains("must be one of: Master, Explorer"),
         "got {}",
         text(&outcome)
     );
     // Explorer 合法：本测试的 ctx 没挂 subagent 钩子，应走到「无运行时」而非角色报错
-    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Explorer" }), &ctx);
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Explorer" }),
+        &ctx,
+    );
     assert_eq!(text(&outcome), "Agent: no sub-agent runtime available");
 }
 
@@ -3787,11 +4088,9 @@ fn agent_tool_validates_role_against_registry() {
 /// fixtures/toolInputValidation.json 的 Agent 枚举用例同口径）。
 #[test]
 fn agent_role_input_validation_reports_multi_value_enum() {
-    let err = crate::tool_input::parse_input(
-        "Agent",
-        &json!({ "prompt": "x", "agentRole": "Dev" }),
-    )
-    .expect_err("非法角色应当校验失败");
+    let err =
+        crate::tool_input::parse_input("Agent", &json!({ "prompt": "x", "agentRole": "Dev" }))
+            .expect_err("非法角色应当校验失败");
     // 错误文案是 issue 数组的 JSON（内嵌引号带转义），按结构比对
     let issues: Value = serde_json::from_str(&err).expect("错误应当是 issue 数组 JSON");
     assert_eq!(
@@ -3804,11 +4103,9 @@ fn agent_role_input_validation_reports_multi_value_enum() {
         }])
     );
     // Explorer 合法且规范化通过
-    let parsed = crate::tool_input::parse_input(
-        "Agent",
-        &json!({ "prompt": "x", "agentRole": "Explorer" }),
-    )
-    .expect("explorer 应当合法");
+    let parsed =
+        crate::tool_input::parse_input("Agent", &json!({ "prompt": "x", "agentRole": "Explorer" }))
+            .expect("explorer 应当合法");
     assert_eq!(parsed["agentRole"], "Explorer");
 }
 
@@ -3840,23 +4137,19 @@ fn test_hooks(
         spawn_queued: std::sync::Arc::new(move |request, cancel| {
             let deferred_request = request.clone();
             let deferred_creator = request.creator_session_id.clone();
-            match crate::subagent::request_slot_or_defer(
-                &request.creator_session_id,
-                cancel,
-                {
-                    let queued_spawn = std::sync::Arc::clone(&queued_spawn);
-                    let queued_remote = std::sync::Arc::clone(&queued_remote);
-                    move || {
-                        let spawned = match &deferred_request.target {
-                            Some(_) => queued_remote(deferred_request.clone()),
-                            None => queued_spawn(deferred_request.clone()),
-                        };
-                        if spawned.is_err() {
-                            crate::subagent::release_slot(&deferred_creator);
-                        }
+            match crate::subagent::request_slot_or_defer(&request.creator_session_id, cancel, {
+                let queued_spawn = std::sync::Arc::clone(&queued_spawn);
+                let queued_remote = std::sync::Arc::clone(&queued_remote);
+                move || {
+                    let spawned = match &deferred_request.target {
+                        Some(_) => queued_remote(deferred_request.clone()),
+                        None => queued_spawn(deferred_request.clone()),
+                    };
+                    if spawned.is_err() {
+                        crate::subagent::release_slot(&deferred_creator);
                     }
-                },
-            ) {
+                }
+            }) {
                 crate::subagent::SlotDecision::Acquired => {
                     let spawned = match &request.target {
                         Some(_) => inline_remote(request.clone()),
@@ -3919,7 +4212,11 @@ fn agent_target_selects_remote_spawn_hook() {
     };
 
     // 不带 target：本机钩子
-    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Master" }), &ctx);
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master" }),
+        &ctx,
+    );
     assert!(matches!(outcome, ToolOutcome::Success(ref text) if text.contains("sub_local")));
     assert!(local_called.load(Ordering::Relaxed));
     assert!(!remote_called.load(Ordering::Relaxed));
@@ -3982,15 +4279,16 @@ fn agent_over_limit_queues_and_returns_immediately() {
         assert!(crate::subagent::acquire_slot(creator, &never));
     }
 
-    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Master" }), &ctx);
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master" }),
+        &ctx,
+    );
     assert!(
         matches!(outcome, ToolOutcome::Success(ref text) if text.contains("queued")),
         "超上限应立即返回排队文案: {outcome:?}"
     );
-    assert!(
-        spawned.lock().unwrap().is_empty(),
-        "排队路径不得当场 spawn"
-    );
+    assert!(spawned.lock().unwrap().is_empty(), "排队路径不得当场 spawn");
 
     // 释放一个槽位：排队者获得预留，后台创建开始
     crate::subagent::release_slot(creator);
@@ -4041,7 +4339,11 @@ fn agent_cancelled_before_dispatch_does_not_queue() {
         transfer: None,
     };
 
-    let outcome = execute("Agent", &json!({ "prompt": "x", "agentRole": "Master" }), &ctx);
+    let outcome = execute(
+        "Agent",
+        &json!({ "prompt": "x", "agentRole": "Master" }),
+        &ctx,
+    );
     assert!(
         matches!(outcome, ToolOutcome::Canceled(ref text) if text == "Tool was canceled due to abort"),
         "取消应逐字返回既有文案: {outcome:?}"
@@ -4078,7 +4380,9 @@ fn agent_empty_target_is_rejected() {
         &json!({ "prompt": "x", "agentRole": "Master", "target": "" }),
         &ctx,
     );
-    assert!(matches!(outcome, ToolOutcome::Error(ref text) if text.contains("target must not be empty")));
+    assert!(
+        matches!(outcome, ToolOutcome::Error(ref text) if text.contains("target must not be empty"))
+    );
 }
 
 /// 宿主不支持跨工作区代理时，带 target 直接报错（FR-009）。
@@ -4182,8 +4486,8 @@ fn transfer_input_validation_matrix() {
         crate::tool_input::parse_input("Transfer", &unknown).is_err(),
         "未知字段应当 schema 失败"
     );
-    let parsed = crate::tool_input::parse_input("Transfer", &base)
-        .expect("合法入参应当通过 schema");
+    let parsed =
+        crate::tool_input::parse_input("Transfer", &base).expect("合法入参应当通过 schema");
     assert_eq!(parsed["destTarget"], json!("host:/ws"));
 
     let mut blank = base.clone();
@@ -4267,7 +4571,10 @@ fn transfer_success_summary_text() {
             assert!(text.contains("4.0 KB"), "文案应含字节数：{text}");
             assert!(text.contains("m1:/ws1"), "文案应含源身份：{text}");
             assert!(text.contains("m2:/ws2"), "文案应含目标身份：{text}");
-            assert!(text.contains("skipped 2 symlinks"), "文案应含跳过数：{text}");
+            assert!(
+                text.contains("skipped 2 symlinks"),
+                "文案应含跳过数：{text}"
+            );
             // 统计行逐字不变（specs/042 非目标）：明细只追加在它之后的行
             let first_line = text.lines().next().unwrap_or("");
             assert_eq!(
@@ -4277,7 +4584,11 @@ fn transfer_success_summary_text() {
             );
             assert_eq!(
                 text.lines().skip(1).collect::<Vec<_>>(),
-                vec!["  - src/a.txt", "  - src/sub/b.txt", "  - src/sub/deep/c.txt"],
+                vec![
+                    "  - src/a.txt",
+                    "  - src/sub/b.txt",
+                    "  - src/sub/deep/c.txt"
+                ],
                 "明细行格式应为 `  - {{rel}}`：{text}"
             );
         }
@@ -4314,8 +4625,7 @@ fn transfer_path_detail_caps_and_counts_the_rest() {
         ToolOutcome::Success(text) => {
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(
-                lines[0],
-                "✓ Transferred 27 files (1.0 KB) from `m1:/ws1` to `m2:/ws2`",
+                lines[0], "✓ Transferred 27 files (1.0 KB) from `m1:/ws1` to `m2:/ws2`",
                 "统计行不带 skipped 段：{text}"
             );
             assert_eq!(
@@ -4325,8 +4635,7 @@ fn transfer_path_detail_caps_and_counts_the_rest() {
             );
             assert_eq!(lines[1], "  - dir/file-0.txt");
             assert_eq!(
-                lines[TRANSFER_PATH_DETAIL_LIMIT],
-                "  - dir/file-19.txt",
+                lines[TRANSFER_PATH_DETAIL_LIMIT], "  - dir/file-19.txt",
                 "最后一条展示的是第 {TRANSFER_PATH_DETAIL_LIMIT} 条"
             );
             assert_eq!(lines[lines.len() - 1], "  ... and 7 more files");
@@ -4357,8 +4666,7 @@ fn transfer_path_detail_is_absent_for_empty_paths() {
     match execute("Transfer", &input, &ctx) {
         ToolOutcome::Success(text) => {
             assert_eq!(
-                text,
-                "✓ Transferred 0 files (0 B) from `m1:/ws1` to `m2:/ws2`",
+                text, "✓ Transferred 0 files (0 B) from `m1:/ws1` to `m2:/ws2`",
                 "空清单不应追加任何行（也不留尾随换行）：{text:?}"
             );
         }
@@ -4438,7 +4746,10 @@ fn agent_dispatch_appends_transfer_reminder() {
                 .as_str()
                 .expect("reminder 内容");
             assert!(content.starts_with("<Reminder>"));
-            assert!(content.contains("\"HOST:/b\""), "应逐字点名目标身份：{content}");
+            assert!(
+                content.contains("\"HOST:/b\""),
+                "应逐字点名目标身份：{content}"
+            );
         }
         other => panic!("期望带 reminder 的成功，得到 {other:?}"),
     }
@@ -4458,12 +4769,14 @@ fn write_workspace_skill(sandbox: &Sandbox, name: &str, frontmatter: &str) {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
-        format!("---
+        format!(
+            "---
 {frontmatter}
 ---
 
 Body of {name}
-"),
+"
+        ),
     )
     .unwrap();
 }
@@ -4472,8 +4785,12 @@ Body of {name}
 fn validate_input_rejects_disable_model_invocation() {
     let sandbox = Sandbox::new("tools-skill-disable-model");
     crate::skills::reset_registries();
-    write_workspace_skill(&sandbox, "deploy", "description: Deploy
-disable-model-invocation: true");
+    write_workspace_skill(
+        &sandbox,
+        "deploy",
+        "description: Deploy
+disable-model-invocation: true",
+    );
     let cwd = sandbox.workspace.to_string_lossy().to_string();
 
     assert_eq!(
@@ -4494,8 +4811,12 @@ disable-model-invocation: true");
 fn run_skill_executes_disable_model_invocation_skill() {
     let sandbox = Sandbox::new("tools-skill-inject-disable-model");
     crate::skills::reset_registries();
-    write_workspace_skill(&sandbox, "deploy", "description: Deploy
-disable-model-invocation: true");
+    write_workspace_skill(
+        &sandbox,
+        "deploy",
+        "description: Deploy
+disable-model-invocation: true",
+    );
     let ctx = context(&sandbox);
 
     // 执行层**不**看模型侧开关：用户 `/name` 的注入路径与模型调用共用本函数，
@@ -4525,21 +4846,34 @@ fn write_and_edit_record_modified_md_docs() {
     let meta_path = dir.join("workspace.meta.json");
 
     // Write 新建 md / 覆盖既有 md 都登记
-    assert!(!execute("Write", &json!({ "file_path": "a.md", "content": "hello" }), &ctx).is_error());
+    assert!(!execute(
+        "Write",
+        &json!({ "file_path": "a.md", "content": "hello" }),
+        &ctx
+    )
+    .is_error());
     sandbox.write_file("b.md", "old");
     sandbox.seed_read("s-tools", "b.md");
-    assert!(!execute("Write", &json!({ "file_path": "b.md", "content": "new" }), &ctx).is_error());
+    assert!(!execute(
+        "Write",
+        &json!({ "file_path": "b.md", "content": "new" }),
+        &ctx
+    )
+    .is_error());
     // Edit 修改 md 也登记
-    assert!(
-        !execute(
-            "Edit",
-            &json!({ "file_path": "a.md", "old_string": "hello", "new_string": "hi" }),
-            &ctx
-        )
-        .is_error()
-    );
+    assert!(!execute(
+        "Edit",
+        &json!({ "file_path": "a.md", "old_string": "hello", "new_string": "hi" }),
+        &ctx
+    )
+    .is_error());
     // 非 md 不登记
-    assert!(!execute("Write", &json!({ "file_path": "c.txt", "content": "x" }), &ctx).is_error());
+    assert!(!execute(
+        "Write",
+        &json!({ "file_path": "c.txt", "content": "x" }),
+        &ctx
+    )
+    .is_error());
 
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
@@ -4561,8 +4895,14 @@ fn find_detach_construct_names_the_matched_construct() {
     assert_eq!(find_detach_construct("setsid x"), Some("setsid"));
     assert_eq!(find_detach_construct("disown %1"), Some("disown"));
     // PowerShell cmdlet 大小写不敏感
-    assert_eq!(find_detach_construct("Start-Process x"), Some("Start-Process"));
-    assert_eq!(find_detach_construct("start-process x"), Some("Start-Process"));
+    assert_eq!(
+        find_detach_construct("Start-Process x"),
+        Some("Start-Process")
+    );
+    assert_eq!(
+        find_detach_construct("start-process x"),
+        Some("Start-Process")
+    );
     // `start` 仅当第二 token 恰为 /b 才算 cmd 后台化（大小写不敏感）
     assert_eq!(find_detach_construct("start /b x"), Some("start /b"));
     assert_eq!(find_detach_construct("START /B x"), Some("start /b"));
@@ -4615,7 +4955,10 @@ fn find_detach_construct_ignores_heredoc_bodies() {
     );
     // 非 heredoc 的 `<<<`（here-string）与引号内 `<<` 不触发 heredoc 语义
     assert_eq!(find_detach_construct("cat <<< 'a & b'"), None);
-    assert_eq!(find_detach_construct("grep \"<<\" a.c; server &"), Some("&"));
+    assert_eq!(
+        find_detach_construct("grep \"<<\" a.c; server &"),
+        Some("&")
+    );
     // 注释里的 `<<` 不开启正文屏蔽（否则后续命令行被吞，造成漏判）
     assert_eq!(find_detach_construct("echo a # <<EOF\nserver &"), Some("&"));
     // 反斜杠定界符与未闭合 heredoc
@@ -4633,8 +4976,13 @@ fn bash_gate_allows_ampersand_inside_heredoc() {
     let sandbox = Sandbox::new("tools-bash-detach-heredoc");
     let command = "cat > main.c <<'EOF'\nint main(){int x = 1; int *p = &x; return *p;}\nEOF";
     let outcome = execute("Bash", &json!({ "command": command }), &context(&sandbox));
-    assert!(!outcome.is_error(), "heredoc 正文的 & 不应拦截: {}", text(&outcome));
-    let written = std::fs::read_to_string(sandbox.workspace.join("main.c")).expect("heredoc 应写出文件");
+    assert!(
+        !outcome.is_error(),
+        "heredoc 正文的 & 不应拦截: {}",
+        text(&outcome)
+    );
+    let written =
+        std::fs::read_to_string(sandbox.workspace.join("main.c")).expect("heredoc 应写出文件");
     assert!(written.contains("*p = &x;"), "got {written}");
 
     let blocked = "cat > blocked.c <<'EOF'\n&\nEOF\ntrue &";
@@ -4671,7 +5019,11 @@ fn bash_schema_exposes_detach_with_minimal_description() {
 fn bash_gate_rejects_backgrounding_constructs_with_routing_message() {
     let sandbox = Sandbox::new("tools-bash-detach-gate");
 
-    let outcome = execute("Bash", &json!({ "command": "nohup server" }), &context(&sandbox));
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "nohup server" }),
+        &context(&sandbox),
+    );
     assert!(outcome.is_error(), "got {}", text(&outcome));
     let body = text(&outcome);
     assert!(body.contains("Bash: command uses `nohup`."), "got {body}");
@@ -4721,24 +5073,25 @@ fn bash_gate_allows_quoted_ampersand_and_logical_and() {
 fn bash_detach_true_bypasses_the_gate_and_is_inert_without_constructs() {
     let sandbox = Sandbox::new("tools-bash-detach-escape");
     // 同一命令：缺省被拦、true 放行
-    assert!(execute("Bash", &json!({ "command": "nohup true" }), &context(&sandbox)).is_error());
-    assert!(
-        !execute(
-            "Bash",
-            &json!({ "command": "nohup true", "detach": true }),
-            &context(&sandbox)
-        )
-        .is_error()
-    );
+    assert!(execute(
+        "Bash",
+        &json!({ "command": "nohup true" }),
+        &context(&sandbox)
+    )
+    .is_error());
+    assert!(!execute(
+        "Bash",
+        &json!({ "command": "nohup true", "detach": true }),
+        &context(&sandbox)
+    )
+    .is_error());
     // 无构造时字段惰性（AC-6）
-    assert!(
-        !execute(
-            "Bash",
-            &json!({ "command": "echo ok", "detach": true }),
-            &context(&sandbox)
-        )
-        .is_error()
-    );
+    assert!(!execute(
+        "Bash",
+        &json!({ "command": "echo ok", "detach": true }),
+        &context(&sandbox)
+    )
+    .is_error());
 }
 
 /// 回流（AC-8）：豁免只关闸门，不改前台生命周期——未自我脱离的长命令超时后

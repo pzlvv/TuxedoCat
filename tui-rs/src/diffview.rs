@@ -11,12 +11,22 @@ use crate::store::{OverlayColor, OverlayLine};
 /// 权限预览不需要为极端大文件付出这个代价。
 pub fn diff_lines(before: &str, after: &str) -> Vec<(bool, bool, String)> {
     // (added, removed, text)
-    let a: Vec<&str> = if before.is_empty() { Vec::new() } else { split_lines(before) };
-    let b: Vec<&str> = if after.is_empty() { Vec::new() } else { split_lines(after) };
+    let a: Vec<&str> = if before.is_empty() {
+        Vec::new()
+    } else {
+        split_lines(before)
+    };
+    let b: Vec<&str> = if after.is_empty() {
+        Vec::new()
+    } else {
+        split_lines(after)
+    };
     const MAX: usize = 4000;
     if a.len() > MAX || b.len() > MAX {
-        let mut out: Vec<(bool, bool, String)> =
-            a.into_iter().map(|line| (false, true, line.to_string())).collect();
+        let mut out: Vec<(bool, bool, String)> = a
+            .into_iter()
+            .map(|line| (false, true, line.to_string()))
+            .collect();
         out.extend(b.into_iter().map(|line| (true, false, line.to_string())));
         return out;
     }
@@ -61,7 +71,10 @@ pub fn diff_lines(before: &str, after: &str) -> Vec<(bool, bool, String)> {
 }
 
 fn split_lines(text: &str) -> Vec<&str> {
-    let mut lines: Vec<&str> = text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)).collect();
+    let mut lines: Vec<&str> = text
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
     // 与 TS `part.value.replace(/\n$/, '').split('\n')` 的口径一致：结尾换行不产生空尾行
     if lines.last() == Some(&"") {
         lines.pop();
@@ -81,7 +94,9 @@ pub fn trim_unchanged(lines: &[OverlayLine], context: usize) -> Vec<OverlayLine>
             // 等值行只在邻近变更时保留
             let start = index.saturating_sub(context);
             let end = (index + context).min(lines.len() - 1);
-            lines[start..=end].iter().any(|near| near.color != OverlayColor::Gray)
+            lines[start..=end]
+                .iter()
+                .any(|near| near.color != OverlayColor::Gray)
         })
         .collect();
 
@@ -115,7 +130,10 @@ pub fn diff_overlay_lines(before: &str, after: &str, context: usize) -> Vec<Over
         } else {
             (OverlayColor::Gray, ' ')
         };
-        lines.push(OverlayLine { text: format!("{sign} {text}"), color });
+        lines.push(OverlayLine {
+            text: format!("{sign} {text}"),
+            color,
+        });
     }
     trim_unchanged(&lines, context)
 }

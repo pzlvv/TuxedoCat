@@ -56,9 +56,24 @@ pub const FALLBACK_MAX_OUTPUT_TOKENS: f64 = 128.0 * 1024.0;
 /// 注册表条目（精确匹配 + 子串匹配；对齐 `MODEL_CONFIGS`）。
 const MODEL_CONFIGS: [(&str, f64, f64, f64); 3] = [
     // (name, contextWindow, thinking_token_budget, maxOutputTokens)
-    ("deepseek-flash", 1024.0 * 1024.0, 192.0 * 1024.0, 384.0 * 1024.0),
-    ("deepseek-v4-flash", 1024.0 * 1024.0, 192.0 * 1024.0, 384.0 * 1024.0),
-    ("deepseek-v4-pro", 1024.0 * 1024.0, 192.0 * 1024.0, 384.0 * 1024.0),
+    (
+        "deepseek-flash",
+        1024.0 * 1024.0,
+        192.0 * 1024.0,
+        384.0 * 1024.0,
+    ),
+    (
+        "deepseek-v4-flash",
+        1024.0 * 1024.0,
+        192.0 * 1024.0,
+        384.0 * 1024.0,
+    ),
+    (
+        "deepseek-v4-pro",
+        1024.0 * 1024.0,
+        192.0 * 1024.0,
+        384.0 * 1024.0,
+    ),
 ];
 
 /// 模型未显式配置多模态时的默认值（对齐 `src/shared/utils/modelConfig.ts` 的
@@ -68,16 +83,31 @@ const DEFAULT_MODEL_MULTIMODAL: bool = true;
 /// 按模型名解析限值（context, thinkingBudget, output, apiType, multimodal）：
 /// 精确匹配 → 子串匹配 → 兜底；用户 context / output / multimodal 覆盖优先
 /// （对齐 `getModelConfig` 与 `resolveModelLimits`）。
-fn resolve_model_limits(model: &str, overrides: &Map<String, Value>) -> (f64, f64, f64, ApiType, bool) {
+fn resolve_model_limits(
+    model: &str,
+    overrides: &Map<String, Value>,
+) -> (f64, f64, f64, ApiType, bool) {
     let matched = MODEL_CONFIGS
         .iter()
         .find(|(name, ..)| *name == model)
-        .or_else(|| MODEL_CONFIGS.iter().find(|(name, ..)| !model.is_empty() && model.contains(name)));
+        .or_else(|| {
+            MODEL_CONFIGS
+                .iter()
+                .find(|(name, ..)| !model.is_empty() && model.contains(name))
+        });
     let (context, budget, output) = match matched {
         Some((_, context, budget, output)) => (*context, *budget, *output),
-        None => (FALLBACK_CONTEXT_WINDOW, FALLBACK_THINKING_BUDGET, FALLBACK_MAX_OUTPUT_TOKENS),
+        None => (
+            FALLBACK_CONTEXT_WINDOW,
+            FALLBACK_THINKING_BUDGET,
+            FALLBACK_MAX_OUTPUT_TOKENS,
+        ),
     };
-    let override_entry = if model.is_empty() { None } else { overrides.get(model) };
+    let override_entry = if model.is_empty() {
+        None
+    } else {
+        overrides.get(model)
+    };
     let override_context = || {
         override_entry
             .and_then(|entry| entry.get("context"))
@@ -202,16 +232,29 @@ fn normalize_model_configs(raw: Option<&Value>) -> Map<String, Value> {
         return out;
     };
     for (model, limits) in entries {
-        let Some(limits) = limits.as_object() else { continue };
+        let Some(limits) = limits.as_object() else {
+            continue;
+        };
         let mut entry = Map::new();
-        if let Some(context) = limits.get("context").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+        if let Some(context) = limits
+            .get("context")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+        {
             entry.insert("context".into(), json!(context));
         }
-        if let Some(output) = limits.get("output").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+        if let Some(output) = limits
+            .get("output")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+        {
             entry.insert("output".into(), json!(output));
         }
         if let Some(api_type) = limits.get("apiType").and_then(Value::as_str) {
-            entry.insert("apiType".into(), json!(normalize_api_type(Some(api_type)).as_str()));
+            entry.insert(
+                "apiType".into(),
+                json!(normalize_api_type(Some(api_type)).as_str()),
+            );
         }
         // 多模态覆盖同样是「合法才保留」：非布尔的取值不进覆盖表，由
         // `resolve_model_limits` 回落到默认开启（对齐 `normalizeModelConfigs`）。
@@ -231,8 +274,15 @@ fn resolve_providers(raw: Option<&Value>) -> BTreeMap<String, SnapshotProvider> 
         return providers;
     };
     for (key, value) in entries {
-        let Some(value) = value.as_object() else { continue };
-        let base_url = value.get("baseURL").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let Some(value) = value.as_object() else {
+            continue;
+        };
+        let base_url = value
+            .get("baseURL")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let models = normalize_models(value.get("models"));
         let model_configs = normalize_model_configs(value.get("modelConfigs"));
 
@@ -249,10 +299,17 @@ fn resolve_providers(raw: Option<&Value>) -> BTreeMap<String, SnapshotProvider> 
             }
         }
         for model in known {
-            let (context, budget, output, api_type, multimodal) = resolve_model_limits(&model, &model_configs);
+            let (context, budget, output, api_type, multimodal) =
+                resolve_model_limits(&model, &model_configs);
             model_limits.insert(
                 model,
-                ModelLimits { context, output, api_type, thinking_token_budget: budget, multimodal },
+                ModelLimits {
+                    context,
+                    output,
+                    api_type,
+                    thinking_token_budget: budget,
+                    multimodal,
+                },
             );
         }
 
@@ -268,7 +325,11 @@ fn resolve_providers(raw: Option<&Value>) -> BTreeMap<String, SnapshotProvider> 
             key.clone(),
             SnapshotProvider {
                 base_url,
-                api_key: value.get("apiKey").and_then(Value::as_str).unwrap_or("").to_string(),
+                api_key: value
+                    .get("apiKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 models,
                 default_model,
                 model_limits,
@@ -283,10 +344,15 @@ fn resolve_providers(raw: Option<&Value>) -> BTreeMap<String, SnapshotProvider> 
 /// 任何字段缺失、类型不对或取值非法都按默认值处理，不抛错（对齐 `resolveSettingsSnapshot`）。
 pub fn resolve_settings_snapshot(raw: &Value) -> SettingsSnapshot {
     let root = raw.as_object();
-    let llm = root.and_then(|root| root.get("llm")).and_then(Value::as_object);
+    let llm = root
+        .and_then(|root| root.get("llm"))
+        .and_then(Value::as_object);
     let providers = resolve_providers(llm.and_then(|llm| llm.get("providers")));
 
-    let active_raw = llm.and_then(|llm| llm.get("activeProvider")).and_then(Value::as_str).unwrap_or("");
+    let active_raw = llm
+        .and_then(|llm| llm.get("activeProvider"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let active_provider = match providers.get(active_raw) {
         Some(provider) if !provider.base_url.is_empty() => active_raw.to_string(),
         _ => String::new(),
@@ -326,7 +392,12 @@ pub fn resolve_settings_snapshot(raw: &Value) -> SettingsSnapshot {
         .and_then(Value::as_object)
         .and_then(|mcp| mcp.get("enabled"))
         .and_then(Value::as_array)
-        .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
 
     let default_agent_mode = root
@@ -417,7 +488,11 @@ pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
 }
 
 /// 校验模型身份是否仍然有效，失效时解析出可用身份（`resolveModelRef` 移植）。
-pub fn resolve_model_ref(snapshot: &SettingsSnapshot, provider: &str, model: &str) -> Option<(String, String)> {
+pub fn resolve_model_ref(
+    snapshot: &SettingsSnapshot,
+    provider: &str,
+    model: &str,
+) -> Option<(String, String)> {
     let active = snapshot.active_model_ref();
     if provider.is_empty() {
         return active;
@@ -431,7 +506,11 @@ pub fn resolve_model_ref(snapshot: &SettingsSnapshot, provider: &str, model: &st
     if entry.models.is_empty() {
         return Some((
             provider.to_string(),
-            if model.is_empty() { entry.default_model.clone() } else { model.to_string() },
+            if model.is_empty() {
+                entry.default_model.clone()
+            } else {
+                model.to_string()
+            },
         ));
     }
     if !model.is_empty() && entry.models.iter().any(|candidate| candidate == model) {
@@ -491,7 +570,9 @@ pub fn parse_mcp_server_definitions(raw: Option<&Value>) -> Vec<McpServerDefinit
 
     let mut servers = Vec::new();
     for (name, value) in server_map {
-        let Some(value) = value.as_object() else { continue };
+        let Some(value) = value.as_object() else {
+            continue;
+        };
         let command: Vec<String> = match value.get("command") {
             Some(Value::String(text)) => {
                 let trimmed = text.trim();
@@ -501,7 +582,11 @@ pub fn parse_mcp_server_definitions(raw: Option<&Value>) -> Vec<McpServerDefinit
                     vec![trimmed.to_string()]
                 }
             }
-            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
             _ => Vec::new(),
         };
         let url = value
@@ -526,7 +611,9 @@ pub fn parse_mcp_server_definitions(raw: Option<&Value>) -> Vec<McpServerDefinit
             name: name.clone(),
             kind,
             command,
-            environment: normalize_string_map(value.get("environment").or_else(|| value.get("env"))),
+            environment: normalize_string_map(
+                value.get("environment").or_else(|| value.get("env")),
+            ),
             url,
             headers: normalize_string_map(value.get("headers")),
         });
@@ -574,7 +661,9 @@ fn read_json_file(path: &Path) -> ReadResult {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ReadResult::Missing,
-        Err(error) => return ReadResult::Invalid(format!("read {} failed: {error}", path.display())),
+        Err(error) => {
+            return ReadResult::Invalid(format!("read {} failed: {error}", path.display()))
+        }
     };
     match serde_json::from_str::<Value>(&text) {
         Ok(Value::Object(_)) => ReadResult::Ok(serde_json::from_str(&text).unwrap_or(Value::Null)),
@@ -597,7 +686,12 @@ impl SettingsStore {
     }
 
     pub fn with_dir(dir: PathBuf) -> Self {
-        Self { dir, raw_settings: Value::Object(Map::new()), mcp_servers: Vec::new(), snapshot: None }
+        Self {
+            dir,
+            raw_settings: Value::Object(Map::new()),
+            mcp_servers: Vec::new(),
+            snapshot: None,
+        }
     }
 
     pub fn settings_path(&self) -> PathBuf {
@@ -634,7 +728,9 @@ impl SettingsStore {
             _ => None,
         };
         self.mcp_servers = parse_mcp_server_definitions(mcp_value.as_ref());
-        self.snapshot.clone().expect("load() always produces a snapshot")
+        self.snapshot
+            .clone()
+            .expect("load() always produces a snapshot")
     }
 
     /// 重新读盘并刷新快照（打开菜单前手工编辑过 settings.json 的收敛入口）。
@@ -671,7 +767,9 @@ impl SettingsStore {
 
     /// 当前快照；未 load 时抛错（接线缺失在启动期暴露，不静默给默认值）。
     pub fn snapshot(&self) -> &SettingsSnapshot {
-        self.snapshot.as_ref().expect("SettingsStore.snapshot() called before load()")
+        self.snapshot
+            .as_ref()
+            .expect("SettingsStore.snapshot() called before load()")
     }
 
     pub fn mcp_servers(&self) -> &[McpServerDefinition] {
@@ -686,11 +784,13 @@ impl SettingsStore {
     /// 界面语言（`settings.json` 的 `uiLanguage`）；只有 UI 消费，不进快照。
     pub fn ui_language(&self) -> &'static str {
         match self.raw_settings.get("uiLanguage").and_then(Value::as_str) {
-            Some("zh") | Some("en") | Some("auto") => match self.raw_settings.get("uiLanguage").and_then(Value::as_str) {
-                Some("zh") => "zh",
-                Some("en") => "en",
-                _ => "auto",
-            },
+            Some("zh") | Some("en") | Some("auto") => {
+                match self.raw_settings.get("uiLanguage").and_then(Value::as_str) {
+                    Some("zh") => "zh",
+                    Some("en") => "en",
+                    _ => "auto",
+                }
+            }
             _ => "auto",
         }
     }
@@ -720,7 +820,8 @@ impl SettingsStore {
         &mut self,
         mutator: impl FnOnce(&mut Value),
     ) -> Result<SettingsSnapshot, String> {
-        fs::create_dir_all(&self.dir).map_err(|error| format!("create config dir failed: {error}"))?;
+        fs::create_dir_all(&self.dir)
+            .map_err(|error| format!("create config dir failed: {error}"))?;
         let lock_path = self.settings_path().with_extension("json.lock");
         let _lock = FileLock::acquire(&lock_path)?;
 
@@ -732,7 +833,10 @@ impl SettingsStore {
             ReadResult::Ok(value) => self.raw_settings = value,
         }
         mutator(&mut self.raw_settings);
-        let text = format!("{}\n", serde_json::to_string_pretty(&self.raw_settings).map_err(|error| error.to_string())?);
+        let text = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&self.raw_settings).map_err(|error| error.to_string())?
+        );
         write_atomic(&self.settings_path(), &text)?;
         let snapshot = resolve_settings_snapshot(&self.raw_settings);
         self.snapshot = Some(snapshot.clone());
@@ -749,10 +853,16 @@ struct FileLock {
 impl FileLock {
     fn acquire(path: &Path) -> Result<Self, String> {
         for _ in 0..50 {
-            match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
                 Ok(mut file) => {
                     let _ = writeln!(file, "{}", std::process::id());
-                    return Ok(Self { path: path.to_path_buf() });
+                    return Ok(Self {
+                        path: path.to_path_buf(),
+                    });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     // 残留锁（进程已死）直接接管；活着则等 20ms 再试
@@ -767,7 +877,9 @@ impl FileLock {
                     }
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
-                Err(error) => return Err(format!("acquire lock {} failed: {error}", path.display())),
+                Err(error) => {
+                    return Err(format!("acquire lock {} failed: {error}", path.display()))
+                }
             }
         }
         Err(format!("acquire lock {} timed out", path.display()))
@@ -799,11 +911,19 @@ fn pid_alive(pid: u32) -> bool {
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     {
-        let mut file = fs::File::create(&tmp).map_err(|error| format!("create {} failed: {error}", tmp.display()))?;
-        file.write_all(text.as_bytes()).map_err(|error| format!("write {} failed: {error}", tmp.display()))?;
+        let mut file = fs::File::create(&tmp)
+            .map_err(|error| format!("create {} failed: {error}", tmp.display()))?;
+        file.write_all(text.as_bytes())
+            .map_err(|error| format!("write {} failed: {error}", tmp.display()))?;
         file.sync_all().ok();
     }
-    fs::rename(&tmp, path).map_err(|error| format!("rename {} → {} failed: {error}", tmp.display(), path.display()))
+    fs::rename(&tmp, path).map_err(|error| {
+        format!(
+            "rename {} → {} failed: {error}",
+            tmp.display(),
+            path.display()
+        )
+    })
 }
 
 #[cfg(test)]

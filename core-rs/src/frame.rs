@@ -64,12 +64,22 @@ pub enum CoreToUiFrame {
 impl CoreToUiFrame {
     /// 成功应答
     pub fn response(id: u64, result: Value) -> Self {
-        CoreToUiFrame::Response { id, ok: true, result: Some(result), error: None }
+        CoreToUiFrame::Response {
+            id,
+            ok: true,
+            result: Some(result),
+            error: None,
+        }
     }
 
     /// 失败应答
     pub fn error_response(id: u64, error: impl Into<String>) -> Self {
-        CoreToUiFrame::Response { id, ok: false, result: None, error: Some(error.into()) }
+        CoreToUiFrame::Response {
+            id,
+            ok: false,
+            result: None,
+            error: Some(error.into()),
+        }
     }
 }
 

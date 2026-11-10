@@ -40,8 +40,7 @@ pub const COMPACT_SYSTEM_PROMPT: &str = "你是一个专业的对话摘要助手
 /// 返回 `f64`：阈值按浮点比较，`0.3 * 8192 = 2457.6` 这类非整数值
 /// 会原样参与比较（截断成整数会在阈值恰好落在边界时改变判定结果）。
 pub fn get_auto_compact_threshold(context_window: u64, max_output_tokens: u64) -> f64 {
-    let buffer =
-        AUTOCOMPACT_OUTPUT_BUFFER_RATIO * (max_output_tokens.max(0) as f64);
+    let buffer = AUTOCOMPACT_OUTPUT_BUFFER_RATIO * (max_output_tokens.max(0) as f64);
     let buffer = (AUTOCOMPACT_MAX_BUFFER as f64).min(buffer);
     (context_window as f64 - buffer).max(0.0)
 }
@@ -123,11 +122,18 @@ pub fn mark_pending_compact(session_id: &str) {
 }
 
 pub fn unmark_pending_compact(session_id: &str) {
-    PENDING_COMPACT.lock().unwrap().retain(|id| id != session_id);
+    PENDING_COMPACT
+        .lock()
+        .unwrap()
+        .retain(|id| id != session_id);
 }
 
 pub fn is_pending_compact(session_id: &str) -> bool {
-    PENDING_COMPACT.lock().unwrap().iter().any(|id| id == session_id)
+    PENDING_COMPACT
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|id| id == session_id)
 }
 
 /// 仅测试用：清空两个注册表
@@ -145,7 +151,9 @@ pub fn format_messages_for_compact(messages: &[Value]) -> String {
     for message in messages {
         match message.get("type").and_then(Value::as_str) {
             Some("user") => {
-                let content = message.get("message").and_then(|inner| inner.get("content"));
+                let content = message
+                    .get("message")
+                    .and_then(|inner| inner.get("content"));
                 let text = match content {
                     Some(Value::String(text)) => text.clone(),
                     Some(Value::Array(blocks)) => format_content_blocks(blocks),
@@ -154,7 +162,9 @@ pub fn format_messages_for_compact(messages: &[Value]) -> String {
                 formatted.push(format!("[User]: {text}"));
             }
             Some("assistant") => {
-                let content = message.get("message").and_then(|inner| inner.get("content"));
+                let content = message
+                    .get("message")
+                    .and_then(|inner| inner.get("content"));
                 let text = match content {
                     Some(Value::Array(blocks)) => format_assistant_content(blocks),
                     _ => String::new(),
@@ -279,7 +289,9 @@ fn format_assistant_content(blocks: &[Value]) -> String {
 /// 从用户消息里提取纯文本（对齐 `compact/prompt.ts` 的**局部** `extractUserContent`：
 /// 它收的是整条消息、返回字符串，与 `utils/contentBlocks.ts` 的同名函数不同）。
 pub fn extract_user_content(message: &Value) -> String {
-    let content = message.get("message").and_then(|inner| inner.get("content"));
+    let content = message
+        .get("message")
+        .and_then(|inner| inner.get("content"));
     match content {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(blocks)) => {
@@ -403,7 +415,10 @@ pub fn read_compact_user_input_history(messages: &[Value]) -> Vec<Value> {
         if message.get("isCompactSummary").and_then(Value::as_bool) != Some(true) {
             continue;
         }
-        if let Some(history) = message.get("compactUserInputHistory").and_then(Value::as_array) {
+        if let Some(history) = message
+            .get("compactUserInputHistory")
+            .and_then(Value::as_array)
+        {
             return history.clone();
         }
     }
@@ -653,7 +668,8 @@ pub fn sanitize_tool_pairing(messages: &[Value]) -> Vec<Value> {
                     }
                     if kept.len() != blocks.len() {
                         let mut cloned = message.clone();
-                        if let Some(inner) = cloned.get_mut("message").and_then(Value::as_object_mut)
+                        if let Some(inner) =
+                            cloned.get_mut("message").and_then(Value::as_object_mut)
                         {
                             inner.insert("content".to_string(), Value::Array(kept));
                         }
@@ -766,7 +782,9 @@ fn compact_conversation_inner(
     let messages_for_compact = messages_after_compact_boundary(messages);
 
     // 保留最近 N 条；截断后必须修复 tool_use / tool_result 配对
-    let keep_from = messages_for_compact.len().saturating_sub(max_messages_to_keep);
+    let keep_from = messages_for_compact
+        .len()
+        .saturating_sub(max_messages_to_keep);
     let recent_messages: Vec<Value> = sanitize_tool_pairing(
         &messages_for_compact[keep_from..]
             .iter()
@@ -783,8 +801,12 @@ fn compact_conversation_inner(
     // 摘要生成那次调用的 output tokens 不再外发：`compactEnd.postCompactTokenCount`
     // 的载荷语义是「压缩后上下文占用」（压缩完成后按压缩产物重算，见下方
     // `post_compact_tokens`），摘要自身的 output 只是中间量。
-    let (summary, _summary_output_tokens) =
-        generate_summary(provider, &messages_to_summarize, custom_instructions, session_id);
+    let (summary, _summary_output_tokens) = generate_summary(
+        provider,
+        &messages_to_summarize,
+        custom_instructions,
+        session_id,
+    );
 
     // 提取用户输入历史，追加为摘要消息的一个章节。
     // 历史 = 上次摘要持久化的历史（含会话最初的用户输入，见 `docs/features/compaction.md`）

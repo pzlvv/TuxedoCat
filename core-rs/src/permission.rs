@@ -29,31 +29,93 @@ pub enum Decision {
 /// 只读命令（不修改任何状态、不写盘、不发网络请求）
 const READONLY_COMMANDS: &[&str] = &[
     // 文件查看
-    "cat", "head", "tail", "wc", "stat", "file", "tree", "du", "ls", "find", "grep", "which",
-    "whereis", "locate", "type", "command", "getconf",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "stat",
+    "file",
+    "tree",
+    "du",
+    "ls",
+    "find",
+    "grep",
+    "which",
+    "whereis",
+    "locate",
+    "type",
+    "command",
+    "getconf",
     // 文本处理
-    "sort", "uniq", "cut", "paste", "join", "tr", "column", "nl", "awk",
+    "sort",
+    "uniq",
+    "cut",
+    "paste",
+    "join",
+    "tr",
+    "column",
+    "nl",
+    "awk",
     // 输出
-    "echo", "printf",
+    "echo",
+    "printf",
     // 路径工具
-    "basename", "dirname", "realpath", "readlink",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
     // 数据处理
-    "jq", "yq",
+    "jq",
+    "yq",
     // 校验和
-    "sha256sum", "sha1sum", "md5sum", "cksum", "sum",
+    "sha256sum",
+    "sha1sum",
+    "md5sum",
+    "cksum",
+    "sum",
     // 比较
-    "diff", "cmp", "comm",
+    "diff",
+    "cmp",
+    "comm",
     // 压缩文件查看
-    "zcat", "zgrep", "zless", "bzcat", "xzcat", "zipinfo",
+    "zcat",
+    "zgrep",
+    "zless",
+    "bzcat",
+    "xzcat",
+    "zipinfo",
     // 文本生成 / 格式化
-    "seq", "shuf", "fold", "fmt", "expand", "unexpand",
+    "seq",
+    "shuf",
+    "fold",
+    "fmt",
+    "expand",
+    "unexpand",
     // 二进制查看
-    "od", "xxd", "hexdump", "strings",
+    "od",
+    "xxd",
+    "hexdump",
+    "strings",
     // 目录导航
-    "cd", "pwd",
+    "cd",
+    "pwd",
     // 进程 / 系统状态
-    "ps", "jobs", "uptime", "dmesg", "df", "free", "uname", "hostname", "id", "whoami",
-    "printenv", "env", "alias", "last", "history", "date",
+    "ps",
+    "jobs",
+    "uptime",
+    "dmesg",
+    "df",
+    "free",
+    "uname",
+    "hostname",
+    "id",
+    "whoami",
+    "printenv",
+    "env",
+    "alias",
+    "last",
+    "history",
+    "date",
     // 设备调试
     "hdc",
     // 低风险写入
@@ -480,9 +542,7 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                     }
                     Some(Value::String(_)) => {}
                     Some(_) => {
-                        return CheckResult::deny(format!(
-                            "Invalid {key}: {key} must be a string"
-                        ));
+                        return CheckResult::deny(format!("Invalid {key}: {key} must be a string"));
                     }
                 }
             }
@@ -557,14 +617,8 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 }
                 Err(err) => return CheckResult::deny(format!("Failed to read file: {err}")),
             };
-            let old_string_raw = args
-                .get("old_string")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let new_string_raw = args
-                .get("new_string")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let old_string_raw = args.get("old_string").and_then(Value::as_str).unwrap_or("");
+            let new_string_raw = args.get("new_string").and_then(Value::as_str).unwrap_or("");
             let replace_all = crate::tools::resolve_replace_all(args.get("replace_all"));
             let offset = args.get("offset").and_then(Value::as_u64);
             let limit = args.get("limit").and_then(Value::as_u64);
@@ -888,9 +942,7 @@ fn build_display_args(
         Value::Object(map) => Value::Object(map.clone()),
         _ => json!({}),
     };
-    let display_map = display
-        .as_object_mut()
-        .expect("displayArgs 必须是对象");
+    let display_map = display.as_object_mut().expect("displayArgs 必须是对象");
 
     if matches!(tool_name, "Read" | "Write" | "Edit") {
         // `args.file_path || args.path`（真值优先），再做类型判断
@@ -906,10 +958,7 @@ fn build_display_args(
             .filter(|value| !value.is_empty())
         {
             let absolute = crate::tools::expand_path(cwd, file_path);
-            display_map.insert(
-                "file_path".to_string(),
-                json!(absolute.to_string_lossy()),
-            );
+            display_map.insert("file_path".to_string(), json!(absolute.to_string_lossy()));
         }
 
         if tool_name == "Write" {
@@ -921,10 +970,7 @@ fn build_display_args(
                 let (diff_before, diff_after) = diff_texts(diff_payload);
                 display_map.insert("content".to_string(), content_value.clone());
                 display_map.insert("contentPreview".to_string(), json!(content));
-                display_map.insert(
-                    "totalLines".to_string(),
-                    json!(content.split('\n').count()),
-                );
+                display_map.insert("totalLines".to_string(), json!(content.split('\n').count()));
                 display_map.insert("isTruncated".to_string(), json!(false));
                 // 保留 null（新建文件）以便回滚时删除文件
                 display_map.insert(
@@ -1023,8 +1069,6 @@ fn write_target_exists(cwd: &str, file_path: &str) -> bool {
     }
     crate::tools::expand_path(cwd, file_path).exists()
 }
-
-
 
 #[cfg(test)]
 #[path = "permission_tests.rs"]

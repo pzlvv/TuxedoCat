@@ -158,14 +158,21 @@ impl Harness {
             if lines.len() >= expected {
                 return lines;
             }
-            assert!(Instant::now() < deadline, "core did not receive frames in time");
+            assert!(
+                Instant::now() < deadline,
+                "core did not receive frames in time"
+            );
             thread::sleep(Duration::from_millis(5));
         }
     }
 
     fn shutdown(&mut self) -> ChannelExit {
         self.command(json!({ "kind": "shutdown" }));
-        self.join.take().expect("daemon thread").join().expect("daemon join")
+        self.join
+            .take()
+            .expect("daemon thread")
+            .join()
+            .expect("daemon join")
     }
 }
 
@@ -259,7 +266,12 @@ fn grace_period_exits_after_the_last_core_closes() {
     assert_eq!(harness.next_frame()["kind"], "workspaceClosed");
 
     // 没有新工作区：grace 期到点后 daemon 自行退出
-    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("daemon join");
     assert_eq!(exit, ChannelExit::Stop);
 }
 
@@ -311,7 +323,11 @@ fn opening_a_workspace_during_grace_keeps_the_daemon_alive() {
     assert_eq!(reopened["channel"], 2);
 
     thread::sleep(Duration::from_millis(200));
-    assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 2, "daemon must stay alive");
+    assert_eq!(
+        harness.spawner.spawns.load(Ordering::SeqCst),
+        2,
+        "daemon must stay alive"
+    );
     assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
 
@@ -335,7 +351,11 @@ fn crashed_core_restarts_on_the_same_channel_and_flushes_queued_frames() {
     harness.wait_for_spawns(2);
     let lines = harness.wait_for_lines(1, 1);
     assert_eq!(lines[0], "{\"kind\":\"hello\",\"protocol\":2}");
-    assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 2, "same channel restart");
+    assert_eq!(
+        harness.spawner.spawns.load(Ordering::SeqCst),
+        2,
+        "same channel restart"
+    );
 
     assert_eq!(harness.shutdown(), ChannelExit::Stop);
 }
@@ -375,7 +395,12 @@ fn restart_limit_closes_the_channel_and_reports_failure() {
     assert_eq!(closed["reason"], "failed");
 
     // 没有 channel 了：grace 期后 daemon 退出
-    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("daemon join");
     assert_eq!(exit, ChannelExit::Stop);
 }
 
@@ -387,9 +412,17 @@ fn host_disconnect_closes_all_cores_and_exits() {
     harness.next_frame();
     harness.next_frame();
 
-    harness.tx.send(DaemonEvent::HostDisconnected).expect("disconnect");
+    harness
+        .tx
+        .send(DaemonEvent::HostDisconnected)
+        .expect("disconnect");
     // 只是这条控制通道断了：远程 daemon 回到 accept，进程不退出
-    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("daemon join");
     assert_eq!(exit, ChannelExit::Continue);
     assert!(harness.spawner.child(0).killed.load(Ordering::SeqCst));
     assert!(harness.spawner.child(1).killed.load(Ordering::SeqCst));
@@ -408,7 +441,12 @@ fn heartbeat_silence_closes_all_cores_and_continues() {
 
     // 心跳在连接建立时已武装；此后沉默超过时限按 Host 断开处理
     harness.command(json!({ "kind": "ping" }));
-    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("daemon join");
     assert_eq!(exit, ChannelExit::Continue);
     assert!(harness.spawner.child(0).killed.load(Ordering::SeqCst));
 }
@@ -421,7 +459,12 @@ fn heartbeat_expires_a_silent_connection() {
         heartbeat_timeout: Some(Duration::from_millis(200)),
         ..Harness::fast_options()
     });
-    let exit = harness.join.take().expect("daemon thread").join().expect("daemon join");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("daemon join");
     assert_eq!(exit, ChannelExit::Continue);
 }
 
@@ -439,7 +482,7 @@ fn heartbeat_is_refreshed_by_control_traffic() {
     thread::sleep(Duration::from_millis(200));
     harness.command(json!({ "kind": "ping" }));
     thread::sleep(Duration::from_millis(200)); // 距首个 ping 已 400ms > 300ms 窗口
-    // 未经顺延此刻已经回收：daemon 还活着说明控制帧确实顺延了心跳
+                                               // 未经顺延此刻已经回收：daemon 还活着说明控制帧确实顺延了心跳
     harness.command(json!({
         "kind": "frame",
         "channel": 1,
@@ -509,8 +552,16 @@ fn host_disconnect_orphans_busy_cores_and_closes_idle_ones() {
     // channel 1 有非 idle 会话，channel 2 无快照
     harness.emit_line(0, &runtime_snapshot(false, false));
 
-    harness.tx.send(DaemonEvent::HostDisconnected).expect("disconnect");
-    let exit = harness.join.take().expect("daemon thread").join().expect("join");
+    harness
+        .tx
+        .send(DaemonEvent::HostDisconnected)
+        .expect("disconnect");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("join");
     assert_eq!(exit, ChannelExit::Continue);
     // 忙 Core 孤儿化存活，idle Core 照旧终止（spec AC-5 / AC-6）
     assert!(
@@ -529,10 +580,21 @@ fn malformed_snapshot_counts_as_busy_for_orphaning() {
     let mut harness = Harness::with_context(Harness::fast_options(), orphan_context());
     harness.command(open(1, "D:/repo/w"));
     harness.next_frame();
-    harness.emit_line(0, "{\"kind\":\"event\",\"event\":{\"type\":\"sessionRuntimeChanged\"}}");
+    harness.emit_line(
+        0,
+        "{\"kind\":\"event\",\"event\":{\"type\":\"sessionRuntimeChanged\"}}",
+    );
 
-    harness.tx.send(DaemonEvent::HostDisconnected).expect("disconnect");
-    let exit = harness.join.take().expect("daemon thread").join().expect("join");
+    harness
+        .tx
+        .send(DaemonEvent::HostDisconnected)
+        .expect("disconnect");
+    let exit = harness
+        .join
+        .take()
+        .expect("daemon thread")
+        .join()
+        .expect("join");
     assert_eq!(exit, ChannelExit::Continue);
     assert!(!harness.spawner.child(0).killed.load(Ordering::SeqCst));
 }
@@ -610,7 +672,11 @@ fn claim_replays_orphan_frames_in_arrival_order_without_spawning() {
     assert_eq!(opened["kind"], "workspaceOpened");
     assert_eq!(opened["id"], 2);
     assert_eq!(opened["channel"], 2);
-    assert_eq!(harness.spawner.spawns.load(Ordering::SeqCst), 1, "claim must not spawn");
+    assert_eq!(
+        harness.spawner.spawns.load(Ordering::SeqCst),
+        1,
+        "claim must not spawn"
+    );
 
     // 重放缓存帧按到达序，channel 号换成新连接分配的号（spec AC-8 / AC-9 原料）
     let first = harness.next_frame();
@@ -710,16 +776,22 @@ fn replay_drain_drops_requests_beyond_the_reply_ttl() {
         idle_since: None,
         exited: false,
     };
-    push_replay(&mut entry.replay, BufferedFrame {
-        line: pending_request(1),
-        at: now.checked_sub(PENDING_REQUEST_TTL).unwrap_or(now),
-        is_request: true,
-    });
-    push_replay(&mut entry.replay, BufferedFrame {
-        line: runtime_snapshot(true, false),
-        at: now,
-        is_request: false,
-    });
+    push_replay(
+        &mut entry.replay,
+        BufferedFrame {
+            line: pending_request(1),
+            at: now.checked_sub(PENDING_REQUEST_TTL).unwrap_or(now),
+            is_request: true,
+        },
+    );
+    push_replay(
+        &mut entry.replay,
+        BufferedFrame {
+            line: runtime_snapshot(true, false),
+            at: now,
+            is_request: false,
+        },
+    );
 
     let lines = drain_replay(&mut entry);
     assert_eq!(lines.len(), 1, "过时效的请求帧不再重放");

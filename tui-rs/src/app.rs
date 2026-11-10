@@ -24,7 +24,7 @@ use crate::i18n::tt;
 use crate::markdown::{self, MdColor, MdLine, MdSpan};
 use crate::store::{
     active_session, runtime_dot, runtime_of, Action, LocalAction, NoticeLevel, Overlay,
-    OverlayColor, Role, TuiMessage, TuiState, ToolStatus,
+    OverlayColor, Role, ToolStatus, TuiMessage, TuiState,
 };
 
 /// 渲染上限：超过后头部折叠（终端整帧重绘，超长历史会拖慢流式帧率）。
@@ -214,15 +214,20 @@ impl App {
         self.menu_filter.clear();
         // 打开 MCP 菜单时拉取一次服务器列表（按会话解析启用状态）
         if pulls_mcp {
-            self.host.request_mcp_servers(self.state.active_session_id.clone());
+            self.host
+                .request_mcp_servers(self.state.active_session_id.clone());
         }
     }
 
     fn handle_overlay_key(&mut self, key: KeyEvent) {
-        let Some(overlay) = self.state.overlay.clone() else { return };
+        let Some(overlay) = self.state.overlay.clone() else {
+            return;
+        };
         let max_offset = overlay.lines.len().saturating_sub(OVERLAY_VISIBLE);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.dispatch(Action::Local(LocalAction::CloseOverlay)),
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.dispatch(Action::Local(LocalAction::CloseOverlay))
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.overlay_offset = (self.overlay_offset + 1).min(max_offset);
             }
@@ -240,11 +245,15 @@ impl App {
     }
 
     fn handle_choice_key(&mut self, key: KeyEvent) {
-        let Some(choice) = self.state.pending_choice.clone() else { return };
+        let Some(choice) = self.state.pending_choice.clone() else {
+            return;
+        };
         if self.choice_free_input.is_none() {
             match key.code {
                 KeyCode::Esc => self.choice_free_input = Some(String::new()),
-                KeyCode::Enter => self.respond_choice(choice.choice_id.clone(), self.choice_cursor as i64, None),
+                KeyCode::Enter => {
+                    self.respond_choice(choice.choice_id.clone(), self.choice_cursor as i64, None)
+                }
                 KeyCode::Up => {
                     self.choice_cursor = if self.choice_cursor > 0 {
                         self.choice_cursor - 1
@@ -253,11 +262,12 @@ impl App {
                     };
                 }
                 KeyCode::Down => {
-                    self.choice_cursor = if self.choice_cursor < choice.choices.len().saturating_sub(1) {
-                        self.choice_cursor + 1
-                    } else {
-                        0
-                    };
+                    self.choice_cursor =
+                        if self.choice_cursor < choice.choices.len().saturating_sub(1) {
+                            self.choice_cursor + 1
+                        } else {
+                            0
+                        };
                 }
                 KeyCode::Char(character)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -323,7 +333,9 @@ impl App {
         match key.code {
             KeyCode::Esc => self.menu_escape(),
             KeyCode::Enter => {
-                if let Some(item) = filtered.get(self.menu_cursor.min(filtered.len().saturating_sub(1))) {
+                if let Some(item) =
+                    filtered.get(self.menu_cursor.min(filtered.len().saturating_sub(1)))
+                {
                     self.select_menu_item(item.clone());
                 }
             }
@@ -401,7 +413,9 @@ impl App {
     }
 
     fn select_menu_item(&mut self, item: MenuItem) {
-        let Some(menu) = self.menu.clone() else { return };
+        let Some(menu) = self.menu.clone() else {
+            return;
+        };
         match menu {
             Menu::Sessions => match item.key.as_str() {
                 "__new__" => self.start_new_conversation(),
@@ -410,7 +424,10 @@ impl App {
                     let initial = active_session(&self.state)
                         .and_then(|session| session.title.clone())
                         .unwrap_or_default();
-                    self.menu = Some(Menu::Rename { session_id, value: initial });
+                    self.menu = Some(Menu::Rename {
+                        session_id,
+                        value: initial,
+                    });
                     self.menu_cursor = 0;
                     self.menu_filter.clear();
                 }
@@ -473,7 +490,8 @@ impl App {
                     self.menu_cursor = 0;
                     self.menu_filter.clear();
                     if matches!(self.menu, Some(Menu::Mcp)) {
-                        self.host.request_mcp_servers(self.state.active_session_id.clone());
+                        self.host
+                            .request_mcp_servers(self.state.active_session_id.clone());
                     }
                 }
                 _ => self.close_menu(),
@@ -500,7 +518,8 @@ impl App {
                 if let Some(session_id) = self.state.active_session_id.clone() {
                     let enabled = item.hint.as_deref() != Some("[✓]");
                     self.host.set_mcp_enabled(&session_id, &item.key, enabled);
-                    self.host.request_mcp_servers(self.state.active_session_id.clone());
+                    self.host
+                        .request_mcp_servers(self.state.active_session_id.clone());
                 }
                 // 保持菜单开着，连续切换
             }
@@ -514,7 +533,9 @@ impl App {
 
     fn start_new_conversation(&mut self) {
         let session_id = uuid::Uuid::new_v4().to_string();
-        self.dispatch(Action::Local(LocalAction::ActivateSession(Some(session_id.clone()))));
+        self.dispatch(Action::Local(LocalAction::ActivateSession(Some(
+            session_id.clone(),
+        ))));
         let actions = self.host.new_conversation(&session_id);
         for action in actions {
             self.dispatch(action);
@@ -522,7 +543,9 @@ impl App {
     }
 
     fn open_conversation(&mut self, session_id: &str) {
-        self.dispatch(Action::Local(LocalAction::ActivateSession(Some(session_id.to_string()))));
+        self.dispatch(Action::Local(LocalAction::ActivateSession(Some(
+            session_id.to_string(),
+        ))));
         let actions = self.host.load_conversation(session_id);
         for action in actions {
             self.dispatch(action);
@@ -547,32 +570,74 @@ impl App {
                 }
             }
             _ if is_backspace(key) => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { backspace: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        backspace: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Delete => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { delete: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        delete: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Left => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { left: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        left: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Right => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { right: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        right: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Up => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { up: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        up: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Down => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { down: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        down: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Tab => {
-                self.composer =
-                    composer::apply_key(&self.composer, "", &EditorKey { tab: true, ..Default::default() })
+                self.composer = composer::apply_key(
+                    &self.composer,
+                    "",
+                    &EditorKey {
+                        tab: true,
+                        ..Default::default()
+                    },
+                )
             }
             KeyCode::Char(character) => {
                 let control = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -591,11 +656,19 @@ impl App {
                     self.open_menu(Menu::Slash);
                     return;
                 }
-                let chunk = if control || alt { String::new() } else { character.to_string() };
+                let chunk = if control || alt {
+                    String::new()
+                } else {
+                    character.to_string()
+                };
                 self.composer = composer::apply_key(
                     &self.composer,
                     &chunk,
-                    &EditorKey { ctrl: control, alt, ..Default::default() },
+                    &EditorKey {
+                        ctrl: control,
+                        alt,
+                        ..Default::default()
+                    },
                 );
             }
             _ => {}
@@ -612,15 +685,28 @@ impl App {
         if text.trim().is_empty() {
             return;
         }
-        let Some(session_id) = self.state.active_session_id.clone() else { return };
+        let Some(session_id) = self.state.active_session_id.clone() else {
+            return;
+        };
         // 会话配置带上已到达的事实；未到达的字段不猜（None 即不覆盖）
         let overrides = active_session(&self.state)
             .map(|session| SessionOverrides {
-                model: session.model.clone().filter(|model| !model.trim().is_empty()),
+                model: session
+                    .model
+                    .clone()
+                    .filter(|model| !model.trim().is_empty()),
                 provider: session
                     .provider
                     .clone()
-                    .filter(|_| session.model.as_deref().map(str::trim).map(str::len).unwrap_or(0) > 0)
+                    .filter(|_| {
+                        session
+                            .model
+                            .as_deref()
+                            .map(str::trim)
+                            .map(str::len)
+                            .unwrap_or(0)
+                            > 0
+                    })
                     .filter(|provider| !provider.trim().is_empty()),
                 agent_mode: session.agent_mode.clone(),
                 thinking_mode: session.thinking_mode.clone(),
@@ -639,10 +725,17 @@ impl App {
     fn menu_items(&self) -> Vec<MenuItem> {
         match self.menu.as_ref() {
             Some(Menu::Sessions) => {
-                let mut items =
-                    vec![MenuItem { key: "__new__".into(), label: tt("＋ 新建对话", "+ New conversation"), hint: None }];
+                let mut items = vec![MenuItem {
+                    key: "__new__".into(),
+                    label: tt("＋ 新建对话", "+ New conversation"),
+                    hint: None,
+                }];
                 let mut sorted = self.state.conversations.clone();
-                sorted.sort_by(|a, b| b.updated_at.partial_cmp(&a.updated_at).unwrap_or(std::cmp::Ordering::Equal));
+                sorted.sort_by(|a, b| {
+                    b.updated_at
+                        .partial_cmp(&a.updated_at)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 for conversation in sorted.iter().take(30) {
                     let runtime = self
                         .state
@@ -664,14 +757,34 @@ impl App {
                         )),
                     });
                 }
-                items.push(MenuItem { key: "__rename__".into(), label: tt("重命名当前会话", "Rename current session"), hint: None });
-                items.push(MenuItem { key: "__smart__".into(), label: tt("智能命名当前会话", "Smart-name current session"), hint: None });
-                items.push(MenuItem { key: "__delete__".into(), label: tt("删除当前会话", "Delete current session"), hint: None });
+                items.push(MenuItem {
+                    key: "__rename__".into(),
+                    label: tt("重命名当前会话", "Rename current session"),
+                    hint: None,
+                });
+                items.push(MenuItem {
+                    key: "__smart__".into(),
+                    label: tt("智能命名当前会话", "Smart-name current session"),
+                    hint: None,
+                });
+                items.push(MenuItem {
+                    key: "__delete__".into(),
+                    label: tt("删除当前会话", "Delete current session"),
+                    hint: None,
+                });
                 items
             }
             Some(Menu::DeleteConfirm { .. }) => vec![
-                MenuItem { key: "cancel".into(), label: tt("取消", "Cancel"), hint: None },
-                MenuItem { key: "delete".into(), label: tt("删除", "Delete"), hint: None },
+                MenuItem {
+                    key: "cancel".into(),
+                    label: tt("取消", "Cancel"),
+                    hint: None,
+                },
+                MenuItem {
+                    key: "delete".into(),
+                    label: tt("删除", "Delete"),
+                    hint: None,
+                },
             ],
             Some(Menu::Providers) => self
                 .state
@@ -697,13 +810,21 @@ impl App {
                 .map(|(_, provider_models)| {
                     provider_models
                         .iter()
-                        .map(|model| MenuItem { key: model.clone(), label: model.clone(), hint: None })
+                        .map(|model| MenuItem {
+                            key: model.clone(),
+                            label: model.clone(),
+                            hint: None,
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
             Some(Menu::Config) => {
                 let session = active_session(&self.state);
-                let mode_value = |value: Option<&String>| value.map(|text| text.to_string()).unwrap_or_else(|| "-".to_string());
+                let mode_value = |value: Option<&String>| {
+                    value
+                        .map(|text| text.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                };
                 vec![
                     MenuItem {
                         key: "agentMode".into(),
@@ -739,26 +860,50 @@ impl App {
                             tt("联网搜索", "Web search"),
                             session
                                 .and_then(|session| session.web_search)
-                                .map(|enabled| if enabled { "on".to_string() } else { "off".to_string() })
+                                .map(|enabled| if enabled {
+                                    "on".to_string()
+                                } else {
+                                    "off".to_string()
+                                })
                                 .unwrap_or_else(|| "-".into())
                         ),
                         hint: None,
                     },
-                    MenuItem { key: "mcp".into(), label: tt("MCP 服务器", "MCP servers"), hint: None },
-                    MenuItem { key: "compact".into(), label: tt("压缩上下文", "Compact context"), hint: None },
+                    MenuItem {
+                        key: "mcp".into(),
+                        label: tt("MCP 服务器", "MCP servers"),
+                        hint: None,
+                    },
+                    MenuItem {
+                        key: "compact".into(),
+                        label: tt("压缩上下文", "Compact context"),
+                        hint: None,
+                    },
                 ]
             }
             Some(Menu::AgentMode) => ["manual", "risk", "auto"]
                 .iter()
-                .map(|mode| MenuItem { key: (*mode).into(), label: (*mode).into(), hint: None })
+                .map(|mode| MenuItem {
+                    key: (*mode).into(),
+                    label: (*mode).into(),
+                    hint: None,
+                })
                 .collect(),
             Some(Menu::ThinkingMode) => ["off", "low", "high", "max"]
                 .iter()
-                .map(|mode| MenuItem { key: (*mode).into(), label: (*mode).into(), hint: None })
+                .map(|mode| MenuItem {
+                    key: (*mode).into(),
+                    label: (*mode).into(),
+                    hint: None,
+                })
                 .collect(),
             Some(Menu::PromptMode) => ["normal", "minimal", "mixed"]
                 .iter()
-                .map(|mode| MenuItem { key: (*mode).into(), label: (*mode).into(), hint: None })
+                .map(|mode| MenuItem {
+                    key: (*mode).into(),
+                    label: (*mode).into(),
+                    hint: None,
+                })
                 .collect(),
             Some(Menu::Mcp) => self
                 .state
@@ -770,7 +915,11 @@ impl App {
                         .map(|(name, enabled)| MenuItem {
                             key: name.clone(),
                             label: name.clone(),
-                            hint: Some(if *enabled { "[✓]".into() } else { "[ ]".into() }),
+                            hint: Some(if *enabled {
+                                "[✓]".into()
+                            } else {
+                                "[ ]".into()
+                            }),
                         })
                         .collect()
                 })
@@ -834,7 +983,8 @@ impl App {
                 let filtered = filter_items(&items, &self.menu_filter).len();
                 let filter_line = u16::from(!self.menu_filter.is_empty());
                 let more_line = u16::from(filtered > MENU_VISIBLE);
-                filtered.min(MENU_VISIBLE) as u16 + 2 /* 标题+帮助 */ + filter_line + more_line + 2 /* 边框 */
+                filtered.min(MENU_VISIBLE) as u16 + 2 /* 标题+帮助 */ + filter_line + more_line + 2
+                /* 边框 */
             }
             None => 0,
         };
@@ -859,7 +1009,10 @@ impl App {
                     NoticeLevel::Warn => Color::Yellow,
                     NoticeLevel::Error => Color::Red,
                 };
-                Line::from(Span::styled(format!("≡ {}", notice.text), Style::new().fg(color)))
+                Line::from(Span::styled(
+                    format!("≡ {}", notice.text),
+                    Style::new().fg(color),
+                ))
             })
             .collect();
         frame.render_widget(Paragraph::new(lines), area);
@@ -867,10 +1020,18 @@ impl App {
 
     fn draw_messages(&mut self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
-        match self.state.active_session_id.as_deref().and_then(|id| self.state.sessions.get(id)) {
+        match self
+            .state
+            .active_session_id
+            .as_deref()
+            .and_then(|id| self.state.sessions.get(id))
+        {
             None => {
                 lines.push(dim_line(tt("尚未打开会话。", "No conversation open yet.")));
-                lines.push(dim_line(tt("Ctrl+L 选择 / 新建会话", "Ctrl+L to pick / start a conversation")));
+                lines.push(dim_line(tt(
+                    "Ctrl+L 选择 / 新建会话",
+                    "Ctrl+L to pick / start a conversation",
+                )));
             }
             Some(session) => {
                 // 先拷贝渲染窗口所需的数据：markdown 渲染要走缓存（&mut），不与
@@ -882,7 +1043,10 @@ impl App {
                 let queued = session.queued.clone();
 
                 if skip > 0 {
-                    lines.push(dim_line(format!("… (+{skip} {})", tt("更早的消息", "earlier messages"))));
+                    lines.push(dim_line(format!(
+                        "… (+{skip} {})",
+                        tt("更早的消息", "earlier messages")
+                    )));
                 }
                 for message in &window {
                     lines.extend(self.message_lines(message));
@@ -893,7 +1057,10 @@ impl App {
                         Role::Thinking => {
                             let last = stream.text.lines().last().unwrap_or("");
                             lines.push(Line::from(vec![
-                                Span::styled(format!("{} ", tt("· 思考中…", "· thinking…")), dim_italic()),
+                                Span::styled(
+                                    format!("{} ", tt("· 思考中…", "· thinking…")),
+                                    dim_italic(),
+                                ),
                                 Span::styled(last.to_string(), dim_style()),
                             ]));
                         }
@@ -907,7 +1074,10 @@ impl App {
                 }
                 if let Some(queued) = queued {
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{}: ", tt("排队中", "Queued")), Style::new().fg(Color::Magenta)),
+                        Span::styled(
+                            format!("{}: ", tt("排队中", "Queued")),
+                            Style::new().fg(Color::Magenta),
+                        ),
                         Span::styled(queued.content, dim_style()),
                     ]));
                 }
@@ -931,7 +1101,9 @@ impl App {
                 ),
                 Span::raw(message.content.clone()),
             ])],
-            Role::Assistant => markdown_lines_cached(&message.content, &mut self.markdown_cache, message.id),
+            Role::Assistant => {
+                markdown_lines_cached(&message.content, &mut self.markdown_cache, message.id)
+            }
             Role::Thinking => {
                 let first_line = message.content.lines().next().unwrap_or("");
                 let preview: String = if first_line.chars().count() > 80 {
@@ -946,18 +1118,27 @@ impl App {
                 ])]
             }
             Role::System => vec![Line::from(vec![
-                Span::styled(format!("{}: ", tt("系统", "system")), Style::new().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{}: ", tt("系统", "system")),
+                    Style::new().fg(Color::Yellow),
+                ),
                 Span::styled(message.content.clone(), Style::new().fg(Color::Yellow)),
             ])],
             Role::ToolCall => {
                 let mut lines: Vec<Line> = Vec::new();
                 let icon = match message.status {
-                    ToolStatus::Running => Span::styled(spinner_char().to_string(), Style::new().fg(Color::Cyan)),
+                    ToolStatus::Running => {
+                        Span::styled(spinner_char().to_string(), Style::new().fg(Color::Cyan))
+                    }
                     ToolStatus::Success => Span::styled("✓ ", Style::new().fg(Color::Green)),
                     ToolStatus::Fail => Span::styled("✗ ", Style::new().fg(Color::Red)),
                     ToolStatus::Normal => Span::styled("· ", Style::new().fg(Color::Gray)),
                 };
-                let name_color = if message.status == ToolStatus::Fail { Color::Red } else { Color::White };
+                let name_color = if message.status == ToolStatus::Fail {
+                    Color::Red
+                } else {
+                    Color::White
+                };
                 lines.push(Line::from(vec![
                     icon,
                     Span::styled(
@@ -965,7 +1146,11 @@ impl App {
                         Style::new().fg(name_color).add_modifier(Modifier::BOLD),
                     ),
                 ]));
-                let content_lines: Vec<&str> = message.content.lines().filter(|line| !line.is_empty()).collect();
+                let content_lines: Vec<&str> = message
+                    .content
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .collect();
                 let shown = content_lines.len().min(4);
                 for line in &content_lines[..shown] {
                     lines.push(Line::from(Span::styled(format!("  {line}"), dim_style())));
@@ -996,7 +1181,12 @@ impl App {
             .to_string();
         let model = session
             .and_then(|session| session.model.clone())
-            .or_else(|| self.state.settings_defaults.as_ref().map(|defaults| defaults.model.clone()))
+            .or_else(|| {
+                self.state
+                    .settings_defaults
+                    .as_ref()
+                    .map(|defaults| defaults.model.clone())
+            })
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| "…".into());
 
@@ -1016,7 +1206,10 @@ impl App {
             }
             if let Some(mode) = &session.thinking_mode {
                 if mode != "off" {
-                    spans.push(Span::styled(format!(" ✦{mode}"), Style::new().fg(Color::Magenta)));
+                    spans.push(Span::styled(
+                        format!(" ✦{mode}"),
+                        Style::new().fg(Color::Magenta),
+                    ));
                 }
             }
             if session.web_search == Some(true) {
@@ -1030,12 +1223,18 @@ impl App {
             "compacting" | "background" | "subagent" => Color::Magenta,
             _ => Color::Green,
         };
-        spans.push(Span::styled(runtime_dot(runtime).to_string(), Style::new().fg(dot_color)));
+        spans.push(Span::styled(
+            runtime_dot(runtime).to_string(),
+            Style::new().fg(dot_color),
+        ));
         if !runtime_name.is_empty() {
             spans.push(Span::styled(format!(" {runtime_name}"), dim_style()));
         }
         spans.push(Span::styled(" │ ", dim_style()));
-        if runtime.map(|state| state.pending_compact && !state.compacting).unwrap_or(false) {
+        if runtime
+            .map(|state| state.pending_compact && !state.compacting)
+            .unwrap_or(false)
+        {
             // 待压缩（手动压缩已排队、尚未开始）：tokens 位置显示「准备压缩」，
             // 开始压缩或标记清除后还原（docs/features/compaction.md FR-002）。
             spans.push(Span::styled(tt("准备压缩", "Preparing"), dim_style()));
@@ -1046,7 +1245,10 @@ impl App {
                 .max_context_tokens
                 .map(|max| format!("/{}", format_tokens(max)))
                 .unwrap_or_default();
-            spans.push(Span::styled(format!("{}{max} tok", format_tokens(context)), dim_style()));
+            spans.push(Span::styled(
+                format!("{}{max} tok", format_tokens(context)),
+                dim_style(),
+            ));
         }
         if let Some((total, _)) = &self.state.balance {
             spans.push(Span::styled(format!(" │ ${total:.2}"), dim_style()));
@@ -1075,7 +1277,9 @@ impl App {
 
     fn draw_document_overlay(&mut self, frame: &mut Frame, area: Rect, overlay: &Overlay) {
         let total = overlay.lines.len();
-        let offset = self.overlay_offset.min(total.saturating_sub(OVERLAY_VISIBLE));
+        let offset = self
+            .overlay_offset
+            .min(total.saturating_sub(OVERLAY_VISIBLE));
         let end = (offset + OVERLAY_VISIBLE).min(total);
         let mut lines: Vec<Line> = overlay.lines[offset..end]
             .iter()
@@ -1093,7 +1297,11 @@ impl App {
                     style = style.fg(color);
                 }
                 Line::from(Span::styled(
-                    if line.text.is_empty() { " ".to_string() } else { line.text.clone() },
+                    if line.text.is_empty() {
+                        " ".to_string()
+                    } else {
+                        line.text.clone()
+                    },
                     style,
                 ))
             })
@@ -1103,7 +1311,10 @@ impl App {
             let _ = help;
         }
         lines.push(Line::from(Span::styled(
-            tt("j/k/↑↓ 滚动 · PgUp/PgDn 翻页 · q/Esc 关闭", "j/k/↑↓ scroll · PgUp/PgDn page · q/Esc close"),
+            tt(
+                "j/k/↑↓ 滚动 · PgUp/PgDn 翻页 · q/Esc 关闭",
+                "j/k/↑↓ scroll · PgUp/PgDn page · q/Esc close",
+            ),
             dim_style(),
         )));
         let block = Block::new()
@@ -1111,13 +1322,28 @@ impl App {
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(Color::Magenta))
             .title(Span::styled(
-                format!("{}  ({}/{})", overlay.title, (offset + 1).min(total.max(1)), total),
+                format!(
+                    "{}  ({}/{})",
+                    overlay.title,
+                    (offset + 1).min(total.max(1)),
+                    total
+                ),
                 Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
             ));
-        frame.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .wrap(Wrap { trim: false }),
+            area,
+        );
     }
 
-    fn draw_choice_overlay(&mut self, frame: &mut Frame, area: Rect, choice: &crate::store::PendingChoice) {
+    fn draw_choice_overlay(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        choice: &crate::store::PendingChoice,
+    ) {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
             format!(
@@ -1150,7 +1376,10 @@ impl App {
                 lines.push(Line::from(spans));
             }
             lines.push(Line::from(Span::styled(
-                tt("↑↓/数字 选择 · Enter 确认 · Esc 转自由输入", "↑↓/digit select · Enter confirm · Esc free input"),
+                tt(
+                    "↑↓/数字 选择 · Enter 确认 · Esc 转自由输入",
+                    "↑↓/digit select · Enter confirm · Esc free input",
+                ),
                 dim_style(),
             )));
         } else {
@@ -1160,7 +1389,10 @@ impl App {
                 Span::styled("▌", Style::new().fg(Color::Yellow)),
             ]));
             lines.push(Line::from(Span::styled(
-                tt("Enter 提交 · Esc 返回选项", "Enter submit · Esc back to options"),
+                tt(
+                    "Enter 提交 · Esc 返回选项",
+                    "Enter submit · Esc back to options",
+                ),
                 dim_style(),
             )));
         }
@@ -1172,7 +1404,9 @@ impl App {
     }
 
     fn draw_menu_overlay(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(menu) = self.menu.clone() else { return };
+        let Some(menu) = self.menu.clone() else {
+            return;
+        };
         if matches!(menu, Menu::Rename { .. }) {
             if let Menu::Rename { value, .. } = &menu {
                 let lines = vec![
@@ -1184,7 +1418,10 @@ impl App {
                         Span::raw(value.clone()),
                         Span::styled("▌", Style::new().fg(Color::Cyan)),
                     ]),
-                    Line::from(Span::styled(tt("Enter 提交 · Esc 取消", "Enter submit · Esc cancel"), dim_style())),
+                    Line::from(Span::styled(
+                        tt("Enter 提交 · Esc 取消", "Enter submit · Esc cancel"),
+                        dim_style(),
+                    )),
                 ];
                 let block = Block::new()
                     .borders(Borders::ALL)
@@ -1196,7 +1433,10 @@ impl App {
         }
         let title = match &menu {
             Menu::Sessions => tt("会话", "Sessions"),
-            Menu::DeleteConfirm { .. } => tt("确认删除该会话？（不可恢复）", "Delete this conversation? (irrecoverable)"),
+            Menu::DeleteConfirm { .. } => tt(
+                "确认删除该会话？（不可恢复）",
+                "Delete this conversation? (irrecoverable)",
+            ),
             Menu::Rename { .. } => String::new(),
             Menu::Providers => tt("选择服务商", "Choose provider"),
             Menu::Models { provider } => format!("{} · {provider}", tt("模型", "Model")),
@@ -1222,7 +1462,10 @@ impl App {
             )));
         }
         if filtered.is_empty() {
-            lines.push(Line::from(Span::styled(tt("（无匹配项）", "(no matches)"), dim_style())));
+            lines.push(Line::from(Span::styled(
+                tt("（无匹配项）", "(no matches)"),
+                dim_style(),
+            )));
         }
         let cursor = self.menu_cursor.min(filtered.len().saturating_sub(1));
         for (index, item) in filtered.iter().take(MENU_VISIBLE).enumerate() {
@@ -1249,7 +1492,10 @@ impl App {
             )));
         }
         lines.push(Line::from(Span::styled(
-            tt("↑↓ 选择 · Enter 确认 · 输入过滤 · Esc 取消", "↑↓ select · Enter confirm · type to filter · Esc cancel"),
+            tt(
+                "↑↓ 选择 · Enter 确认 · 输入过滤 · Esc 取消",
+                "↑↓ select · Enter confirm · type to filter · Esc cancel",
+            ),
             dim_style(),
         )));
         let block = Block::new()
@@ -1266,9 +1512,15 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         if self.composer.is_empty() {
             let placeholder = if self.state.active_session_id.is_none() {
-                tt("Ctrl+L 选择 / 新建会话", "Ctrl+L to pick / start a conversation")
+                tt(
+                    "Ctrl+L 选择 / 新建会话",
+                    "Ctrl+L to pick / start a conversation",
+                )
             } else {
-                tt("输入消息，Enter 发送；/ 查看斜杠命令", "Type a message, Enter to send; / for slash commands")
+                tt(
+                    "输入消息，Enter 发送；/ 查看斜杠命令",
+                    "Type a message, Enter to send; / for slash commands",
+                )
             };
             lines.push(Line::from(Span::styled(placeholder, dim_style())));
         } else {
@@ -1286,7 +1538,10 @@ impl App {
                 lines.push(Line::from(spans));
             }
             if hidden > 0 {
-                lines.push(Line::from(Span::styled(format!("… (+{hidden})"), dim_style())));
+                lines.push(Line::from(Span::styled(
+                    format!("… (+{hidden})"),
+                    dim_style(),
+                )));
             }
         }
         lines.push(Line::from(Span::styled(
@@ -1345,7 +1600,9 @@ fn dim_style() -> Style {
 }
 
 fn dim_italic() -> Style {
-    Style::new().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+    Style::new()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC)
 }
 
 fn dim_line(text: impl Into<String>) -> Line<'static> {

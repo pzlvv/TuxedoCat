@@ -90,9 +90,16 @@ fn applies_snapshot_and_serves_lookups() {
     let servers = mcp_server_definitions().expect("servers");
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0].name, "s1");
-    assert_eq!(servers[0].command, vec!["uvx".to_string(), "s1".to_string()]);
     assert_eq!(
-        servers[0].environment.iter().find(|(key, _)| key == "A").map(|(_, value)| value.as_str()),
+        servers[0].command,
+        vec!["uvx".to_string(), "s1".to_string()]
+    );
+    assert_eq!(
+        servers[0]
+            .environment
+            .iter()
+            .find(|(key, _)| key == "A")
+            .map(|(_, value)| value.as_str()),
         Some("1"),
     );
 
@@ -116,7 +123,10 @@ fn missing_or_invalid_fields_are_protocol_errors() {
 
     // 快照内部缺字段（`llm.modelLimitsFallback`）
     let mut broken = sample_snapshot();
-    broken["llm"].as_object_mut().unwrap().remove("modelLimitsFallback");
+    broken["llm"]
+        .as_object_mut()
+        .unwrap()
+        .remove("modelLimitsFallback");
     let event = host_environment(broken, json!([]));
     let err = apply_from_host_environment(&event).expect_err("missing fallback");
     assert!(err.contains("modelLimitsFallback"), "{err}");

@@ -24,7 +24,12 @@ fn ui_event_roundtrip_shape() {
 
 #[test]
 fn request_response_shapes() {
-    let line = UiToCoreFrame::Request { id: 7, request: json!({ "type": "skillsRequested" }) }.encode().unwrap();
+    let line = UiToCoreFrame::Request {
+        id: 7,
+        request: json!({ "type": "skillsRequested" }),
+    }
+    .encode()
+    .unwrap();
     let value: Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(value["kind"], "request");
     assert_eq!(value["id"], 7);
@@ -67,7 +72,10 @@ fn decoder_splits_lines_and_skips_bad_rows() {
     decoder.push(b"\"}\n{\"kind\":\"event\",\"event\":{\"type\":\"coreReady\"}}\n");
     assert_eq!(decoder.frames.len(), 2);
     assert_eq!(decoder.frames[0], CoreToUiFrame::Ready);
-    assert_eq!(decoder.frames[1], CoreToUiFrame::Event(json!({ "type": "coreReady" })));
+    assert_eq!(
+        decoder.frames[1],
+        CoreToUiFrame::Event(json!({ "type": "coreReady" }))
+    );
     // 坏行是两段：{"kind":"junk（第一段就被 \n 截断）与 "}（第二段的残行）
     assert_eq!(decoder.bad_lines, 2);
 }

@@ -96,7 +96,10 @@ fn usage_lists_all_modes_and_flags() {
         assert!(text.contains(needle), "usage 缺少 {needle}：{text}");
     }
     // daemon 实体是内部实现：不出现在帮助里
-    assert!(!text.contains("start-daemon"), "usage 不该出现 start-daemon：{text}");
+    assert!(
+        !text.contains("start-daemon"),
+        "usage 不该出现 start-daemon：{text}"
+    );
     // daemon 恒绑回环：帮助里不出现绑定地址 / 凭证 / 连接串
     assert!(!text.contains("--host"), "usage 不该出现 --host：{text}");
     assert!(!text.contains("--port"), "usage 不该出现 --port：{text}");
@@ -109,5 +112,8 @@ fn no_action_defaults_to_start() {
     // 没有动作时按 start 处理：用户直接运行可执行文件即启动远程服务
     assert!(matches!(parse(&[]), Command::Start(_)));
     // 只有选项、没有动作也一样
-    assert!(matches!(parse(&args(&["--idle-exit", "30"])), Command::Start(_)));
+    assert!(matches!(
+        parse(&args(&["--idle-exit", "30"])),
+        Command::Start(_)
+    ));
 }

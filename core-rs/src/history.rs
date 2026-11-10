@@ -4,7 +4,6 @@
 //! JSONL 每行一条 `StoredMessage`（`uuid` / `parentUuid` / `timestamp` / `message`），
 //! `tool_use_update` 记录按顺序回放覆盖已写入的 tool_use block。
 
-
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -35,7 +34,8 @@ fn session_file_name(session_id: &str, suffix: &str) -> Result<String, String> {
 }
 
 pub fn metadata_path(session_id: &str, project: &str) -> Result<PathBuf, String> {
-    Ok(config::project_conversation_dir(project)?.join(session_file_name(session_id, ".meta.json")?))
+    Ok(config::project_conversation_dir(project)?
+        .join(session_file_name(session_id, ".meta.json")?))
 }
 
 /// 读取压缩归档：返回归档里的 `message` 对象。
@@ -98,15 +98,22 @@ pub fn load_conversation_list(workspace_path: Option<&str>) -> Vec<Value> {
         let Ok(text) = util::read_to_string_lossy(&entry.path()) else {
             continue;
         };
-        let Ok(mut metadata) = serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
+        let Ok(mut metadata) =
+            serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
         else {
             continue;
         };
         if !metadata.is_object() {
             continue;
         }
-        let message_count = metadata.get("messageCount").and_then(Value::as_u64).unwrap_or(0);
-        let cleared = metadata.get("clearedAt").map(|value| !value.is_null()).unwrap_or(false);
+        let message_count = metadata
+            .get("messageCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let cleared = metadata
+            .get("clearedAt")
+            .map(|value| !value.is_null())
+            .unwrap_or(false);
         if message_count == 0 && !cleared {
             continue;
         }
@@ -221,10 +228,7 @@ pub fn record_unread_completions(session_ids: &[String], project: &str) -> Resul
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if let Some(object) = metadata.as_object_mut() {
-                    object.insert(
-                        UNREAD_COMPLETIONS_KEY.to_string(),
-                        Value::from(current + 1),
-                    );
+                    object.insert(UNREAD_COMPLETIONS_KEY.to_string(), Value::from(current + 1));
                 }
             },
         )?;
@@ -235,11 +239,7 @@ pub fn record_unread_completions(session_ids: &[String], project: &str) -> Resul
 /// 未读完成清零（打开对话即视为阅读）：计数已是 0 / 字段缺失 / meta 不存在时不落盘。
 pub fn clear_unread_completions(session_id: &str, project: &str) -> Result<(), String> {
     let current = load_metadata(session_id, project)
-        .and_then(|metadata| {
-            metadata
-                .get(UNREAD_COMPLETIONS_KEY)
-                .and_then(Value::as_u64)
-        })
+        .and_then(|metadata| metadata.get(UNREAD_COMPLETIONS_KEY).and_then(Value::as_u64))
         .unwrap_or(0);
     if current == 0 {
         return Ok(());
@@ -283,7 +283,11 @@ pub fn update_metadata(
     mutator(&mut metadata);
     // 补齐放在 mutator 之后：调用方可以显式写时间戳（如 `touch_metadata` 刷
     // `updatedAt`），这里只补仍然缺的那一半，不覆盖已有值。
-    fill_missing_timestamps(&mut metadata, file_mtime_millis_of(&path), util::now_millis());
+    fill_missing_timestamps(
+        &mut metadata,
+        file_mtime_millis_of(&path),
+        util::now_millis(),
+    );
     let text = serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?;
     write_file_atomic(&path, &text)?;
     Ok(metadata)
@@ -334,7 +338,10 @@ fn file_mtime_millis(meta: &std::fs::Metadata) -> Option<u64> {
 
 /// `path` 的修改时间（毫秒）；文件不存在或读不出时返回 `None`
 fn file_mtime_millis_of(path: &std::path::Path) -> Option<u64> {
-    std::fs::metadata(path).ok().as_ref().and_then(file_mtime_millis)
+    std::fs::metadata(path)
+        .ok()
+        .as_ref()
+        .and_then(file_mtime_millis)
 }
 
 /// 原子落盘：先写同目录临时文件，再 rename 覆盖目标。
@@ -351,9 +358,15 @@ fn write_file_atomic(path: &std::path::Path, text: &str) -> Result<(), String> {
         .ok_or_else(|| format!("write {} failed: non-utf8 file name", path.display()))?;
     let tmp = path.with_file_name(format!("{file_name}.tmp-{}", util::random_suffix()));
     let write = || -> Result<(), String> {
-        std::fs::write(&tmp, text).map_err(|err| format!("write {} failed: {err}", tmp.display()))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|err| format!("rename {} -> {} failed: {err}", tmp.display(), path.display()))
+        std::fs::write(&tmp, text)
+            .map_err(|err| format!("write {} failed: {err}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|err| {
+            format!(
+                "rename {} -> {} failed: {err}",
+                tmp.display(),
+                path.display()
+            )
+        })
     };
     match write() {
         Ok(()) => Ok(()),
@@ -371,11 +384,7 @@ fn write_file_atomic(path: &std::path::Path, text: &str) -> Result<(), String> {
 /// （见 `engine::update_title_if_needed` 与 `history::append_message`），
 /// 避免「点了新建但没发消息」留下空对话。保留给测试与后续「预建会话」场景。
 #[allow(dead_code)]
-pub fn create_conversation(
-    session_id: &str,
-    project: &str,
-    metadata: Value,
-) -> Result<(), String> {
+pub fn create_conversation(session_id: &str, project: &str, metadata: Value) -> Result<(), String> {
     let _guard = WRITE_LOCK.lock().unwrap();
     let dir = config::ensure_project_conversation_dir(project)?;
     let meta_path = dir.join(session_file_name(session_id, ".meta.json")?);
@@ -516,7 +525,9 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
             };
             let parent = util::read_to_string_lossy(&entry.path())
                 .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text)).ok())
+                .and_then(|text| {
+                    serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text)).ok()
+                })
                 .and_then(|metadata| {
                     metadata
                         .get("parentSessionId")
@@ -533,7 +544,9 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
         grew = false;
         for (id, parent) in &pairs {
             let Some(parent) = parent else { continue };
-            if affected.iter().any(|value| value == parent) && !affected.iter().any(|value| value == id) {
+            if affected.iter().any(|value| value == parent)
+                && !affected.iter().any(|value| value == id)
+            {
                 affected.push(id.clone());
                 grew = true;
             }
@@ -547,7 +560,12 @@ fn conversation_closure_in(dir: &std::path::Path, session_id: &str) -> Vec<Strin
 
 /// 删除单个会话的落盘数据（**不处理子对话**，对齐 `deleteSingleConversation` 的落盘部分）
 fn delete_single_conversation(dir: &std::path::Path, session_id: &str) -> Result<(), String> {
-    for suffix in [".meta.json", ".jsonl", ".compact_archive.jsonl", ".session.lock"] {
+    for suffix in [
+        ".meta.json",
+        ".jsonl",
+        ".compact_archive.jsonl",
+        ".session.lock",
+    ] {
         let path = dir.join(session_file_name(session_id, suffix)?);
         if path.exists() {
             std::fs::remove_file(&path)
@@ -1219,10 +1237,7 @@ pub fn touch_metadata(
                         map.insert("promptMode".to_string(), json!(prompt_mode));
                     }
                 } else if let Some(object) = metadata.as_object_mut() {
-                    object.insert(
-                        "context".to_string(),
-                        json!({ "promptMode": prompt_mode }),
-                    );
+                    object.insert("context".to_string(), json!({ "promptMode": prompt_mode }));
                 }
             }
         },
@@ -1241,7 +1256,10 @@ pub fn derive_title(messages: &[Value]) -> Option<String> {
         if message.get("isMeta").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let Some(content) = message.get("message").and_then(|inner| inner.get("content")) else {
+        let Some(content) = message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+        else {
             continue;
         };
         let (text, image_title) = match content {
@@ -1256,15 +1274,17 @@ pub fn derive_title(messages: &[Value]) -> Option<String> {
                     .join("\n");
                 // 对齐 `extractUserContent`：只有可解析出 dataUrl 的 image block 才算
                 // （`imageBlockToDataUrl`：type=image + source.type=base64 + data 是字符串）。
-                let image_count = blocks.iter().filter(|block| is_user_image_block(block)).count();
+                let image_count = blocks
+                    .iter()
+                    .filter(|block| is_user_image_block(block))
+                    .count();
                 // `buildConversationTitle`：仅图片时优先用消息顶层 `imageSizes` 里
                 // 第一张「有 dataUrl 且宽高为真值」的图片生成 `Image[<w>*<h>]`。
                 // `imageSizes` 与有效图片按出现顺序一一对应。
                 let image_title = if image_count == 0 {
                     None
                 } else {
-                    image_size_title(message, image_count)
-                        .or_else(|| Some("Image".to_string()))
+                    image_size_title(message, image_count).or_else(|| Some("Image".to_string()))
                 };
                 (text, image_title)
             }
@@ -1403,7 +1423,12 @@ pub fn model_ref_of_session(session_id: &str, project: &str) -> (Option<String>,
     let provider = metadata
         .get("provider")
         .and_then(Value::as_str)
-        .or_else(|| metadata.get("context").and_then(|c| c.get("provider")).and_then(Value::as_str))
+        .or_else(|| {
+            metadata
+                .get("context")
+                .and_then(|c| c.get("provider"))
+                .and_then(Value::as_str)
+        })
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
@@ -1413,7 +1438,12 @@ pub fn model_ref_of_session(session_id: &str, project: &str) -> (Option<String>,
     let model = metadata
         .get("model")
         .and_then(Value::as_str)
-        .or_else(|| metadata.get("context").and_then(|c| c.get("model")).and_then(Value::as_str))
+        .or_else(|| {
+            metadata
+                .get("context")
+                .and_then(|c| c.get("model"))
+                .and_then(Value::as_str)
+        })
         .map(str::trim)
         .unwrap_or("")
         .to_string();
@@ -1428,11 +1458,7 @@ pub fn model_ref_of_session(session_id: &str, project: &str) -> (Option<String>,
 /// promptMode / webSearch / mcpEnabled / 模型身份）同样要能从对话恢复——档案缺
 /// `title` / `messageCount` / `updatedAt`（由首条消息建档时补齐），
 /// 零消息条目被 `load_conversation_list` 的空对话过滤天然排除。
-pub fn update_context(
-    session_id: &str,
-    project: &str,
-    changes: &[Value],
-) -> Result<(), String> {
+pub fn update_context(session_id: &str, project: &str, changes: &[Value]) -> Result<(), String> {
     update_metadata(
         session_id,
         project,

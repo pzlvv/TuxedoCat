@@ -225,7 +225,10 @@ impl McpHttpClient {
         };
 
         let Some(response) = response else {
-            return Err(format!("MCP server \"{}\" 对 {method} 未返回响应", self.name()));
+            return Err(format!(
+                "MCP server \"{}\" 对 {method} 未返回响应",
+                self.name()
+            ));
         };
         if let Some(error) = response.get("error").filter(|value| !value.is_null()) {
             let code = error
@@ -398,12 +401,7 @@ impl McpHttpClient {
             .unwrap_or("")
             .to_string();
         let (sender, receiver) = mpsc::channel::<Result<Value, String>>();
-        self.shared
-            .state
-            .lock()
-            .unwrap()
-            .pending
-            .insert(id, sender);
+        self.shared.state.lock().unwrap().pending.insert(id, sender);
 
         // POST 在独立线程上跑；响应从 SSE 长连接回流（对齐 `void this.postLegacy(...)`）
         {
@@ -437,7 +435,11 @@ impl McpHttpClient {
     /// 构造 Streamable HTTP 请求头（对齐 `buildHeaders`）
     fn build_headers(&self, json_body: bool) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
-        insert_header(&mut headers, "Accept", "application/json, text/event-stream");
+        insert_header(
+            &mut headers,
+            "Accept",
+            "application/json, text/event-stream",
+        );
         for (key, value) in &self.shared.headers {
             insert_header(&mut headers, key, value);
         }
@@ -450,7 +452,11 @@ impl McpHttpClient {
         }
         // 2025-03-26 起要求 initialize 之后的请求回传协议版本；旧版服务器不认识该头，直接不发
         if state.handshake_done && !state.protocol_version.starts_with("2024") {
-            insert_header(&mut headers, "MCP-Protocol-Version", &state.protocol_version);
+            insert_header(
+                &mut headers,
+                "MCP-Protocol-Version",
+                &state.protocol_version,
+            );
         }
         headers
     }
@@ -558,9 +564,7 @@ impl McpHttpClient {
         self.apply_initialize_result(&init_result);
         self.shared.state.lock().unwrap().handshake_done = true;
         self.notify("notifications/initialized", None)?;
-        let tools = list_mcp_tools(|method, params, timeout| {
-            self.rpc(method, params, timeout)
-        })?;
+        let tools = list_mcp_tools(|method, params, timeout| self.rpc(method, params, timeout))?;
         self.shared.state.lock().unwrap().tools = tools;
         Ok(())
     }
@@ -573,9 +577,7 @@ impl McpHttpClient {
         self.apply_initialize_result(&init_result);
         self.shared.state.lock().unwrap().handshake_done = true;
         self.notify("notifications/initialized", None)?;
-        let tools = list_mcp_tools(|method, params, timeout| {
-            self.rpc(method, params, timeout)
-        })?;
+        let tools = list_mcp_tools(|method, params, timeout| self.rpc(method, params, timeout))?;
         self.shared.state.lock().unwrap().tools = tools;
         Ok(())
     }
@@ -720,7 +722,9 @@ impl McpClient for McpHttpClient {
             return Err(format!(
                 "MCP server \"{}\" 未运行{}",
                 self.name(),
-                reason.map(|reason| format!("（{reason}）")).unwrap_or_default()
+                reason
+                    .map(|reason| format!("（{reason}）"))
+                    .unwrap_or_default()
             ));
         }
         let result = self.rpc(
@@ -903,7 +907,10 @@ fn post_legacy(shared: &Arc<HttpShared>, message: &Value) -> Result<(), String> 
         state.legacy_endpoint.clone()
     };
     let Some(endpoint) = endpoint else {
-        return Err(format!("MCP server \"{}\" 的 SSE endpoint 尚未就绪", shared.name));
+        return Err(format!(
+            "MCP server \"{}\" 的 SSE endpoint 尚未就绪",
+            shared.name
+        ));
     };
 
     let client = reqwest::blocking::Client::builder()
@@ -911,7 +918,11 @@ fn post_legacy(shared: &Arc<HttpShared>, message: &Value) -> Result<(), String> 
         .build()
         .map_err(|err| format!("MCP server \"{}\" 网络错误: {err}", shared.name))?;
     let mut headers = reqwest::header::HeaderMap::new();
-    insert_header(&mut headers, "Accept", "application/json, text/event-stream");
+    insert_header(
+        &mut headers,
+        "Accept",
+        "application/json, text/event-stream",
+    );
     insert_header(&mut headers, "Content-Type", "application/json");
     for (key, value) in &shared.headers {
         insert_header(&mut headers, key, value);

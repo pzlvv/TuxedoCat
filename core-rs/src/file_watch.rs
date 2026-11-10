@@ -86,7 +86,9 @@ impl FileWatchRegistry {
         // 目录内任何非 Access 事件都算目标变化——git 的 commit / stage / checkout 会原子
         // 替换目录里的 index / refs，只按 basename 过滤文件会漏掉这些。文件目标沿用
         // 「监听父目录 + basename 过滤」的口径（对「写临时文件 + rename」的原子保存有效）。
-        let target_is_dir = fs::metadata(&target).map(|meta| meta.is_dir()).unwrap_or(false);
+        let target_is_dir = fs::metadata(&target)
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false);
         let (watch_root, filter_name) = if target_is_dir {
             (target.clone(), None)
         } else {
@@ -104,8 +106,8 @@ impl FileWatchRegistry {
         let (tx, rx) = channel::<RawEvent>();
         let callback_tx = tx.clone();
         let filter_name = filter_name.clone();
-        let mut watcher =
-            notify::recommended_watcher(move |result: notify::Result<notify::Event>| match result {
+        let mut watcher = notify::recommended_watcher(
+            move |result: notify::Result<notify::Event>| match result {
                 Ok(event) => {
                     if matches!(event.kind, EventKind::Access(_)) {
                         return;
@@ -114,10 +116,10 @@ impl FileWatchRegistry {
                     //（notify 的路径可能保留原始大小写，Windows 下按不区分大小写比较）。
                     let touched = match &filter_name {
                         None => true,
-                        Some(name) => event
-                            .paths
-                            .iter()
-                            .any(|path| path.file_name().is_some_and(|n| same_name(n, name.as_os_str()))),
+                        Some(name) => event.paths.iter().any(|path| {
+                            path.file_name()
+                                .is_some_and(|n| same_name(n, name.as_os_str()))
+                        }),
                     };
                     if touched {
                         let _ = callback_tx.send(RawEvent::Fs);
@@ -126,8 +128,9 @@ impl FileWatchRegistry {
                 Err(err) => {
                     let _ = callback_tx.send(RawEvent::Error(err.to_string()));
                 }
-            })
-            .map_err(|err| format!("failed to create file watcher: {err}"))?;
+            },
+        )
+        .map_err(|err| format!("failed to create file watcher: {err}"))?;
 
         watcher
             .watch(&watch_root, RecursiveMode::NonRecursive)
@@ -193,7 +196,9 @@ fn validate_target(workspace_root: &str, path: &str) -> Result<PathBuf, String> 
                 return Err(format!("watch target escapes the workspace root: {path}"));
             }
             if !existing.is_file() && !existing.is_dir() {
-                return Err(format!("watch target is neither a file nor a directory: {path}"));
+                return Err(format!(
+                    "watch target is neither a file nor a directory: {path}"
+                ));
             }
             Ok(existing)
         }
@@ -207,7 +212,8 @@ fn validate_target(workspace_root: &str, path: &str) -> Result<PathBuf, String> 
 fn same_name(left: &OsStr, right: &OsStr) -> bool {
     #[cfg(windows)]
     {
-        left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
     }
     #[cfg(not(windows))]
     {

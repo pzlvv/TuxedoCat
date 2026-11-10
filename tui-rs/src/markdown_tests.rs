@@ -28,13 +28,21 @@ fn fenced_code_is_cyan_and_verbatim() {
 
 #[test]
 fn inline_styles_nest() {
-    let spans = inline("**粗** 和 `码` 和 [链](https://x.y) 和 ~~删~~", MdStyle::default());
+    let spans = inline(
+        "**粗** 和 `码` 和 [链](https://x.y) 和 ~~删~~",
+        MdStyle::default(),
+    );
     assert_eq!(spans[0].style.bold, true);
     assert_eq!(spans[0].text, "粗");
     assert_eq!(spans[1].text, " 和 ");
     assert_eq!(spans[2].style.color, MdColor::Cyan);
     assert_eq!(spans[2].text, "码");
-    let link: String = spans.iter().skip(4).take(2).map(|span| span.text.as_str()).collect();
+    let link: String = spans
+        .iter()
+        .skip(4)
+        .take(2)
+        .map(|span| span.text.as_str())
+        .collect();
     assert_eq!(link, "链 (https://x.y)");
     assert!(spans[4].style.underline);
     assert_eq!(spans.last().unwrap().style.strikethrough, true);
@@ -43,7 +51,13 @@ fn inline_styles_nest() {
 #[test]
 fn unterminated_markers_stay_literal() {
     let spans = inline("a **b c", MdStyle::default());
-    assert_eq!(spans.iter().map(|span| span.text.as_str()).collect::<String>(), "a **b c");
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>(),
+        "a **b c"
+    );
 }
 
 #[test]
@@ -98,6 +112,12 @@ fn images_render_as_placeholder() {
 #[test]
 fn escapes_keep_literals() {
     let spans = inline("\\*不是斜体\\*", MdStyle::default());
-    assert_eq!(spans.iter().map(|span| span.text.as_str()).collect::<String>(), "*不是斜体*");
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>(),
+        "*不是斜体*"
+    );
     assert!(!spans[0].style.italic);
 }

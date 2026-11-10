@@ -541,7 +541,10 @@ pub fn sub_agent_communication_section(creator_session_id: &str) -> String {
 /// `originSessionId`——宿主填充，不经模型工具入参）：身份段（创建方工作区身份 +
 /// 会话 id）+ 既有 `## Communication` 段（`Reply` 回传要求，`targetSessionId` 指向
 /// 创建方会话）。本地子代理不走本模板（[`sub_agent_communication_section`]）。
-pub fn remote_sub_agent_system_prompt(origin_workspace_id: &str, origin_session_id: &str) -> String {
+pub fn remote_sub_agent_system_prompt(
+    origin_workspace_id: &str,
+    origin_session_id: &str,
+) -> String {
     format!(
         "## Cross-workspace Agent\n\
          You are an agent dispatched across workspaces by the creator workspace \
@@ -632,7 +635,11 @@ pub fn build_system_prompt_with_preset(
 /// `agent_mode` 保留在签名里（调用方按会话解析），但**不进**系统提示：
 /// 环境段没有这一行（权限模式由 UI 展示）。
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn build_system_prompt(cwd: &str, _agent_mode: &str, _metadata: &Value) -> Result<String, String> {
+pub fn build_system_prompt(
+    cwd: &str,
+    _agent_mode: &str,
+    _metadata: &Value,
+) -> Result<String, String> {
     build_system_prompt_with_preset("normal", cwd, &tools::definitions(), None)
 }
 
@@ -676,8 +683,7 @@ fn environment_section(cwd: &str) -> Result<String, String> {
     // 可用的 Skill 列表（对齐 `SystemEnvironment.ts` 的 `availableSkills`）：
     // 内置 Skill + `<configDir>/skills/` 与 `<cwd>/<configDir>/skills/` 下的
     // `SKILL.md`，只列 `!isHidden && userInvocable` 的条目。
-    let skills_section =
-        skills::available_skills_section(&skills::get_all_skills(cwd));
+    let skills_section = skills::available_skills_section(&skills::get_all_skills(cwd));
     if !skills_section.is_empty() {
         lines.push(String::new());
         lines.push(skills_section);
@@ -763,13 +769,7 @@ fn parse_windows_release(inner: &str) -> String {
             token.chars().next().is_some_and(|ch| ch.is_ascii_digit())
                 && token.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
         })
-        .map(|token| {
-            token
-                .split('.')
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(".")
-        });
+        .map(|token| token.split('.').take(3).collect::<Vec<_>>().join("."));
     version.unwrap_or_else(|| inner.trim().to_string())
 }
 
@@ -809,7 +809,10 @@ fn available_commands() -> Result<Vec<String>, String> {
                     .stderr(std::process::Stdio::null());
                 crate::util::hide_console(&mut command);
                 crate::shell_env::apply_native(&mut command)?;
-                Ok(command.status().map(|status| status.success()).unwrap_or(false))
+                Ok(command
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false))
             })
         })
         .collect();

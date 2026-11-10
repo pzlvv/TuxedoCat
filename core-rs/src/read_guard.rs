@@ -64,8 +64,8 @@ static RECORDS: std::sync::Mutex<Option<HashMap<String, HashMap<String, FileFing
     std::sync::Mutex::new(None);
 
 /// 取表锁；锁中毒（持锁线程 panic）沿用内部数据继续，不让后续每次调用都 panic。
-fn lock()
--> std::sync::MutexGuard<'static, Option<HashMap<String, HashMap<String, FileFingerprint>>>> {
+fn lock(
+) -> std::sync::MutexGuard<'static, Option<HashMap<String, HashMap<String, FileFingerprint>>>> {
     RECORDS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

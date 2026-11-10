@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 
 use super::*;
-    use crate::util::IMAGE_TOKEN_ESTIMATE;
+use crate::util::IMAGE_TOKEN_ESTIMATE;
 
 /// 行为对照表（数据见 core-rs/fixtures/）。
 const FIXTURE: &str = include_str!("../fixtures/responses.json");
@@ -123,11 +123,8 @@ mod parity_tests {
         let fixture = fixture();
         for case in fixture["syncOutput"].as_array().unwrap() {
             let output = &case["output"];
-            let blocks = sync_content_blocks_from_output(if output.is_null() {
-                None
-            } else {
-                Some(output)
-            });
+            let blocks =
+                sync_content_blocks_from_output(if output.is_null() { None } else { Some(output) });
             assert_eq!(
                 Value::Array(blocks),
                 case["result"],

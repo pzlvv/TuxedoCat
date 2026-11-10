@@ -209,7 +209,10 @@ fn http_streamable_handshake_headers_and_sse_response() {
                 write_response(
                     stream,
                     200,
-                    &[("Content-Type", "text/event-stream"), ("Connection", "close")],
+                    &[
+                        ("Content-Type", "text/event-stream"),
+                        ("Connection", "close"),
+                    ],
                     &frame,
                 );
             }
@@ -325,7 +328,8 @@ fn http_falls_back_to_legacy_sse() {
     let server = FakeHttp::start(move |request, stream| {
         if request.method == "GET" {
             // 建立 SSE 长连接，下发 endpoint 事件，之后按需推送 message 事件
-            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            let head =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(head.as_bytes());
             let _ = stream.write_all(b"event: endpoint\ndata: /messages\n\n");
             let _ = stream.flush();

@@ -374,7 +374,10 @@ pub fn parse_node(value: &Value) -> SpinNode {
             .get("forEach")
             .and_then(Value::as_str)
             .map(str::to_string),
-        role: value.get("role").and_then(Value::as_str).map(str::to_string),
+        role: value
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         skills: value
             .get("skills")
             .and_then(Value::as_array)
@@ -715,8 +718,6 @@ pub fn write_spin_json(cwd: &str, config: &Value) -> Result<(), String> {
     let _guard = spin_write_lock();
     write_spin_json_locked(cwd, config)
 }
-
-
 
 fn write_spin_json_locked(cwd: &str, config: &Value) -> Result<(), String> {
     // 确保项目对话目录存在（目录由 core 建；其中的 settings.json 由宿主写）
@@ -1222,7 +1223,8 @@ impl SpinLoop {
                     "Task {current_seq} failed after {} attempts, stopping the entire Spin mode",
                     self.max_attempts
                 );
-                self.host.push_message(&self.session_id, "user", &stop_message);
+                self.host
+                    .push_message(&self.session_id, "user", &stop_message);
                 update_node_meta(
                     &self.cwd,
                     next.id,
@@ -1279,11 +1281,8 @@ impl SpinLoop {
             let mut resolved_node = next.clone();
             resolved_node.task = resolved_task.clone();
             resolved_node.criteria = resolved_criteria.clone();
-            let node_prompt = build_run_prompt(
-                &resolved_node,
-                prev_note.as_deref(),
-                Some(&skills_prompt),
-            );
+            let node_prompt =
+                build_run_prompt(&resolved_node, prev_note.as_deref(), Some(&skills_prompt));
 
             eprintln!(
                 "[core] SpinLoop: Executing Task {current_seq}{} - {resolved_task}{attempt_suffix}",
@@ -1295,7 +1294,8 @@ impl SpinLoop {
                 "{attempt_prefix}{} Starting: Task {current_seq} - {resolved_task}",
                 progress.iteration_label
             );
-            self.host.push_message(&self.session_id, "user", &start_message);
+            self.host
+                .push_message(&self.session_id, "user", &start_message);
 
             // 执行子代理
             let request = SpinSubAgentRequest {
@@ -1482,9 +1482,7 @@ fn js_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
-        Some(Value::Number(number)) => {
-            number.as_f64().map(|value| value != 0.0).unwrap_or(true)
-        }
+        Some(Value::Number(number)) => number.as_f64().map(|value| value != 0.0).unwrap_or(true),
         Some(Value::String(text)) => !text.is_empty(),
         Some(Value::Array(_)) | Some(Value::Object(_)) => true,
     }

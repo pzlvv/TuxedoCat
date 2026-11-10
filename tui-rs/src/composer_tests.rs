@@ -3,7 +3,10 @@
 use super::*;
 
 fn key(backspace: bool) -> EditorKey {
-    EditorKey { backspace, ..Default::default() }
+    EditorKey {
+        backspace,
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -27,7 +30,14 @@ fn backspace_joins_lines() {
     state = apply_key(&state, "", &key(true));
     assert_eq!(state.lines, vec!["ab", "c"]);
     // 到行首再退格：与上一行合并
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
     state = apply_key(&state, "", &key(true));
     assert_eq!(state.lines, vec!["abc"]);
     assert_eq!((state.row, state.col), (0, 2));
@@ -38,15 +48,43 @@ fn delete_merges_forward() {
     let mut state = initial_editor();
     state = insert_text(&state, "ab\ncd");
     // ↑ 到上一行行尾（0,2）
-    state = apply_key(&state, "", &EditorKey { up: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            up: true,
+            ..Default::default()
+        },
+    );
     assert_eq!((state.row, state.col), (0, 2));
     // 行尾 Delete：与下一行合并
-    state = apply_key(&state, "", &EditorKey { delete: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            delete: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(state.lines, vec!["abcd"]);
     assert_eq!(state.col, 2);
     // 行内 Delete 删光标处字符（col=1 的 'b'）
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
-    state = apply_key(&state, "", &EditorKey { delete: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            delete: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(state.lines, vec!["acd"]);
 }
 
@@ -55,15 +93,50 @@ fn arrows_move_across_lines() {
     let mut state = initial_editor();
     state = insert_text(&state, "ab\ncdef");
     // ↑ 到上一行行尾（列被夹到上一行长度内）
-    state = apply_key(&state, "", &EditorKey { up: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            up: true,
+            ..Default::default()
+        },
+    );
     assert_eq!((state.row, state.col), (0, 2));
     // ↓ 回来，列保持 2（目标行更长，不夹）
-    state = apply_key(&state, "", &EditorKey { down: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            down: true,
+            ..Default::default()
+        },
+    );
     assert_eq!((state.row, state.col), (1, 2));
     // 行首 ← 跳到上一行行尾
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
     assert_eq!((state.row, state.col), (0, 2));
 }
 
@@ -80,14 +153,28 @@ fn multiline_paste_inserted_verbatim() {
 fn ctrl_chunks_are_ignored_by_the_state_machine() {
     // ctrl/alt 组合留给全局快捷键，状态机不吃
     let state = initial_editor();
-    let next = apply_key(&state, "x", &EditorKey { ctrl: true, ..Default::default() });
+    let next = apply_key(
+        &state,
+        "x",
+        &EditorKey {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(next, state);
 }
 
 #[test]
 fn tab_inserts_two_spaces() {
     let mut state = initial_editor();
-    state = apply_key(&state, "", &EditorKey { tab: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            tab: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(state.lines, vec!["  "]);
 }
 
@@ -95,8 +182,22 @@ fn tab_inserts_two_spaces() {
 fn insert_newline_and_clear_line() {
     let mut state = initial_editor();
     state = insert_text(&state, "hello");
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
-    state = apply_key(&state, "", &EditorKey { left: true, ..Default::default() });
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
+    state = apply_key(
+        &state,
+        "",
+        &EditorKey {
+            left: true,
+            ..Default::default()
+        },
+    );
     // Ctrl+O：光标处断行
     state = insert_newline(&state);
     assert_eq!(state.lines, vec!["hel", "lo"]);

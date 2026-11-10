@@ -25,10 +25,23 @@ fn write_conversation(session_id: &str, project: &str, messages: Vec<Value>) {
 }
 
 /// assistant 行：一条 tool_use（带 `_meta` 备份）
-fn assistant_tool(uuid: &str, tool_id: &str, name: &str, path: &str, before: Option<&str>, after: Option<&str>) -> Value {
+fn assistant_tool(
+    uuid: &str,
+    tool_id: &str,
+    name: &str,
+    path: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> Value {
     let mut meta = serde_json::Map::new();
-    meta.insert("beforeContent".to_string(), before.map(|t| json!(t)).unwrap_or(Value::Null));
-    meta.insert("afterContent".to_string(), after.map(|t| json!(t)).unwrap_or(Value::Null));
+    meta.insert(
+        "beforeContent".to_string(),
+        before.map(|t| json!(t)).unwrap_or(Value::Null),
+    );
+    meta.insert(
+        "afterContent".to_string(),
+        after.map(|t| json!(t)).unwrap_or(Value::Null),
+    );
     json!({
         "type": "assistant",
         "uuid": uuid,
@@ -120,7 +133,10 @@ fn truncate_never_leaves_an_orphan_tool_use() {
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
         .filter_map(|block| block.get("id").and_then(Value::as_str))
         .collect();
-    assert!(kept_tool_uses.is_empty(), "保留区不能剩孤立 tool_use：{kept_tool_uses:?}");
+    assert!(
+        kept_tool_uses.is_empty(),
+        "保留区不能剩孤立 tool_use：{kept_tool_uses:?}"
+    );
 }
 
 /// 目标是 system、且它前面是带工具调用的 assistant 行：截断点整体前移到该行之前。
@@ -137,7 +153,10 @@ fn truncate_moves_before_a_tool_use_row_when_target_is_a_system_message() {
 
 #[test]
 fn truncate_drops_the_target_system_message() {
-    let messages = vec![user_text("u1", "一"), json!({"type": "system", "uuid": "s1", "content": "提示"})];
+    let messages = vec![
+        user_text("u1", "一"),
+        json!({"type": "system", "uuid": "s1", "content": "提示"}),
+    ];
     // system 是产出物：从它之前继续
     assert_eq!(truncate_index(&messages, "s1"), Some(1));
 }
@@ -170,7 +189,9 @@ fn rewind_rejects_unknown_target_without_touching_files() {
     sandbox.write_file("a.txt", "CURRENT\n");
     write_conversation("s1", &project, vec![user_text("u1", "一")]);
 
-    let error = rewind("s1", "nope", &state_for().1).err().expect("should fail");
+    let error = rewind("s1", "nope", &state_for().1)
+        .err()
+        .expect("should fail");
     assert!(error.contains("target node not found"), "got {error}");
     assert_eq!(
         std::fs::read_to_string(sandbox.workspace.join("a.txt")).unwrap(),
@@ -184,10 +205,16 @@ fn rewind_rejects_target_of_the_last_node() {
     let sandbox = Sandbox::new("rewind-last");
     let project = sandbox.workspace.to_string_lossy().to_string();
     config::set_session_workspace("s1", Some(project.clone()));
-    write_conversation("s1", &project, vec![user_text("u1", "一"), user_text("u2", "二")]);
+    write_conversation(
+        "s1",
+        &project,
+        vec![user_text("u1", "一"), user_text("u2", "二")],
+    );
 
     // 末节点是 user：截断点 = 下标 + 1 = len，其后没有可删内容
-    let error = rewind("s1", "u2", &state_for().1).err().expect("should fail");
+    let error = rewind("s1", "u2", &state_for().1)
+        .err()
+        .expect("should fail");
     assert!(error.contains("no messages after"), "got {error}");
 }
 
@@ -243,7 +270,10 @@ fn rewind_leaves_no_orphan_tool_use_in_history() {
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         .filter_map(|block| block.get("tool_use_id").and_then(Value::as_str))
         .collect();
-    assert!(tool_use_ids.is_empty(), "Bash 卡片应整体删除，实际残留 {tool_use_ids:?}");
+    assert!(
+        tool_use_ids.is_empty(),
+        "Bash 卡片应整体删除，实际残留 {tool_use_ids:?}"
+    );
     for id in tool_use_ids {
         assert!(
             tool_result_ids.contains(&id),
@@ -312,7 +342,10 @@ fn rewind_deletes_files_created_in_the_range() {
     let outcome = rewind("s1", "u1", &state_for().1).expect("rewind ok");
     assert_eq!(outcome.files.len(), 1);
     assert!(outcome.files[0].ok);
-    assert!(!sandbox.workspace.join("born.txt").exists(), "新建的文件被删除");
+    assert!(
+        !sandbox.workspace.join("born.txt").exists(),
+        "新建的文件被删除"
+    );
 }
 
 #[test]
@@ -395,7 +428,7 @@ fn rewind_skips_files_without_backup() {
                     "type": "tool_use", "id": "t1", "name": "Edit",
                     "input": {"file_path": "no-backup.txt"},
                     "_meta": {"afterContent": "current
-"},
+            "},
                 }]},
             }),
             json!({
@@ -454,8 +487,16 @@ fn receipt_lists_counts_files_and_skips() {
         removed: 3,
         target: "u1".to_string(),
         files: vec![
-            RewindFile { path: "a.txt".to_string(), ok: true, error: None },
-            RewindFile { path: "b.txt".to_string(), ok: false, error: Some("denied".to_string()) },
+            RewindFile {
+                path: "a.txt".to_string(),
+                ok: true,
+                error: None,
+            },
+            RewindFile {
+                path: "b.txt".to_string(),
+                ok: false,
+                error: Some("denied".to_string()),
+            },
         ],
         skipped: vec!["c.txt".to_string()],
         had_bash: false,
@@ -514,12 +555,21 @@ fn rewind_guard_requires_an_idle_session() {
         guard.compacting = false;
         guard.background = true;
     }
-    assert!(!harness.core.is_session_idle("s1"), "后台任务运行时不拒绝就不一致了");
+    assert!(
+        !harness.core.is_session_idle("s1"),
+        "后台任务运行时不拒绝就不一致了"
+    );
     {
         let mut guard = state.lock().unwrap();
         guard.background = false;
         guard.pending_user_message = Some(crate::engine::QueuedUserMessage::plain(json!({})));
     }
-    assert!(!harness.core.is_session_idle("s1"), "排队中的用户消息同样算未空闲");
-    assert!(harness.core.is_session_idle("nope"), "不存在的会话按空闲处理");
+    assert!(
+        !harness.core.is_session_idle("s1"),
+        "排队中的用户消息同样算未空闲"
+    );
+    assert!(
+        harness.core.is_session_idle("nope"),
+        "不存在的会话按空闲处理"
+    );
 }

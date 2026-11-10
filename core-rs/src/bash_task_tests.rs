@@ -135,8 +135,9 @@ fn completion_notification_matches_spec_text() {
     assert!(build_completion_notification(&failed, "").contains("Duration: 200ms"));
 
     let stopped = finished(TaskStatus::Killed, 1, 200);
-    assert!(build_completion_notification(&stopped, "")
-        .contains("Description: Background command \"List files in current directory\" was stopped"));
+    assert!(build_completion_notification(&stopped, "").contains(
+        "Description: Background command \"List files in current directory\" was stopped"
+    ));
 }
 
 #[test]
@@ -190,13 +191,23 @@ fn spawn_background_writes_output_and_notifies() {
 
     let (session_id, notification) = wait_for_notification(&captured, 10_000).expect("完成通知");
     assert_eq!(session_id, "s-bg");
-    assert!(notification.contains("Background task completed"), "{notification}");
-    assert!(notification.contains(&format!("Task: {task_id}")), "{notification}");
     assert!(
-        notification.contains("Description: Background command \"Say hello\" completed (exit code 0)"),
+        notification.contains("Background task completed"),
         "{notification}"
     );
-    assert!(notification.contains("Output (first 500 chars):\nhello"), "{notification}");
+    assert!(
+        notification.contains(&format!("Task: {task_id}")),
+        "{notification}"
+    );
+    assert!(
+        notification
+            .contains("Description: Background command \"Say hello\" completed (exit code 0)"),
+        "{notification}"
+    );
+    assert!(
+        notification.contains("Output (first 500 chars):\nhello"),
+        "{notification}"
+    );
 
     // 输出文件就是子进程的 stdout（file mode）
     let path = task_output_path(&task_id);
@@ -255,7 +266,10 @@ fn aborting_a_session_drops_the_completion_notification() {
     assert_eq!(abort_tasks_for_session("s-bg"), 1);
     assert_eq!(abort_tasks_for_session("s-bg"), 0);
     assert_eq!(running_count_for_session("s-bg"), 0);
-    assert!(wait_for_notification(&captured, 500).is_none(), "被中止的任务不应发通知");
+    assert!(
+        wait_for_notification(&captured, 500).is_none(),
+        "被中止的任务不应发通知"
+    );
     reset_for_test();
 }
 
@@ -286,7 +300,10 @@ fn completing_tasks_fire_the_completed_event() {
     while seen.lock().unwrap().is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(seen.lock().unwrap().as_slice(), std::slice::from_ref(&task_id));
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        std::slice::from_ref(&task_id)
+    );
 
     // 取消订阅后不再收到事件
     off_task_completed(subscription);
@@ -356,10 +373,9 @@ fn completion_notifies_the_engine_before_clearing_background() {
 /// 兜底提醒门槛（距上次访问满 3 分钟，或还没兜底过的 sleep 任务）逐条一致。
 #[test]
 fn background_reminder_parity() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../fixtures/backgroundReminder.json"
-    ))
-    .expect("parse backgroundReminderParity.json");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/backgroundReminder.json"))
+            .expect("parse backgroundReminderParity.json");
 
     let intervals: Vec<u64> = fixture["intervalsMin"]
         .as_array()
@@ -382,7 +398,10 @@ fn background_reminder_parity() {
         background_reminder_interval_label(0)
     );
 
-    for case in fixture["intervalLabelCases"].as_array().expect("intervalLabelCases") {
+    for case in fixture["intervalLabelCases"]
+        .as_array()
+        .expect("intervalLabelCases")
+    {
         let round = case["round"].as_u64().expect("round") as usize;
         assert_eq!(
             background_reminder_interval_min(round),
@@ -422,7 +441,9 @@ fn background_reminder_parity() {
             case["command"].as_str().expect("command"),
             case["elapsedMs"].as_u64().expect("elapsedMs"),
             case["output"].as_str().expect("output"),
-            case["nextIntervalLabel"].as_str().expect("nextIntervalLabel"),
+            case["nextIntervalLabel"]
+                .as_str()
+                .expect("nextIntervalLabel"),
             case["killCommand"].as_str().expect("killCommand"),
         );
         assert_eq!(
@@ -444,7 +465,9 @@ fn background_reminder_parity() {
             .as_u64()
             .expect("sinceLastAccessMs");
         let command = case["command"].as_str().expect("command");
-        let fallback_reminded = case["fallbackReminded"].as_bool().expect("fallbackReminded");
+        let fallback_reminded = case["fallbackReminded"]
+            .as_bool()
+            .expect("fallbackReminded");
         assert_eq!(
             qualifies_fallback_reminder(
                 fallback_now_ms - since_last_access_ms,

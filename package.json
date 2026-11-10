@@ -86,6 +86,8 @@
     "build:core:linux-arm64": "node scripts/build-core.mjs --target aarch64-unknown-linux-musl",
     "build:core:win32-arm64": "node scripts/build-core.mjs --target aarch64-pc-windows-msvc",
     "test:core": "cargo test --manifest-path core-rs/Cargo.toml",
+    "fmt:rust": "cargo fmt --manifest-path core-rs/Cargo.toml && cargo fmt --manifest-path tui-rs/Cargo.toml && cargo fmt --manifest-path installer-rs/Cargo.toml",
+    "fmt:rust:check": "cargo fmt --manifest-path core-rs/Cargo.toml --check && cargo fmt --manifest-path tui-rs/Cargo.toml --check && cargo fmt --manifest-path installer-rs/Cargo.toml --check",
     "docs:freshness": "node scripts/docs-freshness.mjs",
     "coverage:core": "node scripts/coverage-core.mjs",
     "coverage:core:html": "node scripts/coverage-core.mjs --html",

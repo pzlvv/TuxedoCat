@@ -56,13 +56,17 @@ fn json_string_field(text: &str, key: &str) -> String {
         panic!("src/config/project.json 缺字段 {needle}");
     });
     let rest = &text[start + needle.len()..];
-    let colon = rest.find(':').unwrap_or_else(|| panic!("{needle} 后没有冒号"));
+    let colon = rest
+        .find(':')
+        .unwrap_or_else(|| panic!("{needle} 后没有冒号"));
     let after = rest[colon + 1..].trim_start();
     if !after.starts_with('"') {
         panic!("{needle} 的值不是字符串");
     }
     let value_start = 1;
-    let value_len = after[value_start..].find('"').unwrap_or_else(|| panic!("{needle} 的字符串没有闭合引号"));
+    let value_len = after[value_start..]
+        .find('"')
+        .unwrap_or_else(|| panic!("{needle} 的字符串没有闭合引号"));
     after[value_start..value_start + value_len].to_string()
 }
 
@@ -71,12 +75,18 @@ fn json_string_field(text: &str, key: &str) -> String {
 /// 产物名 = cargo 的二进制目标名，单一来源是 tui-rs/Cargo.toml；排版变化直接 panic。
 /// 与 `scripts/build-tui-installer.mjs` 的解析口径一致（同一份来源，两处消费）。
 fn cargo_bin_name(text: &str) -> String {
-    let section = text.find("[[bin]]").expect("tui-rs/Cargo.toml 缺 [[bin]] 段");
+    let section = text
+        .find("[[bin]]")
+        .expect("tui-rs/Cargo.toml 缺 [[bin]] 段");
     let rest = &text[section..];
     let needle = "name = \"";
-    let start = rest.find(needle).expect("tui-rs/Cargo.toml 的 [[bin]] 缺 name");
+    let start = rest
+        .find(needle)
+        .expect("tui-rs/Cargo.toml 的 [[bin]] 缺 name");
     let after = &rest[start + needle.len()..];
-    let end = after.find('"').expect("tui-rs/Cargo.toml 的 [[bin]] name 没有闭合引号");
+    let end = after
+        .find('"')
+        .expect("tui-rs/Cargo.toml 的 [[bin]] name 没有闭合引号");
     after[..end].to_string()
 }
 
@@ -122,13 +132,13 @@ fn main() {
                 host_native
             }
         });
-    let version =
-        env::var("TUI_INSTALL_VERSION").unwrap_or_else(|_| "dev".to_string());
+    let version = env::var("TUI_INSTALL_VERSION").unwrap_or_else(|_| "dev".to_string());
 
     // 产品身份字段：部署产品目录名 / Core 二进制名 / 配置目录名 / 产品显示名，
     // 与 tui-rs/build.rs 同一口径（env! 消费，源码零产品字面量）
-    let project_text = fs::read_to_string(repo_root.join("src").join("config").join("project.json"))
-        .expect("读取 src/config/project.json 失败");
+    let project_text =
+        fs::read_to_string(repo_root.join("src").join("config").join("project.json"))
+            .expect("读取 src/config/project.json 失败");
     let product = json_string_field(&project_text, "deployPrefix");
     let core_binary_name = json_string_field(&project_text, "binaryName");
     let config_dir_name = json_string_field(&project_text, "configDir");
@@ -153,7 +163,11 @@ fn main() {
         })
         .trim()
         .to_string();
-    if !(fingerprint.len() == 64 && fingerprint.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())) {
+    if !(fingerprint.len() == 64
+        && fingerprint
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()))
+    {
         panic!(
             "构建指纹不合法：{}/fingerprint 必须是 64 位小写 hex，实际是「{fingerprint}」。",
             pkg_dir_path.display()
@@ -187,7 +201,11 @@ fn main() {
     // 一启动就报缺 DLL。只在文件存在时内嵌——它随构建变体出现 / 消失，release 产物
     // 没有它是正常状态，缺失不是错误。
     if is_windows {
-        let asan_arch = if triple.starts_with("aarch64") { "aarch64" } else { "x86_64" };
+        let asan_arch = if triple.starts_with("aarch64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
         let asan_dll = pkg_dir_path.join(format!("clang_rt.asan_dynamic-{asan_arch}.dll"));
         if asan_dll.is_file() {
             let asan_dll_name = asan_dll.file_name().unwrap().to_string_lossy().to_string();

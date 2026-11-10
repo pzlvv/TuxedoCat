@@ -1,7 +1,9 @@
 //! `llm` 的单元测试：协议转换、URL 拼接、以及两条流式解析链路（走本地假服务）。
 
 use super::*;
-use crate::test_support::{anthropic_sse, openai_text_sse, openai_thinking_sse, openai_tool_sse, FakeLlm};
+use crate::test_support::{
+    anthropic_sse, openai_text_sse, openai_thinking_sse, openai_tool_sse, FakeLlm,
+};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -239,9 +241,18 @@ fn usage_json_always_carries_cache_keys_and_omits_absent_reasoning() {
 #[test]
 fn join_url_trims_the_base_trailing_slashes() {
     // 约定：suffix 自带前导斜杠，base 的尾斜杠被吃掉
-    assert_eq!(join_url("https://x", "/v1/messages"), "https://x/v1/messages");
-    assert_eq!(join_url("https://x/", "/v1/messages"), "https://x/v1/messages");
-    assert_eq!(join_url("https://x//", "/v1/messages"), "https://x/v1/messages");
+    assert_eq!(
+        join_url("https://x", "/v1/messages"),
+        "https://x/v1/messages"
+    );
+    assert_eq!(
+        join_url("https://x/", "/v1/messages"),
+        "https://x/v1/messages"
+    );
+    assert_eq!(
+        join_url("https://x//", "/v1/messages"),
+        "https://x/v1/messages"
+    );
     assert_eq!(join_url("https://x", "/"), "https://x/");
 }
 
@@ -339,8 +350,14 @@ fn chat_messages_split_tool_results_into_tool_role_entries() {
     ] })];
     let out = to_chat_messages(&messages);
     assert_eq!(out.len(), 2);
-    assert_eq!(out[0], json!({ "role": "tool", "tool_call_id": "call_1", "content": "第一行" }));
-    assert_eq!(out[1], json!({ "role": "tool", "tool_call_id": "call_2", "content": "第二行" }));
+    assert_eq!(
+        out[0],
+        json!({ "role": "tool", "tool_call_id": "call_1", "content": "第一行" })
+    );
+    assert_eq!(
+        out[1],
+        json!({ "role": "tool", "tool_call_id": "call_2", "content": "第二行" })
+    );
 }
 
 // ==================== 非多模态的请求出口图片过滤（specs/012-multimodal-model-filter） ====================
@@ -348,7 +365,9 @@ fn chat_messages_split_tool_results_into_tool_role_entries() {
 #[test]
 fn has_images_scans_user_blocks_and_tool_results() {
     assert!(!has_images(&[]));
-    assert!(!has_images(&[json!({ "role": "user", "content": [{ "type": "text", "text": "x" }] })]));
+    assert!(!has_images(&[
+        json!({ "role": "user", "content": [{ "type": "text", "text": "x" }] })
+    ]));
     assert!(has_images(&[json!({ "role": "user", "content": [
         { "type": "image", "source": { "data": "AAAA" } }
     ] })]));
@@ -473,7 +492,8 @@ fn chat_messages_convert_tool_use_and_thinking() {
     assert_eq!(call["type"], "function");
     assert_eq!(call["function"]["name"], "Bash");
     // 入参序列化成 JSON 字符串（Chat Completions 的约定）
-    let arguments: Value = serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+    let arguments: Value =
+        serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
     assert_eq!(arguments["command"], "ls");
 }
 
@@ -499,7 +519,8 @@ fn chat_messages_match_empty_and_unknown_entries() {
     // 空 assistant（只有 thinking / 未知 block 被忽略时）不产生条目
     assert!(to_chat_messages(&[json!({ "role": "assistant", "content": [
         { "type": "unknown" }
-    ] })]).is_empty());
+    ] })])
+    .is_empty());
 }
 
 #[test]
@@ -509,7 +530,9 @@ fn chat_tools_wrap_input_schema_as_parameters() {
     assert_eq!(converted.len(), tools.len());
     assert_eq!(converted[0]["type"], "function");
     assert_eq!(converted[0]["function"]["name"], "Bash");
-    assert!(converted[0]["function"]["description"].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(converted[0]["function"]["description"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
     assert_eq!(converted[0]["function"]["parameters"]["type"], "object");
 
     // 缺 name 退化为 "unknown"，缺 / null input_schema 退化为
@@ -531,12 +554,19 @@ fn chat_tools_wrap_input_schema_as_parameters() {
 fn openai_stream_emits_text_deltas_and_stop_reason() {
     let llm = FakeLlm::fixed(openai_text_sse(&["你好", "，世界"]));
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
 
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(text_of(&events), "你好，世界");
     // finish_reason `stop` 映射为内部 `end_turn`
-    assert!(events.iter().any(|event| matches!(event, LlmEvent::StopReason(reason) if reason == "end_turn")));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, LlmEvent::StopReason(reason) if reason == "end_turn")));
 }
 
 #[test]
@@ -560,7 +590,12 @@ fn sse_parsing_uses_js_trim_before_the_data_prefix() {
 
     let llm = FakeLlm::fixed(body);
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
 
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(text_of(&events), "AB");
@@ -571,15 +606,30 @@ fn request_bodies_use_js_json_number_format() {
     // `JSON.stringify` 口径：`temperature: 1.0` 序列化成
     // `1`。Rust 必须用 `util::js_json_stringify`，不能落到 serde_json 的 `1.0`。
     for api_type in ["OpenAI", "Anthropic"] {
-        let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let base = start_body_capture_server(Arc::clone(&captured), openai_text_sse(&["hi"]));
         let provider = provider(&base, api_type);
-        let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+        let (result, _) = collect(
+            &provider,
+            &[json!({ "role": "user", "content": "hi" })],
+            &[],
+            false,
+        );
         assert!(result.is_ok(), "api_type={api_type} got {result:?}");
         let raw = captured.lock().unwrap().pop().expect("captured body");
-        assert!(raw.contains("\"temperature\":1"), "api_type={api_type} raw={raw}");
-        assert!(!raw.contains("\"temperature\":1.0"), "api_type={api_type} raw={raw}");
-        assert!(raw.contains("\"top_p\":0.95"), "api_type={api_type} raw={raw}");
+        assert!(
+            raw.contains("\"temperature\":1"),
+            "api_type={api_type} raw={raw}"
+        );
+        assert!(
+            !raw.contains("\"temperature\":1.0"),
+            "api_type={api_type} raw={raw}"
+        );
+        assert!(
+            raw.contains("\"top_p\":0.95"),
+            "api_type={api_type} raw={raw}"
+        );
     }
 }
 
@@ -588,7 +638,12 @@ fn openai_stream_emits_tool_calls_split_across_chunks() {
     let arguments = r#"{"command":"echo hi","description":"greet"}"#;
     let llm = FakeLlm::fixed(openai_tool_sse("call_1", "Bash", arguments));
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
 
     let starts: Vec<(&String, &String)> = events
@@ -634,7 +689,12 @@ fn openai_stream_generates_fallback_tool_ids() {
 
     let llm = FakeLlm::fixed(sse);
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
 
     let id = events
@@ -658,7 +718,12 @@ fn openai_stream_generates_fallback_tool_ids() {
 fn openai_stream_emits_thinking_and_usage() {
     let llm = FakeLlm::fixed(openai_thinking_sse("先想想", "答案是 42"));
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(thinking_of(&events), "先想想");
     assert_eq!(text_of(&events), "答案是 42");
@@ -666,7 +731,9 @@ fn openai_stream_emits_thinking_and_usage() {
     let usage = events
         .iter()
         .filter_map(|event| match event {
-            LlmEvent::Usage(usage) if usage.input_tokens > 0 || usage.output_tokens > 0 => Some(usage),
+            LlmEvent::Usage(usage) if usage.input_tokens > 0 || usage.output_tokens > 0 => {
+                Some(usage)
+            }
             _ => None,
         })
         .next()
@@ -778,7 +845,12 @@ fn openai_stream_falls_back_to_reasoning_when_reasoning_content_is_empty() {
 fn openai_stream_surfaces_http_errors_with_the_body() {
     let llm = FakeLlm::start(|_, _| "{\"error\":\"model not found\"}".to_string());
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     // 假服务总是回 200，因此这里拿到的是「流里没有内容」而不是 HTTP 错误
     assert!(result.is_ok(), "got {result:?}");
 }
@@ -787,7 +859,12 @@ fn openai_stream_surfaces_http_errors_with_the_body() {
 fn openai_stream_reports_transport_failures() {
     // 指向一个没有监听的端口
     let provider = provider("http://127.0.0.1:1", "OpenAI");
-    let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     let error = result.unwrap_err();
     assert!(error.contains("request failed"), "got {error}");
 }
@@ -797,7 +874,12 @@ fn openai_stream_errors_when_the_server_reports_one() {
     let body = "data: {\"error\":{\"message\":\"quota exceeded\"}}\n\n";
     let llm = FakeLlm::fixed(body.to_string());
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.unwrap_err().contains("quota exceeded"));
 }
 
@@ -810,7 +892,12 @@ fn openai_stream_error_without_message_serializes_the_error_object() {
         "data: {\"error\":{\"code\":\"rate_limit\",\"type\":\"server_error\"}}\n\n".to_string(),
     );
     let provider_a = provider(&llm.base_url, "OpenAI");
-    let (result, _) = collect(&provider_a, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider_a,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert_eq!(
         result.unwrap_err(),
         "Chat Completions failed: {\"code\":\"rate_limit\",\"type\":\"server_error\"}"
@@ -819,18 +906,26 @@ fn openai_stream_error_without_message_serializes_the_error_object() {
     // message 为空串（JS 假值）时同样退化为整个对象
     let llm = FakeLlm::fixed("data: {\"error\":{\"message\":\"\",\"code\":\"x\"}}\n\n".to_string());
     let provider_b = provider(&llm.base_url, "OpenAI");
-    let (result, _) = collect(&provider_b, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider_b,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert_eq!(
         result.unwrap_err(),
         "Chat Completions failed: {\"message\":\"\",\"code\":\"x\"}"
     );
 
     // message 是对象（JS 真值）时按 `String(value)` 拼接 → `[object Object]`
-    let llm = FakeLlm::fixed(
-        "data: {\"error\":{\"message\":{\"detail\":\"x\"}}}\n\n".to_string(),
-    );
+    let llm = FakeLlm::fixed("data: {\"error\":{\"message\":{\"detail\":\"x\"}}}\n\n".to_string());
     let provider_c = provider(&llm.base_url, "OpenAI");
-    let (result, _) = collect(&provider_c, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider_c,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert_eq!(
         result.unwrap_err(),
         "Chat Completions failed: [object Object]"
@@ -843,7 +938,12 @@ fn openai_stream_error_without_message_serializes_the_error_object() {
             .to_string(),
     );
     let provider_d = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider_d, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider_d,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(text_of(&events), "ok");
 }
@@ -873,7 +973,12 @@ fn openai_stream_keeps_the_fallback_tool_id_when_a_later_chunk_carries_one() {
 
     let llm = FakeLlm::fixed(sse);
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
 
     let (id, name) = events
@@ -907,7 +1012,12 @@ fn openai_stream_ignores_malformed_and_irrelevant_lines() {
                 data: [DONE]\n\n";
     let llm = FakeLlm::fixed(body.to_string());
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(text_of(&events), "ok");
 }
@@ -926,7 +1036,12 @@ fn openai_request_body_carries_system_prompt_and_tools() {
     });
     let provider = provider(&llm.base_url, "OpenAI");
     let tools = crate::tools::definitions();
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &tools, true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &tools,
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(text_of(&events), "ok");
 }
@@ -960,7 +1075,12 @@ fn openai_request_omits_system_prompt_when_empty() {
 fn anthropic_stream_parses_thinking_text_and_usage() {
     let llm = FakeLlm::fixed(anthropic_sse("思考中", "答案", None));
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(thinking_of(&events), "思考中");
     assert_eq!(text_of(&events), "答案");
@@ -995,7 +1115,12 @@ fn anthropic_stream_parses_thinking_signature() {
     .to_string();
     let llm = FakeLlm::fixed(sse);
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     let signature: String = events
         .iter()
@@ -1020,7 +1145,12 @@ fn anthropic_stream_keeps_signature_from_content_block_start() {
     .to_string();
     let llm = FakeLlm::fixed(sse);
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     let signatures: Vec<&str> = events
         .iter()
@@ -1045,7 +1175,12 @@ fn anthropic_stream_uses_content_block_start_input_when_no_delta() {
     .to_string();
     let llm = FakeLlm::fixed(sse);
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     let starts: Vec<(String, String, Value)> = events
         .iter()
@@ -1080,7 +1215,12 @@ fn anthropic_empty_stop_reason_keeps_the_previous_one() {
     .to_string();
     let llm = FakeLlm::fixed(sse);
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
 
     let reasons: Vec<String> = events
@@ -1090,14 +1230,27 @@ fn anthropic_empty_stop_reason_keeps_the_previous_one() {
             _ => None,
         })
         .collect();
-    assert_eq!(reasons, vec!["tool_use".to_string()], "空 stop_reason 不得覆盖已有值");
+    assert_eq!(
+        reasons,
+        vec!["tool_use".to_string()],
+        "空 stop_reason 不得覆盖已有值"
+    );
 }
 
 #[test]
 fn anthropic_stream_parses_tool_use_blocks() {
-    let llm = FakeLlm::fixed(anthropic_sse("", "", Some(("toolu_1", "Read", r#"{"file_path":"a.ts"}"#))));
+    let llm = FakeLlm::fixed(anthropic_sse(
+        "",
+        "",
+        Some(("toolu_1", "Read", r#"{"file_path":"a.ts"}"#)),
+    ));
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
 
     let starts: Vec<(String, String)> = events
@@ -1131,7 +1284,12 @@ fn anthropic_request_body_enables_or_disables_thinking() {
         anthropic_sse("", "ok", None)
     });
     let config = self::provider(&llm.base_url, "Anthropic");
-    let (result, _) = collect(&config, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &config,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
 
     let llm_disabled = FakeLlm::start(|_, body| {
@@ -1139,7 +1297,12 @@ fn anthropic_request_body_enables_or_disables_thinking() {
         anthropic_sse("", "ok", None)
     });
     let config = self::provider(&llm_disabled.base_url, "Anthropic");
-    let (result, _) = collect(&config, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, _) = collect(
+        &config,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
 }
 
@@ -1148,7 +1311,12 @@ fn anthropic_stream_propagates_error_events() {
     let body = "data: {\"type\":\"error\",\"error\":{\"message\":\"overloaded\"}}\n\n";
     let llm = FakeLlm::fixed(body.to_string());
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.unwrap_err().contains("overloaded"));
 }
 
@@ -1157,7 +1325,12 @@ fn anthropic_stream_errors_without_a_message() {
     let body = "data: {\"type\":\"error\"}\n\n";
     let llm = FakeLlm::fixed(body.to_string());
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, _) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.unwrap_err().contains("unknown error"));
 }
 
@@ -1225,7 +1398,10 @@ mod chat_completion_parity_tests {
     #[test]
     fn matches_the_shared_chat_completion_table() {
         let fixture: Value = serde_json::from_str(FIXTURE).expect("fixture json");
-        let cases = fixture.get("cases").and_then(Value::as_array).expect("cases");
+        let cases = fixture
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases");
         assert!(!cases.is_empty(), "对照表非空");
         for case in cases {
             let name = case.get("name").and_then(Value::as_str).unwrap_or("");
@@ -1235,7 +1411,10 @@ mod chat_completion_parity_tests {
             assert_eq!(actual, expected, "case {name}");
         }
 
-        let tools = fixture.get("tools").and_then(Value::as_array).expect("tools");
+        let tools = fixture
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("tools");
         assert!(!tools.is_empty(), "工具对照表非空");
         for case in tools {
             let name = case.get("name").and_then(Value::as_str).unwrap_or("");
@@ -1278,7 +1457,11 @@ fn repetition_detector_matches_table() {
         (vec!["\n\n".repeat(3000)], Some((1, 6000, 6000, "\n", 6000))),
         // 循环前混入正常内容：只比对尾部窗口
         (
-            vec![format!("{}{}", "hello world ".repeat(300), "ab".repeat(3000))],
+            vec![format!(
+                "{}{}",
+                "hello world ".repeat(300),
+                "ab".repeat(3000)
+            )],
             Some((2, 3000, 6000, "ab", 9600)),
         ),
         // 代理对：重复单元按 UTF-16 code unit 计（emoji = 2）
@@ -1296,7 +1479,13 @@ fn repetition_detector_matches_table() {
             Some((unit, count, span, preview, total)) => {
                 let hit = hit.unwrap_or_else(|| panic!("应命中 unit={unit}"));
                 assert_eq!(
-                    (hit.unit_length, hit.repeat_count, hit.span_length, hit.unit_preview.as_str(), hit.total_length),
+                    (
+                        hit.unit_length,
+                        hit.repeat_count,
+                        hit.span_length,
+                        hit.unit_preview.as_str(),
+                        hit.total_length
+                    ),
                     (unit, count, span, preview, total)
                 );
             }
@@ -1314,7 +1503,9 @@ fn repetition_error_message_matches_wording() {
     );
     let mut thinking = RepetitionDetector::new();
     let error = check_repetition(&mut thinking, &"a".repeat(6000), "thinking").unwrap_err();
-    assert!(error.message().starts_with("检测到模型循环输出：思考中长度 1"));
+    assert!(error
+        .message()
+        .starts_with("检测到模型循环输出：思考中长度 1"));
 }
 
 // ==================== 重试（对齐 shared.ts / 两个适配器） ====================
@@ -1343,12 +1534,19 @@ fn stream_retries_on_retryable_status() {
         }
     });
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(calls.load(Ordering::Relaxed), 2, "503 应当重试一次");
     // 重试即重建累积
     assert!(events.iter().any(|event| matches!(event, LlmEvent::Reset)));
-    assert!(events.iter().any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "重试成功")));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "重试成功")));
 }
 
 #[test]
@@ -1360,7 +1558,12 @@ fn stream_gives_up_after_max_retries() {
         (502, "bad gateway".to_string())
     });
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, _) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, _) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     let error = result.unwrap_err();
     assert!(error.contains("502"), "got {error}");
     // 初次 + MAX_RETRIES 次重试
@@ -1375,16 +1578,28 @@ fn openai_stream_retries_when_it_ends_without_finish_reason_or_content() {
         counter.fetch_add(1, Ordering::Relaxed);
         if index == 0 {
             // 只有 usage，没有 choices、没有 finish_reason
-            "data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0}}\n\ndata: [DONE]\n\n".to_string()
+            "data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0}}\n\ndata: [DONE]\n\n"
+                .to_string()
         } else {
             openai_text_sse(&["补齐"])
         }
     });
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
-    assert_eq!(calls.load(Ordering::Relaxed), 2, "无内容且无结束原因应重试一次");
-    assert!(events.iter().any(|event| matches!(event, LlmEvent::StopReason(reason) if reason == "end_turn")));
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "无内容且无结束原因应重试一次"
+    );
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, LlmEvent::StopReason(reason) if reason == "end_turn")));
 }
 
 #[test]
@@ -1397,10 +1612,17 @@ fn openai_stream_accepts_content_without_finish_reason_as_end_turn() {
         "data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\ndata: [DONE]\n\n".to_string()
     });
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(calls.load(Ordering::Relaxed), 1, "有内容时不应重试");
-    assert!(events.iter().any(|event| matches!(event, LlmEvent::StopReason(reason) if reason == "end_turn")));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, LlmEvent::StopReason(reason) if reason == "end_turn")));
 }
 
 #[test]
@@ -1419,7 +1641,12 @@ fn stream_retries_once_after_detecting_repetition_and_resets_output() {
         }
     });
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(calls.load(Ordering::Relaxed), 2, "退化重复应重试一次");
     // 重试前发 Reset，且重复内容从未作为增量发给上层
@@ -1433,7 +1660,9 @@ fn stream_retries_once_after_detecting_repetition_and_resets_output() {
             .any(|event| matches!(event, LlmEvent::TextDelta(_))),
         "重复内容不应作为增量发出"
     );
-    assert!(events.iter().any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "正常回复")));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "正常回复")));
 }
 
 /// 服务商不认识 `stream_options.include_usage`（400）时：去掉该字段重试一次，
@@ -1467,7 +1696,10 @@ fn openai_stream_drops_stream_options_when_provider_rejects_it() {
         "400 stream_options 应当去掉该字段重试一次"
     );
     let bodies = bodies.lock().unwrap();
-    assert_eq!(bodies[0]["stream_options"], json!({ "include_usage": true }));
+    assert_eq!(
+        bodies[0]["stream_options"],
+        json!({ "include_usage": true })
+    );
     assert!(
         bodies[1].get("stream_options").is_none(),
         "重试请求不应再带 stream_options: {}",
@@ -1487,7 +1719,9 @@ fn stream_watchdog_times_out_on_first_byte_and_retries_once() {
     let (base_url, hits) = start_stalling_server(|_index, stream| {
         write_sse_headers(stream);
         use std::io::Write;
-        stream.write_all(b": keep-alive\n\n").expect("write comment");
+        stream
+            .write_all(b": keep-alive\n\n")
+            .expect("write comment");
         stream.flush().expect("flush comment");
         std::thread::sleep(Duration::from_millis(800));
     });
@@ -1544,10 +1778,7 @@ fn stream_watchdog_times_out_after_idle_gap_and_retries_once() {
     let provider = provider(&base_url, "OpenAI");
     let (result, _events) = collect_with_timeouts(&provider, 2000, 200);
     let error = result.expect_err("应当空闲超时");
-    assert!(
-        error.contains("流已停滞"),
-        "空闲超时文案不对: {error}"
-    );
+    assert!(error.contains("流已停滞"), "空闲超时文案不对: {error}");
     assert_eq!(hits.load(Ordering::SeqCst), 2, "空闲超时应只重试一次");
 }
 
@@ -1596,11 +1827,22 @@ fn anthropic_stream_emits_block_boundaries() {
     // Anthropic 的块边界直接来自 `content_block_start` / `content_block_stop`
     let llm = FakeLlm::fixed(anthropic_sse("想一想", "完成", None));
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(
         block_boundaries(&events),
-        vec!["start:thinking", "stop", "start:text", "stop", "message_delta"]
+        vec![
+            "start:thinking",
+            "stop",
+            "start:text",
+            "stop",
+            "message_delta"
+        ]
     );
 }
 
@@ -1608,7 +1850,12 @@ fn anthropic_stream_emits_block_boundaries() {
 fn anthropic_stream_emits_a_tool_use_block() {
     let llm = FakeLlm::fixed(anthropic_sse("想一想", "", Some(("toolu_1", "Read", "{}"))));
     let provider = provider(&llm.base_url, "Anthropic");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], true);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        true,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(
         block_boundaries(&events),
@@ -1628,11 +1875,22 @@ fn openai_stream_synthesizes_block_boundaries() {
     // 流结束时再关掉仍打开的块。
     let llm = FakeLlm::fixed(openai_thinking_sse("想", "答"));
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(
         block_boundaries(&events),
-        vec!["start:thinking", "stop", "start:text", "stop", "message_delta"]
+        vec![
+            "start:thinking",
+            "stop",
+            "start:text",
+            "stop",
+            "message_delta"
+        ]
     );
 }
 
@@ -1640,7 +1898,12 @@ fn openai_stream_synthesizes_block_boundaries() {
 fn openai_tool_calls_get_their_own_block() {
     let llm = FakeLlm::fixed(openai_tool_sse("call_1", "Bash", r#"{"command":"ls"}"#));
     let provider = provider(&llm.base_url, "OpenAI");
-    let (result, events) = collect(&provider, &[json!({ "role": "user", "content": "hi" })], &[], false);
+    let (result, events) = collect(
+        &provider,
+        &[json!({ "role": "user", "content": "hi" })],
+        &[],
+        false,
+    );
     assert!(result.is_ok(), "got {result:?}");
     assert_eq!(
         block_boundaries(&events),

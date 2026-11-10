@@ -161,7 +161,10 @@ fn split_data_url_handles_missing_prefix_and_base64_marker() {
     // 没有 `data:` 前缀：不匹配正则，整串当纯 base64、类型兜底 png（对齐 parseDataUrl）
     assert_eq!(
         split_data_url("image/webp;base64,BBBB"),
-        ("image/png".to_string(), "image/webp;base64,BBBB".to_string())
+        (
+            "image/png".to_string(),
+            "image/webp;base64,BBBB".to_string()
+        )
     );
     // 没有 ;base64, 分隔符：整串当数据，类型按 png
     assert_eq!(
@@ -172,7 +175,12 @@ fn split_data_url_handles_missing_prefix_and_base64_marker() {
 
 #[test]
 fn build_assistant_message_orders_thinking_text_and_tool_uses() {
-    let tools = vec![tool_use_block("call_1", "Bash", r#"{"command":"ls"}"#, &json!({}))];
+    let tools = vec![tool_use_block(
+        "call_1",
+        "Bash",
+        r#"{"command":"ls"}"#,
+        &json!({}),
+    )];
     let message = build_assistant_message(
         "正文",
         "思考",
@@ -222,7 +230,10 @@ fn build_assistant_message_skips_empty_sections() {
 
 #[test]
 fn message_text_flattens_string_and_block_contents() {
-    assert_eq!(message_text(&json!({ "message": { "content": "纯文本" } })), "纯文本");
+    assert_eq!(
+        message_text(&json!({ "message": { "content": "纯文本" } })),
+        "纯文本"
+    );
     assert_eq!(
         message_text(&json!({ "message": { "content": [
             { "type": "text", "text": "第一行" },
@@ -288,9 +299,18 @@ fn build_llm_messages_strips_ui_only_block_fields() {
     assert_eq!(tool_use["type"], "tool_use");
     assert!(tool_use.get("_meta").is_none(), "got {tool_use:?}");
     let tool_result = &messages[1]["content"][0];
-    assert!(tool_result.get("beforeContent").is_none(), "got {tool_result:?}");
-    assert!(tool_result.get("afterContent").is_none(), "got {tool_result:?}");
-    assert!(tool_result.get("_partialJson").is_none(), "got {tool_result:?}");
+    assert!(
+        tool_result.get("beforeContent").is_none(),
+        "got {tool_result:?}"
+    );
+    assert!(
+        tool_result.get("afterContent").is_none(),
+        "got {tool_result:?}"
+    );
+    assert!(
+        tool_result.get("_partialJson").is_none(),
+        "got {tool_result:?}"
+    );
     assert_eq!(tool_result["content"], "ok");
 }
 
@@ -324,11 +344,17 @@ fn build_raw_api_messages_prefixes_current_file_context() {
         messages[1]["content"],
         "[Current File: src/b.ts (lines 1-4)]\n\n选中多行"
     );
-    assert_eq!(messages[2]["content"], "[Current File: src/c.ts]\n\n整份文件");
+    assert_eq!(
+        messages[2]["content"],
+        "[Current File: src/c.ts]\n\n整份文件"
+    );
     // fileHidden 为 true 时不加前缀
     assert_eq!(messages[3]["content"], "隐藏文件");
     // 已有前缀时不重复添加
-    assert_eq!(messages[4]["content"], "[Current File: src/e.ts]\n\n已有前缀");
+    assert_eq!(
+        messages[4]["content"],
+        "[Current File: src/e.ts]\n\n已有前缀"
+    );
     assert_eq!(messages[5]["content"], "回答");
     // filePath 为空串时不加前缀
     assert_eq!(messages[6]["content"], "空路径");
@@ -433,10 +459,15 @@ fn highlight_languages_reports_every_message_without_deduping_or_writing() {
     prepare(&sandbox, &llm.base_url, "auto");
 
     let harness = EngineHarness::allow_all();
-    submit(&harness, "s1", "看这段
+    submit(
+        &harness,
+        "s1",
+        "看这段
 ```ts
 const a = 1;
-```", "u-1");
+```",
+        "u-1",
+    );
     assert!(harness.wait_query_end());
 
     let events = harness.sink.events_of("highlightLanguagesUsed");
@@ -453,10 +484,15 @@ const a = 1;
 
     // 同一门语言再次出现仍会上报（去重是宿主的事，宿主按幂等处理）
     let harness = EngineHarness::allow_all();
-    submit(&harness, "s2", "再看
+    submit(
+        &harness,
+        "s2",
+        "再看
 ```ts
 const b = 2;
-```", "u-2");
+```",
+        "u-2",
+    );
     assert!(harness.wait_query_end());
     let events = harness.sink.events_of("highlightLanguagesUsed");
     assert_eq!(events.len(), 1, "got {:?}", harness.sink.event_types());
@@ -488,7 +524,11 @@ fn sessions_are_created_on_demand_and_can_be_dropped() {
 
     assert!(harness.core.session_if_exists("s1").is_none());
     let state = harness.core.session("s1");
-    assert_eq!(state.lock().unwrap().agent_mode, "manual", "默认模式来自 settings.json");
+    assert_eq!(
+        state.lock().unwrap().agent_mode,
+        "manual",
+        "默认模式来自 settings.json"
+    );
     assert!(harness.core.session_if_exists("s1").is_some());
     // 同一个会话拿到同一个实例
     assert!(Arc::ptr_eq(&state, &harness.core.session("s1")));
@@ -559,8 +599,13 @@ fn workspace_and_host_environment_updates_are_recorded() {
     let sandbox = Sandbox::new("engine-env");
     let harness = EngineHarness::allow_all();
 
-    harness.core.on_workspace_changed(Some(sandbox.workspace.to_string_lossy().to_string()));
-    assert_eq!(config::project_root("s1").unwrap(), sandbox.workspace.to_string_lossy());
+    harness
+        .core
+        .on_workspace_changed(Some(sandbox.workspace.to_string_lossy().to_string()));
+    assert_eq!(
+        config::project_root("s1").unwrap(),
+        sandbox.workspace.to_string_lossy()
+    );
 
     harness.core.on_host_environment(config::HostEnvironment {
         extension_path: "D:/ext".to_string(),
@@ -574,7 +619,10 @@ fn workspace_and_host_environment_updates_are_recorded() {
     assert!(config::conversations_root().unwrap().is_dir());
     let log = harness.sink.event_of("log").expect("log event");
     assert!(
-        log["message"].as_str().unwrap().contains("Standalone Core ready"),
+        log["message"]
+            .as_str()
+            .unwrap()
+            .contains("Standalone Core ready"),
         "got {log}"
     );
 
@@ -591,7 +639,10 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
 
     let state = harness.core.session("s1");
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     assert_eq!(runtime["states"][0]["sessionId"], "s1");
     assert_eq!(runtime["states"][0]["idle"], true);
     assert_eq!(runtime["states"][0]["waiting"], false);
@@ -605,7 +656,10 @@ fn emit_runtime_reports_idle_and_waiting_flags() {
     state.lock().unwrap().waiting = true;
     harness.sink.clear();
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     assert_eq!(runtime["states"][0]["idle"], false);
     assert_eq!(runtime["states"][0]["waiting"], true);
 }
@@ -623,7 +677,10 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     let parent = harness.core.session("p1");
     parent.lock().unwrap().running = true;
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let entry = &runtime["states"][0];
     assert_eq!(entry["queryRunning"], true);
     assert_eq!(entry["compacting"], false);
@@ -644,7 +701,10 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     crate::subagent::register("c1", "p1");
     harness.sink.clear();
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let states = runtime["states"].as_array().unwrap();
     let parent_entry = states
         .iter()
@@ -671,7 +731,10 @@ fn emit_runtime_reports_root_facts_and_busy_subagents() {
     child.lock().unwrap().running = false;
     harness.sink.clear();
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let states = runtime["states"].as_array().unwrap();
     let parent_entry = states
         .iter()
@@ -738,7 +801,11 @@ fn sub_agent_start_emits_running_runtime_snapshot() {
             .find(|event| {
                 event["states"]
                     .as_array()
-                    .map(|states| states.iter().any(|state| state["sessionId"] == child.as_str()))
+                    .map(|states| {
+                        states
+                            .iter()
+                            .any(|state| state["sessionId"] == child.as_str())
+                    })
                     .unwrap_or(false)
             });
         if first_snapshot.is_some() {
@@ -765,7 +832,10 @@ fn sub_agent_start_emits_running_runtime_snapshot() {
         .iter()
         .find(|state| state["sessionId"] == creator)
         .expect("父会话条目");
-    assert_eq!(parent_entry["subAgentRunning"], true, "父会话应看到子代理在跑");
+    assert_eq!(
+        parent_entry["subAgentRunning"], true,
+        "父会话应看到子代理在跑"
+    );
     assert_eq!(parent_entry["idle"], false, "父会话不应显示空闲");
 
     // 等子代理收尾（`Reply` → queryEnd），避免后台线程跨用例残留。
@@ -831,7 +901,11 @@ fn local_sub_agent_runtime_creator_is_agent_form() {
             .find(|event| {
                 event["states"]
                     .as_array()
-                    .map(|states| states.iter().any(|state| state["sessionId"] == child.as_str()))
+                    .map(|states| {
+                        states
+                            .iter()
+                            .any(|state| state["sessionId"] == child.as_str())
+                    })
                     .unwrap_or(false)
             });
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -862,7 +936,10 @@ fn local_sub_agent_runtime_creator_is_agent_form() {
         "meta.json 的 creator 应为 agent 形态"
     );
     // 树事实不被归属修复改写
-    assert_eq!(child_entry["parentSessionId"], creator, "parentSessionId 仍是父会话 id");
+    assert_eq!(
+        child_entry["parentSessionId"], creator,
+        "parentSessionId 仍是父会话 id"
+    );
 
     // 等子代理收尾，避免后台线程跨用例残留
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -889,12 +966,19 @@ fn spin_reply_is_consumed_once_and_late_replies_are_ignored() {
     harness.core.session("s1").lock().unwrap().work_mode = WorkMode::Spin;
     harness.core.register_spin_sub_agent("s1", "sub_a");
 
-    harness.core.deliver_agent_reply("s1", "第一次反馈", "sub_a").unwrap();
+    harness
+        .core
+        .deliver_agent_reply("s1", "第一次反馈", "sub_a")
+        .unwrap();
     {
         let state = harness.core.session("s1");
         let state = state.lock().unwrap();
         assert_eq!(
-            state.messages.iter().filter(|m| m["silent"] == json!(true)).count(),
+            state
+                .messages
+                .iter()
+                .filter(|m| m["silent"] == json!(true))
+                .count(),
             1,
             "首条 Reply 落 silent 上下文"
         );
@@ -903,16 +987,26 @@ fn spin_reply_is_consumed_once_and_late_replies_are_ignored() {
     }
 
     // 同一子代理的重复 Reply：忽略（不落盘、不入队）
-    harness.core.deliver_agent_reply("s1", "第二次反馈", "sub_a").unwrap();
+    harness
+        .core
+        .deliver_agent_reply("s1", "第二次反馈", "sub_a")
+        .unwrap();
     // SpinLoop 结束后迟到的 Reply：仍按 spin 语义忽略。work_mode 单向保持 spin；
     // 这里显式写回 normal 锁定「已登记 spin 子代理」的兜底分支。
     harness.core.set_work_mode("s1", WorkMode::Normal);
-    harness.core.deliver_agent_reply("s1", "迟到反馈", "sub_a").unwrap();
+    harness
+        .core
+        .deliver_agent_reply("s1", "迟到反馈", "sub_a")
+        .unwrap();
 
     let state = harness.core.session("s1");
     let state = state.lock().unwrap();
     assert_eq!(
-        state.messages.iter().filter(|m| m["silent"] == json!(true)).count(),
+        state
+            .messages
+            .iter()
+            .filter(|m| m["silent"] == json!(true))
+            .count(),
         1,
         "同一子代理只响应一次"
     );
@@ -932,12 +1026,19 @@ fn late_first_reply_from_spin_sub_agent_stays_silent() {
     harness.core.session("s1").lock().unwrap().work_mode = WorkMode::Normal;
     harness.core.register_spin_sub_agent("s1", "sub_late");
 
-    harness.core.deliver_agent_reply("s1", "迟到的反馈", "sub_late").unwrap();
+    harness
+        .core
+        .deliver_agent_reply("s1", "迟到的反馈", "sub_late")
+        .unwrap();
 
     let state = harness.core.session("s1");
     let state = state.lock().unwrap();
     assert_eq!(
-        state.messages.iter().filter(|m| m["silent"] == json!(true)).count(),
+        state
+            .messages
+            .iter()
+            .filter(|m| m["silent"] == json!(true))
+            .count(),
         1
     );
     assert!(state.agent_messages.is_empty());
@@ -956,9 +1057,7 @@ fn user_message_is_dropped_while_spin_mode() {
 
     submit(&harness, "s1", "spin 期间输入", "u-spin");
     // 自动消息（后台 Bash 通知）同样不得入队：Spin 结束后不能被消费循环喂给 LLM
-    harness
-        .core
-        .enqueue_bash_notification("s1", "后台任务完成");
+    harness.core.enqueue_bash_notification("s1", "后台任务完成");
 
     let state = harness.core.session("s1");
     let state = state.lock().unwrap();
@@ -990,13 +1089,21 @@ fn reply_called_sub_agent_discards_user_messages() {
     // Reply 前入队的消息：落在队列里等待驱动循环出队（子代理会话不另起裸消费循环）
     submit(&harness, "sub1", "排队消息", "u-q");
     assert!(
-        harness.core.session("sub1").lock().unwrap().pending_user_message.is_some(),
+        harness
+            .core
+            .session("sub1")
+            .lock()
+            .unwrap()
+            .pending_user_message
+            .is_some(),
         "Reply 前的排队消息应入队"
     );
     assert!(!harness.core.session("sub1").lock().unwrap().running);
 
     // Reply 投递（去向缺失不影响置位）：对话进入收尾
-    let _ = harness.core.deliver_agent_reply("missing-target", "结果", "sub1");
+    let _ = harness
+        .core
+        .deliver_agent_reply("missing-target", "结果", "sub1");
 
     // Reply 后的新消息：守卫拒收，队列里仍是 Reply 前那条
     submit(&harness, "sub1", "Reply 后新消息", "u-post");
@@ -1038,14 +1145,24 @@ fn finished_sub_agent_rejects_user_message() {
         .lock()
         .unwrap()
         .parent_session_id = Some("p1".to_string());
-    harness.core.session("sub1").lock().unwrap().sub_agent_driver_done = true;
+    harness
+        .core
+        .session("sub1")
+        .lock()
+        .unwrap()
+        .sub_agent_driver_done = true;
 
     // 重启恢复路径：meta 带本地子代理归属（creator 为 agent 形态），加载即推导收尾
     history::create_sub_agent_metadata("sub2", &project, "子任务", "p1", "Master", None, None)
         .unwrap();
     harness.core.ensure_loaded("sub2").unwrap();
     assert!(
-        harness.core.session("sub2").lock().unwrap().sub_agent_driver_done,
+        harness
+            .core
+            .session("sub2")
+            .lock()
+            .unwrap()
+            .sub_agent_driver_done,
         "恢复出的子代理会话应推导为已收尾"
     );
 
@@ -1058,7 +1175,10 @@ fn finished_sub_agent_rejects_user_message() {
             "{session_id}: 收尾后不得入队"
         );
         assert!(!state.running, "{session_id}: 收尾后不得拉起消费循环");
-        assert!(state.messages.is_empty(), "{session_id}: 收尾后不得进上下文");
+        assert!(
+            state.messages.is_empty(),
+            "{session_id}: 收尾后不得进上下文"
+        );
     }
 }
 
@@ -1102,7 +1222,11 @@ fn abort_request_stops_foreground_before_background() {
     core.session("s1").lock().unwrap().running = true;
     core.on_abort("s1");
     assert!(
-        core.session("s1").lock().unwrap().cancel.load(Ordering::Relaxed),
+        core.session("s1")
+            .lock()
+            .unwrap()
+            .cancel
+            .load(Ordering::Relaxed),
         "第一阶段应置 cancel"
     );
     assert_eq!(
@@ -1156,14 +1280,19 @@ fn conversation_lifecycle_updates_state_and_metadata() {
 
     // 重命名：先 titleChanged（宿主据此更新标题栏），再 conversationListChanged
     harness.core.on_conversation_renamed("s1", "新名字");
-    assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "新名字");
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["title"],
+        "新名字"
+    );
     let title = harness.sink.event_of("titleChanged").expect("titleChanged");
     assert_eq!(title["sessionId"], "s1");
     assert_eq!(title["title"], "新名字");
     assert!(harness.sink.event_of("conversationListChanged").is_some());
 
     // 上下文更新
-    harness.core.on_context_updated("s1", &[json!({ "key": "currentFile", "value": "a.ts" })]);
+    harness
+        .core
+        .on_context_updated("s1", &[json!({ "key": "currentFile", "value": "a.ts" })]);
     assert_eq!(
         history::load_metadata("s1", &workspace).unwrap()["context"]["currentFile"],
         "a.ts"
@@ -1215,8 +1344,14 @@ fn deleting_a_conversation_aborts_the_query_and_clears_its_tool_results() {
     assert!(harness.core.session_if_exists("s1").is_none());
     assert!(history::load_metadata("s1", &workspace).is_none());
     assert!(!history::messages_path("s1", &workspace).unwrap().exists());
-    assert!(!dir.join("s1__tool-Bash-1.txt").exists(), "会话的大工具结果应一并清理");
-    assert!(dir.join("s2__tool-Bash-1.txt").exists(), "别的会话的文件不能动");
+    assert!(
+        !dir.join("s1__tool-Bash-1.txt").exists(),
+        "会话的大工具结果应一并清理"
+    );
+    assert!(
+        dir.join("s2__tool-Bash-1.txt").exists(),
+        "别的会话的文件不能动"
+    );
 }
 
 #[test]
@@ -1247,8 +1382,14 @@ fn deleting_a_conversation_releases_its_sub_conversations_too() {
         "子对话的查询也必须先中止"
     );
     assert!(harness.core.session_if_exists("root").is_none());
-    assert!(harness.core.session_if_exists("child").is_none(), "子对话要一并卸掉");
-    assert!(harness.core.session_if_exists("unrelated").is_some(), "无关会话不能动");
+    assert!(
+        harness.core.session_if_exists("child").is_none(),
+        "子对话要一并卸掉"
+    );
+    assert!(
+        harness.core.session_if_exists("unrelated").is_some(),
+        "无关会话不能动"
+    );
     assert!(history::load_metadata("root", &workspace).is_none());
     assert!(history::load_metadata("child", &workspace).is_none());
     assert!(history::load_metadata("unrelated", &workspace).is_some());
@@ -1292,7 +1433,9 @@ fn rename_and_context_updates_are_noops_without_a_project() {
     let _sandbox = Sandbox::new("engine-no-project");
     let harness = EngineHarness::allow_all();
     harness.core.on_conversation_renamed("ghost", "标题");
-    harness.core.on_context_updated("ghost", &[json!({ "key": "model", "value": "m" })]);
+    harness
+        .core
+        .on_context_updated("ghost", &[json!({ "key": "model", "value": "m" })]);
     harness.core.on_conversation_deleted("ghost");
     assert!(harness.sink.event_of("conversationListChanged").is_some());
 }
@@ -1316,16 +1459,22 @@ fn session_config_changes_update_state_and_persist_model_identity() {
     assert_eq!(metadata["model"], "m1");
     assert_eq!(metadata["context"]["provider"], "p1");
 
-    harness.core.on_session_config_changed("s1", &json!({ "key": "agentMode", "value": "auto" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "agentMode", "value": "auto" }));
     assert_eq!(state.lock().unwrap().agent_mode, "auto");
 
     // 未知 key 只上报不落盘
-    harness.core.on_session_config_changed("s1", &json!({ "key": "thinkingEffort", "value": "off" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "thinkingEffort", "value": "off" }));
     assert!(harness.sink.events_of("sessionConfigChanged").len() == 3);
 
     // 没有 key 的变更直接丢弃
     harness.sink.clear();
-    harness.core.on_session_config_changed("s1", &json!({ "value": "x" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "value": "x" }));
     assert!(harness.sink.events().is_empty());
 
     // model 变更里缺 provider / model 字段时按 None 处理
@@ -1366,11 +1515,18 @@ fn ensure_loaded_reads_messages_and_session_metadata() {
     let state = state.lock().unwrap();
     assert_eq!(state.messages.len(), 1);
     assert_eq!(state.last_uuid.as_deref(), Some("u1"));
-    assert_eq!(state.agent_mode, "auto", "meta.json 的 agentMode 覆盖默认值");
+    assert_eq!(
+        state.agent_mode, "auto",
+        "meta.json 的 agentMode 覆盖默认值"
+    );
     assert_eq!(state.model.as_deref(), Some("m9"));
     assert_eq!(state.provider.as_deref(), Some("p9"));
     assert_eq!(state.project.as_deref(), Some(workspace.as_str()));
-    assert_eq!(state.creator, crate::engine::SessionCreator::User, "creator 从 meta.json 恢复");
+    assert_eq!(
+        state.creator,
+        crate::engine::SessionCreator::User,
+        "creator 从 meta.json 恢复"
+    );
 }
 
 /// creator 缺失 / 形态不对是数据异常：ensure_loaded 报错不回退（specs/025 FR-002）。
@@ -1450,12 +1606,7 @@ fn set_work_mode_persists_metadata_and_broadcasts() {
     let sandbox = Sandbox::new("engine-set-work-mode");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace.clone()));
-    history::create_conversation(
-        "s1",
-        &workspace,
-        json!({ "sessionId": "s1" }),
-    )
-    .unwrap();
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1" })).unwrap();
 
     let harness = EngineHarness::allow_all();
     // 先登记会话（set_work_mode 只对已登记会话生效，不复活 / 不隐式建档）
@@ -1466,7 +1617,11 @@ fn set_work_mode_persists_metadata_and_broadcasts() {
         assert_eq!(state.lock().unwrap().work_mode, WorkMode::Spin);
     }
     let metadata = history::load_metadata("s1", &workspace).expect("meta.json");
-    assert_eq!(metadata["workMode"], json!("spin"), "进入 spin 落盘 meta.json");
+    assert_eq!(
+        metadata["workMode"],
+        json!("spin"),
+        "进入 spin 落盘 meta.json"
+    );
     let events = harness.sink.events_of("workModeChanged");
     assert_eq!(
         events.len(),
@@ -1580,7 +1735,13 @@ fn user_message_without_session_id_is_dropped() {
     let harness = EngineHarness::allow_all();
     harness.core.on_user_message(&json!({ "content": "hi" }));
     let log = harness.sink.event_of("log").expect("log event");
-    assert!(log["message"].as_str().unwrap().contains("without sessionId"), "got {log}");
+    assert!(
+        log["message"]
+            .as_str()
+            .unwrap()
+            .contains("without sessionId"),
+        "got {log}"
+    );
 }
 
 #[test]
@@ -1683,7 +1844,10 @@ fn queued_message_is_discarded_by_uuid() {
     harness.core.on_queued_message_discarded("s1", "u1");
 
     let state = state.lock().unwrap();
-    assert!(state.pending_user_message.is_none(), "uuid 配对时丢弃排队消息");
+    assert!(
+        state.pending_user_message.is_none(),
+        "uuid 配对时丢弃排队消息"
+    );
     // 消息带着自己的处置一起被丢弃：不存在残留到下一批的注入
     assert!(state.pending_user_message.is_none(), "消息与注入一并清除");
     // 不置 cancel：撤回排队项不打断正在运行的查询（区别于 abort 第一阶段）
@@ -1802,7 +1966,9 @@ fn query_retry_requested_reruns_query_without_persisting_new_messages() {
         .collect();
     assert_eq!(user_messages.len(), 1, "重试不得重复落盘用户消息");
     assert_eq!(user_messages[0]["uuid"], "u1");
-    assert!(messages.iter().any(|message| message["type"] == "assistant"));
+    assert!(messages
+        .iter()
+        .any(|message| message["type"] == "assistant"));
     assert!(!harness.core.session("s1").lock().unwrap().running);
 }
 
@@ -1823,7 +1989,10 @@ fn query_retry_requested_is_dropped_while_busy() {
 
     harness.core.on_query_retry_requested("s1");
 
-    assert!(!state.lock().unwrap().pending_retry, "忙碌时不得登记重试槽位");
+    assert!(
+        !state.lock().unwrap().pending_retry,
+        "忙碌时不得登记重试槽位"
+    );
     assert!(state.lock().unwrap().running);
     // 没有消费循环被拉起：留一个观察窗口，确认 queryBegin 不出现
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1967,13 +2136,26 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let types = harness.sink.event_types();
     for expected in [
-        "queryBegin", "aiBegin", "toolCall", "toolArgsUpdated", "toolResult", "aiEnd", "queryEnd",
+        "queryBegin",
+        "aiBegin",
+        "toolCall",
+        "toolArgsUpdated",
+        "toolResult",
+        "aiEnd",
+        "queryEnd",
     ] {
-        assert!(types.iter().any(|kind| kind == expected), "缺少 {expected}: {types:?}");
+        assert!(
+            types.iter().any(|kind| kind == expected),
+            "缺少 {expected}: {types:?}"
+        );
     }
 
     let call = harness.sink.event_of("toolCall").unwrap();
@@ -1984,7 +2166,10 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "success");
-    assert!(result["output"].as_str().unwrap().contains("tool-ok"), "got {result}");
+    assert!(
+        result["output"].as_str().unwrap().contains("tool-ok"),
+        "got {result}"
+    );
 
     // 落盘：用户消息 + assistant(tool_use) + tool_result + assistant(文本)
     let messages = history::load_messages("s1", &workspace);
@@ -1995,10 +2180,16 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
     assert_eq!(messages[3]["message"]["content"][0]["text"], "完成");
 
     // 标题由首条用户消息推导
-    assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "跑一下");
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["title"],
+        "跑一下"
+    );
     // 只在改名（conversationRenamed）时发 titleChanged，新消息推导标题不发
     assert!(harness.sink.event_of("titleChanged").is_none());
-    assert_eq!(history::load_metadata("s1", &workspace).unwrap()["messageCount"], 4);
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["messageCount"],
+        4
+    );
     // `conversationListChanged` 每条消息落盘后各发一次（用户 + assistant + tool_result
     // + assistant = 4 次）
     assert_eq!(
@@ -2023,7 +2214,11 @@ fn first_user_message_creates_the_conversation_files() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "帮我看看这个文件", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let metadata = history::load_metadata("s1", &workspace).expect("meta.json 应被创建");
     assert_eq!(metadata["title"], "帮我看看这个文件");
@@ -2052,7 +2247,11 @@ fn first_user_message_without_text_falls_back_to_new_conversation() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     assert_eq!(
         history::load_metadata("s1", &workspace).unwrap()["title"],
@@ -2078,7 +2277,11 @@ fn first_user_message_preserves_preexisting_title() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "帮我看看这个文件", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     assert_eq!(
         history::load_metadata("s1", &workspace).unwrap()["title"],
@@ -2103,7 +2306,11 @@ fn rename_after_messages_is_preserved_on_later_turns() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "再来一轮", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     assert_eq!(
         history::load_metadata("s1", &workspace).unwrap()["title"],
@@ -2132,18 +2339,28 @@ fn image_read_is_returned_as_an_image_content_block() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "看图", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let result = harness.sink.event_of("toolResult").expect("toolResult");
     assert_eq!(result["status"], "success");
     // UI 事件的 `output` 是 string：数组 content 上报 `'[Image]'`
     // （图片本体只进 tool_result block）。
-    assert_eq!(result["output"], "[Image]", "图片的 UI 输出应为 [Image]: {result}");
+    assert_eq!(
+        result["output"], "[Image]",
+        "图片的 UI 输出应为 [Image]: {result}"
+    );
 
     // 落盘的 tool_result block 同样是数组（LLM 上下文里就是 image block）
     let messages = history::load_messages("s1", &workspace);
     assert_eq!(messages[2]["message"]["content"][0]["type"], "tool_result");
-    assert_eq!(messages[2]["message"]["content"][0]["content"][0]["type"], "image");
+    assert_eq!(
+        messages[2]["message"]["content"][0]["content"][0]["type"],
+        "image"
+    );
 }
 
 #[test]
@@ -2180,7 +2397,11 @@ fn orphan_tool_use_is_backfilled_with_a_cancelled_tool_result_on_load() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "继续", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let bodies = bodies.lock().unwrap();
     assert_eq!(bodies.len(), 1);
@@ -2190,10 +2411,9 @@ fn orphan_tool_use_is_backfilled_with_a_cancelled_tool_result_on_load() {
         .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_orphan")
         .unwrap_or_else(|| panic!("缺少补发的 tool_result: {messages:?}"));
     assert!(
-        recovered["content"]
-            .as_str()
-            .unwrap()
-            .contains("[Previous session interrupted] Tool \"Bash\" was canceled before execution."),
+        recovered["content"].as_str().unwrap().contains(
+            "[Previous session interrupted] Tool \"Bash\" was canceled before execution."
+        ),
         "got {recovered}"
     );
 }
@@ -2207,12 +2427,8 @@ fn crash_recovered_tool_results_are_persisted_before_the_next_user_message() {
     let llm = FakeLlm::fixed(openai_text_sse(&["好的"]));
     prepare(&sandbox, &llm.base_url, "auto");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
-    history::create_conversation(
-        "s1",
-        &workspace,
-        json!({ "sessionId": "s1", "title": "t" }),
-    )
-    .unwrap();
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1", "title": "t" }))
+        .unwrap();
     history::append_message(
         "s1",
         &workspace,
@@ -2232,7 +2448,11 @@ fn crash_recovered_tool_results_are_persisted_before_the_next_user_message() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "继续", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let dir = sandbox.conversation_dir(&workspace);
     let lines: Vec<Value> = std::fs::read_to_string(dir.join("s1.jsonl"))
@@ -2263,17 +2483,15 @@ fn crash_recovered_tool_results_are_persisted_before_the_next_user_message() {
     // 对齐 `Conversation.appendMessage`：每落盘一条消息各发一次列表变化——
     // 恢复结果 + 用户消息 + assistant 回复 = 3 次。
     assert_eq!(
-        harness
-            .sink
-            .events_of("conversationListChanged")
-            .len(),
+        harness.sink.events_of("conversationListChanged").len(),
         3,
         "恢复结果也要各发一次 conversationListChanged"
     );
 }
 
 #[test]
-fn second_llm_round_sees_the_tool_result() {    let sandbox = Sandbox::new("engine-round-two");
+fn second_llm_round_sees_the_tool_result() {
+    let sandbox = Sandbox::new("engine-round-two");
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = Arc::clone(&bodies);
     let llm = FakeLlm::start(move |index, body| {
@@ -2301,7 +2519,10 @@ fn second_llm_round_sees_the_tool_result() {    let sandbox = Sandbox::new("engi
         .unwrap_or_else(|| panic!("第二轮缺少 tool 结果: {messages:?}"));
     assert_eq!(tool_message["tool_call_id"], "call_1");
     assert!(
-        tool_message["content"].as_str().unwrap().contains("文件内容"),
+        tool_message["content"]
+            .as_str()
+            .unwrap()
+            .contains("文件内容"),
         "got {tool_message}"
     );
     // 第一轮里工具还没执行，不应有 tool 消息
@@ -2439,7 +2660,9 @@ fn manual_background_pauses_the_loop_until_a_queued_message_arrives() {
 /// 关 → 不在。会话级覆盖（context.webSearch）优先于 settings。
 #[test]
 fn web_tools_follow_the_web_search_flag() {
-    let run_query_and_collect_tools = |sandbox_name: &str, web_search: Option<bool>| -> Vec<String> {
+    let run_query_and_collect_tools = |sandbox_name: &str,
+                                       web_search: Option<bool>|
+     -> Vec<String> {
         let sandbox = Sandbox::new(sandbox_name);
         let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&bodies);
@@ -2521,11 +2744,7 @@ fn web_search_toggle_syncs_tool_list_and_prompt_details() {
     let system_prompt_of = |body: &Value| -> String {
         body["messages"]
             .as_array()
-            .and_then(|messages| {
-                messages
-                    .iter()
-                    .find(|message| message["role"] == "system")
-            })
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "system"))
             .and_then(|message| message["content"].as_str())
             .unwrap_or_default()
             .to_string()
@@ -2541,13 +2760,18 @@ fn web_search_toggle_syncs_tool_list_and_prompt_details() {
         assert!(!bodies.is_empty(), "应当发出 LLM 请求");
         let names = tool_names(&bodies[0]);
         assert!(
-            names.contains(&"WebSearch".to_string())
-                && names.contains(&"WebFetch".to_string()),
+            names.contains(&"WebSearch".to_string()) && names.contains(&"WebFetch".to_string()),
             "默认开工具清单：{names:?}"
         );
         let prompt = system_prompt_of(&bodies[0]);
-        assert!(prompt.contains("## WebSearch Tool"), "默认开提示词应含 WebSearch 段");
-        assert!(prompt.contains("## WebFetch Tool"), "默认开提示词应含 WebFetch 段");
+        assert!(
+            prompt.contains("## WebSearch Tool"),
+            "默认开提示词应含 WebSearch 段"
+        );
+        assert!(
+            prompt.contains("## WebFetch Tool"),
+            "默认开提示词应含 WebFetch 段"
+        );
     }
 
     // 会话内关闭联网搜索（与 UI setWebSearch 同路径：配置事件）
@@ -2609,15 +2833,16 @@ fn message_payload_does_not_override_established_web_search() {
         }
     }));
     config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
-    let submit_with_web_search = |harness: &EngineHarness, session_id: &str, content: &str, uuid: &str, web_search: bool| {
-        harness.core.on_user_message(&json!({
-            "sessionId": session_id,
-            "content": content,
-            "uuid": uuid,
-            "workspacePath": null,
-            "webSearch": web_search,
-        }));
-    };
+    let submit_with_web_search =
+        |harness: &EngineHarness, session_id: &str, content: &str, uuid: &str, web_search: bool| {
+            harness.core.on_user_message(&json!({
+                "sessionId": session_id,
+                "content": content,
+                "uuid": uuid,
+                "workspacePath": null,
+                "webSearch": web_search,
+            }));
+        };
 
     let harness = EngineHarness::allow_all();
 
@@ -2650,7 +2875,8 @@ fn message_payload_does_not_override_established_web_search() {
                     && types
                         .iter()
                         .filter(|kind| *kind == "conversationListChanged")
-                        .count() >= 2
+                        .count()
+                        >= 2
             },
             std::time::Duration::from_secs(30),
         ),
@@ -2666,7 +2892,12 @@ fn message_payload_does_not_override_established_web_search() {
     }
 }
 
-fn write_settings_with_features_max_turns(sandbox: &Sandbox, base_url: &str, agent_mode: &str, max_turns: u64) {
+fn write_settings_with_features_max_turns(
+    sandbox: &Sandbox,
+    base_url: &str,
+    agent_mode: &str,
+    max_turns: u64,
+) {
     sandbox.write_settings(json!({
         "defaultAgentMode": agent_mode,
         "features": { "maxTurns": max_turns },
@@ -2695,11 +2926,7 @@ fn tool_loop_has_no_default_turn_limit() {
     let llm = FakeLlm::start(move |index, _| {
         *counter.lock().unwrap() = index + 1;
         if index < 45 {
-            openai_tool_sse(
-                &format!("call_{index}"),
-                "Bash",
-                r#"{"command":"echo hi"}"#,
-            )
+            openai_tool_sse(&format!("call_{index}"), "Bash", r#"{"command":"echo hi"}"#)
         } else {
             openai_text_sse(&["收工"])
         }
@@ -2710,7 +2937,11 @@ fn tool_loop_has_no_default_turn_limit() {
     submit(&harness, "s1", "跑起来", "u-1");
     assert!(harness.wait_query_end());
 
-    assert_eq!(*calls.lock().unwrap(), 46, "45 轮工具调用后还应有收尾的一轮");
+    assert_eq!(
+        *calls.lock().unwrap(),
+        46,
+        "45 轮工具调用后还应有收尾的一轮"
+    );
     assert_eq!(harness.sink.events_of("aiBegin").len(), 46);
     // 未超限时不应有错误提示
     let has_error = harness.sink.events_of("message").iter().any(|event| {
@@ -2813,7 +3044,11 @@ fn allowed_tool_executes_without_permission_response() {
     let sandbox = Sandbox::new("engine-orphan-perm-roundtrip");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            anthropic_sse("", "", Some(("toolu_1", "Bash", r#"{"command":"echo orphan"}"#)))
+            anthropic_sse(
+                "",
+                "",
+                Some(("toolu_1", "Bash", r#"{"command":"echo orphan"}"#)),
+            )
         } else {
             anthropic_sse("", "完成", None)
         }
@@ -2836,11 +3071,10 @@ fn allowed_tool_executes_without_permission_response() {
 
     // 模拟孤儿：除 toolPermissionRequested 外都应答——它留在 pending 表无人理睬
     // （对端排水但不代答，specs/031 FR-005 的帧排水语义）。
-    let harness = EngineHarness::start_ignoring(
-        &["toolPermissionRequested"],
-        Capture::new(),
-        |_request| Some(json!({})),
-    );
+    let harness =
+        EngineHarness::start_ignoring(&["toolPermissionRequested"], Capture::new(), |_request| {
+            Some(json!({}))
+        });
     submit(&harness, "s1", "后台跑一下", "u-1");
 
     assert!(
@@ -2859,7 +3093,9 @@ fn allowed_tool_executes_without_permission_response() {
         .sink
         .events_of("streamEnd")
         .into_iter()
-        .find(|event| event["data"]["role"] == "assistant" && event["data"]["accumulated"] == "完成")
+        .find(|event| {
+            event["data"]["role"] == "assistant" && event["data"]["accumulated"] == "完成"
+        })
         .expect("第二轮 LLM 应到达");
     assert_eq!(stream_end["data"]["accumulated"], "完成");
 
@@ -2892,7 +3128,9 @@ fn ask_user_question_round_trips_through_the_user_choice_request() {
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         // AskUserQuestion 的 checkPermissions 直接放行：回传 permResult 本身
         "toolPermissionRequested" => Some(request["permResult"].clone()),
-        "userChoice" => Some(json!({ "answers": [{ "id": "q", "selected": ["B"], "custom": null }] })),
+        "userChoice" => {
+            Some(json!({ "answers": [{ "id": "q", "selected": ["B"], "custom": null }] }))
+        }
         _ => Some(json!({})),
     });
     submit(&harness, "s1", "问个问题", "u-1");
@@ -2915,9 +3153,18 @@ fn ask_user_question_round_trips_through_the_user_choice_request() {
     assert_eq!(choices[0]["options"]["kind"], "question");
     assert_eq!(choices[0]["options"]["toolName"], "AskUserQuestion");
     assert_eq!(choices[0]["options"]["questions"][0]["id"], "q");
-    assert_eq!(choices[0]["options"]["questions"][0]["question"], "选哪个？");
-    assert_eq!(choices[0]["options"]["questions"][0]["options"][0]["label"], "A");
-    assert_eq!(choices[0]["options"]["questions"][0]["options"][1]["label"], "B");
+    assert_eq!(
+        choices[0]["options"]["questions"][0]["question"],
+        "选哪个？"
+    );
+    assert_eq!(
+        choices[0]["options"]["questions"][0]["options"][0]["label"],
+        "A"
+    );
+    assert_eq!(
+        choices[0]["options"]["questions"][0]["options"][1]["label"],
+        "B"
+    );
 
     // tool_result：按 dsh 口径回传 answers JSON
     let result = harness.sink.event_of("toolResult").unwrap();
@@ -3085,7 +3332,10 @@ fn llm_failures_surface_as_system_messages() {
     let message = harness.sink.event_of("message").expect("system message");
     assert_eq!(message["data"]["role"], "system");
     assert!(
-        message["data"]["content"].as_str().unwrap().contains("boom"),
+        message["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("boom"),
         "got {message}"
     );
 }
@@ -3095,7 +3345,11 @@ fn anthropic_provider_runs_the_same_turn() {
     let sandbox = Sandbox::new("engine-anthropic");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            anthropic_sse("想一想", "", Some(("toolu_1", "Bash", r#"{"command":"echo anthropic"}"#)))
+            anthropic_sse(
+                "想一想",
+                "",
+                Some(("toolu_1", "Bash", r#"{"command":"echo anthropic"}"#)),
+            )
         } else {
             anthropic_sse("", "完成", None)
         }
@@ -3120,7 +3374,10 @@ fn anthropic_provider_runs_the_same_turn() {
     submit(&harness, "s1", "跑一下", "u-1");
     assert!(harness.wait_query_end());
 
-    assert_eq!(harness.sink.event_of("toolResult").unwrap()["status"], "success");
+    assert_eq!(
+        harness.sink.event_of("toolResult").unwrap()["status"],
+        "success"
+    );
     let thinking = harness
         .sink
         .events_of("streamMessage")
@@ -3134,9 +3391,7 @@ fn anthropic_provider_runs_the_same_turn() {
         .sink
         .events_of("streamEnd")
         .into_iter()
-        .find(|event| {
-            event["data"]["role"] == "assistant" && event["data"].get("usage").is_some()
-        })
+        .find(|event| event["data"]["role"] == "assistant" && event["data"].get("usage").is_some())
         .expect("assistant streamEnd");
     assert_eq!(stream_end["data"]["accumulated"], "完成");
     // input = message_start 的 input_tokens + 两个 cache 计数（5 + 3 + 2），
@@ -3177,7 +3432,11 @@ fn anthropic_start_signature_is_persisted_in_thinking_block() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     let messages = history::load_messages("s1", &workspace);
@@ -3234,15 +3493,27 @@ fn anthropic_content_block_start_input_is_persisted_without_delta() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
-    assert_eq!(harness.sink.event_of("toolResult").unwrap()["status"], "success");
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
+    assert_eq!(
+        harness.sink.event_of("toolResult").unwrap()["status"],
+        "success"
+    );
 
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     let messages = history::load_messages("s1", &workspace);
     let tool_use = messages
         .iter()
         .filter(|message| message["type"] == "assistant")
-        .flat_map(|message| message["message"]["content"].as_array().cloned().unwrap_or_default())
+        .flat_map(|message| {
+            message["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
         .find(|block| block["type"] == "tool_use")
         .expect("tool_use block");
     assert_eq!(tool_use["input"], json!({ "command": "echo start-input" }));
@@ -3258,16 +3529,18 @@ fn stream_end_usage_carries_cache_keys_even_without_details() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     // 块级收尾：`block_stop` 那条 usage 缺省，带 usage 的是 `message_delta` 那条
     let stream_end = harness
         .sink
         .events_of("streamEnd")
         .into_iter()
-        .find(|event| {
-            event["data"]["role"] == "assistant" && event["data"].get("usage").is_some()
-        })
+        .find(|event| event["data"]["role"] == "assistant" && event["data"].get("usage").is_some())
         .expect("assistant streamEnd");
     assert_eq!(stream_end["data"]["accumulated"], "答");
     let usage = &stream_end["data"]["usage"];
@@ -3288,7 +3561,10 @@ fn stream_end_shapes(capture: &crate::test_support::Capture) -> Vec<StreamEndSha
         .map(|event| {
             (
                 event["data"]["role"].as_str().unwrap_or("").to_string(),
-                event["data"]["accumulated"].as_str().unwrap_or("").to_string(),
+                event["data"]["accumulated"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
                 event["data"].get("usage").is_some(),
                 event["data"]["streamId"].as_str().unwrap_or("").to_string(),
             )
@@ -3302,9 +3578,7 @@ fn assert_block_granular_stream_ends(harness: &EngineHarness, thinking: &str, te
     let shapes = stream_end_shapes(&harness.sink);
     let summary: Vec<(String, String, bool)> = shapes
         .iter()
-        .map(|(role, accumulated, has_usage, _)| {
-            (role.clone(), accumulated.clone(), *has_usage)
-        })
+        .map(|(role, accumulated, has_usage, _)| (role.clone(), accumulated.clone(), *has_usage))
         .collect();
     assert_eq!(
         summary,
@@ -3322,7 +3596,10 @@ fn assert_block_granular_stream_ends(harness: &EngineHarness, thinking: &str, te
     assert!(thinking_id.starts_with("blk_"), "got {thinking_id}");
     assert!(text_id.starts_with("blk_"), "got {text_id}");
     assert_ne!(thinking_id, text_id, "不同块必须用不同 streamId");
-    assert_eq!(&shapes[2].3, thinking_id, "同一块的两条 streamEnd 共用 streamId");
+    assert_eq!(
+        &shapes[2].3, thinking_id,
+        "同一块的两条 streamEnd 共用 streamId"
+    );
     assert_eq!(&shapes[3].3, text_id);
 
     // `streamMessage` 与对应块的 `streamEnd` 共用同一个块级 streamId
@@ -3335,7 +3612,10 @@ fn assert_block_granular_stream_ends(harness: &EngineHarness, thinking: &str, te
         .iter()
         .find(|event| event["data"]["role"] == "assistant")
         .expect("assistant streamMessage");
-    assert_eq!(thinking_msg["data"]["streamId"].as_str().unwrap(), thinking_id);
+    assert_eq!(
+        thinking_msg["data"]["streamId"].as_str().unwrap(),
+        thinking_id
+    );
     assert_eq!(text_msg["data"]["streamId"].as_str().unwrap(), text_id);
 }
 
@@ -3350,7 +3630,11 @@ fn anthropic_stream_end_granularity() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     assert_block_granular_stream_ends(&harness, "想一想", "完成");
 }
@@ -3365,7 +3649,11 @@ fn openai_stream_end_granularity() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     assert_block_granular_stream_ends(&harness, "想", "答");
 }
@@ -3392,13 +3680,20 @@ fn pure_tool_use_turn_emits_one_usage_carrying_stream_end() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     // 第一轮（纯 tool_use）只有一条 streamEnd；第二轮给文本收尾，另有自己的事件
     let shapes = stream_end_shapes(&harness.sink);
     let (role, accumulated, has_usage, stream_id) = &shapes[0];
     assert_eq!(role, "assistant");
-    assert!(accumulated.is_empty(), "纯 tool_use 轮次的 accumulated 为空");
+    assert!(
+        accumulated.is_empty(),
+        "纯 tool_use 轮次的 accumulated 为空"
+    );
     assert!(has_usage, "纯 tool_use 轮次的 streamEnd 必须带 usage");
     assert!(stream_id.starts_with("msg_"), "got {stream_id}");
 }
@@ -3583,7 +3878,11 @@ fn queued_user_message_merges_with_agent_replies_in_one_round() {
     );
 
     let requests = bodies.lock().unwrap();
-    assert_eq!(requests.len(), 2, "两条排队消息应并入同一轮，而不是各自起一轮");
+    assert_eq!(
+        requests.len(),
+        2,
+        "两条排队消息应并入同一轮，而不是各自起一轮"
+    );
     let second = requests[1]["messages"].as_array().unwrap();
     // 两条都是 user 角色、且相邻，请求组装时被 `merge_consecutive_same_role` 合并成
     // 一条 user 消息：自动消息在前、用户消息在末尾。
@@ -3615,10 +3914,14 @@ fn message_submitted_after_a_turn_starts_a_new_turn() {
     submit(&harness, "s1", "第一条", "u-1");
     assert!(harness.wait_query_end());
     submit(&harness, "s1", "第二条", "u-2");
-    assert!(harness.wait_for(
-        |sink| sink.events_of("queryEnd").len() == 2,
-        std::time::Duration::from_secs(30)
-    ), "两条消息都应当各自跑完一轮: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_for(
+            |sink| sink.events_of("queryEnd").len() == 2,
+            std::time::Duration::from_secs(30)
+        ),
+        "两条消息都应当各自跑完一轮: {:?}",
+        harness.sink.event_types()
+    );
 
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     let messages = history::load_messages("s1", &workspace);
@@ -3645,9 +3948,18 @@ fn user_message_carries_the_workspace_path() {
     assert!(harness.wait_query_end());
 
     // 尾部分隔符被归一化，且会话状态记住了工作目录
-    assert_eq!(config::session_workspace("s1").as_deref(), Some(workspace.as_str()));
     assert_eq!(
-        harness.core.session("s1").lock().unwrap().project.as_deref(),
+        config::session_workspace("s1").as_deref(),
+        Some(workspace.as_str())
+    );
+    assert_eq!(
+        harness
+            .core
+            .session("s1")
+            .lock()
+            .unwrap()
+            .project
+            .as_deref(),
         Some(workspace.as_str())
     );
 }
@@ -3730,7 +4042,11 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
     // 看起来就是「中断后压缩，压缩完工具调用又冒出来」
     // （specs/defects/aborted-tool-card-appears-only-after-compaction）。
     let permissions = harness.sink.requests_of("toolPermissionRequested");
-    assert_eq!(permissions.len(), 1, "中断也必须上架工具卡片: got {permissions:?}");
+    assert_eq!(
+        permissions.len(),
+        1,
+        "中断也必须上架工具卡片: got {permissions:?}"
+    );
     assert_eq!(permissions[0]["toolUseId"], "call_1");
     assert_eq!(permissions[0]["toolName"], "Bash");
     assert_eq!(
@@ -3781,17 +4097,19 @@ fn abort_with_pending_tool_uses_backfills_tool_results_and_reports_interruption(
 
     // `*User Interrupted*`：UI 事件带 once 标记；记 meta.json 的 `onceMessage`，
     // 不落 jsonl（`docs/hosts/webview-ui.md` 第 11 节）
-    let message = harness.sink.event_of("message").expect("interrupted message");
+    let message = harness
+        .sink
+        .event_of("message")
+        .expect("interrupted message");
     assert_eq!(message["data"]["role"], "system");
     assert_eq!(message["data"]["content"], "*User Interrupted*");
     assert_eq!(message["data"]["once"], true);
     let metadata = history::load_metadata("s1", &workspace).expect("meta");
     assert_eq!(metadata["onceMessage"]["content"], "*User Interrupted*");
     assert!(
-        !messages
-            .iter()
-            .any(|message| message["type"] == "system"
-                && message["content"] == "*User Interrupted*"),
+        !messages.iter().any(
+            |message| message["type"] == "system" && message["content"] == "*User Interrupted*"
+        ),
         "中断提示不得落盘：got {messages:?}"
     );
 }
@@ -3840,8 +4158,7 @@ fn abort_during_responses_stream_reports_interruption_not_api_error() {
     );
     assert!(
         messages.iter().any(|event| {
-            event["data"]["role"] == "system"
-                && event["data"]["content"] == "*User Interrupted*"
+            event["data"]["role"] == "system" && event["data"]["content"] == "*User Interrupted*"
         }),
         "应当上报 *User Interrupted*：{messages:?}"
     );
@@ -3865,7 +4182,11 @@ fn bash_streams_tool_progress_frames() {
     assert!(harness.wait_query_end());
 
     let events = harness.sink.events_of("toolProgress");
-    assert!(!events.is_empty(), "应上报 toolProgress：{:?}", harness.sink.event_types());
+    assert!(
+        !events.is_empty(),
+        "应上报 toolProgress：{:?}",
+        harness.sink.event_types()
+    );
     let event = &events[0];
     assert_eq!(event["sessionId"], "s1");
     assert_eq!(event["toolUseId"], "call_1");
@@ -3881,7 +4202,12 @@ fn bash_streams_tool_progress_frames() {
     assert!(event["progress"]["totalLines"].as_u64().is_some());
     let joined: String = events
         .iter()
-        .map(|event| event["progress"]["output"].as_str().unwrap_or("").to_string())
+        .map(|event| {
+            event["progress"]["output"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
         .collect();
     assert!(joined.contains("hello-progress"), "got {joined:?}");
 }
@@ -3908,7 +4234,10 @@ fn failed_tool_results_get_the_executing_prefix() {
     assert_eq!(result["status"], "error");
     let bare = result["output"].as_str().unwrap();
     assert!(bare.starts_with("File not found:"), "got {result}");
-    assert!(!bare.starts_with("Error executing"), "UI 用裸消息: {result}");
+    assert!(
+        !bare.starts_with("Error executing"),
+        "UI 用裸消息: {result}"
+    );
 
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     let messages = history::load_messages("s1", &workspace);
@@ -4064,10 +4393,9 @@ fn abort_during_tool_execution_reports_interruption() {
         "*User Interrupted*"
     );
     assert!(
-        !history::load_messages("s1", &workspace)
-            .iter()
-            .any(|message| message["type"] == "system"
-                && message["content"] == "*User Interrupted*"),
+        !history::load_messages("s1", &workspace).iter().any(
+            |message| message["type"] == "system" && message["content"] == "*User Interrupted*"
+        ),
         "中断提示不得落盘"
     );
 }
@@ -4104,7 +4432,10 @@ fn allowed_tool_still_emits_the_permission_request() {
     assert_eq!(request["toolName"], "Read");
     assert_eq!(request["permResult"]["behavior"], "allow");
     // `buildTool` 默认 checkPermissions 返回 updatedInput = 规范化入参
-    assert_eq!(request["permResult"]["updatedInput"]["file_path"], "sample.txt");
+    assert_eq!(
+        request["permResult"]["updatedInput"]["file_path"],
+        "sample.txt"
+    );
     // displayArgs 展开为会话工作目录下的绝对路径
     let expected = sandbox
         .workspace
@@ -4190,7 +4521,11 @@ fn edit_permission_request_carries_the_diff_preview() {
     assert_eq!(perm["lineEndings"], "LF");
 
     let display = &requests[0]["displayArgs"];
-    let expected_path = sandbox.workspace.join("a.txt").to_string_lossy().to_string();
+    let expected_path = sandbox
+        .workspace
+        .join("a.txt")
+        .to_string_lossy()
+        .to_string();
     assert_eq!(display["file_path"], expected_path);
     assert_eq!(display["old_string"], "beta");
     assert_eq!(display["new_string"], "BETA");
@@ -4276,11 +4611,18 @@ fn write_permission_request_carries_the_preview_fields() {
     assert_eq!(requests.len(), 1);
     let perm = &requests[0]["permResult"];
     assert_eq!(perm["behavior"], "ask");
-    assert!(perm["beforeContent"].is_null(), "新建文件 beforeContent 必须是 null");
+    assert!(
+        perm["beforeContent"].is_null(),
+        "新建文件 beforeContent 必须是 null"
+    );
     assert_eq!(perm["afterContent"], "hello\nworld");
 
     let display = &requests[0]["displayArgs"];
-    let expected_path = sandbox.workspace.join("new.txt").to_string_lossy().to_string();
+    let expected_path = sandbox
+        .workspace
+        .join("new.txt")
+        .to_string_lossy()
+        .to_string();
     assert_eq!(display["file_path"], expected_path);
     assert_eq!(display["content"], "hello\nworld");
     assert_eq!(display["contentPreview"], "hello\nworld");
@@ -4570,13 +4912,9 @@ fn permission_refusal_without_a_reason_terminates_the_turn() {
         1,
         "不带原因地拒绝后不应再发起 LLM 请求"
     );
-    let interrupted = harness
-        .sink
-        .events_of("message")
-        .iter()
-        .any(|event| {
-            event["data"]["role"] == "system" && event["data"]["content"] == "*User Interrupted*"
-        });
+    let interrupted = harness.sink.events_of("message").iter().any(|event| {
+        event["data"]["role"] == "system" && event["data"]["content"] == "*User Interrupted*"
+    });
     assert!(interrupted, "应当上报 *User Interrupted* 系统消息");
 }
 
@@ -4604,13 +4942,9 @@ fn permission_refusal_with_a_reason_continues_the_turn() {
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["output"], "用户拒绝操作，原因：换个方式");
     assert_eq!(harness.sink.events_of("aiBegin").len(), 2);
-    let interrupted = harness
-        .sink
-        .events_of("message")
-        .iter()
-        .any(|event| {
-            event["data"]["role"] == "system" && event["data"]["content"] == "*User Interrupted*"
-        });
+    let interrupted = harness.sink.events_of("message").iter().any(|event| {
+        event["data"]["role"] == "system" && event["data"]["content"] == "*User Interrupted*"
+    });
     assert!(!interrupted, "带原因的拒绝不应上报 *User Interrupted*");
 }
 
@@ -4624,7 +4958,10 @@ fn rename_without_a_metadata_file_creates_it_and_broadcasts_title_changed() {
     config::set_active_workspace(Some(workspace.clone()));
     let harness = EngineHarness::allow_all();
 
-    assert!(history::load_metadata("ghost", &workspace).is_none(), "测试前提：无 meta.json");
+    assert!(
+        history::load_metadata("ghost", &workspace).is_none(),
+        "测试前提：无 meta.json"
+    );
     harness.core.on_conversation_renamed("ghost", "标题");
     let title = harness.sink.event_of("titleChanged").expect("titleChanged");
     assert_eq!(title["sessionId"], "ghost");
@@ -4676,7 +5013,10 @@ fn double_encoded_tool_input_still_executes_and_is_persisted_as_an_update() {
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "success");
-    assert!(sandbox.workspace.join("marker.txt").exists(), "命令应当真的执行");
+    assert!(
+        sandbox.workspace.join("marker.txt").exists(),
+        "命令应当真的执行"
+    );
 
     // 落盘：assistant 消息里的 input 仍是 double-encode 的原样，
     // 但 `tool_use_update` 记录会在加载历史时把入参还原成对象。
@@ -4744,7 +5084,10 @@ fn field_level_json_string_input_is_unwrapped_and_persisted_as_an_update() {
         })
         .expect("应当落盘 tool_use block");
     assert!(raw_tool_use["input"]["todos"].is_string());
-    assert!(raw.contains("\"type\":\"tool_use_update\""), "应当追加 tool_use_update 记录");
+    assert!(
+        raw.contains("\"type\":\"tool_use_update\""),
+        "应当追加 tool_use_update 记录"
+    );
 
     // 加载历史后入参已被回放成数组
     let messages = history::load_messages("s1", &workspace);
@@ -4763,7 +5106,6 @@ fn field_level_json_string_input_is_unwrapped_and_persisted_as_an_update() {
     assert_eq!(loaded["input"]["todos"][0]["content"], "写测试");
 }
 
-
 /// 工具不存在：不发 toolCall、不执行，但仍发一次 toolPermissionRequested
 /// （permResult 默认 allow），
 /// 随后补 `Error: Tool "X" not found` 并跳过该工具。
@@ -4781,7 +5123,11 @@ fn unknown_tool_is_reported_and_skipped_without_executing() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "error");
@@ -4830,7 +5176,11 @@ fn bash_input_validation_failure_is_reported_and_skipped() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "error");
@@ -4865,8 +5215,7 @@ fn bash_input_validation_failure_is_reported_and_skipped() {
 /// 产出同结果。
 #[test]
 fn js_value_parity_tests() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures/jsValue.json");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/jsValue.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("读取 {} 失败: {err}", path.display()));
     let fixture: Value = serde_json::from_str(&raw).expect("对照表不是合法 JSON");
@@ -4911,10 +5260,7 @@ fn available_output_tokens_matches_the_formula() {
     // 上下文很空：输出预算取配置值
     assert_eq!(available_output_tokens(WINDOW, OUTPUT, 0), OUTPUT as u32);
     // 上下文占用 90%：只剩窗口的 10%
-    assert_eq!(
-        available_output_tokens(WINDOW, OUTPUT, WINDOW - 1000),
-        1000
-    );
+    assert_eq!(available_output_tokens(WINDOW, OUTPUT, WINDOW - 1000), 1000);
     // 输出上限小于剩余空间时取输出上限
     assert_eq!(available_output_tokens(WINDOW, 50, 0), 50);
     // 已超出窗口：至少留 1 个 token（对齐 `Math.max(1, ...)`）
@@ -4942,7 +5288,10 @@ fn exact_context_tokens_prefers_the_last_assistant_usage() {
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
 
     // 没有任何消息、meta.json 也不存在 → None
-    assert_eq!(exact_context_tokens(&state, "s1", &sandbox.workspace.to_string_lossy()), None);
+    assert_eq!(
+        exact_context_tokens(&state, "s1", &sandbox.workspace.to_string_lossy()),
+        None
+    );
 
     {
         let mut state = state.lock().unwrap();
@@ -4953,7 +5302,9 @@ fn exact_context_tokens_prefers_the_last_assistant_usage() {
             "message": { "role": "assistant", "content": [] },
             "uuid": "a-2",
         }));
-        state.messages.push(json!({ "type": "user", "message": { "role": "user", "content": "hi" } }));
+        state
+            .messages
+            .push(json!({ "type": "user", "message": { "role": "user", "content": "hi" } }));
     }
     assert_eq!(
         exact_context_tokens(&state, "s1", &sandbox.workspace.to_string_lossy()),
@@ -4979,20 +5330,36 @@ fn exact_context_tokens_falls_back_to_metadata_total_context_tokens() {
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
 
     // 只有 meta.json 记录了上下文占用时用它兜底
-    history::create_conversation("s1", &project, json!({ "sessionId": "s1", "project": project }))
-        .expect("create conversation");
-    history::update_context("s1", &project, &[json!({ "key": "totalContextTokens", "value": 4321 })])
-        .expect("write metadata");
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project }),
+    )
+    .expect("create conversation");
+    history::update_context(
+        "s1",
+        &project,
+        &[json!({ "key": "totalContextTokens", "value": 4321 })],
+    )
+    .expect("write metadata");
     assert_eq!(exact_context_tokens(&state, "s1", &project), Some(4321));
 
     // meta.json 的 0 视为「不可信」，不参与
-    history::update_context("s1", &project, &[json!({ "key": "totalContextTokens", "value": 0 })])
-        .expect("write metadata");
+    history::update_context(
+        "s1",
+        &project,
+        &[json!({ "key": "totalContextTokens", "value": 0 })],
+    )
+    .expect("write metadata");
     assert_eq!(exact_context_tokens(&state, "s1", &project), None);
 
     // 内存里有 usage 时优先于 meta.json
-    history::update_context("s1", &project, &[json!({ "key": "totalContextTokens", "value": 999 })])
-        .expect("write metadata");
+    history::update_context(
+        "s1",
+        &project,
+        &[json!({ "key": "totalContextTokens", "value": 999 })],
+    )
+    .expect("write metadata");
     state
         .lock()
         .unwrap()
@@ -5113,8 +5480,12 @@ fn estimate_next_context_tokens_falls_back_to_full_estimate_without_usage_anchor
     );
 
     // meta.json 兜底更大时取 max（旧口径保持）
-    history::create_conversation("s1", &project, json!({ "sessionId": "s1", "project": project }))
-        .expect("create conversation");
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project }),
+    )
+    .expect("create conversation");
     history::update_context(
         "s1",
         &project,
@@ -5143,11 +5514,10 @@ fn assistant_reply(blocks: Value, stop_reason: &str) -> Value {
 fn pending_reminder_covers_stop_reason_colon_and_skips_tool_use() {
     // stop_reason 非 end_turn → 「回复未完成」提醒
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
-    state
-        .lock()
-        .unwrap()
-        .messages
-        .push(assistant_reply(json!([{ "type": "text", "text": "被截断" }]), "max_tokens"));
+    state.lock().unwrap().messages.push(assistant_reply(
+        json!([{ "type": "text", "text": "被截断" }]),
+        "max_tokens",
+    ));
     update_pending_reminder(&state, 0);
     let reminder = state.lock().unwrap().pending_reminder.clone().unwrap();
     // 逐字对齐 `QueryEngine.runQuery` 的 pendingReminder 文案
@@ -5160,11 +5530,10 @@ fn pending_reminder_covers_stop_reason_colon_and_skips_tool_use() {
 
     // end_turn + 正文以半角冒号结尾 → 「像是要调用工具却没调用」提醒
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
-    state
-        .lock()
-        .unwrap()
-        .messages
-        .push(assistant_reply(json!([{ "type": "text", "text": "让我先读一下：" }]), "end_turn"));
+    state.lock().unwrap().messages.push(assistant_reply(
+        json!([{ "type": "text", "text": "让我先读一下：" }]),
+        "end_turn",
+    ));
     update_pending_reminder(&state, 0);
     let reminder = state.lock().unwrap().pending_reminder.clone().unwrap();
     assert_eq!(
@@ -5177,21 +5546,19 @@ fn pending_reminder_covers_stop_reason_colon_and_skips_tool_use() {
 
     // 全角冒号同样命中
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
-    state
-        .lock()
-        .unwrap()
-        .messages
-        .push(assistant_reply(json!([{ "type": "text", "text": "先看看：" }]), "end_turn"));
+    state.lock().unwrap().messages.push(assistant_reply(
+        json!([{ "type": "text", "text": "先看看：" }]),
+        "end_turn",
+    ));
     update_pending_reminder(&state, 0);
     assert!(state.lock().unwrap().pending_reminder.is_some());
 
     // end_turn + 无冒号 → 不注入
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
-    state
-        .lock()
-        .unwrap()
-        .messages
-        .push(assistant_reply(json!([{ "type": "text", "text": "完成了。" }]), "end_turn"));
+    state.lock().unwrap().messages.push(assistant_reply(
+        json!([{ "type": "text", "text": "完成了。" }]),
+        "end_turn",
+    ));
     update_pending_reminder(&state, 0);
     assert!(state.lock().unwrap().pending_reminder.is_none());
 
@@ -5209,22 +5576,20 @@ fn pending_reminder_covers_stop_reason_colon_and_skips_tool_use() {
 
     // 用户中断 → 不注入
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
-    state
-        .lock()
-        .unwrap()
-        .messages
-        .push(assistant_reply(json!([{ "type": "text", "text": "让我读一下：" }]), "end_turn"));
+    state.lock().unwrap().messages.push(assistant_reply(
+        json!([{ "type": "text", "text": "让我读一下：" }]),
+        "end_turn",
+    ));
     state.lock().unwrap().cancel.store(true, Ordering::Relaxed);
     update_pending_reminder(&state, 0);
     assert!(state.lock().unwrap().pending_reminder.is_none());
 
     // 只看本轮新增的消息：messages_before_query 之前的历史 assistant 不参与判定
     let state = Arc::new(Mutex::new(SessionState::new("auto".to_string(), None)));
-    state
-        .lock()
-        .unwrap()
-        .messages
-        .push(assistant_reply(json!([{ "type": "text", "text": "上一轮：" }]), "end_turn"));
+    state.lock().unwrap().messages.push(assistant_reply(
+        json!([{ "type": "text", "text": "上一轮：" }]),
+        "end_turn",
+    ));
     update_pending_reminder(&state, 1);
     assert!(state.lock().unwrap().pending_reminder.is_none());
 }
@@ -5268,7 +5633,10 @@ fn assistant_reply_ending_with_a_colon_triggers_a_silent_reminder_follow_up() {
         .unwrap_or_else(|| panic!("第二轮请求缺少 reminder: {second:?}"));
     // reminder 是 silent 系统自动消息，正文以 `<reminder>` 开头
     assert!(
-        reminder["content"].as_str().unwrap().starts_with("<reminder>"),
+        reminder["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("<reminder>"),
         "got {reminder}"
     );
     // 原始用户消息仍在上下文里（reminder 是另一条 user 消息，不是替换）
@@ -5366,7 +5734,10 @@ fn fallback_reminder_gate() {
         let mut guard = state.lock().unwrap();
         let text = background_reminder("s-fb", &mut guard).expect("sleep 豁免应兜底");
         assert!(text.contains("bg-sleep"), "got {text}");
-        assert!(!text.contains("bg-plain"), "非 sleep 刚注册不该进列表: {text}");
+        assert!(
+            !text.contains("bg-plain"),
+            "非 sleep 刚注册不该进列表: {text}"
+        );
     }
     {
         let mut guard = state.lock().unwrap();
@@ -5501,7 +5872,11 @@ fn capture_first_request_body(sandbox: &Sandbox, settings: Value) -> Value {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "你好", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
     let captured = bodies.lock().unwrap();
     captured.first().cloned().expect("应当发出一次 LLM 请求")
 }
@@ -5546,7 +5921,9 @@ fn request_max_tokens_keeps_configured_value_within_the_window() {
     let sandbox = Sandbox::new("engine-max-tokens-keep");
     let body = capture_first_request_body(
         &sandbox,
-        settings_with_model_config(json!({ "apiType": "OpenAI", "output": 4096, "context": 1024 * 1024 })),
+        settings_with_model_config(
+            json!({ "apiType": "OpenAI", "output": 4096, "context": 1024 * 1024 }),
+        ),
     );
     assert_eq!(body["max_tokens"], 4096);
 }
@@ -5588,12 +5965,15 @@ fn minimal_prompt_mode_exposes_only_bash_and_edit() {
     let (bodies, _llm) = capture_requests(&sandbox);
     let harness = EngineHarness::allow_all();
     // 首条消息前切换预设：ensure_loaded 不得把它覆盖回 normal
-    harness.core.on_session_config_changed(
-        "s1",
-        &json!({ "key": "promptMode", "value": "minimal" }),
-    );
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "minimal" }));
     submit(&harness, "s1", "你好", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let bodies = bodies.lock().unwrap();
     let body = bodies.first().expect("应当发出一次 LLM 请求");
@@ -5601,7 +5981,10 @@ fn minimal_prompt_mode_exposes_only_bash_and_edit() {
         body["messages"][0]["content"], "You are a helpful software engineer assistant.",
         "minimal 只有单行核心身份提示"
     );
-    assert_eq!(tool_names(body), vec!["Bash".to_string(), "Edit".to_string()]);
+    assert_eq!(
+        tool_names(body),
+        vec!["Bash".to_string(), "Edit".to_string()]
+    );
     // 落盘的 meta.json 记录会话级 promptMode（对齐 updateMetadataForNewMessage）
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     assert_eq!(
@@ -5615,7 +5998,9 @@ fn mixed_prompt_mode_switches_to_normal_after_first_reply() {
     let sandbox = Sandbox::new("engine-prompt-mixed");
     let (bodies, _llm) = capture_requests(&sandbox);
     let harness = EngineHarness::allow_all();
-    harness.core.on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "mixed" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "mixed" }));
 
     submit(&harness, "s1", "你好", "u-1");
     assert!(harness.wait_query_end());
@@ -5636,7 +6021,10 @@ fn mixed_prompt_mode_switches_to_normal_after_first_reply() {
         bodies[0]["messages"][0]["content"],
         "You are a helpful software engineer assistant."
     );
-    assert_eq!(tool_names(&bodies[0]), vec!["Bash".to_string(), "Edit".to_string()]);
+    assert_eq!(
+        tool_names(&bodies[0]),
+        vec!["Bash".to_string(), "Edit".to_string()]
+    );
     // 第二轮：已有 assistant 回复 → normal
     let second = bodies[1]["messages"][0]["content"].as_str().unwrap();
     assert!(second.contains("## Core Principles"), "got {second}");
@@ -5666,12 +6054,24 @@ fn prompt_mode_is_restored_from_metadata() {
     harness.core.ensure_loaded("s1").unwrap();
     harness.core.ensure_loaded("s2").unwrap();
     assert_eq!(
-        harness.core.session("s1").lock().unwrap().prompt_mode.as_deref(),
+        harness
+            .core
+            .session("s1")
+            .lock()
+            .unwrap()
+            .prompt_mode
+            .as_deref(),
         Some("minimal")
     );
     // 非法值回退 normal（对齐 isPromptPresetId 白名单）
     assert_eq!(
-        harness.core.session("s2").lock().unwrap().prompt_mode.as_deref(),
+        harness
+            .core
+            .session("s2")
+            .lock()
+            .unwrap()
+            .prompt_mode
+            .as_deref(),
         Some("normal")
     );
 }
@@ -5689,7 +6089,11 @@ fn empty_thinking_effort_disables_reasoning_in_the_request() {
         "uuid": "u-1",
         "thinkingMode": "",
     }));
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let bodies = bodies.lock().unwrap();
     let body = bodies.first().expect("应当发出一次 LLM 请求");
@@ -5729,7 +6133,11 @@ fn message_payload_overrides_apply_after_metadata_except_established_web_search(
         "thinkingMode": "max",
         "webSearch": true,
     }));
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let state = harness.core.session("s1");
     let state = state.lock().unwrap();
@@ -5757,10 +6165,18 @@ fn session_config_persists_before_first_message_and_restores() {
     );
 
     // 首条消息前切配置（与 webview 五个 set 消息同路径）
-    harness.core.on_session_config_changed("s1", &json!({ "key": "webSearch", "value": false }));
-    harness.core.on_session_config_changed("s1", &json!({ "key": "agentMode", "value": "auto" }));
-    harness.core.on_session_config_changed("s1", &json!({ "key": "thinkingEffort", "value": "high" }));
-    harness.core.on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "minimal" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "webSearch", "value": false }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "agentMode", "value": "auto" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "thinkingEffort", "value": "high" }));
+    harness
+        .core
+        .on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "minimal" }));
 
     // 配置变化即兜底建档：五字段全部落进 context
     let metadata = history::load_metadata("s1", &workspace).expect("配置应建档 meta.json");
@@ -5828,7 +6244,10 @@ fn session_runtime_states_follow_insertion_order() {
         harness.core.session(id);
     }
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let order: Vec<&str> = runtime["states"]
         .as_array()
         .unwrap()
@@ -5839,7 +6258,11 @@ fn session_runtime_states_follow_insertion_order() {
 
     // 关闭中间会话后顺序保持，且被关闭的会话不再出现
     harness.core.on_conversation_closed("s-a");
-    let runtime = harness.sink.events_of("sessionRuntimeChanged").pop().unwrap();
+    let runtime = harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .pop()
+        .unwrap();
     let order: Vec<&str> = runtime["states"]
         .as_array()
         .unwrap()
@@ -5861,11 +6284,20 @@ fn title_changed_is_only_emitted_for_renames() {
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "帮我改个名字", "u-1");
     assert!(harness.wait_query_end());
-    assert_eq!(history::load_metadata("s1", &workspace).unwrap()["title"], "帮我改个名字");
-    assert!(harness.sink.event_of("titleChanged").is_none(), "新消息不发 titleChanged");
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["title"],
+        "帮我改个名字"
+    );
+    assert!(
+        harness.sink.event_of("titleChanged").is_none(),
+        "新消息不发 titleChanged"
+    );
 
     harness.core.on_conversation_renamed("s1", "手动标题");
-    let title = harness.sink.event_of("titleChanged").expect("改名应发 titleChanged");
+    let title = harness
+        .sink
+        .event_of("titleChanged")
+        .expect("改名应发 titleChanged");
     assert_eq!(title["title"], "手动标题");
 }
 
@@ -5949,7 +6381,8 @@ fn tool_arguments_parity_tests() {
     assert_eq!(sanitized["content"][0]["input"], json!({}));
 
     // 对象型 tool_use 不被改写（保持原值）
-    let object_block = json!({ "type": "tool_use", "id": "t-3", "name": "Bash", "input": { "command": "ls" } });
+    let object_block =
+        json!({ "type": "tool_use", "id": "t-3", "name": "Bash", "input": { "command": "ls" } });
     let message = json!({
         "role": "assistant",
         "content": [object_block.clone(), { "type": "text", "text": "ok" }],
@@ -5958,7 +6391,10 @@ fn tool_arguments_parity_tests() {
         .into_iter()
         .next()
         .unwrap();
-    assert_eq!(sanitized["content"][0], object_block, "对象型 tool_use 应保持原值");
+    assert_eq!(
+        sanitized["content"][0], object_block,
+        "对象型 tool_use 应保持原值"
+    );
 }
 
 // ==================== 后台 Bash 任务通知 ====================
@@ -5978,7 +6414,11 @@ fn background_completion_notification_wakes_the_consumer_as_a_bash_message() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "hi", "u-1");
-    assert!(harness.wait_query_end(), "首轮应当跑完: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "首轮应当跑完: {:?}",
+        harness.sink.event_types()
+    );
 
     let notification = "Background task completed\n\
                         Task: bg-1-2\n\
@@ -6016,7 +6456,12 @@ fn background_completion_notification_wakes_the_consumer_as_a_bash_message() {
         .events_of("message")
         .into_iter()
         .find(|event| event["data"]["origin"] == "bash")
-        .unwrap_or_else(|| panic!("缺少 origin=bash 的 message 事件: {:?}", harness.sink.events()));
+        .unwrap_or_else(|| {
+            panic!(
+                "缺少 origin=bash 的 message 事件: {:?}",
+                harness.sink.events()
+            )
+        });
     assert_eq!(message["sessionId"], "s1");
     assert_eq!(message["data"]["role"], "user");
     assert_eq!(message["data"]["content"], notification);
@@ -6089,7 +6534,11 @@ fn running_background_tasks_keep_the_session_out_of_idle() {
         harness.sink.events_of("sessionRuntimeChanged")
     );
     assert_eq!(crate::bash_task::running_count_for_session("s1"), 0);
-    assert_eq!(crate::bash_task::task_status(&task_id), None, "记录已被移除");
+    assert_eq!(
+        crate::bash_task::task_status(&task_id),
+        None,
+        "记录已被移除"
+    );
 
     crate::bash_task::reset_for_test();
     match previous_tmpdir {
@@ -6134,7 +6583,10 @@ fn consecutive_concurrency_safe_tools_run_as_one_parallel_batch() {
             if kind != "toolCall" && kind != "toolResult" {
                 return None;
             }
-            Some(format!("{kind}({})", event["toolUseId"].as_str().unwrap_or("")))
+            Some(format!(
+                "{kind}({})",
+                event["toolUseId"].as_str().unwrap_or("")
+            ))
         })
         .collect();
     assert_eq!(
@@ -6195,7 +6647,10 @@ fn a_non_concurrency_safe_tool_flushes_the_pending_batch() {
             if kind != "toolCall" && kind != "toolResult" {
                 return None;
             }
-            Some(format!("{kind}({})", event["toolUseId"].as_str().unwrap_or("")))
+            Some(format!(
+                "{kind}({})",
+                event["toolUseId"].as_str().unwrap_or("")
+            ))
         })
         .collect();
     assert_eq!(
@@ -6287,7 +6742,10 @@ fn agent_tool_spawns_a_sub_agent_that_replies_to_the_creator() {
         .find(|event| event["toolName"] == "Agent")
         .expect("Agent toolResult");
     let agent_output = agent_result["output"].as_str().unwrap_or("");
-    assert!(agent_output.starts_with("✓ Agent [Master] created\n\n"), "got {agent_output}");
+    assert!(
+        agent_output.starts_with("✓ Agent [Master] created\n\n"),
+        "got {agent_output}"
+    );
     assert!(
         agent_output.contains("Task: Look into sub-agent"),
         "got {agent_output}"
@@ -6462,7 +6920,12 @@ fn agent_tool_caps_concurrent_sub_agents_and_queues_the_rest() {
     poll_stop.store(true, Ordering::Relaxed);
 
     let book = book.lock().unwrap();
-    assert_eq!(book.order.len(), 6, "6 个子代理都应发起首请求: {:?}", book.order);
+    assert_eq!(
+        book.order.len(),
+        6,
+        "6 个子代理都应发起首请求: {:?}",
+        book.order
+    );
     // 槽位峰值恰为 4：低于 4 说明接线缺失，高于 4 说明上限失效
     assert_eq!(
         max_active.load(Ordering::Relaxed),
@@ -6706,7 +7169,13 @@ fn sub_agent_without_reply_gets_reminders() {
     // 子代理会话应当收到 3 条 Reminder（每次都是一轮完整查询）
     assert!(
         harness.wait_for(
-            |_| bodies.lock().unwrap().iter().filter(|body| is_sub_agent_request(body)).count() >= 4,
+            |_| bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|body| is_sub_agent_request(body))
+                .count()
+                >= 4,
             Duration::from_secs(30),
         ),
         "子代理应当在首轮 + 3 次 Reminder 后停止"
@@ -6737,7 +7206,9 @@ fn sub_agent_without_reply_gets_reminders() {
     // Reminder 走静默通道（specs/025 FR-007：对用户不可见）：`silent` / `origin=agent`
     // 的 user 消息——进上下文、落盘，回放与 conversationLoaded 都按 silent 过滤；
     // 子代理会话的 UI 侧输入已禁用，系统催办不占消息流。
-    let sub_id = crate::subagent::list_for_creator("s1").pop().expect("sub session");
+    let sub_id = crate::subagent::list_for_creator("s1")
+        .pop()
+        .expect("sub session");
     let sub_state = harness.core.session(&sub_id);
     let sub_state = sub_state.lock().unwrap();
     let reminders: Vec<&Value> = sub_state
@@ -6853,7 +7324,10 @@ fn a_second_user_message_replaces_the_pending_one() {
         .iter()
         .filter_map(|message| message.get("content").and_then(Value::as_str))
         .collect();
-    assert!(texts.contains(&"第三条"), "最后一条应当进入上下文: {texts:?}");
+    assert!(
+        texts.contains(&"第三条"),
+        "最后一条应当进入上下文: {texts:?}"
+    );
     assert!(
         !texts.contains(&"第二条"),
         "被替换掉的那条不应进入上下文: {texts:?}"
@@ -6871,8 +7345,14 @@ fn a_second_user_message_replaces_the_pending_one() {
                 .map(str::to_string)
         })
         .collect();
-    assert!(persisted.iter().any(|text| text == "第三条"), "{persisted:?}");
-    assert!(!persisted.iter().any(|text| text == "第二条"), "{persisted:?}");
+    assert!(
+        persisted.iter().any(|text| text == "第三条"),
+        "{persisted:?}"
+    );
+    assert!(
+        !persisted.iter().any(|text| text == "第二条"),
+        "{persisted:?}"
+    );
 }
 
 // ==================== 斜杠命令 / Skill 注入 ====================
@@ -6892,7 +7372,10 @@ fn slash_skill_command_injects_the_skill_tool_use() {
 
     assert!(
         harness.wait_for(
-            |sink| sink.events_of("toolResult").iter().any(|event| event["toolName"] == "Skill"),
+            |sink| sink
+                .events_of("toolResult")
+                .iter()
+                .any(|event| event["toolName"] == "Skill"),
             Duration::from_secs(30),
         ),
         "应当收到 Skill 的 toolResult: {:?}",
@@ -7033,7 +7516,11 @@ fn slash_skill_command_injects_the_skill_tool_use() {
                 .unwrap_or(false)
         })
         .unwrap();
-    assert_eq!(injected_index, result_index + 1, "注入消息应紧随 tool_result");
+    assert_eq!(
+        injected_index,
+        result_index + 1,
+        "注入消息应紧随 tool_result"
+    );
 
     crate::skills::reset_registries();
 }
@@ -7235,7 +7722,9 @@ fn builtin_command_does_not_swallow_a_pending_reminder() {
     );
 
     // 命令就地执行后：发起一轮提醒也能照常消费，不被命令批次吞掉
-    harness.core.deliver_background_reminder("s1", "后台任务仍在跑");
+    harness
+        .core
+        .deliver_background_reminder("s1", "后台任务仍在跑");
     assert!(
         harness.wait_for(
             |sink| sink.events_of("queryEnd").len() >= 2,
@@ -7295,7 +7784,10 @@ fn slash_builtin_command_is_handled_without_an_llm_round() {
     // 内置命令被就地执行：没有发起任何 LLM 请求。
     // 注意 `queryBegin` / `queryEnd` 仍会成对出现——它们归**消费循环**所有
     // ，与是否真的调 LLM 无关。
-    assert!(bodies.lock().unwrap().is_empty(), "内置命令不应发起 LLM 请求");
+    assert!(
+        bodies.lock().unwrap().is_empty(),
+        "内置命令不应发起 LLM 请求"
+    );
     assert_eq!(harness.sink.events_of("queryBegin").len(), 1);
     assert_eq!(harness.sink.events_of("queryEnd").len(), 1);
 
@@ -7303,9 +7795,9 @@ fn slash_builtin_command_is_handled_without_an_llm_round() {
     let project = sandbox.workspace.to_string_lossy().to_string();
     let messages = crate::history::load_messages("s1", &project);
     assert!(
-        !messages.iter().any(|message| {
-            message["message"]["content"] == json!("/spin design")
-        }),
+        !messages
+            .iter()
+            .any(|message| { message["message"]["content"] == json!("/spin design") }),
         "内置命令消息不应进上下文: {messages:?}"
     );
 
@@ -7337,10 +7829,16 @@ fn mcp_tools_are_appended_to_the_session_tool_list() {
 fn mcp_tools_are_concurrency_safe_per_their_annotations() {
     let _sandbox = Sandbox::new("engine-mcp-concurrency");
     // 未连接 / 未注册的 MCP 工具读不到注解 → 按「不安全」处理（与 Tool 默认实现一致）
-    assert!(!crate::engine::is_tool_concurrency_safe("mcp__demo__echo", &json!({})));
+    assert!(!crate::engine::is_tool_concurrency_safe(
+        "mcp__demo__echo",
+        &json!({})
+    ));
     // 内置工具的口径不受影响
     assert!(crate::engine::is_tool_concurrency_safe("Read", &json!({})));
-    assert!(!crate::engine::is_tool_concurrency_safe("Write", &json!({})));
+    assert!(!crate::engine::is_tool_concurrency_safe(
+        "Write",
+        &json!({})
+    ));
 }
 
 // ==================== 权限往返期间的 waiting（RT-1 / RT-2） ====================
@@ -7393,7 +7891,11 @@ fn auto_approved_tool_permission_never_marks_the_session_waiting() {
 
     // 卡片确实上架过（否则这条用例会因「压根没走到权限」而空转）
     assert_eq!(harness.sink.requests_of("toolPermissionRequested").len(), 1);
-    assert_eq!(harness.sink.requests_of("userChoice").len(), 0, "auto 模式不弹确认框");
+    assert_eq!(
+        harness.sink.requests_of("userChoice").len(),
+        0,
+        "auto 模式不弹确认框"
+    );
     assert_eq!(
         waiting_snapshots(&harness, "s1"),
         0,
@@ -7464,7 +7966,11 @@ fn invalid_ask_user_question_schema_never_marks_the_session_waiting() {
         _ => Some(json!({})),
     });
     submit(&harness, "s1", "问个问题", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["status"], "error");
@@ -7505,7 +8011,11 @@ fn blank_ask_user_question_never_marks_the_session_waiting() {
         _ => Some(json!({})),
     });
     submit(&harness, "s1", "问个问题", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(
@@ -7535,7 +8045,11 @@ fn unknown_tool_never_marks_the_session_waiting() {
 
     let harness = EngineHarness::allow_all();
     submit(&harness, "s1", "跑一下", "u-1");
-    assert!(harness.wait_query_end(), "轮次未结束: {:?}", harness.sink.event_types());
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
 
     let result = harness.sink.event_of("toolResult").unwrap();
     assert_eq!(result["output"], "Error: Tool \"Nope\" not found");
@@ -7637,7 +8151,9 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
     assert_eq!(bash_result["status"], "error");
     let output = bash_result["output"].as_str().unwrap_or("");
     assert!(
-        output.contains("Explorer 子代理只有 Read / Glob / Grep / Reply / TodoWrite 工具，Bash 不可用"),
+        output.contains(
+            "Explorer 子代理只有 Read / Glob / Grep / Reply / TodoWrite 工具，Bash 不可用"
+        ),
         "got {output}"
     );
     // 命令确实未执行
@@ -7703,8 +8219,15 @@ fn explorer_fixes_session_config_while_master_inherits() {
     {
         let state = harness.core.session(&explorer_id);
         let state = state.lock().unwrap();
-        assert_eq!(state.prompt_mode, None, "Explorer 固定 normal（不继承 minimal）");
-        assert_eq!(state.web_search, Some(false), "Explorer 固定不联网（不继承开启）");
+        assert_eq!(
+            state.prompt_mode, None,
+            "Explorer 固定 normal（不继承 minimal）"
+        );
+        assert_eq!(
+            state.web_search,
+            Some(false),
+            "Explorer 固定不联网（不继承开启）"
+        );
     }
     {
         let state = harness.core.session(&master_id);
@@ -7714,7 +8237,11 @@ fn explorer_fixes_session_config_while_master_inherits() {
             Some("minimal"),
             "Master 维持继承父会话预设"
         );
-        assert_eq!(state.web_search, Some(true), "Master 维持继承父会话联网开关");
+        assert_eq!(
+            state.web_search,
+            Some(true),
+            "Master 维持继承父会话联网开关"
+        );
     }
 
     // LLM 请求侧：explorer = normal 口径（含核心身份段）+ 五件套；Master = minimal 口径 + Bash / Edit
@@ -7774,7 +8301,10 @@ fn runtime_snapshot_lists_background_tasks_in_registration_order() {
     harness.sink.clear();
     // t2 注册时布尔位 true→true 不变，sync 早退；这里的显式 emit 靠清单 diff 推全量
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let entry = runtime["states"]
         .as_array()
         .unwrap()
@@ -7782,7 +8312,9 @@ fn runtime_snapshot_lists_background_tasks_in_registration_order() {
         .find(|state| state["sessionId"] == "s1")
         .expect("session entry")
         .clone();
-    let tasks = entry["backgroundTasks"].as_array().expect("backgroundTasks");
+    let tasks = entry["backgroundTasks"]
+        .as_array()
+        .expect("backgroundTasks");
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0]["taskId"], "t1");
     assert_eq!(tasks[0]["description"], "任务一");
@@ -7797,7 +8329,10 @@ fn runtime_snapshot_lists_background_tasks_in_registration_order() {
     crate::bash_task::abort_tasks_for_session("s1");
     harness.sink.clear();
     harness.core.sync_session_background("s1");
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let entry = runtime["states"]
         .as_array()
         .unwrap()
@@ -7828,7 +8363,10 @@ fn runtime_snapshot_carries_sub_agent_description() {
     }
     crate::subagent::register("c1", "p1");
     harness.core.emit_runtime();
-    let runtime = harness.sink.event_of("sessionRuntimeChanged").expect("runtime");
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
     let states = runtime["states"].as_array().unwrap();
     let child_entry = states
         .iter()
@@ -7856,7 +8394,10 @@ fn runtime_snapshot_republishes_when_task_mix_changes() {
     let hooks = harness.core.background_hooks();
     // 注册首个任务：布尔位 false→true 经 hooks 触发首次推送
     crate::bash_task::register_running("t1", "任务一", "echo 1", "s1", 100, Some(hooks.clone()));
-    let first = harness.sink.event_of("sessionRuntimeChanged").expect("first push");
+    let first = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("first push");
     let entry = first["states"]
         .as_array()
         .unwrap()
@@ -7903,7 +8444,10 @@ fn mention_identity_parsing_covers_quoted_and_plain_forms() {
         parse_mention_identity("@\"DEV-PC:C:\\Program Files\\b\" 帮个忙"),
         Some("DEV-PC:C:\\Program Files\\b".to_string())
     );
-    assert_eq!(parse_mention_identity("  @HOST:/b\n多行正文"), Some("HOST:/b".to_string()));
+    assert_eq!(
+        parse_mention_identity("  @HOST:/b\n多行正文"),
+        Some("HOST:/b".to_string())
+    );
     assert_eq!(parse_mention_identity("@"), None);
     assert_eq!(parse_mention_identity("@\"\""), None);
     assert_eq!(parse_mention_identity("看 @HOST:/b"), None);
@@ -8117,12 +8661,17 @@ fn cross_workspace_spawn_registers_remote_child() {
     let sandbox = Sandbox::new("engine-cross-workspace-spawn");
     sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
     crate::subagent::reset_for_test();
-    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
-        Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
-        Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
-        Some("userChoice") => Some(json!({ "index": 0 })),
-        _ => Some(json!({})),
-    });
+    let harness =
+        EngineHarness::start(
+            |request| match request.get("type").and_then(Value::as_str) {
+                Some("crossWorkspaceAgentRequested") => {
+                    Some(json!({ "sessionId": "sub_remote_1" }))
+                }
+                Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
+                Some("userChoice") => Some(json!({ "index": 0 })),
+                _ => Some(json!({})),
+            },
+        );
     let creator = harness.core.session("s-cross-1");
     creator.lock().unwrap().project = Some("D:/repo/a".to_string());
 
@@ -8162,10 +8711,15 @@ fn cross_workspace_spawn_payload_carries_origin_settings() {
     let sandbox = Sandbox::new("engine-cross-workspace-payload");
     sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
     crate::subagent::reset_for_test();
-    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
-        Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
-        _ => Some(json!({})),
-    });
+    let harness =
+        EngineHarness::start(
+            |request| match request.get("type").and_then(Value::as_str) {
+                Some("crossWorkspaceAgentRequested") => {
+                    Some(json!({ "sessionId": "sub_remote_1" }))
+                }
+                _ => Some(json!({})),
+            },
+        );
     let creator = harness.core.session("s-cross-payload");
     {
         let mut state = creator.lock().unwrap();
@@ -8211,10 +8765,15 @@ fn cross_workspace_spawn_payload_falls_back_to_global_defaults() {
     let sandbox = Sandbox::new("engine-cross-workspace-defaults");
     sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
     crate::subagent::reset_for_test();
-    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
-        Some("crossWorkspaceAgentRequested") => Some(json!({ "sessionId": "sub_remote_1" })),
-        _ => Some(json!({})),
-    });
+    let harness =
+        EngineHarness::start(
+            |request| match request.get("type").and_then(Value::as_str) {
+                Some("crossWorkspaceAgentRequested") => {
+                    Some(json!({ "sessionId": "sub_remote_1" }))
+                }
+                _ => Some(json!({})),
+            },
+        );
     let creator = harness.core.session("s-cross-defaults");
     creator.lock().unwrap().project = Some("D:/repo/a".to_string());
     harness
@@ -8247,12 +8806,15 @@ fn cross_workspace_spawn_error_propagates() {
     let sandbox = Sandbox::new("engine-cross-workspace-spawn-error");
     sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
     crate::subagent::reset_for_test();
-    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
-        Some("crossWorkspaceAgentRequested") => {
-            Some(json!({ "error": "target workspace is not open: HOST:/b" }))
-        }
-        _ => Some(json!({})),
-    });
+    let harness =
+        EngineHarness::start(
+            |request| match request.get("type").and_then(Value::as_str) {
+                Some("crossWorkspaceAgentRequested") => {
+                    Some(json!({ "error": "target workspace is not open: HOST:/b" }))
+                }
+                _ => Some(json!({})),
+            },
+        );
     let error = harness
         .core
         .spawn_remote_agent(tools::SubAgentRequest {
@@ -8323,10 +8885,7 @@ fn reply_to_cross_workspace_subagent_reports_remote_workspace() {
         error.contains("Agent"),
         "错误文案应给出可行动作（新起 Agent / 派发时写全）: {error}"
     );
-    assert!(
-        !error.contains("不存在"),
-        "不再统一说「不存在」: {error}"
-    );
+    assert!(!error.contains("不存在"), "不再统一说「不存在」: {error}");
     // 反向投递不能误发：「子代理 → 创建者」的事件只在目标等于调用者 creator 时发
     assert!(
         harness
@@ -8387,8 +8946,12 @@ fn reply_tool_error_for_cross_workspace_target_names_the_remote_workspace() {
     let _serial = crate::test_support::serial();
     crate::subagent::reset_for_test();
     let harness = EngineHarness::allow_all();
-    harness.core.session("session_parent").lock().unwrap().project =
-        Some("D:/repo/a".to_string());
+    harness
+        .core
+        .session("session_parent")
+        .lock()
+        .unwrap()
+        .project = Some("D:/repo/a".to_string());
     crate::subagent::register("sub_remote_tool", "session_parent");
     crate::subagent::register_remote("sub_remote_tool", "session_parent", "HOST:/b");
 
@@ -8529,7 +9092,10 @@ fn start_remote_sub_agent_records_creator() {
         }))
         .expect("start remote sub agent");
 
-    let state = harness.core.session_if_exists("sub_remote_start").expect("state");
+    let state = harness
+        .core
+        .session_if_exists("sub_remote_start")
+        .expect("state");
     let state = state.lock().unwrap();
     assert_eq!(state.sub_agent_role.as_deref(), Some("Master"));
     // 跨工作区对话是顶层普通会话：无父会话，归属由 creator 承载（specs/025 FR-001 / FR-002）
@@ -8569,13 +9135,20 @@ fn start_remote_sub_agent_records_creator() {
 
     // 列表只收录「发过消息」的对话（messageCount > 0）：第一条消息落盘后作为
     // 顶层普通条目出现，不再派生占位父对话（specs/025 FR-001）。
-    history::update_metadata("sub_remote_start", &project, || json!({}), |metadata| {
-        metadata["messageCount"] = json!(1);
-    })
+    history::update_metadata(
+        "sub_remote_start",
+        &project,
+        || json!({}),
+        |metadata| {
+            metadata["messageCount"] = json!(1);
+        },
+    )
     .expect("mark child as non-empty");
 
     let list = history::load_conversation_list(Some(&project));
-    assert!(list.iter().any(|item| item["sessionId"] == "sub_remote_start"));
+    assert!(list
+        .iter()
+        .any(|item| item["sessionId"] == "sub_remote_start"));
     assert!(list.iter().all(|item| item["sessionId"] != "ph_origin-1"));
 
     // 收尾：停掉后台子代理线程（没有 LLM 配置，循环会自行退出）
@@ -8612,7 +9185,10 @@ fn start_remote_sub_agent_full_inheritance_and_system_prompt() {
         }))
         .expect("start remote sub agent");
 
-    let state = harness.core.session_if_exists("sub_remote_explorer").expect("state");
+    let state = harness
+        .core
+        .session_if_exists("sub_remote_explorer")
+        .expect("state");
     let state = state.lock().unwrap();
     assert_eq!(state.agent_mode, "auto");
     assert_eq!(state.model.as_deref(), Some("m-origin"));
@@ -8625,10 +9201,22 @@ fn start_remote_sub_agent_full_inheritance_and_system_prompt() {
     assert_eq!(state.web_search, Some(true));
     // specs/025 FR-006：SystemPrompt 含创建方工作区身份、会话 id 与 Reply 要求
     // （targetSessionId 指向创建方会话）
-    let prefix = state.system_prompt_prefix.as_deref().expect("system prompt prefix");
-    assert!(prefix.contains("HOST:/a"), "SystemPrompt 缺创建方工作区身份: {prefix}");
-    assert!(prefix.contains("origin-2"), "SystemPrompt 缺创建方会话 id: {prefix}");
-    assert!(prefix.contains("targetSessionId"), "SystemPrompt 缺 Reply 说明: {prefix}");
+    let prefix = state
+        .system_prompt_prefix
+        .as_deref()
+        .expect("system prompt prefix");
+    assert!(
+        prefix.contains("HOST:/a"),
+        "SystemPrompt 缺创建方工作区身份: {prefix}"
+    );
+    assert!(
+        prefix.contains("origin-2"),
+        "SystemPrompt 缺创建方会话 id: {prefix}"
+    );
+    assert!(
+        prefix.contains("targetSessionId"),
+        "SystemPrompt 缺 Reply 说明: {prefix}"
+    );
     drop(state);
 
     // MCP 名单全量继承（不再恒空），落进 meta context
@@ -8670,7 +9258,10 @@ fn start_remote_sub_agent_rejects_missing_settings() {
         .start_remote_sub_agent(&event)
         .expect_err("missing settings must be rejected");
     assert!(error.contains("missing required fields"));
-    assert!(harness.core.session_if_exists("sub_remote_missing").is_none());
+    assert!(harness
+        .core
+        .session_if_exists("sub_remote_missing")
+        .is_none());
     crate::subagent::reset_for_test();
 }
 
@@ -8710,7 +9301,10 @@ fn todo_write_emits_todos_changed() {
         ])
     );
     // 表与推送一致（同一份事实）
-    assert_eq!(crate::tools::session_todos("s1"), Some(pushed["todos"].clone()));
+    assert_eq!(
+        crate::tools::session_todos("s1"),
+        Some(pushed["todos"].clone())
+    );
 
     // 推送发生在 toolResult 之后：事件顺序 = toolResult → todosChanged
     let types = harness.sink.event_types();
@@ -8727,16 +9321,19 @@ fn todo_write_emits_todos_changed() {
 fn transfer_hook_roundtrip_and_cancel() {
     let sandbox = Sandbox::new("engine-transfer-hook");
     sandbox.write_llm_settings("http://127.0.0.1:9/fake", "risk");
-    let harness = EngineHarness::start(|request| match request.get("type").and_then(Value::as_str) {
-        Some("crossWorkspaceTransferRequested") => Some(json!({
-            "files": 2, "bytes": 128, "skippedSymlinks": 1,
-            "sourceWorkspaceId": "m1:/a", "destWorkspaceId": "m2:/b",
-            "paths": ["a.txt", "sub/b.txt"]
-        })),
-        Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
-        Some("userChoice") => Some(json!({ "index": 0 })),
-        _ => Some(json!({})),
-    });
+    let harness =
+        EngineHarness::start(
+            |request| match request.get("type").and_then(Value::as_str) {
+                Some("crossWorkspaceTransferRequested") => Some(json!({
+                    "files": 2, "bytes": 128, "skippedSymlinks": 1,
+                    "sourceWorkspaceId": "m1:/a", "destWorkspaceId": "m2:/b",
+                    "paths": ["a.txt", "sub/b.txt"]
+                })),
+                Some("toolPermissionRequested") => Some(json!({ "behavior": "ask" })),
+                Some("userChoice") => Some(json!({ "index": 0 })),
+                _ => Some(json!({})),
+            },
+        );
     let hook = harness.core.transfer_hook();
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let summary = hook(
@@ -8756,7 +9353,10 @@ fn transfer_hook_roundtrip_and_cancel() {
     assert_eq!(summary.source_workspace_id, "m1:/a");
     assert_eq!(summary.dest_workspace_id, "m2:/b");
     // 文件清单从宿主应答透传（specs/042 FR-001）：缺字段时是空清单，不是默认猜测
-    assert_eq!(summary.paths, vec!["a.txt".to_string(), "sub/b.txt".to_string()]);
+    assert_eq!(
+        summary.paths,
+        vec!["a.txt".to_string(), "sub/b.txt".to_string()]
+    );
     // 契约成员必选：缺省端以 null 下发
     let request = harness
         .sink

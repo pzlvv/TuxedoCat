@@ -33,7 +33,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 
 use crossterm::event::{Event, KeyEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::{execute, tty::IsTty};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -91,7 +93,10 @@ fn parse_args() -> CliArgs {
             "--version" => args.version = true,
             other => {
                 eprintln!("未知参数：{other}");
-                eprintln!("用法：{} [--workspace <dir>] [--verbose] [--version]", program_name());
+                eprintln!(
+                    "用法：{} [--workspace <dir>] [--verbose] [--version]",
+                    program_name()
+                );
                 std::process::exit(2);
             }
         }
@@ -104,7 +109,10 @@ fn main() {
     let args = parse_args();
     if args.version {
         // 产品名取部署产品目录名（project.json 的 core.deployPrefix，build.rs 烧入）
-        println!("{} tui {TUI_VERSION} (core=standalone)", env!("TC_DEPLOY_PREFIX"));
+        println!(
+            "{} tui {TUI_VERSION} (core=standalone)",
+            env!("TC_DEPLOY_PREFIX")
+        );
         return;
     }
 
@@ -131,7 +139,10 @@ fn main() {
         std::process::exit(1);
     }
 
-    let workspace = args.workspace.canonicalize().unwrap_or(args.workspace.clone());
+    let workspace = args
+        .workspace
+        .canonicalize()
+        .unwrap_or(args.workspace.clone());
     let log = Arc::new(Logger::new(
         Some(settings::config_dir().join("tui-rs.log")),
         args.verbose,
@@ -152,7 +163,10 @@ fn main() {
     let mut child = match spawn_core(&core_binary, &log) {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("TUI 启动失败：无法启动 Core（{}）：{error}", core_binary.display());
+            eprintln!(
+                "TUI 启动失败：无法启动 Core（{}）：{error}",
+                core_binary.display()
+            );
             std::process::exit(1);
         }
     };
@@ -160,7 +174,9 @@ fn main() {
     // 握手：hello → ready（读线程转发 Ready 帧，host 在收到后推 hostEnvironmentProvided）
     let mut stdin = child.stdin.take().expect("stdin piped");
     let stdout = child.stdout.take().expect("stdout piped");
-    if let Err(error) = stdin.write_all(UiToCoreFrame::Hello.encode().unwrap_or_default().as_bytes()) {
+    if let Err(error) =
+        stdin.write_all(UiToCoreFrame::Hello.encode().unwrap_or_default().as_bytes())
+    {
         eprintln!("TUI 启动失败：Core 握手写入失败：{error}");
         let _ = child.kill();
         std::process::exit(1);
@@ -181,7 +197,12 @@ fn main() {
     let result = run_loop(&mut app, &mut stdin, &mut child, receiver);
 
     // 退出路径：shutdown 帧 → 关闭 stdin → Core 随 EOF 退出（不等长，直接收尸）
-    let _ = stdin.write_all(UiToCoreFrame::Shutdown.encode().unwrap_or_default().as_bytes());
+    let _ = stdin.write_all(
+        UiToCoreFrame::Shutdown
+            .encode()
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     let _ = stdin.flush();
     drop(stdin);
     let _ = child.kill();
@@ -197,14 +218,21 @@ fn main() {
 /// 启动 Core 子进程（stdio 是帧通道；Windows 上隐藏控制台窗口）。
 fn spawn_core(core_binary: &std::path::Path, log: &Arc<Logger>) -> std::io::Result<Child> {
     let mut command = Command::new(core_binary);
-    command.arg("stdio").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    command
+        .arg("stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW：不闪控制台窗口（对齐 TS 侧 spawn 的 windowsHide）
         command.creation_flags(0x0800_0000);
     }
-    log.log(&format!("[tui] spawning core: {} stdio", core_binary.display()));
+    log.log(&format!(
+        "[tui] spawning core: {} stdio",
+        core_binary.display()
+    ));
     command.spawn()
 }
 
@@ -245,7 +273,11 @@ fn run_loop(
     let mut stdout = std::io::stdout();
     // bracketed paste：多行粘贴作为单个 Paste 事件到达（不支持的终端静默降级，
     // 与 TS/Ink 的能力边界一致）
-    let _ = execute!(stdout, EnterAlternateScreen, crossterm::event::EnableBracketedPaste);
+    let _ = execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::event::EnableBracketedPaste
+    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -260,7 +292,11 @@ fn run_loop(
     let result = event_loop(app, stdin, child, receiver, &mut terminal);
 
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, crossterm::event::DisableBracketedPaste);
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        crossterm::event::DisableBracketedPaste
+    );
     let _ = terminal.show_cursor();
     result
 }
