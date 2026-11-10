@@ -524,11 +524,19 @@ fn running_tasks_section_lists_id_and_description_in_registration_order() {
 #[test]
 fn running_tasks_section_omits_volatile_fields() {
     // 已运行时长 / pid / 输出不进正文：它们每秒都变，会让摘要消息在重放与估算里抖动
-    let section = build_running_tasks_section(&[running_task("bg-1", "跑测试", "npm test")])
-        .expect("非空集应有章节");
+    let mut task = running_task("bg-1", "跑测试", "npm test");
+    task.start_time = 1_700_000_000_000;
+    let section = build_running_tasks_section(&[task.clone()]).expect("非空集应有章节");
     assert!(!section.contains("4242"), "{section}");
-    assert!(!section.contains("Elapsed"), "{section}");
     assert!(!section.contains("1700000000000"), "{section}");
+    // 章节正文是中文：英文 `Elapsed` 抓不到「已运行 5 分钟」这类时长文案，
+    // 因此用「换个 start_time 输出必须一模一样」直接锁「不含时长」。
+    task.start_time += 3_600_000;
+    assert_eq!(
+        build_running_tasks_section(&[task]),
+        Some(section),
+        "start_time 变化不应影响章节正文"
+    );
 }
 
 #[test]
@@ -547,7 +555,8 @@ fn running_tasks_section_caps_the_list_and_reports_the_remainder() {
 
 #[test]
 fn running_tasks_section_is_deterministic_for_the_same_input() {
-    // 同一份注册表快照两次渲染结果相同：压缩产物不因时间流逝而变化
+    // 同一份注册表快照两次渲染结果相同：压缩产物不因时间流逝而变化。
+    // 两次调用的系统时间不同，若函数读了时钟（或任何进程状态）这里就会红。
     let tasks = vec![
         running_task("bg-1", "跑测试", "npm test"),
         running_task("bg-2", "起 dev server", "npm run dev"),

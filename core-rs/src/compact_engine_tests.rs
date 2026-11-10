@@ -3,6 +3,34 @@
 
 use super::*;
 use crate::test_support::{openai_text_sse, EngineHarness, FakeLlm, Sandbox};
+use std::path::Path;
+
+/// 把 `TMPDIR` 指到沙箱里，让后台任务的输出文件落进临时目录。
+///
+/// 用 `Drop` 还原而不是手工配对：用例中途 panic 时 `TMPDIR` 会永久指向
+/// `Sandbox::drop` 已删掉的目录，污染同进程后续用例（`Sandbox` 的 `env_backup`
+/// 只管 `USERPROFILE` / `HOME`）。`bash_task_tests.rs` 有同款守卫。
+struct TmpDirGuard {
+    previous: Option<String>,
+}
+
+impl TmpDirGuard {
+    fn set(path: &Path) -> TmpDirGuard {
+        let previous = std::env::var("TMPDIR").ok();
+        std::fs::create_dir_all(path).expect("create tmp dir");
+        std::env::set_var("TMPDIR", path);
+        TmpDirGuard { previous }
+    }
+}
+
+impl Drop for TmpDirGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var("TMPDIR", value),
+            None => std::env::remove_var("TMPDIR"),
+        }
+    }
+}
 
 /// 让 `resolve_provider` 指向假 LLM，并登记活动工作目录
 fn prepare(sandbox: &Sandbox, base_url: &str, agent_mode: &str) {
@@ -1048,8 +1076,7 @@ fn compact_carries_the_running_background_tasks_into_the_summary_message() {
     let sandbox = Sandbox::new("engine-compact-running-tasks");
     crate::compact::reset_for_test();
     crate::bash_task::reset_for_test();
-    let previous_tmpdir = std::env::var("TMPDIR").ok();
-    std::env::set_var("TMPDIR", sandbox.root.join("tmp"));
+    let _tmpdir = TmpDirGuard::set(&sandbox.root.join("tmp"));
 
     let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
     prepare(&sandbox, &llm.base_url, "auto");
@@ -1093,14 +1120,10 @@ fn compact_carries_the_running_background_tasks_into_the_summary_message() {
     );
 
     crate::bash_task::reset_for_test();
-    match previous_tmpdir {
-        Some(value) => std::env::set_var("TMPDIR", value),
-        None => std::env::remove_var("TMPDIR"),
-    }
     crate::compact::reset_for_test();
 }
 
-/// 无运行中任务时压缩产物与不实现本特性时一致（零额外内容）。
+/// 无运行中任务时压缩产物不带该章节（零额外内容）。
 #[test]
 fn compact_without_running_tasks_adds_no_section() {
     let sandbox = Sandbox::new("engine-compact-no-running-tasks");
@@ -1116,6 +1139,13 @@ fn compact_without_running_tasks_adds_no_section() {
     harness.core.request_compact("s1");
 
     let messages = crate::history::load_messages("s1", &project);
+    // 正向对照：先证明压缩真的发生了。缺这一行时，压缩彻底不执行
+    // （`compact_and_apply_messages` 提前 return false）也能让下面的负向断言通过。
+    assert_eq!(
+        messages[0]["subtype"],
+        json!("compact_boundary"),
+        "压缩应当发生"
+    );
     let summary = messages[1]["message"]["content"]
         .as_str()
         .expect("摘要消息正文");

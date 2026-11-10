@@ -146,6 +146,11 @@ pub fn reset_for_test() {
 // ==================== prompt.ts ====================
 
 /// 把消息格式化成摘要输入文本（`formatMessagesForCompact`）
+///
+/// 上一次压缩产出的摘要消息里带的「运行中后台任务」章节是**当时的**时点快照，此刻
+/// 可能早已全部结束。原样喂给摘要模型，它会把这些陈旧 taskId 抄进「未完成事项」，
+/// 与本次新算的章节自相矛盾；因此这一节在进摘要输入前剥掉，正文其余部分照常保留
+/// （`docs/features/compaction.md` FR-006）。
 pub fn format_messages_for_compact(messages: &[Value]) -> String {
     let mut formatted: Vec<String> = Vec::new();
     for message in messages {
@@ -158,6 +163,12 @@ pub fn format_messages_for_compact(messages: &[Value]) -> String {
                     Some(Value::String(text)) => text.clone(),
                     Some(Value::Array(blocks)) => format_content_blocks(blocks),
                     _ => String::new(),
+                };
+                let text = if message.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+                {
+                    strip_running_tasks_section(&text)
+                } else {
+                    text
                 };
                 formatted.push(format!("[User]: {text}"));
             }
@@ -182,6 +193,72 @@ pub fn format_messages_for_compact(messages: &[Value]) -> String {
         }
     }
     formatted.join("\n\n")
+}
+
+/// 从摘要正文里剥掉「运行中后台任务」章节（纯函数）。
+///
+/// 章节从标题那一行的行首起，到下一个章节边界或正文末尾为止。边界是 Markdown 标题行
+/// 或一条 `---` 分隔线——摘要正文的固定尾注正是 `---` + 「请基于以上摘要继续工作」，
+/// 章节在它之前，尾注必须留下。章节内部允许空行：本模块生成的章节用空行分隔列表与说明。
+///
+/// 找不到标题时原样返回：正文里本来就没有这段（首次压缩，或旧会话的摘要）。
+fn strip_running_tasks_section(text: &str) -> String {
+    let Some(heading_at) = text.find(crate::bash_task::RUNNING_TASKS_HEADING) else {
+        return text.to_string();
+    };
+    // 标题前可能有 `\n\n` 分隔：章节从标题所在行的行首算起。
+    let section_start = text[..heading_at].rfind('\n').map(|at| at + 1).unwrap_or(0);
+    let body_at = heading_at + crate::bash_task::RUNNING_TASKS_HEADING.len();
+    let mut next_boundary = None;
+    let mut line_at = body_at;
+    while line_at < text.len() {
+        let line_end = text[line_at..]
+            .find('\n')
+            .map(|at| line_at + at + 1)
+            .unwrap_or(text.len());
+        if is_markdown_heading(&text[line_at..line_end])
+            || is_horizontal_rule(&text[line_at..line_end])
+        {
+            next_boundary = Some(line_at);
+            break;
+        }
+        line_at = line_end;
+    }
+    let head = util::js_trim_end(&text[..section_start]);
+    let tail = util::js_trim_start(&text[next_boundary.unwrap_or(text.len())..]);
+    match (head.is_empty(), tail.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => tail.to_string(),
+        (false, true) => head.to_string(),
+        (false, false) => format!("{head}\n\n{tail}"),
+    }
+}
+
+/// 是否是 Markdown ATX 标题行（`#` 到 `######`，后接空格或行尾）。
+///
+/// 与正文里偶然以 `#` 开头的词区分开（那不算标题）。
+fn is_markdown_heading(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_end_matches(['\r', '\n']);
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return false;
+    }
+    match trimmed[hashes..].chars().next() {
+        None => true,
+        Some(ch) => ch == ' ',
+    }
+}
+
+/// 是否是水平分隔线（`---` / `***` / `___`，至少三个，其余字符只能是空白）。
+fn is_horizontal_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    for marker in ['-', '*', '_'] {
+        let count = trimmed.chars().filter(|ch| *ch == marker).count();
+        if count >= 3 && trimmed.chars().all(|ch| ch == marker || ch.is_whitespace()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// 用户消息的内容块（`formatContentBlocks`）

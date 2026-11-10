@@ -155,7 +155,8 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
   `tool_result`；注册表是唯一事实来源（[background-bash.md](background-bash.md)）。
   不进注册表的进程（`detach: true` 放行的自我脱离进程，见
   [bash-detach.md FR-002](bash-detach.md#fr-002detachtrue-的豁免语义)）不在清单内。
-- **落点**：摘要消息 `content` 的末尾段（`generate_compact_user_message` 的
+- **落点**：摘要消息 `content` 的正文段，位于「用户输入历史」之后、固定尾注
+  （`---` + 「请基于以上摘要继续工作」）之前（`generate_compact_user_message` 的
   `running_tasks` 入参，纯函数 `bash_task::build_running_tasks_section` 生成），
   标题为 `### 后台任务`（与用户输入历史章节同级）。
   压缩产物仍是 `[边界标记, 摘要, ...保留区]` 三段形态，不新增消息。
@@ -164,10 +165,23 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 - **不含易变字段**：不写已运行时长、pid、输出尾部——这些每秒都变，会让摘要消息在
   归档重放与上下文估算里反复抖动，且对决策没有增量信息。
 - **时点语义**：章节陈述「压缩开始时」的事实，不回写。之后完成的任务由完成通知
-  按既有通道接续（[background-bash.md FR-003](background-bash.md#fr-003查询结束兜底提醒)），
-  顺序上通知总在摘要消息之后进入上下文。
+  按既有通道接续（[background-bash.md FR-003](background-bash.md#fr-003查询结束兜底提醒)）。
+  压缩进行中到达的自动消息只入队、不另起消费循环（`enqueue_agent_message` 的
+  `compacting` 守卫），因此通知不会被随后的整文件重写丢掉，压缩收尾时与摘要一并消费。
+- **二次压缩**：上一次的摘要消息落在本次归档区，其中带的章节是**当时**的快照。
+  它在进摘要输入前被剥掉（`format_messages_for_compact` 对 `isCompactSummary` 消息调
+  `strip_running_tasks_section`），否则摘要模型会把陈旧 `taskId` 抄进「未完成事项」，
+  与新算的章节自相矛盾。正文其余部分照常进摘要。
 
-空集不产出章节，压缩产物与未实现该章节时逐字节相同。
+章节随摘要消息一并**展示给用户**（webview 的压缩摘要卡片原样渲染正文，与
+「用户输入历史」同等处理）。这是有意的：压缩摘要对用户是可见的历史记录，清单属于
+其中一段，不单独隐藏。
+
+空集不产出章节，正文与不含该章节的形态逐字节相同。
+
+**清单为空不等于没有任务**：`detach: true` 的进程不进注册表，Core 重启后进程内的
+任务表也会清空——两种情况下清单为空但命令可能仍在跑。章节只陈述「本进程当前登记在册的
+运行中任务」，不是全局事实。
 
 ## 3. 行为规格
 
@@ -215,4 +229,4 @@ US-17（压缩历史展开）；无新增 US。
 | FR-003 | `core-rs/src/compact.rs` 的 `compact_conversation` / `sanitize_tool_pairing` | `core-rs/src/compact_engine_tests.rs`；`core-rs/src/compact_tests.rs` | 自动 |
 | FR-004 | `core-rs/src/compact.rs` 的 `select_user_input_history` | `core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_keeps_the_global_user_input_head` | 自动 |
 | FR-005 | 宿主 `expandCompact`（`src/host/ui/webviewMessageHandler.ts`）+ `UiRequest.compactArchiveRequested` 应答 | e2e `e2e/webview/messagePresentation.spec.ts`（展开） | 自动 |
-| FR-006 | `core-rs/src/compact.rs` 的 `compact_conversation_inner` / `generate_compact_user_message`；纯函数 `core-rs/src/bash_task.rs` 的 `build_running_tasks_section` | `core-rs/src/bash_task_tests.rs` 的 `running_tasks_section_*` 五条；`core-rs/src/compact_engine_tests.rs` 的 `compact_carries_the_running_background_tasks_into_the_summary_message` / `compact_without_running_tasks_adds_no_section`；对照表 `core-rs/fixtures/compact.json` 的 `compactUserMessages` | 自动 |
+| FR-006 | `core-rs/src/compact.rs` 的 `compact_conversation_inner` / `generate_compact_user_message` / `strip_running_tasks_section`；`core-rs/src/bash_task.rs` 的 `build_running_tasks_section` / `RUNNING_TASKS_HEADING`；`core-rs/src/engine.rs` 的 `enqueue_agent_message` 的 `compacting` 守卫 | `core-rs/src/bash_task_tests.rs` 的 `running_tasks_section_*` 五条；`core-rs/src/compact_tests.rs` 的 `strip_running_tasks_tests` 三条；`core-rs/src/compact_engine_tests.rs` 的 `compact_carries_the_running_background_tasks_into_the_summary_message` / `compact_without_running_tasks_adds_no_section`；`core-rs/src/engine_tests.rs` 的 `agent_message_during_compaction_is_queued_without_starting_the_consumer`；对照表 `core-rs/fixtures/compact.json` 的 `compactUserMessages` | 自动 |

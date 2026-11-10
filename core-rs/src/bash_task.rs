@@ -465,6 +465,11 @@ pub fn build_background_reminder_text(
 
 // ==================== 运行中清单（压缩携带） ====================
 
+/// 清单章节标题。构建（[`build_running_tasks_section`]）与剥离
+/// （`compact::strip_running_tasks_section`，把上一次的摘要再喂给摘要模型前去掉
+/// 这段陈旧快照）共用这一个字面量——两处各写一份，标题一改就会静默漏剥。
+pub const RUNNING_TASKS_HEADING: &str = "### 后台任务";
+
 /// 清单最多列出的任务数：超出的只报条数。
 ///
 /// 每行约 60 字符，10 条约 600 字符——够覆盖实际并发度，又不至于让摘要消息膨胀。
@@ -491,7 +496,7 @@ pub fn build_running_tasks_section(tasks: &[RunningTask]) -> Option<String> {
         return None;
     }
     let mut lines = vec![
-        "### 后台任务".to_string(),
+        RUNNING_TASKS_HEADING.to_string(),
         String::new(),
         "压缩开始时以下后台 Bash 任务仍在运行：".to_string(),
         String::new(),
