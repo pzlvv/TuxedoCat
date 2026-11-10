@@ -118,6 +118,8 @@ Core 进程承载的 core 侧业务：
   会话关闭 / 中止时终止该会话的全部后台任务。
 - 前台 Bash 与后台任务的结束判据同一口径：**shell 退出即收尾**（`bash_task::watch` 的 `try_wait` 口径），不等管道 EOF；孙进程继承管道写端（`start` 拉起的 detached daemon 等）使 EOF 不会到来时，退出后给读线程一段排水宽限（`PIPE_DRAIN_GRACE_MS`）收割已缓冲的输出，宽限内未结束就停掉读线程、用已累积快照收尾，此后 abort 与前台超时不再生效（命令已完成）。
 - 前台超时默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）；命令含 `sleep` 子命令时死线后移到 `max(默认超时, sleep 时长总和)`（GNU `NUMBER[s|m|h|d]` 口径，`sleep infinity` 饱和为无超时，解析不出时长（变量、算术、非法参数）回退默认超时——sleep 只把死线后移，不注销死线；工具输入显式给 `timeout`（内部覆盖，schema 之外）时优先）。
+- 对话隔离工作视图：改动只落对话私有上层目录，磁盘是唯一基线事实；能力判据、overlay 结构、
+  命名空间与生命周期见 [docs/core/conversation-work-view.md](conversation-work-view.md)。
 
 ### 3.1 平台矩阵
 
@@ -294,16 +296,9 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 `build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust
 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
 
-**交叉目标的 rustup 工具链**：Linux 上交叉编 Windows 目标要求 `rustc` 来自 rustup（它按
-`rustup target add` 装了 `*-pc-windows-msvc`）而不是发行版包管理器那份。两者并存时
-（如 `/usr/bin/rustc` 与 `~/.cargo/bin/rustc`）PATH 顺序决定用哪份：用发行版那份会以
-`can't find crate for core` 失败。
-
-**构建与校验必须用同一套工具链**：指纹把编译器身份算进哈希
-（[第 3.4 节](#34-构建指纹) 的 `rustcIdentity`）。用 A 工具链构建、用 B 工具链校验时，
-四个目标会一起报「与当前 Rust 源码不一致」——源码其实没变，变的是编译器。RD 与
-`verify-core-artifacts` 都按 PATH 里的 `rustc` 取值，因此两者要在同一个 shell 环境里执行；
-两个 rustc 版本不同时（发行版 1.98 与 rustup 1.99 并存）尤其容易踩。
+**交叉目标的工具链**：Linux 上交叉编 Windows 目标要求 `rustc` 来自 rustup（发行版那份缺
+`*-pc-windows-msvc` 的 std，报 `can't find crate for core`）。指纹把编译器身份算进哈希
+（[第 3.4 节](#34-构建指纹)），因此构建与校验要在同一个 shell 环境里用同一套工具链。
 
 预编译 ripgrep（`resources/ripgrep/<arch>-<platform>/`）四个平台取自同一版本的 ripgrep 官方发布物
 （15.2.0；Linux 两份为 `unknown-linux-musl` 静态链接），入库前按官方 `.sha256` 逐份校验。
@@ -311,10 +306,6 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACKAGE_DIRS`，单独重建用
 `npm run build:core:win32-arm64`；TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标
 仍按需补建 Core，兜住单目标场景。
-
-### 3.3.1 对话隔离工作视图
-
-隔离视图对话的改动只落对话私有上层目录，磁盘是唯一基线事实（overlayfs：`lowerdir` 是活磁盘、`userxattr` 参与挂载）。Core 在 `run_core()` 最早处进用户 + 挂载命名空间；工具经视图句柄映射路径，Bash 子进程在私有命名空间里 bind。失败不阻塞启动，能力探测回不可用。详见 [conversation-work-view.md](conversation-work-view.md)。
 
 ### 3.4 构建指纹
 

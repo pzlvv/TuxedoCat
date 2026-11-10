@@ -361,3 +361,146 @@ fn work_view_bash_writes_stay_in_the_upper_layer() {
         );
     });
 }
+
+// ==================== 并发建立 / 注销 ====================
+//
+// 用例对应 `specs/defects/work-view-concurrent-first-use-double-mounts.md`。
+
+/// 视图挂载点在 `/proc/self/mountinfo` 里出现几次。
+///
+/// 叠加挂载会在同一个挂载点留下多条记录，而 `mount()` 返回 0 时从返回值看不出来——这正是
+/// 本组用例要盯的事实。
+fn mount_entries(mount: &std::path::Path) -> usize {
+    let text = mount.to_string_lossy();
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.split_whitespace().nth(4) == Some(text.as_ref()))
+        .count()
+}
+
+/// 首次取句柄：登记；已被别的线程登记过就取回已有记录。与 `Core::ensure_work_view` 同构。
+fn open_view(workspace: &str, session: &str) -> Result<crate::work_view::WorkView, String> {
+    match crate::work_view::WorkView::register(workspace, session) {
+        Ok(view) => Ok(view),
+        Err(reason) if reason.contains("已有工作视图") => {
+            crate::work_view::WorkView::reopen(workspace, session)
+        }
+        Err(reason) => Err(reason),
+    }
+}
+
+/// 同一会话的并发首次工具调用只能挂一层（RT-1）。
+///
+/// 并行工具批里 `Read` / `Grep` / `Glob` 各占一个线程，都会走到 `ensure_work_view`。
+/// 建立过程没有互斥时每个线程都看到「尚未挂载」，于是同一份 `upper` 被叠加挂两次——
+/// `mount(2)` 不报错，登记表也只记一层，后续 `release` 只卸得掉一层。
+#[test]
+fn work_view_concurrent_first_use_mounts_once() {
+    in_namespace("work-view-concurrent-first-use", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-concurrent-first-use";
+        let root = crate::work_view::WorkView::root_of(&workspace, session).expect("根");
+        let mount = root.join("mount");
+
+        // 两个线程同时开始：`Barrier` 保证它们都还没进 `ensure_mounted` 就被一起放行，
+        // 否则「先到的挂完、后到的看到 mounted」这条正常路径会让用例假绿。
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let workspace = workspace.clone();
+            let session = session.to_string();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut view = open_view(&workspace, &session)?;
+                view.ensure_mounted()?;
+                crate::work_view::WorkViewHandle::of(&session)
+                    .map(|_| ())
+                    .ok_or_else(|| "并发建立后取不到视图句柄".to_string())
+            }));
+        }
+        for handle in handles {
+            let result = handle.join().expect("线程不得 panic");
+            assert!(result.is_ok(), "并发首次建立必须都成功：{result:?}");
+        }
+
+        assert_eq!(
+            mount_entries(&mount),
+            1,
+            "同一视图只能挂一层：{} 在 mountinfo 里出现 {} 次",
+            mount.display(),
+            mount_entries(&mount)
+        );
+    });
+}
+
+/// 并发挂载之后注销与回收都要干净（RT-2）。
+///
+/// 叠加挂两层时 `release` 只卸一层，登记表却已清空；`remove` 因此跳过 `umount`，
+/// 直接删一个仍有挂载的目录 → `EBUSY`，视图目录与挂载双双残留。
+#[test]
+fn work_view_release_and_remove_after_concurrent_first_use() {
+    in_namespace("work-view-concurrent-release", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-concurrent-release";
+        let root = crate::work_view::WorkView::root_of(&workspace, session).expect("根");
+        let mount = root.join("mount");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let workspace = workspace.clone();
+            let session = session.to_string();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut view = open_view(&workspace, &session)?;
+                view.ensure_mounted()
+            }));
+        }
+        for handle in handles {
+            let result = handle.join().expect("线程不得 panic");
+            assert!(result.is_ok(), "并发首次建立必须都成功：{result:?}");
+        }
+
+        crate::work_view::release(&workspace, session);
+        assert_eq!(
+            mount_entries(&mount),
+            0,
+            "注销后不得残留挂载：{} 仍在 mountinfo 里",
+            mount.display()
+        );
+
+        crate::work_view::remove(&workspace, session).expect("回收视图");
+        assert!(!root.exists(), "回收必须删掉整个视图目录");
+    });
+}
+
+/// 已注销的视图不得再挂载（RT-3）。
+///
+/// 对话在首次工具调用之前就关闭时，`release` 先注销登记项。之后若还有一次工具调用迟到
+/// （注销与建立竞争），`ensure_mounted` 必须报错——否则会挂出一个登记表里没有、谁也回收
+/// 不到的视图。
+#[test]
+fn work_view_mount_after_release_is_refused() {
+    in_namespace("work-view-mount-after-release", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-mount-after-release";
+        let root = crate::work_view::WorkView::root_of(&workspace, session).expect("根");
+        let mount = root.join("mount");
+
+        let view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        crate::work_view::release(&workspace, session);
+
+        let mut late = view;
+        assert!(late.ensure_mounted().is_err(), "已注销的视图不得再挂载");
+        assert_eq!(
+            mount_entries(&mount),
+            0,
+            "报错路径不得留下挂载：{} 在 mountinfo 里出现 {} 次",
+            mount.display(),
+            mount_entries(&mount)
+        );
+    });
+}

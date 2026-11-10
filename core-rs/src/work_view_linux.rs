@@ -203,6 +203,44 @@ fn umount(target: &Path) -> Result<(), String> {
     }
 }
 
+/// 某个挂载点当前在 `/proc/self/mountinfo` 里是否出现。
+///
+/// `mount()` 返回 0 不等于挂载生效（命名空间或传播属性不对时它会静默无效），也无法从
+/// 返回值看出同一挂载点被叠了几层——两件事都只能读这份表判断。
+fn mounted_at(mount: &Path) -> bool {
+    let text = mount.to_string_lossy();
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap_or_default()
+        .lines()
+        .any(|line| line.split_whitespace().nth(4) == Some(text.as_ref()))
+}
+
+/// 把一个挂载点卸干净。
+///
+/// `mount(2)` 允许在同一挂载点叠加挂载，而 `umount(2)` 一次只撤一层。正常形态下每个视图
+/// 只挂一层（`ensure_mounted` 在登记表的锁内建立），但层数一旦与登记表不一致，单次
+/// `umount` 就会留下一层谁也回收不到的挂载：`remove` 随后 `remove_dir_all` 一个仍有挂载
+/// 的目录直接 `EBUSY`，视图目录与挂载双双残留
+/// （`specs/defects/work-view-concurrent-first-use-double-mounts.md`）。这里循环到表里不再
+/// 出现该挂载点为止，让注销 / 回收对层数不敏感。
+fn umount_all(mount: &Path) {
+    // 上限只为防异常情况下死循环：真实形态最多一层，8 层远超任何可能。
+    for _ in 0..8 {
+        if !mounted_at(mount) {
+            return;
+        }
+        if umount(mount).is_err() {
+            break;
+        }
+    }
+    if mounted_at(mount) {
+        eprintln!(
+            "[core] 挂载点 {} 卸载后仍在 /proc/self/mountinfo 里",
+            mount.display()
+        );
+    }
+}
+
 /// `CapEff` 的 bit 21 是 `CAP_SYS_ADMIN`。
 fn has_cap_sys_admin() -> bool {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
@@ -282,12 +320,7 @@ fn mount_overlay(
     // 调用方随后把工具路径映射到这个**空目录**上——工具看到的是空工作区，写入落到
     // 一个谁也读不到的地方，全程没有任何报错。读 mountinfo 确认挂载点真的出现在表里，
     // 不在就当作失败（`docs/architecture/principles.md` 铁律 4.1：不静默降级）。
-    let mount_text = mount.to_string_lossy();
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
-    let mounted = mountinfo
-        .lines()
-        .any(|line| line.split_whitespace().nth(4) == Some(mount_text.as_ref()));
-    if mounted {
+    if mounted_at(mount) {
         Ok(())
     } else {
         let ns = std::fs::read_link("/proc/self/ns/mnt")
@@ -368,10 +401,22 @@ impl WorkView {
     /// 确保视图已挂载（首次调用时建目录并挂 overlay）。
     ///
     /// 惰性：登记本身不碰磁盘，纯声明性对话（只发一条消息就关）不会留下视图目录。
+    ///
+    /// **建立过程在登记表的锁内完成**：并行工具批里 `Read` / `Grep` / `Glob` 各占一个
+    /// 线程，都会首次走到这里，而它们手里是各自 `mounted == false` 的克隆。锁外做
+    /// 「检查 + 挂载」时每个线程都认为视图尚未建立，`mount(2)` 又允许在同一挂载点叠加
+    /// 挂载，于是同一份 `upper` 被挂两层而登记表只记一层——`release` 只卸得掉一层，
+    /// 残留的那层让 `remove` 的 `remove_dir_all` 报 `EBUSY`
+    /// （`specs/defects/work-view-concurrent-first-use-double-mounts.md`）。
+    /// 锁内重读登记表条目后只有一个线程真正挂载，其余采纳结果。
+    ///
+    /// 注销与建立竞争时（对话在首次工具调用之前就关闭）条目已不在表里，直接报错：
+    /// 否则会挂出一个登记表里没有、谁也回收不到的视图。
     pub fn ensure_mounted(&mut self) -> Result<(), String> {
         if self.mounted {
             return Ok(());
         }
+        // 建目录不共享状态且幂等，放锁外——挂载调用本身才是要串行化的那段。
         for name in ["upper", "work", "mount"] {
             std::fs::create_dir_all(self.root.join(name))
                 .map_err(|error| format!("建视图目录 {} 失败：{error}", name))?;
@@ -382,19 +427,27 @@ impl WorkView {
             self.root.join("mount"),
             std::fs::Permissions::from_mode(0o755),
         );
-        mount_overlay(
-            &self.workspace,
-            &self.root.join("upper"),
-            &self.root.join("work"),
-            &self.mount,
-        )?;
-        self.mounted = true;
-        // 登记表里那份同步标记（`WorkViewHandle::of` 读的是表）
-        if let Ok(mut views) = views().lock() {
-            if let Some(entry) = views.get_mut(&self.session_id) {
-                entry.mounted = true;
-            }
+
+        let mut views = views()
+            .lock()
+            .map_err(|error| format!("视图登记表损坏：{error}"))?;
+        let entry = views.get_mut(&self.session_id).ok_or_else(|| {
+            format!(
+                "会话 {} 的工作视图已注销，不能再挂载",
+                self.session_id
+            )
+        })?;
+        if !entry.mounted {
+            mount_overlay(
+                &self.workspace,
+                &self.root.join("upper"),
+                &self.root.join("work"),
+                &self.mount,
+            )?;
+            entry.mounted = true;
         }
+        // `WorkViewHandle::of` 读的是表，`mount_point()` 读的是这份克隆，两处都要置位
+        self.mounted = true;
         Ok(())
     }
 
@@ -477,9 +530,8 @@ pub fn release(workspace: &str, session_id: &str) {
         .ok()
         .flatten();
     if let Some(view) = removed {
-        if view.mounted {
-            umount(view.mount.as_path()).ok();
-        }
+        // 不看 `view.mounted`：它是登记时的克隆，层数对不对由 mountinfo 说了算
+        umount_all(view.mount.as_path());
     }
 }
 
@@ -491,12 +543,13 @@ pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
         .lock()
         .map_err(|error| format!("视图登记表损坏：{error}"))?
         .remove(session_id);
-    if let Some(view) = &removed {
-        if view.mounted {
-            umount(view.mount.as_path()).ok();
-        }
-    }
     let root = WorkView::root_of(workspace, session_id)?;
+    // 登记表里没有条目时也要卸：`release` 之后残留的挂载不会随条目一起消失，而
+    // `remove_dir_all` 对仍有挂载的目录报 `EBUSY`。
+    match &removed {
+        Some(view) => umount_all(view.mount.as_path()),
+        None => umount_all(&root.join("mount")),
+    }
     if root.exists() {
         std::fs::remove_dir_all(&root)
             .map_err(|error| format!("回收视图目录 {} 失败：{error}", root.display()))?;

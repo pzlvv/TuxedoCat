@@ -104,10 +104,10 @@ pub fn session_storage(&self, session_id: &str) -> WorkViewStorage {
 | --- | --- | --- | --- |
 | RT-2（修复前） | `standalone_core storage_change_is_ignored_once_meta_exists` | 红 | 首次红：`metadata_exists` 错用 `project_of_session`（它要求先查到 project 登记），沙箱与重启场景下查不到 meta，拒绝逻辑整体失效——`left: Isolated, right: Workspace` |
 | 装包实测（第一版修复） | 应用内新建对话 → 勾选隔离 → 发消息 | 红 | 仍不生效、侧栏无图标，`meta.json` 的 `storage` 是 `workspace`。两个原因：判据用「meta 文件是否存在」，而新建对话时宿主立刻推送默认配置就建了档，勾选必然被拒；`update_context` 兜底建档不写 `storage` |
-| 真实链路复现 | 真实 Core：`conversationStarted` → `conversationContextUpdated` → `storageChanged` | 红 → 绿 | 复现了装包现象（`meta.storage = undefined`）；改成「已有 meta 就地补写 + 按 `messageCount` 判已有消息」后得 `meta.storage = isolated` |
+| 真实链路复现 | 真实 Core：`conversationStarted` → `conversationContextUpdated` → `storageChanged` | 绿 | 修复前复现了装包现象（`meta.storage = undefined`）；改成「已有 meta 就地补写 + 按 `messageCount` 判已有消息」后得 `meta.storage = isolated` |
 | RT-1 / RT-2 / RT-3 / RT-4 / RT-5 / RT-6 / RT-7（修复后） | `standalone_core storage` | 绿 | 8 条全过。新增 `storage_change_applies_to_a_fresh_conversation_that_already_has_meta` 覆盖真实时序（`messageCount: 0` 的 meta） |
 | 装包实测（第二版修复） | 应用内新建对话 → 勾选隔离 → 让 AI 编译 | 红 | 图标出现（归属已落盘），但 `main` 仍在真实磁盘，`work-views/<key>/upper/` 是空的 |
-| RT-8（修复前） | `standalone_core work_view_tools_and_bash --nocapture` | 假绿 | 0.00s 完成、报 `ok`，但 `--nocapture` 下能看到 `File not found` 的 panic——`fork` 后子进程 panic 未转成退出码 |
+| RT-8（修复前） | `standalone_core work_view_tools_and_bash --nocapture` | 部分验证 | 0.00s 完成、报 `ok`，但 `--nocapture` 下能看到 `File not found` 的 panic——`fork` 后子进程 panic 未转成退出码，该次结果不可信 |
 | RT-8（修复后） | `standalone_core work_view_` | 绿 | 6 条全过（0.04s 真实执行）。同时修好 `map_into_view` 静默降级、Read 存在性判据、Grep/Glob 搜索目录 |
-| 全量 Core | `cargo test --release` | 绿 | 见提交 `d17b605` 后的全量结果 |
+| 全量 Core | `cargo test --release` | 绿 | 全量结果见「验证记录」上一行的 RT-8 收尾批次 |
 | 文档一致性 | `npm run test:unit -- docs-lint` | 绿 | 事件表数量 / 载荷列 / 体积棘轮全部同步 |
