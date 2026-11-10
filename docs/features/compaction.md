@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-26
+last_reviewed: 2026-11-10
 ---
 
 # 规格：对话压缩
@@ -31,6 +31,11 @@ last_reviewed: 2026-10-26
   - **AC-8**（FR-004）：GIVEN 保留区里的用户输入 WHEN 生成历史章节 THEN 不列入（避免与上下文重复）
 - 场景 5：归档展开
   - **AC-9**（FR-005）：GIVEN 已压缩会话 WHEN 用户展开 THEN 只读重放「归档 + 保留区」给 webview，不改任何 core 状态，LLM 上下文不变
+- 场景 6：运行中后台任务
+  - **AC-10**（FR-006）：GIVEN 压缩开始时本会话有运行中的后台 Bash 任务 WHEN 生成摘要消息 THEN 正文含这些任务的 `taskId` 与描述，按注册序列出
+  - **AC-11**（FR-006）：GIVEN 运行中任务数超过上限 WHEN 生成章节 THEN 只列出上限内的任务并报出剩余条数
+  - **AC-12**（FR-006）：GIVEN 压缩开始时没有运行中的后台任务 WHEN 生成摘要消息 THEN 正文不含该章节
+  - **AC-13**（FR-006）：GIVEN 章节已写入压缩产物 WHEN 其中某个任务随后完成或被杀 THEN 压缩产物不回写（章节是压缩那一刻的时点事实，后续由完成通知接续）
 
 ## 2. 功能需求
 
@@ -72,7 +77,8 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 2. 保留最近 `maxMessagesToKeep`（30）条消息作为**保留区**，原样留在上下文里；
    其余为**归档区**，会被摘要掉。
 3. 用归档区调 LLM 生成摘要（`COMPACT_SYSTEM_PROMPT` + `generate_compact_summary_prompt`）。
-4. 新建边界标记（`system` / `compact_boundary`）与摘要消息（`user` / `isCompactSummary`）。
+4. 新建边界标记（`system` / `compact_boundary`）与摘要消息（`user` / `isCompactSummary`）；
+   摘要正文带用户输入历史章节（FR-004）与运行中后台任务章节（FR-006）。
 5. 组装压缩后的消息：`[边界标记, 摘要消息, ...保留区]`（`build_post_compact_messages`）。
 6. `compactEnd`（`complete`，带压缩后上下文占用的重算值）与归档写盘（`history.rs` 的
    `save_compact_archive`：归档区 + 摘要）在 `compact_conversation` 内完成；返回后整文件
@@ -134,6 +140,35 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
   webview，不改任何 core 状态；LLM 仍只看压缩后的消息（[principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)）。
 - 归档读取经 `UiRequest.compactArchiveRequested`（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
 
+### FR-006：运行中后台任务随压缩携带
+
+后台任务的工具结果里带有「完成会通知、不要轮询」的提示，这段提示寄生在 `tool_result`
+正文中。压缩会销毁那处载体：归档区的 `tool_result` 被摊平成摘要输入
+（`format_messages_for_compact` → `format_content_blocks` 的 `[Tool Result]: …` 转换），
+保留区的可能因配对修复被换成合成的
+`is_canceled` 结果（[第 1 节 AC-6](#1-用户场景与验收标准)），大输出还可能被裁剪。
+任务仍在运行、任务表仍在册，而模型那一侧的事实已经消失。
+
+压缩因此额外产出一段「运行中后台任务」章节，并进摘要消息正文：
+
+- **来源**：压缩开始时按 `bash_task::running_tasks_for_session` 现算，不经由任何一条
+  `tool_result`；注册表是唯一事实来源（[background-bash.md](background-bash.md)）。
+  不进注册表的进程（`detach: true` 放行的自我脱离进程，见
+  [bash-detach.md FR-002](bash-detach.md#fr-002detachtrue-的豁免语义)）不在清单内。
+- **落点**：摘要消息 `content` 的末尾段（`generate_compact_user_message` 的
+  `running_tasks` 入参，纯函数 `bash_task::build_running_tasks_section` 生成），
+  标题为 `### 后台任务`（与用户输入历史章节同级）。
+  压缩产物仍是 `[边界标记, 摘要, ...保留区]` 三段形态，不新增消息。
+- **内容**：每任务一行 `taskId` + 描述；`command` 与描述不同时补命令（与后台提醒文案
+  同一口径）。超过上限（`COMPACT_TASKS_MAX`）只列前若干个并报剩余条数。
+- **不含易变字段**：不写已运行时长、pid、输出尾部——这些每秒都变，会让摘要消息在
+  归档重放与上下文估算里反复抖动，且对决策没有增量信息。
+- **时点语义**：章节陈述「压缩开始时」的事实，不回写。之后完成的任务由完成通知
+  按既有通道接续（[background-bash.md FR-003](background-bash.md#fr-003查询结束兜底提醒)），
+  顺序上通知总在摘要消息之后进入上下文。
+
+空集不产出章节，压缩产物与未实现该章节时逐字节相同。
+
 ## 3. 行为规格
 
 ### 3.1 数据流
@@ -158,6 +193,8 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 - **并发保护**：压缩进行中标记 `compacting`，新到用户消息只入队（压缩结束后排空）；
   周期性后台提醒压缩中不投递。
 - **孤立工具调用**：截断导致的配对断裂由 `sanitize_tool_pairing` 修复（AC-6）。
+- **运行中后台任务**：压缩开始时按任务登记表现算一次并进摘要消息（FR-006）；
+  登记表为空时不出章节。章节不随后续完成 / 中止回写（AC-13）。
 
 ## 5. 非目标
 
@@ -178,3 +215,4 @@ US-17（压缩历史展开）；无新增 US。
 | FR-003 | `core-rs/src/compact.rs` 的 `compact_conversation` / `sanitize_tool_pairing` | `core-rs/src/compact_engine_tests.rs`；`core-rs/src/compact_tests.rs` | 自动 |
 | FR-004 | `core-rs/src/compact.rs` 的 `select_user_input_history` | `core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_keeps_the_global_user_input_head` | 自动 |
 | FR-005 | 宿主 `expandCompact`（`src/host/ui/webviewMessageHandler.ts`）+ `UiRequest.compactArchiveRequested` 应答 | e2e `e2e/webview/messagePresentation.spec.ts`（展开） | 自动 |
+| FR-006 | `core-rs/src/compact.rs` 的 `compact_conversation_inner` / `generate_compact_user_message`；纯函数 `core-rs/src/bash_task.rs` 的 `build_running_tasks_section` | `core-rs/src/bash_task_tests.rs` 的 `running_tasks_section_*` 五条；`core-rs/src/compact_engine_tests.rs` 的 `compact_carries_the_running_background_tasks_into_the_summary_message` / `compact_without_running_tasks_adds_no_section`；对照表 `core-rs/fixtures/compact.json` 的 `compactUserMessages` | 自动 |

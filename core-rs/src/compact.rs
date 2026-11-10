@@ -504,10 +504,18 @@ pub fn generate_compact_summary_prompt(
 }
 
 /// 压缩后注入的 user 消息正文（`generateCompactUserMessage`）
+///
+/// `running_tasks` 是压缩开始时仍在运行的后台任务章节（
+/// [`crate::bash_task::build_running_tasks_section`] 的产物，空集为 `None`）。
+/// 它不是「历史摘要」的一部分：后台任务的提示文字寄生在 `tool_result` 正文里，
+/// 压缩会把它摊平、截断或替换成合成结果，任务仍在跑而模型那一侧的事实已经消失
+/// （`docs/features/compaction.md` FR-006）。放在摘要正文里而不是单开一条消息，
+/// 是为了让压缩产物保持 `[边界标记, 摘要, ...保留区]` 的三段形态。
 pub fn generate_compact_user_message(
     summary: &str,
     transcript_path: Option<&str>,
     user_input_history: Option<&str>,
+    running_tasks: Option<&str>,
 ) -> String {
     let mut content = format!("以下是之前对话的摘要：\n\n{summary}");
     if let Some(path) = transcript_path {
@@ -515,6 +523,9 @@ pub fn generate_compact_user_message(
     }
     if let Some(history) = user_input_history {
         content.push_str(&format!("\n\n### 用户输入历史\n\n{history}"));
+    }
+    if let Some(tasks) = running_tasks {
+        content.push_str(&format!("\n\n{tasks}"));
     }
     content.push_str("\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。");
     content
@@ -828,6 +839,13 @@ fn compact_conversation_inner(
         Some(user_input_history)
     };
 
+    // 压缩开始时仍在运行的后台任务：按注册表现算一份写进摘要消息
+    // （`docs/features/compaction.md` FR-006）。取快照的时机是压缩开始、消息数组被
+    // 整体替换之前——之后完成任务的通知会陆续进入保留区，晚于这条摘要，顺序天然正确。
+    let running_tasks = crate::bash_task::build_running_tasks_section(
+        &crate::bash_task::running_tasks_for_session(session_id),
+    );
+
     let last_message_uuid = messages_for_compact
         .last()
         .and_then(|message| message.get("uuid"))
@@ -861,6 +879,7 @@ fn compact_conversation_inner(
                 &summary,
                 None,
                 user_input_history.as_deref(),
+                running_tasks.as_deref(),
             ),
         },
         "uuid": format!("summary_{}", util::now_millis()),

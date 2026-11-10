@@ -139,6 +139,7 @@ mod parity_tests {
                     case["summary"].as_str().unwrap(),
                     case["transcriptPath"].as_str(),
                     case["userInputHistory"].as_str(),
+                    case["runningTasks"].as_str(),
                 ),
                 case["result"].as_str().unwrap(),
                 "压缩后 user 消息不一致: {}",

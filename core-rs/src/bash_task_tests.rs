@@ -481,3 +481,79 @@ fn background_reminder_parity() {
         );
     }
 }
+
+// ==================== 运行中清单（压缩携带） ====================
+
+fn running_task(task_id: &str, description: &str, command: &str) -> RunningTask {
+    RunningTask {
+        task_id: task_id.to_string(),
+        description: description.to_string(),
+        command: command.to_string(),
+        pid: 4242,
+        start_time: 1_700_000_000_000,
+    }
+}
+
+#[test]
+fn running_tasks_section_is_none_for_an_empty_registry() {
+    // 空集不产出章节：压缩产物与不实现本特性时逐字节相同
+    assert_eq!(build_running_tasks_section(&[]), None);
+}
+
+#[test]
+fn running_tasks_section_lists_id_and_description_in_registration_order() {
+    let section = build_running_tasks_section(&[
+        running_task("bg-1", "跑测试", "npm test"),
+        running_task("bg-2", "起 dev server", "起 dev server"),
+    ])
+    .expect("非空集应有章节");
+
+    assert!(section.starts_with("### 后台任务\n"), "{section}");
+    // 注册序：bg-1 先于 bg-2
+    let first = section.find("- bg-1：跑测试").expect("bg-1 行");
+    let second = section.find("- bg-2：起 dev server").expect("bg-2 行");
+    assert!(first < second, "{section}");
+    // command 与 description 不同时补命令，相同时不重复
+    assert!(
+        section.contains("- bg-1：跑测试（命令：`npm test`）"),
+        "{section}"
+    );
+    assert_eq!(section.matches("起 dev server").count(), 1, "{section}");
+}
+
+#[test]
+fn running_tasks_section_omits_volatile_fields() {
+    // 已运行时长 / pid / 输出不进正文：它们每秒都变，会让摘要消息在重放与估算里抖动
+    let section = build_running_tasks_section(&[running_task("bg-1", "跑测试", "npm test")])
+        .expect("非空集应有章节");
+    assert!(!section.contains("4242"), "{section}");
+    assert!(!section.contains("Elapsed"), "{section}");
+    assert!(!section.contains("1700000000000"), "{section}");
+}
+
+#[test]
+fn running_tasks_section_caps_the_list_and_reports_the_remainder() {
+    let tasks: Vec<RunningTask> = (0..COMPACT_TASKS_MAX + 3)
+        .map(|index| running_task(&format!("bg-{index}"), "任务", "任务"))
+        .collect();
+    let section = build_running_tasks_section(&tasks).expect("非空集应有章节");
+    assert_eq!(
+        section.matches("- bg-").count(),
+        COMPACT_TASKS_MAX,
+        "只列前 {COMPACT_TASKS_MAX} 个: {section}"
+    );
+    assert!(section.contains("另有 3 个运行中任务未列出"), "{section}");
+}
+
+#[test]
+fn running_tasks_section_is_deterministic_for_the_same_input() {
+    // 同一份注册表快照两次渲染结果相同：压缩产物不因时间流逝而变化
+    let tasks = vec![
+        running_task("bg-1", "跑测试", "npm test"),
+        running_task("bg-2", "起 dev server", "npm run dev"),
+    ];
+    assert_eq!(
+        build_running_tasks_section(&tasks),
+        build_running_tasks_section(&tasks)
+    );
+}
