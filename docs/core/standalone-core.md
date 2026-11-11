@@ -293,7 +293,7 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
    （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；Windows arm64 上 ring 的 build.rs 对该目标
    **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）；
    非 Windows 宿主上的 msvc 目标不注入 C 工具链（整条链归 `cargo xwin` 的 clang-cl 包装）。
-
+   判据与探测分两层：`crossToolchainEnv` 只回答「注入什么」、不探测本机有没有 zig，检查落在构建入口（`requiresZig` → `requireZig`）。
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：产物缺失、比
 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自
 `PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份：校验拦住「改了 Rust 源码

@@ -22,10 +22,14 @@ import { createChecker, runTests } from './helpers/harness';
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 
 /** 一个能驱动 `scripts/build-core.mjs` 的 ESM 小程序（脚本是 ESM，测试编译产物是 CJS） */
-function runEsm(body: string): { status: number | null; stdout: string; stderr: string } {
+function runEsm(
+  body: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', body], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    env,
   });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -124,6 +128,69 @@ runTests('coreBuildToolchain', async () => {
     'Linux musl 目标仍注入 zig cc + zig ar',
     /\bcc\b/.test(muslEnv.CC_x86_64_unknown_linux_musl ?? '') &&
       /\bar\b/.test(muslEnv.AR_x86_64_unknown_linux_musl ?? ''),
+  );
+
+  // ---------- RT-1 / RT-2：判据不依赖本机装没装 zig ----------
+  // 判据函数只回答「该目标要什么」，不回答「本机有什么」：把 ZIG 指到不存在的路径后，
+  // `crossToolchainEnv` 仍应算出完整判据并正常退出（缺 zig 是构建入口的事）。
+  const noZigEnv = { ...process.env, ZIG: path.join(REPO_ROOT, 'no-such-zig-binary') };
+  const noZigProbe = runEsm(
+    `const m = await import('./scripts/build-core.mjs');
+     console.log(JSON.stringify({
+       winArm64: m.crossToolchainEnv('aarch64-pc-windows-msvc', 'win32', 'x64'),
+       winX64: m.crossToolchainEnv('x86_64-pc-windows-msvc', 'win32', 'x64'),
+       linuxMusl: m.crossToolchainEnv('x86_64-unknown-linux-musl', 'win32', 'x64'),
+       linuxMuslCross: m.crossToolchainEnv('aarch64-unknown-linux-musl', 'linux', 'x64'),
+     }));`,
+    noZigEnv,
+  );
+  check(
+    'RT-1：缺失 zig 时判据仍可计算（探针正常退出）',
+    noZigProbe.status === 0 && noZigProbe.stdout.trim().startsWith('{'),
+  );
+  let noZigParsed: {
+    winArm64?: Record<string, string>;
+    winX64?: Record<string, string>;
+    linuxMusl?: Record<string, string>;
+    linuxMuslCross?: Record<string, string>;
+  } = {};
+  try {
+    noZigParsed = JSON.parse(noZigProbe.stdout.trim() || '{}');
+  } catch {
+    noZigParsed = {};
+  }
+  if (noZigProbe.status !== 0 || Object.keys(noZigParsed).length === 0) {
+    console.log(`     ${noZigProbe.stderr.split('\n').slice(0, 3).join(' ').trim()}`);
+  }
+  const noZigArm64 = noZigParsed.winArm64 ?? {};
+  const noZigMuslCross = noZigParsed.linuxMuslCross ?? {};
+  check(
+    'RT-2：缺失 zig 时 Windows arm64 仍判 zig cc + aarch64-windows-msvc',
+    /\bcc\b/.test(noZigArm64.CC_aarch64_pc_windows_msvc ?? '') &&
+      (noZigArm64.CFLAGS_aarch64_pc_windows_msvc ?? '') === '--target=aarch64-windows-msvc',
+  );
+  check(
+    'RT-2：缺失 zig 时 Linux musl 交叉仍判 zig cc + zig ar',
+    /\bcc\b/.test(noZigMuslCross.CC_aarch64_unknown_linux_musl ?? '') &&
+      /\bar\b/.test(noZigMuslCross.AR_aarch64_unknown_linux_musl ?? ''),
+  );
+  check(
+    'RT-2：缺失 zig 时 Windows x64 仍不注入 C 工具链',
+    Object.keys(noZigParsed.winX64 ?? {}).length === 0,
+  );
+
+  // ---------- RT-3：缺 zig 仍在构建入口拦住构建 ----------
+  // 判据放宽不等于放弃守卫：真要构建一个需要 zig 的目标时，缺它必须报错且不进 cargo。
+  // 取 aarch64 的 Linux musl 目标：任何架构的 Linux 宿主（或交叉宿主）上它都需要 zig。
+  const buildProbe = spawnSync(
+    process.execPath,
+    ['scripts/build-core.mjs', '--target', 'aarch64-unknown-linux-musl'],
+    { cwd: REPO_ROOT, encoding: 'utf8', env: noZigEnv },
+  );
+  const buildStderr = `${buildProbe.stdout ?? ''}${buildProbe.stderr ?? ''}`;
+  check(
+    'RT-3：缺失 zig 时构建入口报错退出且不进入 cargo',
+    buildProbe.status !== 0 && /zig/.test(buildStderr) && !/cargo 构建失败/.test(buildStderr),
   );
 
   finish();
