@@ -473,3 +473,48 @@ test('US-47 慢速拖动上滚 1px 后新消息到达不把视口拉回底部', 
   expect(after).not.toBeNull();
   expect(after!).toBeGreaterThan(0);
 });
+
+/**
+ * 「真实用户消息到达」的复位入口按消息身份判定（specs/defects/user-message-arrival-skips-scroll-to-bottom.md）：
+ * 判据必须是「末位是新的真实用户消息」，与它前面那条消息的角色无关。此前按「末位角色发生
+ * user 转变」判定，于是末位已经是 `role=user` 的系统自动消息（后台 Bash 完成通知 / 子代理
+ * From / 压缩摘要）时，用户上翻后发的消息不复位滚离、也不回底——自己的消息与随后的回复都
+ * 落在视口外，用户看不到「发出去了」。
+ *
+ * 场景：时间线末位是一条后台任务完成通知（`origin=bash`、`role=user`）→ 真实滚轮上翻 →
+ * 输入框键入并 Enter → 自己的消息可见且视口贴底，本轮回复继续跟随。
+ */
+test('US-47 滚离后发送消息回底（末位是 role=user 的后台任务通知）', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await page.setViewportSize({ width: 1280, height: 500 });
+
+  // 撑高时间线，末位放一条 role=user 但不是用户输入的后台任务通知
+  await host.setTurn({ text: '这一轮的回复正文。\n\n' + '回复内容，用于撑高消息列表。'.repeat(20), chunkDelayMs: 10 });
+  await host.send({
+    type: 'addMessage', sessionId, role: 'assistant',
+    content: '段落内容，用于撑高消息列表。'.repeat(200),
+  });
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '后台任务已完成', origin: 'bash' });
+  await expectAtBottom(page);
+
+  // 用户向上翻阅历史（真实滚轮；低帧率下 wheel→scroll 可能丢帧，整体重试）
+  await expect(async () => {
+    await page.mouse.move(640, 200);
+    await page.mouse.wheel(0, -800);
+    await page.mouse.wheel(0, -800);
+    await expectAwayFromBottom(page, 300);
+  }).toPass({ timeout: 20_000 });
+  await waitForScrollDispatch(page);
+
+  // 真实发送：自己的消息必须可见，视口回到底部（本缺陷的红点）
+  await page.fill('textarea.input-textarea', '后台通知之后的用户消息');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.getByText('后台通知之后的用户消息', { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+
+  // 复位后恢复自动跟随：本轮流式回复继续把视口留在底部
+  await expect(page.getByText('这一轮的回复正文。').first()).toBeVisible({ timeout: 10_000 });
+  await expectAtBottom(page);
+});
