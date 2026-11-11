@@ -144,8 +144,12 @@ export interface Message {
    * 消息来源：`agent`（子代理 Reply）或 `bash`（后台任务通知）；
    * 用户消息留空即视为 `user`。
    *
-   * - `agent`：按 markdown + From 头渲染，不参与滚动置顶；
-   * - `bash`：按普通纯文本（含 ANSI 颜色）渲染，同样不参与滚动置顶。
+   * - `agent`：一行折叠行（图标 + From 来源 + 正文首行摘要）默认收起，展开后按 markdown
+   *   渲染完整回复，不参与滚动置顶；
+   * - `bash`：同一套折叠行（图标 + 结论文案 + 命令描述 + 时长），展开后显示原始通知全文
+   *   （含 ANSI 颜色），同样不参与滚动置顶。
+   *
+   * 两类自动消息的折叠行为见 `docs/hosts/webview-ui.md` 第 11 节的「自动消息折叠行」。
    */
   origin?: MessageOrigin;
   /** 消息是否正在流式输出中（用于 ThinkingMessage 默认展开） */

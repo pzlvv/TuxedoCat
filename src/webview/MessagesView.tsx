@@ -22,6 +22,7 @@ import { isTimelineDotHit, rewindAvailability } from './rewindTimeline';
 import { StreamStatsLabel } from './StreamStatsLabel';
 import { uiFontSizePx } from './fontSize';
 import { isAutoMessageOrigin as isAutoOrigin } from '../shared/utils/messageOrigin';
+import { firstLineSummary, parseBackgroundCompletion } from './autoMessageCard';
 
 /**
  * Pre-computed stable tool component map — created once outside the component
@@ -248,6 +249,123 @@ const ToolCallMessage = memo(function ToolCallMessage({
 /* ------------------------------------------------------------------ */
 /*  User message sub-component                                         */
 /* ------------------------------------------------------------------ */
+
+/** 折叠行摘要的最大字符数（只截长度，实际省略仍由 CSS 按宽度做） */
+const AUTO_MESSAGE_SUMMARY_CHARS = 200;
+
+/**
+ * 系统自动消息的折叠行（`docs/hosts/webview-ui.md` 第 11 节「自动消息折叠行」）：
+ * 后台 Bash 完成通知与子代理 From / To 消息共用同一行形态——图标 + 标题 + 单行摘要 +
+ * 右侧附注 + 展开按钮，正文默认收起。
+ *
+ * 一行只放得下「谁 + 一句话」，因此摘要必须由正文派生（`autoMessageCard.ts` 的纯函数），
+ * 组件不另拼文案；状态（成功 / 失败 / 中止）只体现在标题文字上，不改变颜色与图标——
+ * 失败的任务与成功任务视觉上完全同构。
+ */
+const AutoMessageHead = memo(function AutoMessageHead({
+  colors,
+  label,
+  summary,
+  metaText,
+  expanded,
+  onToggle,
+}: {
+  colors: Colors;
+  /** 行首标题（状态文案 / 来源标签），已本地化 */
+  label: React.ReactNode;
+  /** 单行摘要（description / 正文首行） */
+  summary: string;
+  /** 右侧附注（后台任务时长）；null 时省略 */
+  metaText: string | null;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      // 整行是交互元素：置顶容器不给它「点击空白跳回原位」
+      data-no-jump=""
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      className="auto-msg-head flex w-full items-center gap-1 rounded cursor-pointer ui-fs-12-5"
+      style={{ minHeight: '24px', padding: '2px 6px' }}
+    >
+      {/* 图标与颜色统一：成功 / 失败 / 中止、后台任务 / 子代理全部一致 */}
+      <Icon name="message-square" size={12} style={{ color: colors.harness, flexShrink: 0 }} />
+      <span style={{ color: colors.textSystem, flexShrink: 0 }}>{label}</span>
+      <span
+        style={{
+          color: colors.textPrimary,
+          minWidth: 0,
+          flex: 1,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {summary}
+      </span>
+      {metaText !== null && (
+        <span
+          style={{
+            color: colors.textSystem,
+            opacity: 0.7,
+            flexShrink: 0,
+            paddingLeft: 8,
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {metaText}
+        </span>
+      )}
+      <Icon
+        name="chevron-right"
+        size={11}
+        className="transition-transform"
+        style={{
+          color: colors.textSystem,
+          opacity: 0.6,
+          flexShrink: 0,
+          transform: expanded ? 'rotate(90deg)' : 'none',
+        }}
+      />
+    </div>
+  );
+});
+
+/** 展开后的正文框（与折叠行视觉分层：缩进 + 细边框 + 次级底色） */
+const AutoMessageBody = memo(function AutoMessageBody({
+  colors,
+  children,
+}: {
+  colors: Colors;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="ui-fs-12 leading-relaxed"
+      style={{
+        margin: '2px 0 4px 18px',
+        padding: '7px 10px',
+        border: `1px solid ${colors.border}`,
+        borderRadius: 8,
+        backgroundColor: colors.bgSecondary,
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word',
+      }}
+    >
+      {children}
+    </div>
+  );
+});
+
 const UserMessage = memo(function UserMessage({
   message,
   colors,
@@ -286,7 +404,6 @@ const UserMessage = memo(function UserMessage({
   const metaType = meta?.type as string | undefined;
   /** 跨工作区子代理的来源工作区身份（specs/023）：From 头点击跳到目标工作区 */
   const metaWorkspaceId = typeof meta?.workspaceId === 'string' ? meta.workspaceId : null;
-  const isToMessage = isAgentMessage && metaType === 'to';
   const isFromMessage = isAgentMessage && metaType === 'from';
 
   // 子代理回复（From 类型）可点击跳转到对应会话。
@@ -329,11 +446,17 @@ const UserMessage = memo(function UserMessage({
     return fileName || null;
   }, [metaFilePath, metaFileSelectedLines]);
 
-  // 显示的参数字符串
-  // - 子代理回复（From）：去掉 "From: " 前缀（metaParam 本身没有这个前缀）
-  // - @ 消息（To）：metaParam 以 "To: " 开头，保持原样
-  // - 文件消息：文件名
-  const displayParam = isAgentMessage ? metaParam : fileDisplayText;
+  /**
+   * 折叠行里展示的子代理来源：跨工作区显示「工作区 · 会话短号」，本地显示 `#短号`，
+   * 远程格式（`host:workspace (username):agentId`）显示 `host:workspace (username)`。
+   */
+  const agentDisplayName = useMemo(() => {
+    if (!isFromMessage || !metaParam) return metaParam;
+    if (metaWorkspaceId) return `${metaWorkspaceId} · ${agentSessionId?.slice(-8) ?? ''}`;
+    if (metaParam.startsWith('#')) return `#${agentSessionId?.slice(-8) ?? ''}`;
+    const withoutAgentId = metaParam.split(':').slice(0, 2).join(':');
+    return agentUserName ? `${withoutAgentId} (${agentUserName})` : metaParam;
+  }, [isFromMessage, metaParam, metaWorkspaceId, agentSessionId, agentUserName]);
 
   // User message markdown components
   const userMarkdownComponents = useMemo(() => ({
@@ -352,6 +475,11 @@ const UserMessage = memo(function UserMessage({
     },
   }), [colors]);
 
+  // 系统自动消息走自己的「一行摘要 + 展开」折叠（`docs/hosts/webview-ui.md` 第 11 节
+  // 「自动消息折叠行」）：不再参与 72px 溢出折叠，两套折叠叠在一起会出现两层
+  // 「显示完整内容」入口。
+  const isAutoMessage = isAutoOrigin(message.origin);
+
   // Check if content exceeds max lines after render.
   // 原实现在这里直接读 contentRef.scrollHeight 并 setIsTruncated：React 提交后布局是脏的，
   // 读一次就强制整棵树重排；紧接着的状态更新又改脏 DOM，下一条消息再读又重排一次。
@@ -361,19 +489,22 @@ const UserMessage = memo(function UserMessage({
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (!el) return;
+    // 自动消息的正文只在展开时渲染，没有截断判定
+    if (isAutoMessage) {
+      releaseTruncation(el);
+      return;
+    }
     // 展开态不重测：折叠高度已放开，按溢出判定会误判为「未截断」，
     // 导致「收起」按钮消失；同时停止尺寸观察，避免窗口缩放触发同样的误判。
     if (expanded) {
       releaseTruncation(el);
       return;
     }
-    // 真正的用户消息已按折叠高度 clamp → 按溢出判定；
-    // 子代理 From/To 消息与后台任务通知沿用行数阈值，保持原有行为。
+    // 真正的用户消息已按折叠高度 clamp → 按溢出判定。
     // 测量入口同时把元素交给共享 ResizeObserver：窗口 / 侧边栏宽度变化会改变折行数，
     // 折叠高度下的溢出判定随之变化，必须重测才能让「显示完整内容」入口与真实溢出状态一致。
-    const plainUserMessage = !isAutoOrigin(message.origin);
-    measureTruncation(el, setIsTruncated, plainUserMessage ? 'overflow' : 'lines');
-  }, [message.content, message.origin, expanded]);
+    measureTruncation(el, setIsTruncated);
+  }, [message.content, message.origin, expanded, isAutoMessage]);
 
   // 卸载时解除尺寸观察（ResizeObserver 强引用元素，不解除会阻止回收）
   useLayoutEffect(() => {
@@ -404,6 +535,79 @@ const UserMessage = memo(function UserMessage({
     setExpanded(next);
   }, [expanded, onExpandToggle]);
 
+  // 系统自动消息（后台 Bash 完成通知 / 子代理 From·To）：固定一行 + 展开看正文。
+  // 摘要从正文派生（`autoMessageCard.ts`），状态只影响标题文字——失败不标红、图标不变。
+  if (isAutoMessage) {
+    const background = message.origin === 'bash' ? parseBackgroundCompletion(message.content) : null;
+    // 结论文案逐档映射；`unknown`（core 文案改版 / 老通知）不宣称成功或失败，
+    // 用中性标题，把原文留在摘要里（不猜状态）
+    const label = background
+      ? t(
+        background.state === 'failed'
+          ? 'messagesView.backgroundFailed'
+          : background.state === 'stopped'
+            ? 'messagesView.backgroundStopped'
+            : background.state === 'completed'
+              ? 'messagesView.backgroundCompleted'
+              : 'messagesView.backgroundNotice',
+      )
+      : isFromMessage
+        ? t('messagesView.fromAgent', { id: agentDisplayName ?? '' })
+        // `To` 消息（`meta.type = 'to'`）的 metaParam 自带 "To: " 前缀，原样显示
+        : metaParam ?? '';
+    // 完成通知的描述带括号（「Background bash completed. (描述)」），与通知文案本身的
+    // 引号形态区分开：括号是折叠行的排版，不是正文内容
+    const summary = background
+      ? `(${background.description})`
+      : firstLineSummary(message.content, AUTO_MESSAGE_SUMMARY_CHARS);
+    const metaText = background ? background.duration : null;
+    return (
+      // 自动消息不用用户气泡底色：保持透明，让它在时间线里读起来像系统事件
+      <div className="w-full text-left" style={{ color: colors.textPrimary, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+        <AutoMessageHead
+          colors={colors}
+          label={label}
+          summary={summary}
+          metaText={metaText}
+          expanded={expanded}
+          onToggle={handleToggleExpand}
+        />
+        {expanded && (
+          <AutoMessageBody colors={colors}>
+            {message.origin === 'agent' ? (
+              <div className="markdown-body ui-fs-12 leading-snug">{userMarkdownElement}</div>
+            ) : (
+              <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                <AnsiText text={message.content} />
+              </div>
+            )}
+            {isFromMessage && agentSessionId && (
+              <div className="mt-1">
+                <button
+                  onClick={handleAgentClick}
+                  data-no-jump=""
+                  className="ui-fs-11 hover:underline"
+                  style={{
+                    color: colors.harness,
+                    textDecoration: 'underline',
+                    textDecorationStyle: 'dotted',
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                  }}
+                  title={t('messagesView.openConversation', { id: agentSessionId })}
+                >
+                  {t('messagesView.openAgentConversation')}
+                </button>
+              </div>
+            )}
+          </AutoMessageBody>
+        )}
+      </div>
+    );
+  }
+
   if (message.isCompactSummary) {
     const compactContent = message.content || '';
     return (
@@ -433,24 +637,14 @@ const UserMessage = memo(function UserMessage({
     );
   }
 
-  // 真正的用户消息用统一的浅靛蓝底色（与侧栏选中项同色）：亮色 #eff0fe / 暗色 #242442；
-  // 子代理 From/To 消息（origin=agent）与后台任务通知（origin=bash）保持原有背景，不受影响。
-  const isPlainUserMessage = !isAutoOrigin(message.origin);
-  const userBg = isPlainUserMessage ? (isDark ? '#242442' : '#eff0fe') : (isDark ? 'transparent' : '#fafafa');
+  // 真正的用户消息用统一的浅靛蓝底色（与侧栏选中项同色）：亮色 #eff0fe / 暗色 #242442。
+  const userBg = isDark ? '#242442' : '#eff0fe';
   // 折叠遮罩渐隐到消息自身背景色
-  const collapsedFadeColor = isPlainUserMessage ? userBg : (isDark ? '#1e1e1e' : '#ffffff');
-  // 折叠高度：真正的用户消息 = 原 180px 的 40%（展开后完整显示）；
-  // 子代理 From/To 消息保持原有 180px + 行数阈值行为。
-  const collapsedContentHeight = isPlainUserMessage
-    ? USER_MESSAGE_COLLAPSED_HEIGHT
-    : AGENT_MESSAGE_COLLAPSED_HEIGHT;
-  const fadeHeight = isPlainUserMessage ? USER_MESSAGE_FADE_HEIGHT : AGENT_MESSAGE_FADE_HEIGHT;
-  const contentMaxHeight: number | 'none' = expanded
-    ? 'none'
-    : isPlainUserMessage
-      // 真正的用户消息始终按折叠高度 clamp（测量据此按溢出判定是否截断）
-      ? collapsedContentHeight
-      : (isTruncated ? AGENT_MESSAGE_COLLAPSED_HEIGHT : 'none');
+  const collapsedFadeColor = userBg;
+  // 折叠高度 = 原 180px 的 40%（展开后完整显示）；消息始终按折叠高度 clamp，
+  // 测量据此按实际溢出判定是否截断。
+  const fadeHeight = USER_MESSAGE_FADE_HEIGHT;
+  const contentMaxHeight: number | 'none' = expanded ? 'none' : USER_MESSAGE_COLLAPSED_HEIGHT;
   // 置顶时边框由外层 sticky 容器接管（去掉左/右/上边框，只留整宽底边）：
   // 内层保持同样的 1px 透明边框与内边距，保证消息内容与位置不发生任何变化。
   return (
@@ -464,55 +658,19 @@ const UserMessage = memo(function UserMessage({
         wordBreak: 'break-word',
       }}
     >
-      {displayParam && (
-        <>
-          {isFromMessage && metaParam ? (
-            <div
-              className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b cursor-pointer"
-              style={{ borderColor: colors.border, fontWeight: 500 }}
-              onClick={handleAgentClick}
-              title={t('messagesView.openConversation', { id: agentSessionId ?? '' })}
-            >
-              <span style={{ color: colors.textSystem }}>From: </span>
-              <span style={{ color: colors.harness, textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-                {metaWorkspaceId
-                  ? `${metaWorkspaceId} · ${agentSessionId?.slice(-8)}...`
-                  : metaParam.startsWith('#')
-                    ? `#${agentSessionId?.slice(-8)}...`
-                    : (() => {
-                      // 格式: host:workspace (username):agentId, 展示为 host:workspace (username)
-                      const withoutAgentId = metaParam.split(':').slice(0, 2).join(':');
-                      return agentUserName ? `${withoutAgentId} (${agentUserName})` : metaParam;
-                    })()}
-              </span>
-            </div>
-          ) : isToMessage ? (
-            <div
-              className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b"
-              style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
-            >
-              <span>{metaParam}</span>
-            </div>
-          ) : isFileMessage ? (
-            <div
-              className="flex items-center gap-1 ui-fs-12 mb-0.5 pb-0.5 border-b cursor-pointer hover:underline"
-              style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
-              onClick={handleFileClick}
-              // 点击文件标签是「打开文件」，置顶时不应同时触发跳转
-              data-no-jump=""
-            >
-              <Icon name="file" size={10} />
-              <span>{fileDisplayText}</span>
-            </div>
-          ) : displayParam ? (
-            <div
-              className="flex items-center gap-1 ui-fs-11 mb-0.5 pb-0.5 border-b"
-              style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
-            >
-              <span>{displayParam}</span>
-            </div>
-          ) : null}
-        </>
+      {/* 走到这里的只剩真正的用户消息（两类系统自动消息在函数开头上方提前返回），
+          因此头部只可能是文件引用标签 */}
+      {isFileMessage && (
+        <div
+          className="flex items-center gap-1 ui-fs-12 mb-0.5 pb-0.5 border-b cursor-pointer hover:underline"
+          style={{ borderColor: colors.border, color: colors.textSystem, fontWeight: 500 }}
+          onClick={handleFileClick}
+          // 点击文件标签是「打开文件」，置顶时不应同时触发跳转
+          data-no-jump=""
+        >
+          <Icon name="file" size={10} />
+          <span>{fileDisplayText}</span>
+        </div>
       )}
       <div
         ref={contentRef}
@@ -521,33 +679,26 @@ const UserMessage = memo(function UserMessage({
           maxHeight: contentMaxHeight,
         }}
       >
-        {message.origin === 'agent' ? (
-          <div className="markdown-body ui-fs-13 leading-snug" style={{ lineHeight: '1.4' }}>
-            {userMarkdownElement}
-          </div>
-        ) : (
-          <>
-            {message.images && message.images.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-1.5">
-                {message.images.map((img, idx) => (
-                  <img
-                    key={idx}
-                    src={img.dataUrl}
-                    alt="pasted image"
-                    className="rounded-md border max-w-[260px] max-h-[200px] object-contain"
-                    style={{ borderColor: colors.border, backgroundColor: colors.bgSecondary }}
-                  />
-                ))}
-              </div>
-            )}
-            {message.content && (
-              <p className="whitespace-pre-wrap ui-fs-13 leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
-                {/* 后台 Bash 任务通知：还原 stdout 里的 ANSI 颜色，与 bash 工具结果保持一致 */}
-                {message.origin === 'bash' ? <AnsiText text={message.content} /> : message.content}
-              </p>
-            )}
-          </>
-        )}
+        <>
+          {message.images && message.images.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-1.5">
+              {message.images.map((img, idx) => (
+                <img
+                  key={idx}
+                  src={img.dataUrl}
+                  alt="pasted image"
+                  className="rounded-md border max-w-[260px] max-h-[200px] object-contain"
+                  style={{ borderColor: colors.border, backgroundColor: colors.bgSecondary }}
+                />
+              ))}
+            </div>
+          )}
+          {message.content && (
+            <p className="whitespace-pre-wrap ui-fs-13 leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+              {message.content}
+            </p>
+          )}
+        </>
       </div>
       {/* 折叠遮罩 — 仅当未展开且被截断时显示 */}
       {isTruncated && !expanded && (
@@ -1026,9 +1177,6 @@ const SCROLL_JITTER_PX = 0.5;
 const USER_MESSAGE_COLLAPSED_HEIGHT = 72;
 /** 折叠渐隐遮罩高度：随折叠高度同比缩小（原 50px 的 40%） */
 const USER_MESSAGE_FADE_HEIGHT = 20;
-/** 子代理 From/To 消息保持原有折叠高度与渐隐高度，不受用户消息改动影响 */
-const AGENT_MESSAGE_COLLAPSED_HEIGHT = 180;
-const AGENT_MESSAGE_FADE_HEIGHT = 50;
 
 /**
  * thinking 展开后内容区的最大高度（px）：约等于 3 个 Bash 输出框的高度量级。
