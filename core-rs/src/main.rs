@@ -252,11 +252,11 @@ fn run_frame_loop(
                 bus.handle_response(id, ok, result, error);
             }
             UiToCoreFrame::Request { id, request } => {
-                // 余额查询是 dispatch_ui_request 里唯一的同步网络出口：移到独立线程
-                // 执行、应答异步回写（同 id 走 pending 表），HTTP 挂起期间帧循环
-                // 继续处理后续帧（specs/defects/balance-fetch-blocks-frame-loop）。
-                if request.get("type").and_then(Value::as_str) == Some("balanceRequested") {
-                    spawn_balance_request(Arc::clone(core), Arc::clone(shared_bus), id, request);
+                // 慢请求移到独立线程执行、应答异步回写（同 id 走 pending 表），期间帧循环
+                // 继续处理后续帧：余额是网络出口（specs/defects/balance-fetch-blocks-frame-loop），
+                // 视图取数要起 git 子进程并等它结束（specs/047）。
+                if is_slow_ui_request(&request) {
+                    spawn_slow_request(Arc::clone(core), Arc::clone(shared_bus), id, request);
                     continue;
                 }
                 let response = match dispatch_ui_request(core, &request) {
@@ -302,12 +302,25 @@ fn handle_orphan_completions(control: Value) {
     }
 }
 
-/// 把 `balanceRequested` 交给独立线程执行，应答异步回写（同 id 走 pending 表）。
+/// 需要离开帧循环执行的 `UiRequest`（同步网络出口 / 起子进程等）。
 ///
-/// 帧循环不为 HTTP 等待（specs/defects/balance-fetch-blocks-frame-loop）：
-/// 余额是状态条装饰性信息，3 秒超时即按失败回 `null`，宿主清空显示（既有语义）。
-/// 线程只借 `&Core` 的只读事实（provider 查找读配置快照），不触碰会话状态。
-fn spawn_balance_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64, request: Value) {
+/// 帧循环是顺序处理的：任何一条阻塞几十毫秒以上的请求都会把后续帧压在队列里
+/// （余额查询曾把整个循环挂住，见 `specs/defects/balance-fetch-blocks-frame-loop.md`）。
+/// 视图取数要起 `git` 子进程、等它退出，量级同型，因此走同一条异步应答通道。
+fn is_slow_ui_request(request: &Value) -> bool {
+    matches!(
+        request.get("type").and_then(Value::as_str),
+        Some("balanceRequested")
+            | Some("workViewChangesRequested")
+            | Some("workViewFileDiffRequested")
+    )
+}
+
+/// 把慢请求交给独立线程执行，应答异步回写（同 id 走 pending 表）。
+///
+/// 线程只借 `&Core` 的只读事实（provider 查找读配置快照 / 视图登记表），不触碰会话状态。
+/// 请求本身要能跨线程：`Value` 与 `Arc<Core>` 都已满足。
+fn spawn_slow_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64, request: Value) {
     std::thread::spawn(move || {
         let response = match dispatch_ui_request(&core, &request) {
             Ok(result) => CoreToUiFrame::response(id, result),
@@ -316,7 +329,7 @@ fn spawn_balance_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64
         let mut bus = shared_bus.lock().unwrap();
         if !bus.send(&response) {
             // 帧循环已退出（宿主离开）：pending 表随之销毁，无需清理
-            eprintln!("[core] balance response dropped: frame channel closed");
+            eprintln!("[core] slow request response dropped: frame channel closed");
         }
     });
 }
@@ -365,18 +378,61 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 Err(reason) => Ok(json!({ "ok": false, "error": reason })),
             }
         }
-        // 读 Overlay 对话里的文件文本（specs/046 FR-003）：与目录列举同一理由必须经 Core。
-        "workViewFileReadRequested" => {
+        // 列 Overlay 对话视图里相对 HEAD 的改动（specs/047 FR-001）：磁盘上的 git 看不到
+        // 本对话的改动，必须由 Core 在视图里跑。缺参数报错，不静默取默认范围。
+        "workViewChangesRequested" => {
             let session_id = request
                 .get("sessionId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| "workViewFileReadRequested without sessionId".to_string())?;
+                .ok_or_else(|| "workViewChangesRequested without sessionId".to_string())?;
+            let scope = request
+                .get("scope")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewChangesRequested without scope".to_string())?;
+            match crate::work_view::changes(session_id, scope) {
+                Ok(crate::work_view::ChangesOutcome::Ready(entries)) => Ok(json!({
+                    "ok": true,
+                    "entries": entries
+                        .into_iter()
+                        .map(|entry| json!({
+                            "path": entry.path,
+                            "plus": entry.plus,
+                            "minus": entry.minus,
+                        }))
+                        .collect::<Vec<Value>>(),
+                })),
+                // 「不在 git 仓库里」是事实而不是错误：宿主据此显示提示态（specs/047 FR-002）
+                Ok(crate::work_view::ChangesOutcome::NotAGitWorkspace) => Ok(json!({
+                    "ok": false,
+                    "kind": "not-a-git-workspace",
+                    "error": "不在 git 仓库内，无法列出变更",
+                })),
+                Err(reason) => Ok(json!({ "ok": false, "kind": "error", "error": reason })),
+            }
+        }
+        // 取 Overlay 对话里某个文件的两侧原文（specs/047 FR-004）：`after` 来自视图、
+        // `before` 来自视图里的 HEAD（null = 新增）。宿主读不到视图里的 `.git`。
+        "workViewFileDiffRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileDiffRequested without sessionId".to_string())?;
             let path = request
                 .get("path")
                 .and_then(Value::as_str)
-                .ok_or_else(|| "workViewFileReadRequested without path".to_string())?;
-            match crate::work_view::read_view_file(session_id, path) {
-                Ok(content) => Ok(json!({ "ok": true, "content": content })),
+                .ok_or_else(|| "workViewFileDiffRequested without path".to_string())?;
+            match crate::work_view::file_diff(session_id, path) {
+                Ok(crate::work_view::FileDiffOutcome::NotAGitWorkspace { after }) => Ok(json!({
+                    "ok": true,
+                    "kind": "not-a-git-workspace",
+                    "after": after,
+                })),
+                Ok(crate::work_view::FileDiffOutcome::Git { before, after }) => Ok(json!({
+                    "ok": true,
+                    "kind": "git",
+                    "before": before,
+                    "after": after,
+                })),
                 Err(reason) => Ok(json!({ "ok": false, "error": reason })),
             }
         }

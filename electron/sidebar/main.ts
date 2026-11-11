@@ -211,8 +211,22 @@ interface SidebarAPI {
   ) => Promise<FilesOpResult>;
   /** 变更清单取数（specs/030 FR-003 / FR-004 / specs/041 FR-002）：scope 决定 pathspec */
   filesDocList: (workspaceId: string, scope: 'doc' | 'all') => Promise<DocListResult>;
-  /** 文件浏览器模式上报（specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵监听 */
-  filesModeWatch: (workspaceId: string, mode: 'tree' | 'doc' | 'changes') => void;
+  /**
+   * Overlay 对话的变更清单（specs/047 FR-001）：取数由 Core 在叠加视图里跑 git。
+   * 与 `filesDocList` 分两条通道——取数来源是两条不同的事实。
+   */
+  filesDocListOverlay: (sessionId: string, scope: 'doc' | 'all') => Promise<DocListResult>;
+  /**
+   * 文件浏览器模式上报（specs/041 FR-001 / specs/047 FR-003）：主进程据此挂 / 摘 git 哨兵。
+   *
+   * `overlaySessionId` 一并上报——Overlay 对话的 HEAD 在视图里，磁盘 `.git` 的哨兵对它
+   * 没有意义（挂上也只会在别处 commit 时白白重取一次）。
+   */
+  filesModeWatch: (
+    workspaceId: string,
+    mode: 'tree' | 'doc' | 'changes',
+    overlaySessionId: string | null,
+  ) => void;
   /** 主进程推送的失效信号（specs/030 / specs/041：Write 新建 → 树重读、git 哨兵 → 变更清单重取） */
   onFilesInvalidated: (cb: (payload: { workspaceId: string; reasons: string[] }) => void) => void;
   // ── 侧栏宽度（US-44） ──
@@ -867,7 +881,15 @@ function syncOverlaySession(): void {
   files.anchor = null;
   files.pendingScrollTop = null;
   files.generation += 1;
-  if (files.expanded) loadDir(activeFilesId, '');
+  // 变更清单同样按来源分开（specs/047 FR-002 / FR-003）：换来源即作废在途回包并重取，
+  // 留着上一来源的行集会把磁盘改动显示成 overlay 改动（反之亦然）。
+  files.docGeneration += 1;
+  files.docRequested = false;
+  files.docListing = { state: 'loading', mode: files.docListing.mode, rows: [] };
+  if (files.expanded) {
+    loadDir(activeFilesId, '');
+    if (files.docScope !== null) loadDocList(activeFilesId);
+  }
   renderFiles();
 }
 
@@ -1189,6 +1211,11 @@ function persistFilesExpanded(): void {
 }
 
 /** 把各工作区的文件浏览器模式写进 localStorage（只在变化时调用） */
+/** 上报模式 + 取数来源（哨兵开关看两者：Overlay 来源不需要磁盘 git 哨兵）。 */
+function reportFilesMode(workspaceId: string, files: WorkspaceFilesState): void {
+  window.sidebarAPI?.filesModeWatch(workspaceId, files.mode, files.overlaySessionId);
+}
+
 function persistFilesModes(): void {
   const map: StoredModes = {};
   for (const [id, state] of filesStateByWorkspace) map[id] = state.mode;
@@ -1454,7 +1481,7 @@ function setFilesWorkspace(state: WorkspacesState | null): void {
   if (files.expanded && !files.tree.has('')) loadDir(active.id, '');
   // 变更视图开启的工作区重挂哨兵（重载 / 重开后渲染层状态从 localStorage 恢复，
   // 主进程侧的监听需要重新上报；模式上报幂等，重复上报无害——specs/030 FR-003 / specs/041）
-  if (files.mode !== 'tree') window.sidebarAPI?.filesModeWatch(active.id, files.mode);
+  if (files.mode !== 'tree') reportFilesMode(active.id, files);
   // 切工作区后活动对话也变了：归属可能不同，先同步再决定要不要补读根目录
   // （syncOverlaySession 清缓存后自己会重读，这里不重复发请求）
   syncOverlaySession();
@@ -1531,8 +1558,13 @@ function loadDocList(workspaceId: string): void {
   const generation = files.docGeneration;
   files.docRequested = true;
   files.docListing = { state: 'loading', mode: files.docListing.mode, rows: [] };
-  window.sidebarAPI?.filesDocList(workspaceId, scope)
-    .then((res) => {
+  // 取数来源分流（specs/047 FR-001）：Overlay 对话走 Core 的视图 git，普通对话走磁盘 git。
+  // 磁盘上的 git 看不到只落私有上层目录的改动，两条来源的行集不同。
+  const overlaySessionId = files.overlaySessionId;
+  (overlaySessionId !== null
+    ? window.sidebarAPI?.filesDocListOverlay(overlaySessionId, scope)
+    : window.sidebarAPI?.filesDocList(workspaceId, scope))
+    ?.then((res) => {
       if (filesStateByWorkspace.get(workspaceId) !== files || files.docGeneration !== generation) return;
       // 回包期间模式可能已切换：范围变了就作废这次结果（同一份 generation 口径）
       if (files.docScope !== scope) return;
@@ -1565,7 +1597,7 @@ function toggleFilesMode(target: FilesMode): void {
   files.docRequested = false;
   persistFilesModes();
   closeFilesMenu();
-  window.sidebarAPI?.filesModeWatch(id, files.mode);
+  reportFilesMode(id, files);
   if (files.docScope !== null) loadDocList(id);
   renderFiles();
 }

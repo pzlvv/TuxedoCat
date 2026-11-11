@@ -120,7 +120,7 @@ import {
 import { localFileContentRunner } from './gitFileContent.js';
 // 非 git 工作区里「全部变更」视图的判别值（specs/041 FR-003 / AC-7）：渲染层据此显示
 // 提示而不是空列表。常量放在 sidebarFilesMode 之外——它是 IPC 回包的取值，不是模式逻辑
-import { needsGitSentinel, NOT_A_GIT_WORKSPACE } from './sidebarFilesMode.js';
+import { NOT_A_GIT_WORKSPACE, shouldWatchGitSentinel } from './sidebarFilesMode.js';
 import { readModifiedDocs, readRemoteModifiedDocs, type RemoteMetaAccess } from '../src/shared/workspaceMeta.js';
 import { CONFIG_DIR_NAME } from '../src/config/project.js';
 import type { SshClient } from '../src/host/standalone/sshClient.js';
@@ -174,7 +174,12 @@ import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { getPreferenceDialogHtml, type PreferenceDialogState } from './preferenceDialogHtml.js';
 import { clampSoundVolume, readSoundSettings, type SoundSettings } from './soundSettings.js';
-import { requestSmartNaming, requestWorkViewFile, requestWorkViewFiles } from '../src/host/coreFacts.js';
+import {
+  requestSmartNaming,
+  requestWorkViewChanges,
+  requestWorkViewFileDiff,
+  requestWorkViewFiles,
+} from '../src/host/coreFacts.js';
 
 /**
  * e2e 专用的侧栏列表延迟注入开关（`<envPrefix>_E2E_SLOW_LIST_MS`）。
@@ -5481,16 +5486,60 @@ function setupIpc(): void {
     }
   });
 
+  // 列 Overlay 对话视图里相对 HEAD 的改动（specs/047 FR-001）。
+  //
+  // 与 sidebar:files-doc-list 分两条通道：取数来源是两条不同的事实（磁盘 git vs 视图
+  // git），失败语义也不同。渲染层按活动对话的归属二选一。
+  ipcMain.handle('sidebar:files-doc-list-overlay', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-doc-list-overlay');
+    const p = (payload ?? {}) as { sessionId?: unknown; scope?: unknown };
+    const scope: ChangeScope = p.scope === 'all' ? 'all' : 'doc';
+    if (typeof p.sessionId !== 'string' || p.sessionId.length === 0) {
+      return { ok: false, error: 'invalid-arguments' };
+    }
+    try {
+      const result = await requestWorkViewChanges(p.sessionId, scope);
+      if (!result.ok) {
+        // 「不在 git 仓库里」是事实：转成渲染层已认的判别值，文案仍在渲染层
+        // （docs/architecture/principles.md 第 6 节）
+        if (result.kind === 'not-a-git-workspace') {
+          return { ok: false, error: NOT_A_GIT_WORKSPACE };
+        }
+        fileLogger.warn('sidebar-files', `overlay doc-list failed (${p.sessionId}): ${result.error}`);
+        return { ok: false, error: result.error };
+      }
+      // 组装与磁盘口径共用同一份（目录在前、层级展开、行数徽标）
+      return { ok: true, mode: 'git', rows: buildDocRows(result.entries) };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      fileLogger.warn('sidebar-files', `overlay doc-list failed (${p.sessionId}): ${message}`);
+      return { ok: false, error: message };
+    }
+  });
+
   // 文件浏览器模式上报（specs/030 FR-003 / specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵。
   // 两种变更视图（doc / changes）共用同一个哨兵——哨兵听的是 .git 与 .git/refs/heads，
   // 与「看哪些文件」无关（specs/041 FR-004「共用同一个监听」）。'tree' 摘、其余挂。
   // host 在 initCore 创建，侧栏 handler 注册先于它——经模块级回填引用解耦时序
   ipcMain.on('sidebar:files-mode-watch', (event, payload: unknown) => {
     if (!isSidebarSender(event.sender)) return;
-    const p = (payload ?? {}) as { workspaceId?: unknown; mode?: unknown };
+    const p = (payload ?? {}) as {
+      workspaceId?: unknown;
+      mode?: unknown;
+      overlaySessionId?: unknown;
+    };
     if (typeof p.workspaceId !== 'string') return;
     if (p.mode !== 'tree' && p.mode !== 'doc' && p.mode !== 'changes') return;
-    void electronHost?.setDocSentinel(p.workspaceId, p.mode !== 'tree');
+    // Overlay 对话的 HEAD 与改动都在 Core 的视图里，磁盘 `.git` 的哨兵对它没有意义
+    // （specs/047 FR-003）：判定在 `shouldWatchGitSentinel`（模式 + 来源两条件）。
+    const overlaySessionId =
+      typeof p.overlaySessionId === 'string' && p.overlaySessionId.length > 0
+        ? p.overlaySessionId
+        : null;
+    void electronHost?.setDocSentinel(
+      p.workspaceId,
+      shouldWatchGitSentinel(p.mode, overlaySessionId),
+    );
   });
 
   ipcMain.handle('sidebar:files-reveal', (event, payload: unknown) => {
@@ -5735,11 +5784,9 @@ function setupIpc(): void {
         fileOpenBridge,
         {
           sessionId,
-          readText: async (rel) => {
-            const result = await requestWorkViewFile(sessionId, rel);
-            if (!result.ok) throw new Error(result.error);
-            return result.content;
-          },
+          // 一次请求同时给「视图内容」与「视图里 HEAD 的版本」：内容 / 是否新增 /
+          // 能否显示变更三个事实同源（specs/047 FR-004），不各读一次
+          readDiff: async (rel) => requestWorkViewFileDiff(sessionId, rel),
         },
         ref.path,
         p.path,

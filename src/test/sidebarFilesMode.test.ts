@@ -1,9 +1,12 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   emptyTextForMode,
   modeForScope,
   needsGitSentinel,
   parseStoredModes,
   scopeForMode,
+  shouldWatchGitSentinel,
   toggleFilesMode,
 } from '../../electron/sidebarFilesMode';
 import { pathspecFor } from '../../electron/sidebarDocView';
@@ -17,7 +20,8 @@ import { createChecker, runTests } from './helpers/harness';
  *   与损坏值的丢弃；
  * - `scopeForMode` / `modeForScope` 的双向映射，与 `pathspecFor` 的判别值闭合；
  * - `toggleFilesMode` 的三态转移（AC-2：点当前模式回目录树、点另一模式直接切）；
- * - 空态文案按 scope 分叉（FR-002）。
+ * - 空态文案按 scope 分叉（FR-002）；
+ * - 磁盘 git 哨兵的开关（specs/047 FR-003）：Overlay 来源不挂，且模式与来源两条件缺一不可。
  *
  * 运行方式：npm run test:unit -- sidebar-files-mode
  */
@@ -83,6 +87,26 @@ runTests('sidebarFilesMode', async () => {
   // ---------- 空态文案（FR-002） ----------
   check('doc 空态点名 Markdown', emptyTextForMode('doc') === '没有变更的 Markdown 文档');
   check('changes 空态不点名 Markdown', emptyTextForMode('changes') === '没有变更的文件');
+
+  // ── 磁盘 git 哨兵只在「模式依赖 git 且来源是磁盘」时挂（specs/047 FR-003） ──
+  for (const mode of ['doc', 'changes'] as const) {
+    check(`${mode} + 磁盘来源 → 挂哨兵`, shouldWatchGitSentinel(mode, null) === true);
+    check(`${mode} + Overlay 来源 → 不挂哨兵（HEAD 在视图里）`,
+      shouldWatchGitSentinel(mode, 'sess-1') === false);
+  }
+  check('目录树恒不挂哨兵', shouldWatchGitSentinel('tree', null) === false);
+  check('目录树 + Overlay 来源也不挂', shouldWatchGitSentinel('tree', 'sess-1') === false);
+
+  // 接线：主进程的 mode-watch 分支必须调用判定（判定写好没人调 = 失效推送永远按老口径挂）
+  {
+    const mainSource = fs.readFileSync(path.join(__dirname, '../../..', 'electron', 'main.ts'), 'utf8');
+    const match = /ipcMain\.on\('sidebar:files-mode-watch'[\s\S]*?\n\s{2}\}\);/.exec(mainSource);
+    check('sidebar:files-mode-watch 分支可定位', match !== null);
+    check('分支调用 shouldWatchGitSentinel 决定哨兵开关',
+      match !== null && match[0].includes('shouldWatchGitSentinel('));
+    check('分支把 overlaySessionId 传给判定',
+      match !== null && match[0].includes('p.overlaySessionId'));
+  }
 
   finish();
 });

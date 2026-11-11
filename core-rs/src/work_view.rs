@@ -25,9 +25,19 @@
 //! 平台：只在 Linux 上提供能力。其它平台编译出同签名类型，能力恒回不可用。
 
 pub use imp::{
-    bind_view_onto_workspace, capabilities, enter, list_view_dir, read_view_file, release, remove,
-    WorkView, WorkViewHandle,
+    bind_view_onto_workspace, capabilities, changes, enter, file_diff, list_view_dir, release,
+    remove, WorkView, WorkViewHandle,
 };
+
+/// 视图里的 git 取数（specs/047）：变更清单与文件两侧原文。
+///
+/// 平台无关的解析与编排在这里，挂载与句柄由平台实现提供。非 Linux 上无法构造
+/// （`WorkViewHandle::of` 恒 `None`），能力探测也回不可用。
+#[path = "work_view_changes.rs"]
+mod git_view;
+
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use git_view::{ChangeEntry, ChangeScope, ChangesOutcome, FileDiffOutcome, GitView};
 
 /// 本能力的应答（`UiRequest.storageCapabilitiesRequested`，specs/045 FR-001）。
 #[derive(Clone, Debug, PartialEq, Eq)]

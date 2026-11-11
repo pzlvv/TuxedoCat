@@ -78,8 +78,13 @@ pub fn list_view_dir(_session_id: &str, _dir: &str) -> Result<Vec<serde_json::Va
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
-/// 同 `list_view_dir`：非 Linux 上没有 Overlay 对话，读文件必然失败。
-pub fn read_view_file(_session_id: &str, _path: &str) -> Result<String, String> {
+/// 同 `list_view_dir`：非 Linux 上没有 Overlay 对话，变更清单必然失败。
+pub fn changes(_session_id: &str, _scope: &str) -> Result<super::ChangesOutcome, String> {
+    Err("Overlay 对话只在 Linux Core 上可用".to_string())
+}
+
+/// 同 `list_view_dir`：非 Linux 上没有 Overlay 对话，取两侧原文必然失败。
+pub fn file_diff(_session_id: &str, _path: &str) -> Result<super::FileDiffOutcome, String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
