@@ -126,9 +126,23 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   filesDocList: (workspaceId: string, scope: 'doc' | 'all'): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-doc-list', { workspaceId, scope });
   },
-  /** 文件浏览器模式上报（specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵监听 */
-  filesModeWatch: (workspaceId: string, mode: 'tree' | 'doc' | 'changes'): void => {
-    ipcRenderer.send('sidebar:files-mode-watch', { workspaceId, mode });
+  /**
+   * 列 Overlay 对话视图里的变更清单（specs/047 FR-001）：取数由 Core 在视图里跑 git，
+   * 磁盘上的 git 看不到只落私有上层目录的改动。
+   */
+  filesDocListOverlay: (sessionId: string, scope: 'doc' | 'all'): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-doc-list-overlay', { sessionId, scope });
+  },
+  /**
+   * 文件浏览器模式上报（specs/041 FR-001 / specs/047 FR-003）：主进程据此挂 / 摘 git 哨兵。
+   * `overlaySessionId` 决定哨兵是否有意义（Overlay 对话的 HEAD 在视图里，不在磁盘）。
+   */
+  filesModeWatch: (
+    workspaceId: string,
+    mode: 'tree' | 'doc' | 'changes',
+    overlaySessionId: string | null,
+  ): void => {
+    ipcRenderer.send('sidebar:files-mode-watch', { workspaceId, mode, overlaySessionId });
   },
   /** 主进程推送的失效信号（Write 新建 → 树重读、git 哨兵 → 文档重取） */
   onFilesInvalidated: (callback: (payload: unknown) => void): void => {

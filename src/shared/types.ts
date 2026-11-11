@@ -6,8 +6,8 @@
  * 消息来源统一标记。
  *
  * - `user`：用户真实输入（默认，未显式标记时按此处理）
- * - `agent`：子代理回复 / 提醒等系统自动消息（UI 以 markdown + From 头渲染）
- * - `bash`：后台 Bash 任务完成通知（UI 按纯文本 + ANSI 颜色渲染，不参与滚动置顶）
+ * - `agent`：子代理回复 / 提醒等系统自动消息（UI 渲染为一行折叠行，展开才是完整 markdown）
+ * - `bash`：后台 Bash 任务完成通知（同一套折叠行，展开显示原始通知全文，不参与滚动置顶）
  *
  * 历史会话里用的是 `fromSubAgent` / `fromBashTask` 两个布尔字段，
  * 读取时统一由 `getMessageOrigin` 归一化，见 `utils/messageOrigin.ts`。
@@ -243,7 +243,8 @@ export interface MessageData {
   hasBorder?: boolean;
   /**
    * 消息来源：`agent`（子代理）或 `bash`（后台任务通知）；
-   * 用户消息留空即视为 `user`。UI 依赖它决定渲染方式与是否参与滚动置顶。
+   * 用户消息留空即视为 `user`。UI 依赖它决定渲染方式与是否参与滚动置顶
+   * （两类自动消息都是一行折叠行，见 `docs/hosts/webview-ui.md` 第 11 节）。
    */
   origin?: MessageOrigin;
   /**

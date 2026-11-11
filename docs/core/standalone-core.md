@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-06
+last_reviewed: 2026-11-12
 ---
 
 # 规格：Standalone Core（Rust）
@@ -293,7 +293,7 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
    （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；Windows arm64 上 ring 的 build.rs 对该目标
    **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）；
    非 Windows 宿主上的 msvc 目标不注入 C 工具链（整条链归 `cargo xwin` 的 clang-cl 包装）。
-
+   判据与探测分两层：`crossToolchainEnv` 只回答「注入什么」、不探测本机有没有 zig，检查落在构建入口（`requiresZig` → `requireZig`）。
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：产物缺失、比
 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自
 `PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份：校验拦住「改了 Rust 源码
@@ -352,7 +352,7 @@ Linux 两份均取 `unknown-linux-musl` 静态链接目标。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。`userChoice` 的载荷与结果按 `kind` 判别：`permission` 带 `message` / `choices`、结果为 `index` / `reply`；`question`（AskUserQuestion）带 `questions`、结果为 `answers`。
-- `UiRequest` 的十七个请求（`conversationListRequested` / `storageCapabilitiesRequested` / `workViewFilesRequested` / `workViewFileReadRequested` / `smartNamingRequested` / `balanceRequested` /
+- `UiRequest` 的十八个请求（`conversationListRequested` / `storageCapabilitiesRequested` / `workViewFilesRequested` / `workViewChangesRequested` / `workViewFileDiffRequested` / `smartNamingRequested` / `balanceRequested` /
   `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
   `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /
   `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：

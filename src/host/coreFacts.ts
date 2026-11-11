@@ -24,7 +24,8 @@ import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
 import type { ConversationMetadata } from '../shared/history/Conversation.js';
 import type {
   StorageCapabilities,
-  WorkViewFileResult,
+  WorkViewChangesResult,
+  WorkViewFileDiffResult,
   WorkViewFilesResult,
 } from '../shared/AssistantEventBus.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
@@ -142,15 +143,28 @@ export async function requestWorkViewFiles(
 }
 
 /**
- * 读 Overlay 对话里某个文件的文本（`UiRequest.workViewFileReadRequested`，specs/046 FR-003）。
+ * 列 Overlay 对话视图里相对 HEAD 的改动（`UiRequest.workViewChangesRequested`，specs/047 FR-001）。
  *
- * 与目录列举同一理由必须经 Core：宿主读不到 Core 私有挂载命名空间里的视图。
+ * 与目录列举同一理由必须经 Core：磁盘上的 git 看不到只落在私有上层目录里的改动。
+ * `scope` 与侧栏的 `ChangeScope` 同一判别值。
  */
-export async function requestWorkViewFile(
+export async function requestWorkViewChanges(
+  sessionId: string,
+  scope: 'doc' | 'all',
+): Promise<WorkViewChangesResult> {
+  return requireEventBus().requestCore({ type: 'workViewChangesRequested', sessionId, scope });
+}
+
+/**
+ * 取 Overlay 对话里某个文件的两侧原文（`UiRequest.workViewFileDiffRequested`，specs/047 FR-004）。
+ *
+ * 宿主读不到视图里的 `.git`，因此「内容 + HEAD 版本」只能由 Core 一起给出。
+ */
+export async function requestWorkViewFileDiff(
   sessionId: string,
   path: string,
-): Promise<WorkViewFileResult> {
-  return requireEventBus().requestCore({ type: 'workViewFileReadRequested', sessionId, path });
+): Promise<WorkViewFileDiffResult> {
+  return requireEventBus().requestCore({ type: 'workViewFileDiffRequested', sessionId, path });
 }
 
 /**

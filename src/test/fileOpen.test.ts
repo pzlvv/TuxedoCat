@@ -126,6 +126,9 @@ runTests('fileOpen + markdown 预览', async () => {
   check('changes 来源 + 有 HEAD 版本 → 初始落变更视图',
     diffCalls.length === 1
       && (diffCalls[0].init as { initialView: string }).initialView === 'changes');
+  check('磁盘来源带 kind 判别值（与 overlay 来源互斥）',
+    JSON.stringify((diffCalls[0]?.init as { diffSource: unknown }).diffSource)
+      === JSON.stringify({ kind: 'disk', root: tmp, rel: 'doc.md' }));
   diffCalls.length = 0;
   await openLocalWorkspaceFile(
     recordingBridge(diffCalls), tmp, 'doc.md', 'changes',
@@ -149,41 +152,86 @@ runTests('fileOpen + markdown 预览', async () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 
-  // ── Overlay 对话分流（specs/046 FR-003）──
+  // ── Overlay 对话分流（specs/046 FR-003 / specs/047 FR-004）──
   {
-    // 内容由 Core 提供（宿主不读盘），这里用假读取原语记录请求过的相对路径
+    // 内容与 HEAD 版本都由 Core 提供（宿主不读盘、也读不到视图里的 `.git`），
+    // 这里用假取数原语记录请求过的相对路径
     const requested: string[] = [];
-    const overlayReader = {
+    const overlayReader = (diff: {
+      ok: true; kind: 'git'; before: string | null; after: string;
+    } | { ok: true; kind: 'not-a-git-workspace'; after: string }) => ({
       sessionId: 'sess-overlay',
-      readText: async (rel: string) => {
+      readDiff: async (rel: string) => {
         requested.push(rel);
-        return `overlay:${rel}`;
+        return diff;
       },
-    };
+    });
     const overlayRoot = path.join(os.tmpdir(), 'tuxedo-overlay-root');
 
+    // 有 HEAD 版本且已改动：「变更」来源 + 变更档初始视图（AC-10）
     const mdCalls: { method: string; init: unknown }[] = [];
-    await openOverlayWorkspaceFile(recordingBridge(mdCalls), overlayReader, overlayRoot, 'doc.md', 'tree');
+    await openOverlayWorkspaceFile(
+      recordingBridge(mdCalls),
+      overlayReader({ ok: true, kind: 'git', before: 'a\nb\n', after: 'a\nB\n' }),
+      overlayRoot, 'doc.md', 'changes',
+    );
     check('Overlay md → Markdown 预览出口', mdCalls.length === 1 && mdCalls[0].method === 'markdown');
     check('Overlay md 内容来自 Core 而非磁盘',
-      (mdCalls[0]?.init as { content: string }).content === 'overlay:doc.md');
+      (mdCalls[0]?.init as { content: string }).content === 'a\nB\n');
     check('Overlay 视图不给 watchTarget（视图路径宿主看不到）',
       (mdCalls[0]?.init as { watchTarget: unknown }).watchTarget === null);
-    check('Overlay 视图不给 diffSource（HEAD 是磁盘事实，对比会产生伪差异）',
-      (mdCalls[0]?.init as { diffSource: unknown }).diffSource === null);
+    check('Overlay 非新增文件给出 overlay 来源（变更视图由 Core 取两侧原文）',
+      JSON.stringify((mdCalls[0]?.init as { diffSource: unknown }).diffSource)
+        === JSON.stringify({ kind: 'overlay', sessionId: 'sess-overlay', rel: 'doc.md' }));
+    check('Overlay 变更来源 + 有 HEAD 版本 → 初始落变更视图',
+      (mdCalls[0]?.init as { initialView: string }).initialView === 'changes');
 
+    // 新增文件（before === null）：任何来源都落全文，且不给 diffSource（AC-11）
     const txtCalls: { method: string; init: unknown }[] = [];
-    await openOverlayWorkspaceFile(recordingBridge(txtCalls), overlayReader, overlayRoot, 'note.txt', 'changes');
+    await openOverlayWorkspaceFile(
+      recordingBridge(txtCalls),
+      overlayReader({ ok: true, kind: 'git', before: null, after: 'brand new\n' }),
+      overlayRoot, 'note.txt', 'changes',
+    );
     check('Overlay 文本 → 文本查看器出口', txtCalls.length === 1 && txtCalls[0].method === 'text');
-    check('Overlay 文本初始视图恒为全文（没有可对比的磁盘版本）',
+    check('Overlay 新增文件初始落全文（没有可对比的旧版本）',
       (txtCalls[0]?.init as { initialView: string }).initialView === 'full');
+    check('Overlay 新增文件不给 diffSource',
+      (txtCalls[0]?.init as { diffSource: unknown }).diffSource === null);
     check('请求的相对路径是约定格式', requested.includes('note.txt'));
+
+    // 非 git 工作区：只有内容，变更视图不适用（AC-9 同口径）
+    const nonGitCalls: { method: string; init: unknown }[] = [];
+    await openOverlayWorkspaceFile(
+      recordingBridge(nonGitCalls),
+      overlayReader({ ok: true, kind: 'not-a-git-workspace', after: 'plain\n' }),
+      overlayRoot, 'note.txt', 'changes',
+    );
+    check('Overlay 非 git 工作区落全文',
+      (nonGitCalls[0]?.init as { initialView: string }).initialView === 'full');
+    check('Overlay 非 git 工作区不给 diffSource',
+      (nonGitCalls[0]?.init as { diffSource: unknown }).diffSource === null);
+
+    // 取数失败：错误如实上抛，不打开空窗口
+    let failed = '';
+    try {
+      await openOverlayWorkspaceFile(
+        recordingBridge([]),
+        { sessionId: 'sess-overlay', readDiff: async () => ({ ok: false as const, error: '视图未建立' }) },
+        overlayRoot, 'note.txt', 'tree',
+      );
+    } catch (err) {
+      failed = err instanceof Error ? err.message : String(err);
+    }
+    check('Overlay 取数失败时上抛原错误', failed === '视图未建立');
+
+    const okReader = overlayReader({ ok: true, kind: 'git', before: 'x\n', after: 'x\n' });
 
     // 图片 / 二进制在 Overlay 对话里不支持打开
     for (const name of ['logo.png', 'a.zip']) {
       let rejected = '';
       try {
-        await openOverlayWorkspaceFile(recordingBridge([]), overlayReader, overlayRoot, name, 'tree');
+        await openOverlayWorkspaceFile(recordingBridge([]), okReader, overlayRoot, name, 'tree');
       } catch (err) {
         rejected = err instanceof Error ? err.message : String(err);
       }
@@ -193,7 +241,7 @@ runTests('fileOpen + markdown 预览', async () => {
     // 越界路径与本地同一份校验
     let escaped = '';
     try {
-      await openOverlayWorkspaceFile(recordingBridge([]), overlayReader, overlayRoot, '../etc/passwd', 'tree');
+      await openOverlayWorkspaceFile(recordingBridge([]), okReader, overlayRoot, '../etc/passwd', 'tree');
     } catch (err) {
       escaped = err instanceof Error ? err.message : String(err);
     }

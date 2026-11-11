@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-12
 ---
 
 # 规格：跨工作区多 Agent 通信
@@ -39,6 +39,7 @@ TUI 不提供本能力。
   - **AC-15**（FR-006）：GIVEN 跨工作区子代理正在运行 WHEN 查看发起方的 abort 按钮 THEN 按钮为黄色，悬停明细包含该子代理的 description。
   - **AC-16**（FR-006）：GIVEN 跨工作区子代理正在运行 WHEN 在目标工作区的子代理对话点击 abort THEN 该会话停止运行，发起方 `subAgentRunning` 归假。
   - **AC-17**（FR-006）：GIVEN 发起方会话被关闭 WHEN 关闭完成 THEN 其跨工作区子代理一并中止。
+  - **AC-30**（FR-006）：GIVEN 跨工作区子代理运行中 WHEN 在任一侧 abort 使其停止 THEN 发起方会话收到一条「已被用户取消、不会再 `Reply`」的自动消息（经既有回投通道，无新增事件）；发起方自己也在收尾时不拉起新一轮。
 - 场景 5：`@` 补全与 reminder
   - **AC-18**（FR-007）：GIVEN 已打开多个工作区 WHEN 在某个会话输入 `@` THEN 候选只包含除该会话所属工作区之外的项。
   - **AC-19**（FR-007）：GIVEN 只打开了当前会话所属工作区 WHEN 输入 `@` THEN 不显示候选菜单。
@@ -124,6 +125,10 @@ TUI 不提供本能力。
 - abort 范围沿用 [docs/features/abort-button.md](../features/abort-button.md) 的三段判定；
   「中止已登记子代理」对远程子代理发 `CoreEvent.crossWorkspaceAgentAbortRequested`，
   由宿主转发 `UiEvent.abortRequested` 到目标 Core。
+- 被中止的子代理由运行它的 Core 经 FR-003 的既有回投通道
+  （`crossWorkspaceAgentReplyRequested` → 宿主 → `UiEvent.agentReplyReceived`）向发起方
+  会话回报一条「已被用户取消、不会再 `Reply`」的自动消息；发起方 abort 与目标工作区侧
+  abort 都覆盖，不新增事件与载荷字段。发起方自己也在收尾时不因此拉起新一轮。
 - 目标不可达时按已结束收敛；目标工作区一侧可独立中止（既有语义不变）。
 
 ### FR-007：`@` 工作区补全
@@ -241,7 +246,7 @@ TUI 不提供本能力。
 | FR-002 | `core-rs/src/tools.rs` 的 `run_agent`；`core-rs/src/engine.rs` 的 `spawn_remote_agent`；`src/host/crossWorkspaceRouting.ts` | `core-rs/src/tools_tests.rs`、`src/test/crossWorkspaceRouting.test.ts` | 自动 |
 | FR-003 | `core-rs/src/engine.rs` 的 `start_remote_sub_agent` / `deliver_agent_reply`；`core-rs/src/history.rs` 的 `create_remote_sub_agent_metadata` | `core-rs/src/engine_tests.rs` | 自动 |
 | FR-005 | `src/webview/App.tsx` 的「返回发起方」（按 `creator` 跳转）；`src/webview/tools/Agent.tsx` | `e2e/electron/crossWorkspaceAgent.spec.ts` | 自动 |
-| FR-006 | `core-rs/src/engine.rs` 的 `abort_session_scope`；`src/host/WebViewUI.ts` 的中止转发 | `core-rs/src/engine_tests.rs`、`src/test/abortButtonState.test.ts` | 自动 |
+| FR-006 | `core-rs/src/engine.rs` 的 `abort_session_scope` / `Core::notify_creator_of_cancel`；`src/host/WebViewUI.ts` 的中止转发 | `core-rs/src/engine_tests.rs` 的 `aborted_cross_workspace_sub_agent_reports_cancel_to_the_origin_workspace` / `cancel_notice_from_another_workspace_does_not_restart_an_aborted_creator`、`src/test/abortButtonState.test.ts` | 自动 |
 | FR-007 | `src/webview/mentionState.ts`；`src/host/workspaceIdentity.ts` 的 `workspaceMentionCandidates`；`src/webview/InputArea.tsx` | `src/test/mentionState.test.ts`、`src/test/workspaceIdentity.test.ts`、`e2e/webview/workspaceMention.spec.ts` | 自动 |
 | FR-008 | `core-rs/src/engine.rs` 的 `parse_mention_identity` / `build_mention_reminder` / `classify_injection`（入队时算处置）；`append_user_message`（轮次边界与中途 flush 共用） | `core-rs/src/engine_tests.rs` 的 `classify_injection_adds_reminder_only_when_capable` / `mention_reminder_names_target_and_agent_tool` / `mention_message_flushed_mid_turn_keeps_its_reminder` / `discarded_mention_message_also_drops_its_reminder` | 自动 |
 | FR-009 | `src/shared/AssistantEventBus.ts` 的 `hostEnvironmentProvided.crossWorkspaceAgent`；三个宿主发送点；`core-rs/src/config.rs` | `core-rs/src/tools_tests.rs`、`src/test/bootstrapWiring.test.ts` | 自动 |
