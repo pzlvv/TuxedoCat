@@ -100,7 +100,7 @@ runTests('sidebarFilesMode', async () => {
   // 接线：主进程的 mode-watch 分支必须调用判定（判定写好没人调 = 失效推送永远按老口径挂）
   {
     const mainSource = fs.readFileSync(path.join(__dirname, '../../..', 'electron', 'main.ts'), 'utf8');
-    const match = /ipcMain\.on\('sidebar:files-mode-watch'[\s\S]*?\n  \}\);/.exec(mainSource);
+    const match = /ipcMain\.on\('sidebar:files-mode-watch'[\s\S]*?\n\s{2}\}\);/.exec(mainSource);
     check('sidebar:files-mode-watch 分支可定位', match !== null);
     check('分支调用 shouldWatchGitSentinel 决定哨兵开关',
       match !== null && match[0].includes('shouldWatchGitSentinel('));
