@@ -100,7 +100,10 @@ shell 退出后窗口关闭由 `e2e/electron/remoteSshExecution.spec.ts` 覆盖�
 git 口径（变更集 / 行数 / 未跟踪文档）与 commit 后的自动刷新由
 `e2e/electron/remoteSshExecution.spec.ts` 覆盖，本地 git 行数口径由
 `src/test/sidebarDocViewGit.test.ts`（临时真实 git 仓）与 `src/test/sidebarDocWatch.test.ts`
-锁定；US-64 / US-65 的退出逐区三选混合决策（多远程工作区各选各的）、孤儿期间挂起
+锁定；US-63 验收 10 与 US-38 验收 10 的 Overlay 取数——整链路要真实的 overlay 挂载
+（用户命名空间 + overlayfs + `userxattr`），CI 容器不提供，e2e 豁免；由 core-rs
+`work_view_tests` 的命名空间内用例（视图内改动进清单、`scope` 分流、取数不写视图、非 git
+工作区回事实）与 `src/test/fileOpen.test.ts` 的三种结果分支锁定；US-64 / US-65 的退出逐区三选混合决策（多远程工作区各选各的）、孤儿期间挂起
 请求的重弹与 1 小时超时不再重弹、daemon 空闲判定的宽限口径——`remoteTaskSurvival.spec.ts`
 覆盖对话框与主链路，其余场景依赖真实远端的多实例与长等待，由 `core-rs` 的 `daemon_tests`
 （孤儿化 / 认领 / 空闲判定 / 并发认领）与 `src/test/remoteCoreDaemon.test.ts` 锁定；

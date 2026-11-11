@@ -362,14 +362,42 @@ export type WorkViewFilesResult =
   | { ok: false; error: string };
 
 /**
- * 读 Overlay 对话里某个文件的内容（`UiRequest.workViewFileReadRequested`，specs/046 FR-003）。
+ * Overlay 对话的变更清单条目（`UiRequest.workViewChangesRequested`，specs/047 FR-001）。
  *
- * 与目录列举同一理由必须经 Core。内容是**文本**：内置文本 / Markdown 查看器读它渲染；
+ * 形态与侧栏磁盘口径的 `DocEntry` 同构：`path` 是工作区相对的 '/' 分隔路径，行数徽标
+ * 由界面直接渲染，渲染层不区分来源。
+ */
+export interface WorkViewChangeEntry {
+  path: string;
+  plus: number;
+  minus: number;
+}
+
+/**
+ * Overlay 对话的变更清单结果（`UiRequest.workViewChangesRequested`，specs/047 FR-001 / FR-002）。
+ *
+ * `not-a-git-workspace` 是**事实**而不是界面文案：Core 只说「这里没有 git 口径」，
+ * 显示什么由界面决定（[docs/architecture/principles.md 第 6 节](../../docs/architecture/principles.md#6-core-描述事实ui-决定表现)）。
+ * 失败必带 `error`、成功必带 `entries`，渲染层不用双重判空。
+ */
+export type WorkViewChangesResult =
+  | { ok: true; entries: WorkViewChangeEntry[] }
+  | { ok: false; kind: 'not-a-git-workspace' | 'error'; error: string };
+
+/**
+ * Overlay 对话里某个文件的两侧原文（`UiRequest.workViewFileDiffRequested`，specs/047 FR-004）。
+ *
+ * `after` 是视图内容、`before` 是视图里 HEAD 的版本（`null` = 该文件没有 HEAD 版本，
+ * 即「新增」）。三个事实来自同一次取数：内容 / 是否新增 / 能否显示变更，调用方不必
+ * 再发一次「读内容」。
+ *
+ * `not-a-git-workspace` 时只有内容（没有 HEAD 这个概念），查看器的变更按钮因此不可用。
  * 二进制（图片 / 压缩包 / 可执行文件）在 Overlay 对话里不支持打开——系统应用打不开视图
  * 里的路径，回错误比打开磁盘上的旧内容诚实。
  */
-export type WorkViewFileResult =
-  | { ok: true; content: string }
+export type WorkViewFileDiffResult =
+  | { ok: true; kind: 'not-a-git-workspace'; after: string }
+  | { ok: true; kind: 'git'; before: string | null; after: string }
   | { ok: false; error: string };
 
 export type CoreRequestResultMap = {
@@ -734,12 +762,24 @@ export type UiRequest =
    */
   | { type: 'workViewFilesRequested'; sessionId: string; dir: string }
   /**
-   * 读 Overlay 对话里某个文件的文本内容（specs/046 FR-003）。
+   * 列 Overlay 对话视图里相对 HEAD 的改动（specs/047 FR-001）。
    *
-   * `path` 是 '/' 分隔的相对路径（不能是视图根）。内容由 Core 读视图路径后回传，
-   * 宿主不读盘——理由与目录列举相同。
+   * 磁盘上的 git 看不到本对话的改动（改动只落私有上层目录），因此变更清单必须由 Core
+   * 在视图里跑 git 得到。`scope` 与侧栏的 `ChangeScope` 同一判别值：`doc` 只看 Markdown、
+   * `all` 不限定类型——两者只差 pathspec，解析与过滤完全同一份。
+   *
+   * 视图尚未建立、git 不可用、工作区不在 git 仓库内都回失败侧（`kind` 区分两种事实）；
+   * 不回退成磁盘的变更清单，那会把两个来源的行集混成一个。
    */
-  | { type: 'workViewFileReadRequested'; sessionId: string; path: string }
+  | { type: 'workViewChangesRequested'; sessionId: string; scope: 'doc' | 'all' }
+  /**
+   * 取 Overlay 对话里某个文件的两侧原文（specs/047 FR-004）。
+   *
+   * `path` 是 '/' 分隔的相对路径（不能是视图根）。`after` 来自视图、`before` 来自视图里
+   * 的 HEAD（`null` = 新增）。宿主读不到 Core 的挂载命名空间，也读不到视图里的 `.git`，
+   * 因此这一对原文只能由 Core 给出。
+   */
+  | { type: 'workViewFileDiffRequested'; sessionId: string; path: string }
   /** 智能命名：读会话消息 + 调 LLM + 解析标题（`history/smartNaming` 的等价物） */
   | { type: 'smartNamingRequested'; sessionId: string }
   /**
@@ -868,7 +908,8 @@ export type UiRequestResultMap = {
   conversationListRequested: ConversationMetadata[];
   storageCapabilitiesRequested: StorageCapabilities;
   workViewFilesRequested: WorkViewFilesResult;
-  workViewFileReadRequested: WorkViewFileResult;
+  workViewChangesRequested: WorkViewChangesResult;
+  workViewFileDiffRequested: WorkViewFileDiffResult;
   smartNamingRequested: { title: string };
   balanceRequested: {
     totalBalance: number;

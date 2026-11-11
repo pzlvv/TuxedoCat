@@ -89,6 +89,8 @@
     "spinDesignRequested",
     "spinDesignSaveRequested",
     "watchWorkspaceFileRequested",
-    "unwatchWorkspaceFileRequested"
+    "unwatchWorkspaceFileRequested",
+    "workViewChangesRequested",
+    "workViewFileDiffRequested"
   ]
 }

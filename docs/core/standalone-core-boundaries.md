@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-12
 ---
 
 # 规格：Core 的边界与验收
@@ -54,6 +54,9 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 会话挂起持久化收尾 | `UiRequest.flushSessionRequested` |
 | 智能命名 / 余额 | `UiRequest.smartNamingRequested` / `balanceRequested` |
 | Core 就绪 | `CoreEvent.coreReady` |
+| Overlay 对话的目录列举 | `UiRequest.workViewFilesRequested`（`sessionId` + `dir`；视图未建立回 `{ ok: false, error }`） |
+| Overlay 对话的变更清单 | `UiRequest.workViewChangesRequested`（`sessionId` + `scope`；`not-a-git-workspace` 与 `error` 分开） |
+| Overlay 对话的文件两侧原文 | `UiRequest.workViewFileDiffRequested`（`sessionId` + `path`；`before` 为 `null` = 新增） |
 | 远程工作区文件监听注册 | `UiRequest.watchWorkspaceFileRequested`（`watchId` + `workspacePath` + `path`；失败回 `{ ok: false, error }`） |
 | 远程工作区文件监听注销 | `UiRequest.unwatchWorkspaceFileRequested`（`watchId` + `workspacePath`；未知 id 幂等） |
 | 远程工作区文件变化 | `CoreEvent.workspaceFileChanged`（只带 `watchId` / `path` / `kind` / `mtimeMs` / `size` / `error`，不带文件内容；宿主经 SFTP 读内容） |

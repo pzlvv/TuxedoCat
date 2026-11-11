@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-06
+last_reviewed: 2026-11-12
 ---
 
 # 规格：Standalone Core（Rust）
@@ -352,7 +352,7 @@ Linux 两份均取 `unknown-linux-musl` 静态链接目标。
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。`userChoice` 的载荷与结果按 `kind` 判别：`permission` 带 `message` / `choices`、结果为 `index` / `reply`；`question`（AskUserQuestion）带 `questions`、结果为 `answers`。
-- `UiRequest` 的十七个请求（`conversationListRequested` / `storageCapabilitiesRequested` / `workViewFilesRequested` / `workViewFileReadRequested` / `smartNamingRequested` / `balanceRequested` /
+- `UiRequest` 的十八个请求（`conversationListRequested` / `storageCapabilitiesRequested` / `workViewFilesRequested` / `workViewChangesRequested` / `workViewFileDiffRequested` / `smartNamingRequested` / `balanceRequested` /
   `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
   `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /
   `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：

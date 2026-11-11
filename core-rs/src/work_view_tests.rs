@@ -597,36 +597,337 @@ fn work_view_lists_nothing_when_view_not_mounted() {
     });
 }
 
-/// 读视图文件：对话内新建的能读、磁盘上没有（specs/046 FR-003）。
+/// 取文件两侧原文：`after` 来自视图、`before` 来自视图里的 HEAD（specs/047 FR-004）。
 #[test]
-fn work_view_reads_file_from_overlay() {
-    in_namespace("work-view-read-file", |sandbox| {
+fn work_view_file_diff_reads_both_sides_from_the_view() {
+    in_namespace("work-view-file-diff", |sandbox| {
+        init_git(&sandbox);
         let workspace = sandbox.workspace.to_string_lossy().to_string();
-        let session = "sess-read-file";
+        let session = "sess-file-diff";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+
+        // 对话内改磁盘已有的文件：before 是 HEAD 版本、after 是视图内容
+        std::fs::write(mount.join("f.txt"), "a\nB\n").expect("写视图");
+        match crate::work_view::file_diff(session, "f.txt").expect("取两侧") {
+            crate::work_view::FileDiffOutcome::Git { before, after } => {
+                assert_eq!(before.as_deref(), Some("a\nb\n"), "before 必须是 HEAD 版本");
+                assert_eq!(after, "a\nB\n", "after 必须是视图内容");
+            }
+            other => panic!("git 工作区必须走 Git 分支：{other:?}"),
+        }
+        // 对话内新建：before 为 None（新增），内容来自视图
+        std::fs::write(mount.join("new.txt"), "brand new\n").expect("写视图");
+        match crate::work_view::file_diff(session, "new.txt").expect("取两侧") {
+            crate::work_view::FileDiffOutcome::Git { before, after } => {
+                assert_eq!(before, None, "新增文件没有 HEAD 版本");
+                assert_eq!(after, "brand new\n");
+            }
+            other => panic!("git 工作区必须走 Git 分支：{other:?}"),
+        }
+
+        // 越界 / 根目录 / 不存在的文件都报错（与目录列举同一份校验）
+        assert!(crate::work_view::file_diff(session, "../etc/passwd").is_err());
+        assert!(crate::work_view::file_diff(session, "/etc/passwd").is_err());
+        assert!(crate::work_view::file_diff(session, "").is_err());
+        assert!(crate::work_view::file_diff(session, "nope.txt").is_err());
+        // 未挂载的会话
+        assert!(crate::work_view::file_diff("sess-never", "a.txt").is_err());
+    });
+}
+
+// ==================== 视图里的变更清单（specs/047）====================
+
+/// 在沙箱工作区建一个 git 仓并提交一次基线（`f.txt` / `doc.md`）。
+fn init_git(sandbox: &Sandbox) {
+    let run = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&sandbox.workspace)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} 失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    // 基线文件：`f.txt` 用于「改磁盘已有文件」，`doc.md` 用于 pathspec 分流
+    sandbox.write_file("f.txt", "a\nb\n");
+    sandbox.write_file("doc.md", "m\n");
+    run(&["init", "-q", "."]);
+    run(&["add", "."]);
+    run(&["commit", "-qm", "baseline"]);
+}
+
+/// 清单里的路径（排序后，方便断言）。
+fn change_paths(entries: &[crate::work_view::ChangeEntry]) -> Vec<String> {
+    let mut paths: Vec<String> = entries.iter().map(|entry| entry.path.clone()).collect();
+    paths.sort();
+    paths
+}
+
+/// 视图里的改动进清单：改磁盘已有文件、新建文件、以及**只在 Bash 里**写到的工作区路径。
+///
+/// 第三条是本规格的核心：判据是「视图内容 vs HEAD」，不是工具旁路的记录。
+#[test]
+fn work_view_changes_lists_view_only_edits() {
+    in_namespace("work-view-changes", |sandbox| {
+        init_git(&sandbox);
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-changes";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+
+        // 视图内改磁盘已有文件（行数 1/1）
+        std::fs::write(mount.join("f.txt"), "a\nB\n").expect("写视图");
+        // 视图内新建（未跟踪 → 全文新增）
+        std::fs::write(mount.join("created.txt"), "one\ntwo\n").expect("写视图");
+
+        let entries = match crate::work_view::changes(session, "all").expect("取清单") {
+            crate::work_view::ChangesOutcome::Ready(entries) => entries,
+            other => panic!("git 工作区必须给出清单：{other:?}"),
+        };
+        assert_eq!(change_paths(&entries), vec!["created.txt", "f.txt"]);
+        let modified = entries.iter().find(|e| e.path == "f.txt").expect("f.txt");
+        assert_eq!((modified.plus, modified.minus), (1, 1), "行数按 HEAD 对比");
+        let created = entries
+            .iter()
+            .find(|e| e.path == "created.txt")
+            .expect("created");
+        assert_eq!(
+            (created.plus, created.minus),
+            (2, 0),
+            "未跟踪按全文新增计行"
+        );
+
+        // 磁盘侧看到的是另一份事实：磁盘没改动
+        assert_eq!(
+            std::fs::read_to_string(sandbox.workspace.join("f.txt")).unwrap(),
+            "a\nb\n"
+        );
+        assert!(!sandbox.workspace.join("created.txt").exists());
+    });
+}
+
+/// `scope: 'doc'` 只出 Markdown，`all` 覆盖全部类型（两者只差 pathspec）。
+#[test]
+fn work_view_changes_scopes_to_markdown() {
+    in_namespace("work-view-changes-scope", |sandbox| {
+        init_git(&sandbox);
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-changes-scope";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+
+        std::fs::write(mount.join("f.txt"), "a\nB\n").expect("写视图");
+        std::fs::write(mount.join("doc.md"), "m\nmore\n").expect("写视图");
+        std::fs::write(mount.join("new.md"), "n\n").expect("写视图");
+
+        let doc = match crate::work_view::changes(session, "doc").expect("取 doc 清单") {
+            crate::work_view::ChangesOutcome::Ready(entries) => change_paths(&entries),
+            other => panic!("git 工作区必须给出清单：{other:?}"),
+        };
+        assert_eq!(doc, vec!["doc.md", "new.md"], "doc 范围不含 .txt");
+
+        let all = match crate::work_view::changes(session, "all").expect("取 all 清单") {
+            crate::work_view::ChangesOutcome::Ready(entries) => change_paths(&entries),
+            other => panic!("git 工作区必须给出清单：{other:?}"),
+        };
+        assert_eq!(all, vec!["doc.md", "f.txt", "new.md"]);
+    });
+}
+
+/// 取数不写视图（FR-005）：跑完 git 之后 `upper/` 仍只有用户自己写过的文件。
+///
+/// 这条是临时索引的验收：`--no-optional-locks` 单独并不够——索引 stat 信息陈旧时
+/// git 会重写 `.git/index`，`upper/.git` 就出现在对话私有层里。
+#[test]
+fn work_view_changes_do_not_write_into_the_view() {
+    in_namespace("work-view-changes-readonly", |sandbox| {
+        init_git(&sandbox);
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-changes-readonly";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+        let upper = mount.parent().expect("视图根").join("upper");
+
+        // 让磁盘文件的 stat 信息陈旧：git 因此会想刷新索引（真正触发写回的条件）
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let touched = sandbox.workspace.join("f.txt");
+        let text = std::fs::read_to_string(&touched).unwrap();
+        std::fs::write(&touched, &text).unwrap();
+
+        // 只在视图里改一个文件：upper 里因此只该有它
+        std::fs::write(mount.join("f.txt"), "a\nB\n").expect("写视图");
+
+        let _ = crate::work_view::changes(session, "all").expect("取清单");
+        let _ = crate::work_view::file_diff(session, "f.txt").expect("取两侧");
+
+        let names: Vec<String> = std::fs::read_dir(&upper)
+            .expect("读 upper")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["f.txt"], "取数不得在视图里留条目：{names:?}");
+    });
+}
+
+/// 非 git 工作区：变更清单与两侧原文都回「不是 git 仓库」这个事实，不猜。
+#[test]
+fn work_view_changes_reports_non_git_workspace() {
+    in_namespace("work-view-changes-non-git", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-changes-non-git";
         let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
         view.ensure_mounted().expect("挂载");
 
-        // 对话内新建
-        let in_view = view.mount_point().expect("挂载点").join("only-in-view.txt");
-        std::fs::write(&in_view, "view-content\n").expect("写视图");
         assert_eq!(
-            crate::work_view::read_view_file(session, "only-in-view.txt").expect("读"),
-            "view-content\n"
+            crate::work_view::changes(session, "all").expect("取清单"),
+            crate::work_view::ChangesOutcome::NotAGitWorkspace
         );
-        assert!(!sandbox.workspace.join("only-in-view.txt").exists());
-
-        // 磁盘基线里的文件也能读
-        assert_eq!(
-            crate::work_view::read_view_file(session, "existing.txt").expect("读基线"),
-            "from-workspace\n"
-        );
-
-        // 越界 / 根目录 / 不存在的文件都报错
-        assert!(crate::work_view::read_view_file(session, "../etc/passwd").is_err());
-        assert!(crate::work_view::read_view_file(session, "/etc/passwd").is_err());
-        assert!(crate::work_view::read_view_file(session, "").is_err());
-        assert!(crate::work_view::read_view_file(session, "nope.txt").is_err());
-        // 未挂载的会话
-        assert!(crate::work_view::read_view_file("sess-never", "a.txt").is_err());
+        match crate::work_view::file_diff(session, "existing.txt").expect("取两侧") {
+            crate::work_view::FileDiffOutcome::NotAGitWorkspace { after } => {
+                assert_eq!(after, "from-workspace\n")
+            }
+            other => panic!("非 git 工作区必须回 NotAGitWorkspace：{other:?}"),
+        }
     });
+}
+
+/// 工作区是仓库**子目录**时，清单路径仍是「工作区相对」，不带仓库前缀。
+///
+/// 这条锁的是 `--relative`：bind 之后 git 从工作区向上找到的是仓库根的 `.git`，
+/// 不加它时 `diff` 输出 `pkg/f.txt` 而 `ls-files --others` 输出 `f.txt`——两种口径
+/// 混在一份清单里，渲染层会把文件挂到不存在的目录下。
+#[test]
+fn work_view_changes_use_workspace_relative_paths_in_a_subdirectory() {
+    in_namespace("work-view-changes-subdir", |sandbox| {
+        let root = sandbox.workspace.to_string_lossy().to_string();
+        let pkg = sandbox.workspace.join("pkg");
+        std::fs::create_dir_all(&pkg).expect("建子目录");
+        std::fs::write(pkg.join("f.txt"), "a\nb\n").expect("写基线");
+        std::fs::write(sandbox.workspace.join("root.txt"), "r\n").expect("写基线");
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&sandbox.workspace)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?} 失败：{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init", "-q", "."]);
+        run(&["add", "."]);
+        run(&["commit", "-qm", "baseline"]);
+
+        // 工作区是子目录 pkg
+        let workspace = pkg.to_string_lossy().to_string();
+        let session = "sess-changes-subdir";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+
+        std::fs::write(mount.join("f.txt"), "a\nB\n").expect("写视图");
+        std::fs::write(mount.join("new.txt"), "n\n").expect("写视图");
+        // 仓库根上的改动不属于这个工作区（工作区之外）
+        std::fs::write(sandbox.workspace.join("root.txt"), "changed\n").expect("写仓库根");
+
+        let entries = match crate::work_view::changes(session, "all").expect("取清单") {
+            crate::work_view::ChangesOutcome::Ready(entries) => entries,
+            other => panic!("git 工作区必须给出清单：{other:?}"),
+        };
+        assert_eq!(
+            change_paths(&entries),
+            vec!["f.txt", "new.txt"],
+            "清单路径必须是工作区相对，且不含工作区外的改动"
+        );
+        let _ = root;
+    });
+}
+
+/// 对话内自己 `commit` 之后，清单相对**视图 HEAD** 归零（磁盘 HEAD 不变）。
+///
+/// 这条锁的是「HEAD 以视图为准」：索引若照磁盘那份用，已进视图 HEAD 的文件会被当成
+/// 未跟踪文件列出来（一次 commit 即可复现）。实现因此在有 HEAD 时用
+/// `read-tree HEAD` 从视图 HEAD 重建临时索引。
+#[test]
+fn work_view_changes_follow_the_view_head_after_an_in_view_commit() {
+    in_namespace("work-view-changes-in-view-commit", |sandbox| {
+        init_git(&sandbox);
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-changes-in-view-commit";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+
+        std::fs::write(mount.join("committed.txt"), "committed in view\n").expect("写视图");
+        let run_in_view = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&mount)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?} 失败：{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_in_view(&["add", "committed.txt"]);
+        run_in_view(&["commit", "-qm", "commit inside view"]);
+
+        // 提交后再改一个磁盘已有的文件：清单里只该有它
+        std::fs::write(mount.join("f.txt"), "a\nB\n").expect("写视图");
+
+        let entries = match crate::work_view::changes(session, "all").expect("取清单") {
+            crate::work_view::ChangesOutcome::Ready(entries) => entries,
+            other => panic!("git 工作区必须给出清单：{other:?}"),
+        };
+        assert_eq!(
+            change_paths(&entries),
+            vec!["f.txt"],
+            "已进视图 HEAD 的文件不得出现在清单里"
+        );
+
+        // 磁盘 HEAD 没变：提交只落在视图里
+        let disk_log = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&sandbox.workspace)
+            .output()
+            .expect("run git log");
+        let log = String::from_utf8_lossy(&disk_log.stdout).to_string();
+        assert_eq!(
+            log.lines().count(),
+            1,
+            "磁盘 HEAD 不得被视图里的提交改变：{log}"
+        );
+    });
+}
+
+/// 未挂载的视图回错误（不偷偷读磁盘）。
+#[test]
+fn work_view_changes_require_a_mounted_view() {
+    let sandbox = Sandbox::new("work-view-changes-unmounted");
+    assert!(crate::work_view::changes("sess-never", "all").is_err());
+    let _ = sandbox;
 }

@@ -35,7 +35,8 @@ async function run(): Promise<void> {
       return { isolatedWorkView: true, reason: '' };
     },
     workViewFilesRequested: async () => ({ ok: false as const, error: '测试桩' }),
-    workViewFileReadRequested: async () => ({ ok: false as const, error: '测试桩' }),
+    workViewChangesRequested: async () => ({ ok: false as const, kind: 'error' as const, error: '测试桩' }),
+    workViewFileDiffRequested: async () => ({ ok: false as const, error: '测试桩' }),
     conversationListRequested: async () => [],
     sessionTodosRequested: async () => [],
     conversationLoadRequested: async () => ({

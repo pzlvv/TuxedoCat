@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-12
 ---
 
 # 规格：AssistantEventBus 与事件词汇表
@@ -88,14 +88,14 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 83 个事件：
+四组词汇表，共 84 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 33 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 29 | Core 进程的 `dispatch_ui_event` 分派 |
-| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 17 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
+| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 18 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
 
