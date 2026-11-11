@@ -1690,6 +1690,111 @@ fn session_workspace_assigned_registers_and_clears() {
     assert_eq!(config::session_workspace("s1"), None);
 }
 
+/// `workViewChangesRequested` / `workViewFileDiffRequested` 的请求分支（specs/047 FR-001 / FR-004）。
+///
+/// 与目录列举同一分工：真实取数在 `work_view_tests` 里跑（要进命名空间），这里覆盖请求
+/// 分支的两条通道——缺参数是「请求非法」（Err），没有已挂载视图是「业务失败」（回判别
+/// 联合的失败侧，带 `kind: 'error'`）。
+#[test]
+fn work_view_changes_request_reports_missing_arguments_and_unmounted_view() {
+    // 缺 sessionId / scope：请求本身非法
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "workViewChangesRequested", "scope": "all" })
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "workViewChangesRequested", "sessionId": "s1" })
+    )
+    .is_err());
+
+    // 没有已挂载视图：回 { ok: false, kind: 'error', error }，宿主据此显示错误行
+    let response = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "workViewChangesRequested",
+            "sessionId": "sess-no-view",
+            "scope": "all",
+        }),
+    )
+    .expect("请求合法时必须回响应而不是 Err");
+    assert_eq!(
+        response.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "{response:?}"
+    );
+    assert_eq!(
+        response.get("kind").and_then(Value::as_str),
+        Some("error"),
+        "未挂载视图是执行失败而不是「不是 git 仓库」：{response:?}"
+    );
+    assert!(
+        response
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "失败侧必须带非空 error：{response:?}"
+    );
+}
+
+/// 同上的两侧原文请求（specs/047 FR-004）。
+#[test]
+fn work_view_file_diff_request_reports_missing_arguments_and_unmounted_view() {
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "workViewFileDiffRequested", "path": "a.txt" })
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "workViewFileDiffRequested", "sessionId": "s1" })
+    )
+    .is_err());
+
+    let response = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "workViewFileDiffRequested",
+            "sessionId": "sess-no-view",
+            "path": "a.txt",
+        }),
+    )
+    .expect("请求合法时必须回响应而不是 Err");
+    assert_eq!(
+        response.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "{response:?}"
+    );
+    assert!(
+        response
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "失败侧必须带非空 error：{response:?}"
+    );
+}
+
+/// 慢请求清单与帧循环的分流口径一致（specs/047）：视图取数要起 git 子进程，
+/// 留在帧循环里会把后续帧全部压在队列后面（`specs/defects/balance-fetch-blocks-frame-loop`
+/// 是同一类问题的先例）。
+#[test]
+fn slow_ui_requests_run_off_the_frame_loop() {
+    for request_type in ["workViewChangesRequested", "workViewFileDiffRequested"] {
+        assert!(
+            is_slow_ui_request(&json!({ "type": request_type })),
+            "{request_type} 必须走独立线程"
+        );
+    }
+    assert!(is_slow_ui_request(&json!({ "type": "balanceRequested" })));
+    assert!(!is_slow_ui_request(
+        &json!({ "type": "workViewFilesRequested" })
+    ));
+    assert!(!is_slow_ui_request(
+        &json!({ "type": "conversationListRequested" })
+    ));
+}
+
 /// 事件词汇对照：`dispatch_ui_event` 的 match 必须给 `eventTypesParity.json` 里的
 /// 每个 UiEvent type 一个显式分支（TS 侧 eventTypeParity.test.ts 以编译期穷尽检查
 /// 锁 AssistantEventBus 的联合类型；Rust 侧事件载荷是裸 Value，只能在分发点锁

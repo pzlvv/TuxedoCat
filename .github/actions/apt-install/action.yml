@@ -1,0 +1,95 @@
+# 装 apt 包，Ubuntu 源解析 / 下载抖动时退避重试。
+#
+# 为什么抽成 composite action 而不是各 workflow 各写一遍：GitHub 托管的 Ubuntu
+# runner 会成段地解析不了 Ubuntu 源（2026-11-11 的日志里是 `Temporary failure
+# resolving 'azure.archive.ubuntu.com'`，同一 job 里 `npm ci` 是通的），一次 apt
+# 失败就把整条车道判红——与本次改动无关，却和真红的车道长得一模一样。
+#
+# 三步：
+#   1. 包已装好就直接退出，连 `apt-get update` 都不发（镜像自带这些包时省一整轮）；
+#   2. 首次尝试先不带 update 直接 install——镜像烤进去的本地索引够用时不必碰源；
+#   3. 之后每次 update + install，失败按 30/60/120… 递增退避。
+# apt 自己还会按 Acquire::Retries 在单次调用内重试，覆盖分钟级的短抖动；外层退避
+# 负责跨窗口。
+#
+# 退避有总时限（budget-seconds）：源故障也可能整小时不恢复，没有上限时「重试」
+# 只是把 6 分钟的红灯拖成 15 分钟的红灯（2026-11-11 实证）。超时后如实报错并写明
+# 这是本机对源的解析 / 下载问题、重跑即可，让 PR 闸门尽快给出结论。
+#
+# 顺带把 Acquire::Retries 写进本 job 的 apt 配置：同 job 后续的 apt 调用
+# （如 `npx playwright install-deps chromium`）一并带上重试。
+name: apt-install
+description: 安装 apt 包，Ubuntu 源解析 / 下载抖动时退避重试
+
+inputs:
+  packages:
+    description: 要安装的包名（空格分隔）
+    required: true
+  budget-seconds:
+    description: 失败重试的总时限（秒），用尽即如实报错退出
+    required: false
+    default: '300'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        BUDGET_SECONDS: ${{ inputs.budget-seconds }}
+      run: |
+        set -uo pipefail
+
+        # 只认「install ok installed」：dpkg -s 的返回码对「已卸载但残留配置文件」的
+        # 包也是 0，拿它判会跳过真正的安装，后面编 Core 才报找不到 musl-gcc
+        already_installed() {
+          for pkg in $PACKAGES; do
+            case "$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null)" in
+              'install ok installed') ;;
+              *) return 1 ;;
+            esac
+          done
+        }
+        install_from_local_index() {
+          # shellcheck disable=SC2086 # 包名按空白切开
+          sudo apt-get install -y -o Acquire::Retries=3 $PACKAGES
+        }
+        install_with_update() {
+          sudo apt-get update -o Acquire::Retries=3 && install_from_local_index
+        }
+
+        if already_installed; then
+          echo "${PACKAGES} 已安装，跳过 apt"
+          exit 0
+        fi
+
+        # 同 job 后续的 apt 调用也带上重试。写不进去不算失败：下面每次调用另有
+        # -o Acquire::Retries。
+        echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null ||
+          echo '::warning::写入 apt 重试配置失败，仅本次调用带 Acquire::Retries'
+
+        deadline=$((SECONDS + BUDGET_SECONDS))
+        attempt=1
+        while :; do
+          # 首次先赌镜像自带的索引：源解析坏掉时 update 白等，install 反而能过
+          if [ "$attempt" -eq 1 ] && install_from_local_index; then
+            exit 0
+          fi
+          if install_with_update; then
+            exit 0
+          fi
+
+          # 30 / 60 / 120… 递增，但不超过剩余预算
+          remaining=$((deadline - SECONDS))
+          if [ "$remaining" -le 0 ]; then
+            echo "::error::apt 安装 ${PACKAGES} 失败，已用尽 ${BUDGET_SECONDS}s 重试预算：本机对 Ubuntu 源的解析 / 下载持续失败，与本次改动无关，重跑该 job 即可" >&2
+            exit 1
+          fi
+          delay=$((30 * (2 ** (attempt - 1))))
+          if [ "$delay" -gt "$remaining" ]; then
+            delay=$remaining
+          fi
+          echo "::warning::apt 安装 ${PACKAGES} 第 ${attempt} 次失败，${delay}s 后重试"
+          sleep "$delay"
+          attempt=$((attempt + 1))
+        done

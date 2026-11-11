@@ -107,7 +107,8 @@ export type HostToWebviewMessage = {
    * 用户消息留空即视为 `user`。
    *
    * 与 `MessageData.origin` 一一对应；宿主 `onMessage` 会把该字段原样透传，
-   * webview 的 `toUiMessage` 依赖它区分「真正的用户消息」与系统通知。
+   * webview 的 `toUiMessage` 依赖它区分「真正的用户消息」与系统通知——两类系统通知
+   * 在消息区都是一行折叠行（`docs/hosts/webview-ui.md` 第 11 节）。
    */
   origin?: MessageOrigin;
   /** 消息元信息，如文件引用、agent来源等 */

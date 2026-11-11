@@ -27,6 +27,7 @@ import {
 } from './fileTypes.js';
 import type { ViewerWatchTarget } from './viewerWatch.js';
 import type { WorkspaceEndpoint } from '../src/host/workspaceRef.js';
+import type { WorkViewFileDiffResult } from '../src/shared/AssistantEventBus.js';
 
 export {
   classifyFileForOpen,
@@ -108,13 +109,18 @@ export interface FileOpenBridge {
 }
 
 /**
- * 变更视图的取数来源（specs/040 FR-001）：主进程按 root + rel 跑 `git show HEAD:<rel>`
- * 与读盘，页面只渲染两侧原文。`null` = 没有 git 上下文（虚拟文档 / 非 git 工作区）。
+ * 变更视图的取数来源（specs/040 FR-001 / specs/047 FR-004）。
+ *
+ * 两条来源是不同的事实，因此做成判别联合而不是「带 sessionId 的可选字段」
+ * （[docs/architecture/principles.md 第 2 节](../../docs/architecture/principles.md#2-不让接口--参数可选)）：
+ * - `disk`：磁盘工作区，主进程跑 `git show HEAD:<rel>` + 读盘（本地 / 远程都走这一支）；
+ * - `overlay`：Overlay 对话，两侧原文都由 Core 在视图里取（宿主读不到视图里的 `.git`）。
+ *
+ * `null` = 没有 git 上下文（虚拟文档 / 非 git 工作区）。
  */
-export interface DiffSource {
-  root: string;
-  rel: string;
-}
+export type DiffSource =
+  | { kind: 'disk'; root: string; rel: string }
+  | { kind: 'overlay'; sessionId: string; rel: string };
 
 /** 远端文件读取原语（`electron/sidebarFilesRemote.ts` 提供，SFTP 实现） */
 export interface RemoteFileReader {
@@ -124,16 +130,16 @@ export interface RemoteFileReader {
 }
 
 /**
- * Overlay 对话的文件读取原语（specs/046 FR-003）。
+ * Overlay 对话的文件取数原语（specs/047 FR-004）。
  *
- * 由调用方（`electron/main.ts`）注入：内容经 Core 的 `UiRequest.workViewFileReadRequested`
- * 取，宿主读不到 Core 私有挂载命名空间里的视图。`rel` 是 '/' 分隔的相对路径。
+ * 由调用方（`electron/main.ts`）注入：一次请求同时给「视图内容」与「视图里 HEAD 的版本」，
+ * 宿主读不到 Core 私有挂载命名空间里的视图、也读不到视图里的 `.git`。`rel` 是 '/' 分隔的
+ * 相对路径。
  */
 export interface WorkViewReader {
   sessionId: string;
-  readText(rel: string): Promise<string>;
+  readDiff(rel: string): Promise<WorkViewFileDiffResult>;
 }
-
 
 /**
  * 打开前的 git 上下文（specs/040 FR-003 / FR-004）：判定「是否新增」与「能否显示变更」。
@@ -163,7 +169,7 @@ export async function openLocalWorkspaceFile(
   const git = textual ? await gitContext(rel) : { inGit: false, hasHeadVersion: false };
   const initialView = resolveInitialView(source, textual ? !git.hasHeadVersion : false);
   // 非 git 工作区没有可对比的 HEAD（AC-9）：不传 diffSource，按钮在页面里置灰
-  const diffSource: DiffSource | null = git.inGit ? { root, rel } : null;
+  const diffSource: DiffSource | null = git.inGit ? { kind: 'disk', root, rel } : null;
   if (kind === 'image') {
     const bytes = await fs.promises.readFile(abs);
     await bridge.openImageViewer({
@@ -236,7 +242,7 @@ export async function openRemoteWorkspaceFile(
   const textual = kind === 'text' || kind === 'markdown' || kind === 'sniff';
   const git = textual ? await gitContext(rel) : { inGit: false, hasHeadVersion: false };
   const initialView = resolveInitialView(source, textual ? !git.hasHeadVersion : false);
-  const diffSource: DiffSource | null = git.inGit ? { root, rel } : null;
+  const diffSource: DiffSource | null = git.inGit ? { kind: 'disk', root, rel } : null;
   if (kind === 'image') {
     const bytes = await reader.readBytes(abs);
     await bridge.openImageViewer({
@@ -297,17 +303,17 @@ async function readFileHead(abs: string, maxBytes: number): Promise<Buffer> {
 }
 
 /**
- * Overlay 对话里的文件打开（specs/046 FR-003）。
+ * Overlay 对话里的文件打开（specs/046 FR-003 / specs/047 FR-004）。
  *
- * 内容经 Core 读视图路径（`WorkViewReader.readText`），宿主不读盘——视图挂在 Core 私有
- * 的挂载命名空间里，宿主读不到。编辑器标签仍以**真实工作区路径**标识，与工具输出的
- * 口径一致（`docs/core/conversation-work-view.md` 第 5 节）。
+ * 内容经 Core 从叠加视图读出，宿主不读盘——视图挂在 Core 私有的挂载命名空间里。编辑器
+ * 标签仍以**真实工作区路径**标识，与工具输出的口径一致
+ * （[docs/core/conversation-work-view.md 第 5 节](../../docs/core/conversation-work-view.md#5-工具语义)）。
  *
  * 只支持文本与 Markdown：图片与二进制需要真实文件路径（系统应用打不开视图里的路径），
  * Overlay 对话里明确不支持，回错误而不是打开磁盘上的旧内容。
  *
- * 变更视图（`diffSource`）在 Overlay 对话里不提供：git 的 HEAD 是磁盘事实，与视图内容
- * 对比会产生「视图 vs 磁盘」的伪差异。`initialView` 因此恒为 `full`。
+ * 变更视图的基线是**视图里的 HEAD**（不是磁盘 HEAD）：`readDiff` 一次给出两侧原文与
+ * 「有没有 HEAD 版本」，因此「是否新增」「能否显示变更」与内容同源，不各判一次。
  */
 export async function openOverlayWorkspaceFile(
   bridge: FileOpenBridge,
@@ -324,16 +330,22 @@ export async function openOverlayWorkspaceFile(
   if (kind === 'image' || kind === 'binary') {
     throw new Error(OVERLAY_BINARY_UNSUPPORTED);
   }
-  const content = await reader.readText(rel);
-  // 初始视图恒为全文：Overlay 对话里没有可对比的磁盘版本（见函数注释）
-  const initialView: InitialView = source === 'changes' ? 'full' : 'full';
+  const diff = await reader.readDiff(rel);
+  if (!diff.ok) throw new Error(diff.error);
+  // 非 git 工作区：只有内容，「新增」与「变更视图」都不适用（AC-9 同口径）
+  const isNewFile = diff.kind === 'git' && diff.before === null;
+  const initialView = resolveInitialView(source, diff.kind === 'git' ? isNewFile : true);
+  const diffSource: DiffSource | null =
+    diff.kind === 'git' && !isNewFile
+      ? { kind: 'overlay', sessionId: reader.sessionId, rel }
+      : null;
   if (kind === 'markdown') {
     await bridge.openMarkdownViewer({
       title: name,
-      content,
+      content: diff.after,
       watchTarget: null,
       initialView,
-      diffSource: null,
+      diffSource,
     });
     return;
   }
@@ -342,10 +354,10 @@ export async function openOverlayWorkspaceFile(
   // `read_to_string` 对非 UTF-8 会报错，错误如实上抛）
   await bridge.openTextViewer({
     title: name,
-    content,
+    content: diff.after,
     filePath: name,
     watchTarget: null,
     initialView,
-    diffSource: null,
+    diffSource,
   });
 }

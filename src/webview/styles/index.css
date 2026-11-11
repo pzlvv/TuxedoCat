@@ -162,6 +162,21 @@ html.resize-freeze {
   overflow-anchor: none;
 }
 
+/* 系统自动消息的折叠行（docs/hosts/webview-ui.md 第 11 节「自动消息折叠行」）：
+   整行可点，悬停给一层淡底色作为可点暗示；深浅主题各一档灰度，不引入新色相。 */
+.auto-msg-head {
+  transition: background-color 0.12s ease;
+}
+.auto-msg-head:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+/* 亮色主题两个宿主写法各一份：VS Code 用 `.light`（App 视图根），
+   Electron 独立窗口用 html 上的 `.theme-light`。 */
+.light .auto-msg-head:hover,
+.theme-light .auto-msg-head:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
 /* Webkit scrollbar for all elements */
 ::-webkit-scrollbar {
   width: 4px;
