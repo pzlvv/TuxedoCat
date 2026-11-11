@@ -283,25 +283,25 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 1. **Rust 目标与链接器**（`rustup target add <triple>`；asan 变体装在 nightly 上：
    `rustup target add --toolchain nightly <triple>`，缺工具链时构建脚本直接给出安装命令）：
    Linux musl 用 rustup 自带的 `rust-lld` + self-contained 的 musl crt / libc
-   （配在 `core-rs/.cargo/config.toml`）；Windows arm64 由 rustc 经 Visual Studio 定位 MSVC 链接器，
-   需要装好 VS 的「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
+   （配在 `core-rs/.cargo/config.toml`）；Windows 目标按**宿主平台**分两条路：Windows 宿主由 rustc
+   经 Visual Studio 定位 MSVC 链接器（arm64 要装好 VS 的「MSVC ARM64 生成工具」组件），非 Windows 宿主改经 `cargo xwin`（自带 MSVC 工具链与 Windows SDK）。
 2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）与 mimalloc（Linux musl 产物的分配器）
    都有 C 源码，cc-rs 需要一个能产出该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：
    它自带 clang 与头文件 / libc，一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处
    用环境变量 `ZIG` 指定）；构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默
    降级。Linux musl / gnu 用 `zig cc` 交叉编译、`zig ar` 打包静态库，gnu 的链接也经 `zig cc`
    （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；Windows arm64 上 ring 的 build.rs 对该目标
-   **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
+   **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）；
+   非 Windows 宿主上的 msvc 目标不注入 C 工具链（整条链归 `cargo xwin` 的 clang-cl 包装）。
 
-打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：
-产物缺失、比 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。
-平台列表取自 `PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份；
-校验拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
+打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：产物缺失、比
+`core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。平台列表取自
+`PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份：校验拦住「改了 Rust 源码
+没重编」与「`copy-assets` 没跑」，旧产物会静默打进 vsix / 安装包。
 
-**交叉目标的工具链**：Linux 上交叉编 Windows 目标要求 `rustc` 来自 rustup（发行版那份缺
-`*-pc-windows-msvc` 的 std，报 `can't find crate for core`）；指纹把编译器身份算进哈希
-（[第 3.4 节](#34-构建指纹)），构建与校验要在同一 shell 环境里用同一套工具链。TUI 安装器
-（`scripts/build-tui-installer.mjs`）对缺产物的目标按需补建 Core，兜住单目标场景。
+**交叉目标的工具链**：非 Windows 宿主交叉编 Windows 目标还要求 `rustc` 来自 rustup（发行版那份缺
+`*-pc-windows-msvc` 的 std，报 `can't find crate for core`）；指纹把编译器身份算进哈希（[第 3.4 节](#34-构建指纹)），
+构建与校验要在同一 shell 环境里用同一套工具链。TUI 安装器对缺产物的目标按需补建 Core（`scripts/build-tui-installer.mjs`）。
 
 预编译内置工具四个平台取自各自官方发布物的同一版本：ripgrep（`resources/ripgrep/<arch>-<platform>/`，
 15.2.0）与 fd（`resources/fd/<arch>-<platform>/`，10.5.2），入库前按官方 `.sha256` 逐份校验；
