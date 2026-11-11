@@ -203,6 +203,38 @@ const App = () => {
 
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
+  /**
+   * Overlay 对话能力（specs/045 FR-001）：由宿主转发 Core 的应答。`null` 是等待态
+   * ——能力未到达前**不渲染**勾选框（不猜 false，也不猜 true）。
+   */
+  const [workViewCapable, setWorkViewCapable] = useState<boolean | null>(null);
+  /**
+   * 能力查询在挂载后跑一次：Core 的能力在它的生命周期内不变，不需要重复问。
+   * 应答按来源视图投递（`WebviewMessageHandler` 用 `ctx.sender` 定向），所以预热视图在
+   * 后台发起也能收到，不必等被切到前台再补问。未到达（含查询失败）保持等待态：不猜
+   * false、也不猜 true——不渲染入口，也不给「勾了却静默无效」的形态。
+   */
+  useEffect(() => {
+    postMessage({ type: 'requestStorageCapabilities' });
+  }, []);
+  /** 新建对话空状态的勾选状态；只在「还没发过消息」时有意义 */
+  const [workViewSelected, setWorkViewSelected] = useState(false);
+  /**
+   * 勾选「Overlay 对话」（specs/045 FR-001）。
+   *
+   * 必须补发一条消息：勾选框在 `startNewConversation` **之后**才渲染（该消息已经带着
+   * 初始归属 `workspace` 发出去了），只改本地状态的话 Core 永远不知道用户勾了。
+   */
+  const handleWorkViewChange = useCallback((selected: boolean) => {
+    setWorkViewSelected(selected);
+    const sessionId = currentSessionIdRef.current;
+    if (!sessionId) return;
+    postMessage({
+      type: 'setConversationStorage',
+      sessionId,
+      storage: selected ? 'isolated' : 'workspace',
+    });
+  }, []);
   /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
   const [workspaces, setWorkspaces] = useState<Array<{ id: string; path: string; displayName: string }>>([]);
 
@@ -563,6 +595,7 @@ const App = () => {
     setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
+    setWorkViewCapable: (capable: boolean) => setWorkViewCapable(capable),
     setCurrentSessionId, setParentSessionId, setCreator, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
@@ -792,7 +825,15 @@ const App = () => {
       webSearch: nextWebSearch,
       modelRef: nextModelRef,
     }));
-    postMessage({ type: 'startNewConversation', sessionId: newSessionId });
+    postMessage({
+      type: 'startNewConversation',
+      sessionId: newSessionId,
+      // 归属在第一条消息落盘前确定（specs/045 FR-001）：勾选了隔离视图就带上去，
+      // 之后不再改
+      storage: workViewSelected ? 'isolated' : 'workspace',
+    });
+    // 新对话从「未勾选」开始：勾选框只属于刚建的那一个空状态
+    setWorkViewSelected(false);
     // 聚焦输入框，并把光标放回草稿里的原位置
     setTimeout(() => {
       mainInputRef.current?.focus();
@@ -1434,6 +1475,12 @@ onClick={handleNewConversation}
           containerRef={messagesContainerRef}
           userScrolledAwayRef={userScrolledAwayRef}
           isLoadingConversation={isLoadingConversation}
+          showWorkViewOption={
+            // 只在**新对话、还没发过消息**时给入口：归属在第一条消息落盘前确定
+            workViewCapable === true && messages.length === 0 && !isLoadingConversation
+          }
+          workViewSelected={workViewSelected}
+          onWorkViewChange={handleWorkViewChange}
           showThinkingAnimation={showThinkingAnimation}
           animationMode={animationMode}
           isDark={isDark}

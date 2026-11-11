@@ -9088,6 +9088,7 @@ fn reply_tool_error_for_cross_workspace_target_names_the_remote_workspace() {
             background: None,
             subagent: Some(harness.core.subagent_hooks()),
             transfer: None,
+            work_view: None,
         },
     );
     let text = outcome.text();
@@ -9138,6 +9139,7 @@ fn reply_to_local_sub_agent_still_delivers() {
             background: None,
             subagent: Some(harness.core.subagent_hooks()),
             transfer: None,
+            work_view: None,
         },
     );
     assert_eq!(
@@ -9531,5 +9533,247 @@ fn agent_message_during_compaction_is_queued_without_starting_the_consumer() {
     assert!(
         !guard.running,
         "压缩中不应起消费循环（起了会把通知落进即将被替换的旧数组）"
+    );
+}
+
+#[test]
+fn session_storage_restores_from_meta_after_restart() {
+    // 缺陷回归（specs/045 FR-001）：Core 重启后内存态是空的，`conversationStarted`
+    // 也不会为存量会话重放。归属若只能从内存读，隔离视图对话就退回真实磁盘——
+    // 用户看到的是「重开对话后，改动又写到磁盘上了」。
+    let sandbox = Sandbox::new("engine-storage-restore");
+    prepare(&sandbox, "http://127.0.0.1:1", "auto");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    crate::history::create_conversation(
+        "iso-1",
+        &project,
+        json!({ "sessionId": "iso-1", "storage": "isolated" }),
+    )
+    .unwrap();
+
+    // 读侧：没有内存态时按会话 id 找 meta（Core 重启后的唯一路径）
+    assert_eq!(
+        crate::history::storage_of_session("iso-1"),
+        WorkViewStorage::Isolated,
+        "必须能从 meta.json 读回归属"
+    );
+
+    // 引擎侧：首次建会话状态时把磁盘归属带进内存
+    let harness = EngineHarness::allow_all();
+    assert_eq!(
+        harness.core.session("iso-1").lock().unwrap().storage,
+        WorkViewStorage::Isolated,
+        "会话状态建立时必须继承 meta.json 的归属"
+    );
+    assert_eq!(
+        harness.core.session_storage("iso-1"),
+        WorkViewStorage::Isolated
+    );
+}
+
+#[test]
+fn session_storage_defaults_to_workspace_without_meta_field() {
+    // 存量会话（storage 字段随 specs/045 引入）与未知会话都按真实工作区处理
+    let sandbox = Sandbox::new("engine-storage-default");
+    prepare(&sandbox, "http://127.0.0.1:1", "auto");
+    crate::history::create_conversation(
+        "legacy-1",
+        &sandbox.workspace.to_string_lossy(),
+        json!({ "sessionId": "legacy-1" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    assert_eq!(
+        harness.core.session_storage("legacy-1"),
+        WorkViewStorage::Workspace
+    );
+    assert_eq!(
+        harness.core.session_storage("never-existed"),
+        WorkViewStorage::Workspace
+    );
+}
+
+#[test]
+fn storage_change_applies_before_the_first_message() {
+    // 缺陷回归（specs/045 FR-001）：勾选框在 `conversationStarted` 之后才渲染，用户
+    // 勾选的时刻晚于创建。若 Core 只认 `conversationStarted`，勾选就永远不生效——
+    // 用户看到的是「勾了隔离，改动照样写磁盘」。
+    let sandbox = Sandbox::new("engine-storage-change");
+    prepare(&sandbox, "http://127.0.0.1:1", "auto");
+
+    let harness = EngineHarness::allow_all();
+    harness
+        .core
+        .set_session_storage("new-1", WorkViewStorage::Isolated);
+    assert_eq!(
+        harness.core.session_storage("new-1"),
+        WorkViewStorage::Isolated,
+        "首条消息之前必须接受归属补发"
+    );
+    // 取消勾选同样要生效
+    harness
+        .core
+        .set_session_storage("new-1", WorkViewStorage::Workspace);
+    assert_eq!(
+        harness.core.session_storage("new-1"),
+        WorkViewStorage::Workspace
+    );
+}
+
+#[test]
+fn storage_change_applies_to_a_fresh_conversation_that_already_has_meta() {
+    // 缺陷回归（specs/045 FR-001）：新建对话一开始就有 `meta.json`（宿主建会话时立刻
+    // 写入默认 model / provider / context）。拿「文件是否存在」当「已有消息」的判据，
+    // 勾选会被每一次都当成「已落盘」拒绝——勾选框因此永远无效。
+    let sandbox = Sandbox::new("engine-storage-fresh-meta");
+    prepare(&sandbox, "http://127.0.0.1:1", "auto");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    crate::history::create_conversation(
+        "fresh-1",
+        &project,
+        json!({ "sessionId": "fresh-1", "messageCount": 0, "storage": "workspace" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    harness
+        .core
+        .set_session_storage("fresh-1", WorkViewStorage::Isolated);
+    assert_eq!(
+        harness.core.session_storage("fresh-1"),
+        WorkViewStorage::Isolated,
+        "meta 已存在但还没有消息时，勾选必须生效"
+    );
+}
+
+#[test]
+fn storage_change_is_ignored_once_messages_exist() {
+    // 归属仍是「一次写定」：已经有消息落盘（messageCount > 0）后，补发一律忽略。
+    // 否则同一对话的不同轮次会跑在两种存储上，历史文件也解释不了自己读的是哪份。
+    let sandbox = Sandbox::new("engine-storage-frozen");
+    prepare(&sandbox, "http://127.0.0.1:1", "auto");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    crate::history::create_conversation(
+        "frozen-1",
+        &project,
+        json!({ "sessionId": "frozen-1", "messageCount": 2, "storage": "workspace" }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    harness
+        .core
+        .set_session_storage("frozen-1", WorkViewStorage::Isolated);
+    assert_eq!(
+        harness.core.session_storage("frozen-1"),
+        WorkViewStorage::Workspace,
+        "已有消息的会话不得被改写归属"
+    );
+    // 磁盘上也不能改
+    assert_eq!(
+        crate::history::load_metadata("frozen-1", &project).unwrap()["storage"],
+        "workspace"
+    );
+}
+
+/// 隔离视图对话走**完整工具链路**（`execute_tool` → `ensure_work_view` → `io_path`），
+/// Bash 的编译产物必须落在视图上层，磁盘上不出现。
+///
+/// 这条用例补的是单测盲区：`work_view_tests` 手工构造 `ToolContext`，绕过了
+/// `ensure_work_view` 那次「按会话取句柄」的接线；真实链路上任何一环没接上（句柄为
+/// `None`、`io_path` 静默降级）都会让工具退回真实磁盘，而单测看不出来。
+#[test]
+fn isolated_session_tool_writes_stay_in_the_view() {
+    let _sandbox = Sandbox::new("engine-isolated-tool-chain");
+    let harness = EngineHarness::allow_all();
+    let workspace = _sandbox.workspace.to_string_lossy().to_string();
+    // 只有 in_namespace 那样的真实命名空间才能挂 overlay；这里没有，因此只断言
+    // 「视图句柄接上了」与「io_path 指向视图」——挂载本身由 work_view_tests 覆盖。
+    harness
+        .core
+        .set_session_storage("iso-chain-1", WorkViewStorage::Isolated);
+    assert_eq!(
+        harness.core.session_storage("iso-chain-1"),
+        WorkViewStorage::Isolated
+    );
+    // 工作目录没登记时 `ensure_work_view` 会返回 None（工具按真实磁盘执行，且已记日志）
+    config::set_session_workspace("iso-chain-1", Some(workspace.clone()));
+    let view = harness.core.ensure_work_view("iso-chain-1");
+    if crate::work_view::capabilities().isolated_work_view {
+        assert!(
+            view.is_some(),
+            "能力可用且工作目录已登记时，隔离会话必须拿到视图句柄"
+        );
+        let handle = view.unwrap();
+        // 句柄把真实路径映射到了视图内路径
+        let mapped = handle
+            .map_into_view(std::path::Path::new(&format!("{workspace}/out.txt")))
+            .expect("工作区内路径必须能映射");
+        assert!(
+            mapped.starts_with(handle.mount_point()),
+            "映射结果必须在视图内：{}",
+            mapped.display()
+        );
+        // 越界路径必须报错而不是静默退回真实路径（铁律 4.1）
+        assert!(
+            handle
+                .map_into_view(std::path::Path::new("/tmp/outside.txt"))
+                .is_err(),
+            "工作区外的路径必须报错"
+        );
+    }
+}
+
+/// 隔离会话走**真实轮次**：Bash 写入的文件必须落在视图上层，不出现磁盘上。
+///
+/// 与 `work_view_tests` 的分工：那边手工构造 `ToolContext`，这里走
+/// `execute_tool` → `ensure_work_view` 的完整接线。句柄取不到时工具静默走真实
+/// 磁盘，只有这条用例能看出来。
+#[test]
+fn isolated_session_bash_writes_stay_in_the_view() {
+    let _sandbox = Sandbox::new("engine-iso-bash-chain");
+    let workspace = _sandbox.workspace.to_string_lossy().to_string();
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi > made-by-bash.txt; cat made-by-bash.txt"}"#,
+            )
+        } else {
+            openai_text_sse(&["完成"])
+        }
+    });
+    prepare(&_sandbox, &llm.base_url, "auto");
+    crate::history::create_conversation(
+        "iso-bash",
+        &workspace,
+        json!({
+            "sessionId": "iso-bash",
+            "title": "",
+            "storage": "isolated",
+            "messageCount": 2,
+        }),
+    )
+    .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "iso-bash", "写个文件", "u-1");
+    assert!(harness.wait_query_end(), "轮次未结束");
+
+    // 能力不可用（容器禁命名空间）时工具按真实磁盘执行，是设计允许的降级
+    if !crate::work_view::capabilities().isolated_work_view {
+        return;
+    }
+    let result = harness.sink.event_of("toolResult").unwrap();
+    assert_eq!(result["status"], "success", "Bash 失败：{result}");
+    assert!(
+        result["output"].as_str().unwrap_or("").contains("hi"),
+        "Bash 必须读回自己刚写的文件：{result}"
+    );
+    assert!(
+        !_sandbox.workspace.join("made-by-bash.txt").exists(),
+        "隔离会话的 Bash 不得写到真实磁盘"
     );
 }

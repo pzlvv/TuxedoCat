@@ -71,6 +71,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | --- | --- |
 | `docs/core/standalone-core.md` | Core（Rust）：形态、平台矩阵、构建指纹、契约、传输与生命周期 |
 | `docs/core/tool-read-guard.md` | Read 与 Edit / Write 的时效契约：内容指纹、失效判定、拒绝文案与记录生命周期 |
+| `docs/core/conversation-work-view.md` | 对话隔离工作视图：能力判据、overlay 结构、命名空间、工具语义与生命周期 |
 | `docs/core/standalone-core-boundaries.md` | Core 的边界与验收：宿主侧事实读取、落点与测试 |
 | `docs/core/core-daemon.md` | Core 进程的 daemon：进程形态、通道模型、生命周期、控制通道协议 |
 | `docs/core/core-remote.md` | Core 远程服务：`start` / `kill`、状态文件、远端目录选择与 SSH 接入 |

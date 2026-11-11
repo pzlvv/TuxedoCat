@@ -96,8 +96,8 @@ Core 进程承载的 core 侧业务：
 ## 3. Core 形态
 
 - 语言与工具链：Rust（edition 2021），Cargo 构建。
-- 产物：`core.binaryName`（Windows 加 `.exe`）单文件可执行，外加自带的工具目录
-  （`ripgrep/`，部署时提升为产品目录的共享位）；部署按指纹落槽位，见第 3.1 节。
+- 产物：`core.binaryName`（Windows 加 `.exe`）单文件可执行，外加自带的工具目录（见第 3.1 节）；
+  部署按指纹落槽位，见第 3.1 节。
 - 源码位置：`core-rs/`（Cargo 包，包名与二进制名保持中性；对外文件名由构建脚本按配置落位）。
 - 进程属性：由宿主启动时不显示窗口；标准输入 / 标准输出为帧通道，标准错误为诊断输出。
   远程服务（`start` 动作）让 daemon 把控制通道换成 TCP（[docs/core/core-remote.md 第 2 节](core-remote.md#2-远程服务start--kill)）。
@@ -118,6 +118,8 @@ Core 进程承载的 core 侧业务：
   会话关闭 / 中止时终止该会话的全部后台任务。
 - 前台 Bash 与后台任务的结束判据同一口径：**shell 退出即收尾**（`bash_task::watch` 的 `try_wait` 口径），不等管道 EOF；孙进程继承管道写端（`start` 拉起的 detached daemon 等）使 EOF 不会到来时，退出后给读线程一段排水宽限（`PIPE_DRAIN_GRACE_MS`）收割已缓冲的输出，宽限内未结束就停掉读线程、用已累积快照收尾，此后 abort 与前台超时不再生效（命令已完成）。
 - 前台超时默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）；命令含 `sleep` 子命令时死线后移到 `max(默认超时, sleep 时长总和)`（GNU `NUMBER[s|m|h|d]` 口径，`sleep infinity` 饱和为无超时，解析不出时长（变量、算术、非法参数）回退默认超时——sleep 只把死线后移，不注销死线；工具输入显式给 `timeout`（内部覆盖，schema 之外）时优先）。
+- 对话隔离工作视图：改动只落对话私有上层目录，磁盘是唯一基线事实；能力判据、overlay 结构、
+  命名空间与生命周期见 [docs/core/conversation-work-view.md](conversation-work-view.md)。
 
 ### 3.1 平台矩阵
 
@@ -137,8 +139,8 @@ Electron 打包后产物落在 `app.asar` 内的 `dist/resources/`，但可执�
 
 **调试符号不随分发包走**：Windows（MSVC）的行号表在 `<core.binaryName>.pdb` 里，`build-core.mjs::copyDebugSymbols` 把它落在 `resources/core/<dir>/`，`copy-assets` 照常带进 `dist/resources/` 供本地崩溃诊断，但 vsix 白名单与 electron-builder 的默认规则（`includePdb` 未打开时排除 `**/*.pdb`）都把它挡在分发物之外（[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)）。
 
-**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与内置工具目录同级
-（`BUNDLED_TOOLS` 登记表：`ripgrep/rg[.exe]` 与 `fd/fd[.exe]`）：
+**部署单元与共享位**：仓库里的产物目录是自包含的——可执行文件与内置工具目录同级（`BUNDLED_TOOLS`
+登记表：`ripgrep/rg[.exe]` 与 `fd/fd[.exe]`）：
 
 ```
 resources/core/x64-win32/<core.binaryName>.exe
@@ -161,9 +163,9 @@ Core 定位内置工具时**以自己的可执行文件为基准**（`bundled_to
 `asarUnpack` 解包后工具与 Core 在同一层，而 Rust 的 `Path::exists` 看不进 asar 内的
 `dist/resources/core/<平台>/<tool.dir>/`），以及槽位上一级产品目录里的 `<tool.dir>/`（远端部署
 的共享位）。本地起进程、远端上传与 TUI 版安装都在这两条候选内，不依赖宿主提供
-`extensionPath`。`resources/<tool.dir>/<dir>/` 是构建源目录（`build-core.mjs::copyBundledTools`
-拿它复制成 Core 自带工具），不随分发包走：`scripts/copy-assets.mjs` 把 `resources/` 复制进
-`dist/` 后会清掉 `dist/resources/ripgrep/` 与 `dist/resources/fd/`（无读取方）。
+`extensionPath`。`resources/<tool.dir>/<dir>/` 是构建源目录，不随分发包走：
+`scripts/copy-assets.mjs` 把 `resources/` 复制进 `dist/` 后会清掉 `dist/resources/ripgrep/`
+与 `dist/resources/fd/`（无读取方）。
 
 **产品身份单源**：部署产品目录名（`core.deployPrefix`）、Core 二进制名
 （`core.binaryName`）、扩展名（`extensionName`）、配置目录名（`configDir`）等产品
@@ -281,31 +283,29 @@ ELF 平台的 asan 运行库静态链进二进制，无此文件）。指纹 pro
 1. **Rust 目标与链接器**（`rustup target add <triple>`；asan 变体装在 nightly 上：
    `rustup target add --toolchain nightly <triple>`，缺工具链时构建脚本直接给出安装命令）：
    Linux musl 用 rustup 自带的 `rust-lld` + self-contained 的 musl crt / libc
-   （配在 `core-rs/.cargo/config.toml`）；Linux gnu（ASAN 变体）没有自包含 crt / libc，链接交给
-   zig 的 cc 驱动；Windows arm64 由 rustc 经 Visual Studio 定位 MSVC 链接器，需要装好 VS 的
-   「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
+   （配在 `core-rs/.cargo/config.toml`）；Windows arm64 由 rustc 经 Visual Studio 定位 MSVC 链接器，
+   需要装好 VS 的「MSVC ARM64 生成工具」组件（MSVC 链接器不跨平台，只在 Windows 宿主构建）。
 2. **C 编译器**：`ring`（`reqwest` 的 `rustls-tls` 依赖）与 mimalloc（Linux musl 产物的分配器）
    都有 C 源码，cc-rs 需要一个能产出该目标文件的 C 编译器。用 [zig](https://ziglang.org/)：
    它自带 clang 与头文件 / libc，一个可执行文件就够。装好保证 `zig` 在 PATH 上即可（装在别处
    用环境变量 `ZIG` 指定）；构建脚本会注入 `CC` / `CFLAGS` / `AR`，缺 zig 时直接报错、不静默
    降级。Linux musl / gnu 用 `zig cc` 交叉编译、`zig ar` 打包静态库，gnu 的链接也经 `zig cc`
    （`zig-cc-linker.mjs` 垫片还原 `-Wl,<绝对路径>`）；Windows arm64 上 ring 的 build.rs 对该目标
-   **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe
-   （cc-rs 自行定位，不注入 AR）。
+   **硬性要求 clang**（MSVC 的 cl.exe 不被接受），由 zig cc 充当，静态库打包用 VS 的 lib.exe（cc-rs 自行定位，不注入 AR）。
 
 打包（`npm run package:ext` / `package:app`）会校验要携带的 Core 产物（`verify-core-artifacts.mjs`）：
 产物缺失、比 `core-rs/src/**` 旧、构建指纹与源码不一致、或没同步进 `dist/resources/` 都直接报错。
 平台列表取自 `PACKAGE_DIRS`（asan 变体取 `asanDefaultTargets`，即本机 + Linux x64），两处不各写一份；
-`build:core` 默认构建这四个平台（Linux 两份与 Windows arm64 都是交叉编译）；校验拦住「改了 Rust
-源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
+校验拦住「改了 Rust 源码没重编」与「`copy-assets` 没跑」——旧产物会静默打进 vsix / 安装包。
+
+**交叉目标的工具链**：Linux 上交叉编 Windows 目标要求 `rustc` 来自 rustup（发行版那份缺
+`*-pc-windows-msvc` 的 std，报 `can't find crate for core`）；指纹把编译器身份算进哈希
+（[第 3.4 节](#34-构建指纹)），构建与校验要在同一 shell 环境里用同一套工具链。TUI 安装器
+（`scripts/build-tui-installer.mjs`）对缺产物的目标按需补建 Core，兜住单目标场景。
 
 预编译内置工具四个平台取自各自官方发布物的同一版本：ripgrep（`resources/ripgrep/<arch>-<platform>/`，
-15.2.0，入库前按官方 `.sha256` 逐份校验）与 fd（`resources/fd/<arch>-<platform>/`，10.5.2）；
+15.2.0）与 fd（`resources/fd/<arch>-<platform>/`，10.5.2），入库前按官方 `.sha256` 逐份校验；
 Linux 两份均取 `unknown-linux-musl` 静态链接目标。
-`build-core.mjs::copyBundledTools` 把两份复制成 Core 自带工具（`resources/core/<dir>/<tool.dir>/`）。
-Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACKAGE_DIRS`，单独重建用
-`npm run build:core:win32-arm64`；TUI 安装器（`scripts/build-tui-installer.mjs`）对缺产物的目标
-仍按需补建 Core，兜住单目标场景。
 
 ### 3.4 构建指纹
 
@@ -352,7 +352,7 @@ Windows arm64 的目标与产物目录已登记、属于默认打包集合 `PACK
 - 载荷字段名与 TypeScript 类型逐项一致（`camelCase` 原样）。
 - `CoreEvent` 的每个 `type` 语义唯一确定（[docs/architecture/events.md 第 2.1 节](../architecture/events.md#21-coreeventcore--ui单向)）。
 - `CoreRequest` 的两个请求（`toolPermissionRequested` / `userChoice`）由 Core 发起、UI 应答。`userChoice` 的载荷与结果按 `kind` 判别：`permission` 带 `message` / `choices`、结果为 `index` / `reply`；`question`（AskUserQuestion）带 `questions`、结果为 `answers`。
-- `UiRequest` 的十四个请求（`conversationListRequested` / `smartNamingRequested` / `balanceRequested` /
+- `UiRequest` 的十七个请求（`conversationListRequested` / `storageCapabilitiesRequested` / `workViewFilesRequested` / `workViewFileReadRequested` / `smartNamingRequested` / `balanceRequested` /
   `compactArchiveRequested` / `mcpServersRequested` / `conversationSpacesRequested` / `flushSessionRequested` /
   `conversationLoadRequested` / `sessionTodosRequested` / `skillsRequested` / `spinDesignRequested` /
   `spinDesignSaveRequested` / `watchWorkspaceFileRequested` / `unwatchWorkspaceFileRequested`）由 UI 发起、Core 应答：

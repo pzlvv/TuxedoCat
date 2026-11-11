@@ -32,6 +32,9 @@ async function run(): Promise<void> {
   /** 收到的 UiRequest（按到达顺序），按类型回一个可识别的应答 */
   const sent: UiRequest[] = [];
   const handlers: UiRequestHandlers = {
+    storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, reason: '测试桩' }),
+    workViewFilesRequested: async () => ({ ok: false as const, error: '测试桩' }),
+    workViewFileReadRequested: async () => ({ ok: false as const, error: '测试桩' }),
     conversationListRequested: async (req) => {
       sent.push(req);
       return [{ sessionId: 'c1', title: 't' } as never];

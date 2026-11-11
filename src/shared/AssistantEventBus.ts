@@ -29,6 +29,7 @@ import type { McpServerDefinition, SettingsSnapshot, ThinkingEffort } from './se
 import type { McpServerInfo } from './webviewTypes.js';
 import type { NoticeLevel, NoticeParams } from './coreText.js';
 import type { SpinDesign } from './spin/Types.js';
+import type { DirectoryEntry } from './DirectoryEntry.js';
 
 // ==================== core → UI：单向事件 ====================
 
@@ -336,6 +337,41 @@ export type CoreRequest =
     };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
+/**
+ * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/045 FR-001）。
+ *
+ * 两个字段都必选：`reason` 在能力可用时为空串（不是 `null`——「没有原因」用空串表达，
+ * 与其它能力应答同一口径）。
+ */
+export interface StorageCapabilities {
+  /** 能否为对话建立隔离工作视图（overlay：磁盘为基线 + 对话私有上层）。 */
+  isolatedWorkView: boolean;
+  /** 不可用的原因；可用时为空串。 */
+  reason: string;
+}
+
+/**
+ * Overlay 对话的目录列举结果（`UiRequest.workViewFilesRequested`，specs/046 FR-002）。
+ *
+ * 判别联合而不是可选字段：失败必带 `error`、成功必带 `entries`，渲染层不用双重判空。
+ * 与 `electron/sidebarFiles.ts::listDirectory` 的本地回执同形——侧栏对两条来源的处理
+ * 因此完全一致。
+ */
+export type WorkViewFilesResult =
+  | { ok: true; entries: DirectoryEntry[] }
+  | { ok: false; error: string };
+
+/**
+ * 读 Overlay 对话里某个文件的内容（`UiRequest.workViewFileReadRequested`，specs/046 FR-003）。
+ *
+ * 与目录列举同一理由必须经 Core。内容是**文本**：内置文本 / Markdown 查看器读它渲染；
+ * 二进制（图片 / 压缩包 / 可执行文件）在 Overlay 对话里不支持打开——系统应用打不开视图
+ * 里的路径，回错误比打开磁盘上的旧内容诚实。
+ */
+export type WorkViewFileResult =
+  | { ok: true; content: string }
+  | { ok: false; error: string };
+
 export type CoreRequestResultMap = {
   toolPermissionRequested: PermissionResult;
   userChoice: UserChoiceResult;
@@ -462,7 +498,29 @@ export type UiEvent =
    * 登记（`WebviewMessageHandler.handleStartNewConversation` 先登记再发本事件），
    * core 按会话解析，不从本事件读取。Standalone Core 不发本事件（见 docs/core/core-parity.md）。
    */
-  | { type: 'conversationStarted'; sessionId: string }
+  | {
+      type: 'conversationStarted';
+      sessionId: string;
+      /**
+       * 会话的文件存储归属（specs/045 FR-001）：`workspace` = 工具与 Bash 直接操作真实
+       * 工作区；`isolated` = 落在本对话私有的叠加工作视图上（`lowerdir` 是真实工作区，
+       * `upperdir` 是本对话的改动，对话之间互不可见）。创建时一次写定，之后不变。
+       * 宿主必须显式给出——缺失按 `workspace`（存量会话口径）。
+       */
+      storage: 'workspace' | 'isolated';
+    }
+  /**
+   * 改会话的文件存储归属（specs/045 FR-001）。
+   *
+   * 只对「新建对话、还没有任何消息」生效：勾选框在 `conversationStarted` 之后才渲染，
+   * 用户勾选的时刻晚于创建，必须补发一次归属变更。core 按「meta.json 已存在即忽略」
+   * 拒绝改动（`docs/core/conversation-work-view.md` 第 2 节），归属因此仍是一次写定。
+   */
+  | {
+      type: 'storageChanged';
+      sessionId: string;
+      storage: 'workspace' | 'isolated';
+    }
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。
@@ -656,6 +714,32 @@ export type UiEvent =
 export type UiRequest =
   /** 对话列表元数据（`loadConversationList` 的等价物） */
   | { type: 'conversationListRequested'; workspacePath?: string }
+  /**
+   * 本 Core 的文件存储能力（specs/045 FR-001）。
+   *
+   * 宿主据此决定是否渲染「Overlay 对话」入口。能力由 Core 判断——宿主平台回答不了
+   * 这个问题（Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但 Core 是）。
+   */
+  | { type: 'storageCapabilitiesRequested' }
+  /**
+   * 列 Overlay 对话的叠加视图目录（specs/046 FR-002）。
+   *
+   * 侧栏的文件资源管理器据此显示「这个对话看到的文件树」。必须经 Core：视图挂在 Core
+   * 私有的挂载命名空间里（`docs/core/conversation-work-view.md` 第 4 节），宿主进程读
+   * 挂载点得到的是空目录；直接读 `upper/` 也不成立（whiteout 让删掉的文件仍可见、
+   * 未改动的文件在 `lowerdir` 看不到）。
+   *
+   * `dir` 是 '/' 分隔的相对路径，`''` 表示视图根；越界（绝对路径 / `..`）由 Core 拒绝。
+   * 视图尚未建立时回 `ok: false`——由宿主决定显示磁盘基线还是报错，Core 不替它决定。
+   */
+  | { type: 'workViewFilesRequested'; sessionId: string; dir: string }
+  /**
+   * 读 Overlay 对话里某个文件的文本内容（specs/046 FR-003）。
+   *
+   * `path` 是 '/' 分隔的相对路径（不能是视图根）。内容由 Core 读视图路径后回传，
+   * 宿主不读盘——理由与目录列举相同。
+   */
+  | { type: 'workViewFileReadRequested'; sessionId: string; path: string }
   /** 智能命名：读会话消息 + 调 LLM + 解析标题（`history/smartNaming` 的等价物） */
   | { type: 'smartNamingRequested'; sessionId: string }
   /**
@@ -782,6 +866,9 @@ export type SpinDesignSaveResult =
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 export type UiRequestResultMap = {
   conversationListRequested: ConversationMetadata[];
+  storageCapabilitiesRequested: StorageCapabilities;
+  workViewFilesRequested: WorkViewFilesResult;
+  workViewFileReadRequested: WorkViewFileResult;
   smartNamingRequested: { title: string };
   balanceRequested: {
     totalBalance: number;

@@ -19,6 +19,7 @@ export const zhDict: Record<string, string> = {
   'app.newChat': '新对话',
   'app.closeChat': '关闭当前对话（释放资源）',
   'app.openWorkspaceHint': '请先打开一个工作区以继续使用',
+  'app.workViewOption': 'Overlay 对话',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': '确定要删除 "{title}" 吗？',

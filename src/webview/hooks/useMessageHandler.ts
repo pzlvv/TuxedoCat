@@ -56,6 +56,8 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
+  /** 文件存储能力（specs/045 FR-001）；false 时新建对话空状态不渲染隔离视图入口 */
+  setWorkViewCapable: (capable: boolean) => void;
   /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
   setWorkspaces: (v: Array<{ id: string; path: string; displayName: string }>) => void;
   /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节） */
@@ -421,6 +423,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'setSkills':
           handleConfigSetSkills(msg, ctx);
+          break;
+        case 'setStorageCapabilities':
+          // 能力应答（specs/045 FR-001）：能力不可用时整块入口不渲染，不给「勾了却
+          // 静默无效」的形态。
+          ctx.props.setWorkViewCapable(msg.isolatedWorkView);
           break;
         case 'setWorkspaces':
           handleConfigSetWorkspaces(msg, ctx);

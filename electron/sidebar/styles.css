@@ -134,6 +134,14 @@ body.sidebar-resizing { cursor: col-resize; }
 }
 /* 子代理（subagent）行首的「sub」标记：配色取 webview 对话列表同款
    （dark 的 bgSecondary #1e1e24 / textSystem #9f9fa9），两边观感一致 */
+/* 对话隔离视图标记（specs/045 FR-001）：与「直接改磁盘」的对话区分开 */
+.item .isolated-tag {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: #6ee7b7;
+}
+
 .item .sub-tag {
   flex-shrink: 0;
   font-size: 10px;

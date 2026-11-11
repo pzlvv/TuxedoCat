@@ -19,11 +19,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveWithinRoot } from './sidebarFiles.js';
-import { classifyFileForOpen, imageMimeFor, REMOTE_BINARY_UNSUPPORTED } from './fileTypes.js';
+import {
+  classifyFileForOpen,
+  imageMimeFor,
+  OVERLAY_BINARY_UNSUPPORTED,
+  REMOTE_BINARY_UNSUPPORTED,
+} from './fileTypes.js';
 import type { ViewerWatchTarget } from './viewerWatch.js';
 import type { WorkspaceEndpoint } from '../src/host/workspaceRef.js';
 
-export { classifyFileForOpen, imageMimeFor, REMOTE_BINARY_UNSUPPORTED } from './fileTypes.js';
+export {
+  classifyFileForOpen,
+  imageMimeFor,
+  OVERLAY_BINARY_UNSUPPORTED,
+  REMOTE_BINARY_UNSUPPORTED,
+} from './fileTypes.js';
 export type { FileOpenKind } from './fileTypes.js';
 
 /** 嗅探窗口：未知扩展名只读前 8KB 判二进制（isbinaryfile 与 core Read 工具同一实现） */
@@ -112,6 +122,18 @@ export interface RemoteFileReader {
   readBytes(absPath: string): Promise<Buffer>;
   readText(absPath: string): Promise<string>;
 }
+
+/**
+ * Overlay 对话的文件读取原语（specs/046 FR-003）。
+ *
+ * 由调用方（`electron/main.ts`）注入：内容经 Core 的 `UiRequest.workViewFileReadRequested`
+ * 取，宿主读不到 Core 私有挂载命名空间里的视图。`rel` 是 '/' 分隔的相对路径。
+ */
+export interface WorkViewReader {
+  sessionId: string;
+  readText(rel: string): Promise<string>;
+}
+
 
 /**
  * 打开前的 git 上下文（specs/040 FR-003 / FR-004）：判定「是否新增」与「能否显示变更」。
@@ -272,4 +294,58 @@ async function readFileHead(abs: string, maxBytes: number): Promise<Buffer> {
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * Overlay 对话里的文件打开（specs/046 FR-003）。
+ *
+ * 内容经 Core 读视图路径（`WorkViewReader.readText`），宿主不读盘——视图挂在 Core 私有
+ * 的挂载命名空间里，宿主读不到。编辑器标签仍以**真实工作区路径**标识，与工具输出的
+ * 口径一致（`docs/core/conversation-work-view.md` 第 5 节）。
+ *
+ * 只支持文本与 Markdown：图片与二进制需要真实文件路径（系统应用打不开视图里的路径），
+ * Overlay 对话里明确不支持，回错误而不是打开磁盘上的旧内容。
+ *
+ * 变更视图（`diffSource`）在 Overlay 对话里不提供：git 的 HEAD 是磁盘事实，与视图内容
+ * 对比会产生「视图 vs 磁盘」的伪差异。`initialView` 因此恒为 `full`。
+ */
+export async function openOverlayWorkspaceFile(
+  bridge: FileOpenBridge,
+  reader: WorkViewReader,
+  root: string,
+  rel: string,
+  source: OpenSource,
+): Promise<void> {
+  // 越界校验与本地路径同一份实现：真实工作区路径的包含关系对视图同样成立
+  const abs = resolveWithinRoot(root, rel);
+  if (!abs) throw new Error(`path escapes the workspace root: ${rel}`);
+  const name = path.posix.basename(rel);
+  const kind = classifyFileForOpen(name);
+  if (kind === 'image' || kind === 'binary') {
+    throw new Error(OVERLAY_BINARY_UNSUPPORTED);
+  }
+  const content = await reader.readText(rel);
+  // 初始视图恒为全文：Overlay 对话里没有可对比的磁盘版本（见函数注释）
+  const initialView: InitialView = source === 'changes' ? 'full' : 'full';
+  if (kind === 'markdown') {
+    await bridge.openMarkdownViewer({
+      title: name,
+      content,
+      watchTarget: null,
+      initialView,
+      diffSource: null,
+    });
+    return;
+  }
+  // text 与 sniff 都进文本查看器：嗅探判二进制的活需要真实字节流，视图里不提供
+  // （`classifyFileForOpen` 对未知扩展名回 sniff，此处按文本处理——Core 侧
+  // `read_to_string` 对非 UTF-8 会报错，错误如实上抛）
+  await bridge.openTextViewer({
+    title: name,
+    content,
+    filePath: name,
+    watchTarget: null,
+    initialView,
+    diffSource: null,
+  });
 }

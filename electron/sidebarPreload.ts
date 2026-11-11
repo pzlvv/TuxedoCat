@@ -75,6 +75,15 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
   filesList: (workspaceId: string, dir: string): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-list', { workspaceId, dir });
   },
+  /**
+   * 列 Overlay 对话的叠加视图目录（specs/046 FR-002）。
+   *
+   * 与 `filesList` 分两条通道：视图挂在 Core 私有的挂载命名空间里、宿主读不到，必须由
+   * Core 列；两条通道的失败语义也不同（磁盘读失败 vs 视图未建立）。
+   */
+  filesListOverlay: (sessionId: string, dir: string): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-list-overlay', { sessionId, dir });
+  },
   /** 在系统文件资源管理器中定位（只作用于单个条目） */
   filesReveal: (workspaceId: string, relPath: string): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-reveal', { workspaceId, path: relPath });
@@ -95,6 +104,23 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
    * `source` 是打开来源（specs/040 FR-003）：目录树 / 变更视图决定初始视图 */
   filesOpen: (workspaceId: string, relPath: string, source: 'tree' | 'changes'): Promise<unknown> => {
     return ipcRenderer.invoke('sidebar:files-open', { workspaceId, path: relPath, source });
+  },
+  /**
+   * 打开 Overlay 对话里的文件（specs/046 FR-003）：内容经 Core 读视图路径，
+   * 编辑器标签仍以真实工作区路径标识。`workspaceId` 用于解析真实路径与 git 上下文。
+   */
+  filesOpenOverlay: (
+    workspaceId: string,
+    sessionId: string,
+    relPath: string,
+    source: 'tree' | 'changes',
+  ): Promise<unknown> => {
+    return ipcRenderer.invoke('sidebar:files-open-overlay', {
+      workspaceId,
+      sessionId,
+      path: relPath,
+      source,
+    });
   },
   /** 变更清单取数（specs/030 / specs/041）：`scope` 决定 pathspec（doc = Markdown，all = 全部类型） */
   filesDocList: (workspaceId: string, scope: 'doc' | 'all'): Promise<unknown> => {

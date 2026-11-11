@@ -169,6 +169,49 @@ pub fn load_metadata(session_id: &str, project: &str) -> Option<Value> {
     serde_json::from_str(&util::sanitize_json_surrogates(&text)).ok()
 }
 
+/// 读取会话的文件存储归属（specs/045 FR-001）：`meta.json` 的 `storage`。
+///
+/// 缺失（旧会话 / 旧宿主没有这个字段）即真实工作区——与 `conversationStarted`
+/// 缺字段时的口径一致，两处共用 `work_view_storage_from_text` 的判定。
+pub fn storage_of_session(session_id: &str) -> crate::engine::WorkViewStorage {
+    metadata_of_session(session_id)
+        .map(|metadata| {
+            let text = metadata.get("storage").and_then(Value::as_str);
+            crate::engine::work_view_storage_from_text(text)
+        })
+        .unwrap_or(crate::engine::WorkViewStorage::Workspace)
+}
+
+/// 只要会话 id 就能读到的 `meta.json`（不存在时 `None`）。
+///
+/// 用于回答「这个会话是否已有档案」，与 `storage_of_session` 共用同一份查找规则：
+/// 归属是否存在与归属是什么，必须查同一个文件。
+pub fn metadata_of_session(session_id: &str) -> Option<Value> {
+    session_metadata_anywhere(session_id)
+}
+
+/// 只按会话 id 找 `meta.json`，不需要先知道项目路径。
+///
+/// `project_of_session` + `load_metadata` 的组合要求第一次查到 `project`（它枚举
+/// `conversations_root()`），而这里要回答的正是「Core 重启后归属是什么」——此时内存里
+/// 没有项目登记，只有会话 id。用会话 id 直接在各项目目录下找同名 meta，路径与
+/// `project_conversation_dir` 同构。
+fn session_metadata_anywhere(session_id: &str) -> Option<Value> {
+    let file_name = session_file_name(session_id, ".meta.json").ok()?;
+    let root = config::conversations_root().ok()?;
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let candidate = entry.path().join(&file_name);
+        let Ok(text) = util::read_to_string_lossy(&candidate) else {
+            continue;
+        };
+        if let Ok(metadata) = serde_json::from_str::<Value>(&util::sanitize_json_surrogates(&text))
+        {
+            return Some(metadata);
+        }
+    }
+    None
+}
+
 /// 从 `meta.json` 解析 `creator`（specs/025 FR-002）：缺失 / 形态不对是数据异常，
 /// 报错不回退——静默当 `User` 会把 Agent 会话误判成可输入 / 会提醒的正常对话。
 /// 形态与 TS 侧 `parseSessionCreator` 同一口径。
@@ -1204,16 +1247,34 @@ pub fn touch_metadata(
     user_initiated: bool,
     prompt_mode: Option<&str>,
     creator: &crate::engine::SessionCreator,
+    storage: crate::engine::WorkViewStorage,
 ) -> Result<(), String> {
     let count = count_messages(&load_messages(session_id, project));
     let prompt_mode = prompt_mode.unwrap_or("normal").to_string();
+    // 文件存储归属（specs/045 FR-001）随首条消息建档一次写定。
+    //
+    // 必须在建档时就写：`conversationStarted` 只登记内存态，而 meta.json 由首条消息
+    // 创建（`docs/core/conversation-work-view.md`）。漏写这一格，Core 重启后
+    // `session_storage` 从 meta 读不到归属、回退真实工作区，隔离视图就此丢失。
+    let storage_text = crate::engine::work_view_storage_text(storage);
     update_metadata(
         session_id,
         project,
         // 兜底建档（meta 缺失）一并写 creator（specs/025 FR-002）：归属取会话状态，
         // 由调用方传入——子代理 meta 由创建方预建，兜底只可能命中用户路径
-        || json!({ "sessionId": session_id, "project": project, "creator": creator }),
+        || {
+            json!({
+                "sessionId": session_id,
+                "project": project,
+                "creator": creator,
+                "storage": storage_text,
+            })
+        },
         |metadata| {
+            // 归属只写一次：已有值一律保留（存量会话的 workspace 不能被后来的状态覆盖）
+            if metadata.get("storage").and_then(Value::as_str).is_none() {
+                metadata["storage"] = json!(storage_text);
+            }
             // 新消息落盘即越过末位提示：清掉 `onceMessage`（后继即删，
             // 与 UI 侧 `stripOnce` 同一语义，`docs/hosts/webview-ui.md` 第 11 节）。
             if let Some(object) = metadata.as_object_mut() {

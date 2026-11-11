@@ -320,6 +320,30 @@ pub struct ToolContext {
     pub subagent: Option<SubAgentHooks>,
     /// 跨工作区传输钩子（`Transfer`，specs/028）。单测不设置时该工具报错。
     pub transfer: Option<TransferHook>,
+    /// 对话工作视图句柄（specs/045）：隔离视图对话的工具读写走它映射到的叠加视图，
+    /// 对外报的仍是真实工作区路径。`None` = 该对话直接操作磁盘。
+    pub work_view: Option<crate::work_view::WorkViewHandle>,
+}
+
+impl ToolContext {
+    /// 把工具要访问的真实路径换成实际读写路径（隔离视图里是叠加视图内路径）。
+    ///
+    /// 所有工具都用它解析「该读哪个文件」，因此视图对工具是透明的：路径字符串对用户
+    /// 仍是真实工作区路径，只有 `std::fs` 调用看到视图内路径。
+    ///
+    /// 越界返回错误而不是退回真实路径：静默降级会让隔离对话的工具绕过视图直接写磁盘，
+    /// 而调用方毫不知情（`docs/architecture/principles.md` 铁律 4.1）。
+    pub fn io_path(&self, real: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        match &self.work_view {
+            Some(handle) => handle.map_into_view(real),
+            None => Ok(real.to_path_buf()),
+        }
+    }
+
+    /// 隔离视图的挂载点；`None` = 该对话直接操作磁盘（Bash 不进私有命名空间）。
+    pub fn overlay_mount(&self) -> Option<std::path::PathBuf> {
+        self.work_view.as_ref().map(|handle| handle.mount_point())
+    }
 }
 
 #[derive(Debug)]
@@ -1732,6 +1756,28 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     }
     // 隐藏子进程控制台窗口（否则每次执行命令都会闪一个窗口）
     util::hide_console(&mut cmd);
+
+    // 隔离视图对话（specs/045）：在**子进程**里取一份私有挂载命名空间副本，把视图 bind
+    // 到真实工作区路径上再 exec。这样脚本里写死的绝对路径、`$PWD`、`cd` 全部照常工作，
+    // 而内容来自「磁盘 + 本对话改动」的叠加视图。
+    //
+    // 必须在 `pre_exec` 里做：`unshare(CLONE_NEWNS)` 只影响调用进程及其子孙，放在父进程
+    // 里会污染 Core 自身；而 bind 必须在 exec 之前完成，否则 shell 已经按旧挂载启动。
+    if let Some(mount_point) = ctx.overlay_mount() {
+        let workspace = std::path::PathBuf::from(&cwd);
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(move || {
+                crate::work_view::bind_view_onto_workspace(&mount_point, &workspace)
+                    .map_err(|reason| std::io::Error::other(reason))
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (mount_point, workspace);
+        }
+    }
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -3365,7 +3411,12 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(file_path) = file_path else {
         return ToolOutcome::Error("file_path is required and must be a string".to_string());
     };
+    // 真实路径（对用户可见、用于输出与 diff）与 IO 路径（隔离视图里是视图内路径）
     let path = expand_path(&ctx.cwd, &file_path);
+    let io_path = match ctx.io_path(&path) {
+        Ok(path) => path,
+        Err(reason) => return ToolOutcome::Error(format!("Read: {reason}")),
+    };
 
     let limit = input_u64(input, "limit");
     if let Some(limit) = limit {
@@ -3386,7 +3437,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     // 整文件读取（未传 limit）时先做 256KB 上限检查；xlsx / 图片文件豁免。
     if limit.is_none() && !is_xlsx && media_type.is_none() {
-        if let Ok(meta) = std::fs::metadata(&path) {
+        if let Ok(meta) = std::fs::metadata(&io_path) {
             if meta.is_file() && meta.len() > READ_MAX_SIZE_BYTES {
                 return ToolOutcome::Error(format!(
                     "File ({}) exceeds maximum allowed size ({}). Use offset and limit parameters to read specific portions of the file.",
@@ -3397,21 +3448,25 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         }
     }
 
-    if !path.exists() {
+    // 存在性与类型判断一律看 `io_path`：隔离视图对话的基线来自磁盘、改动在上层，
+    // 「文件在不在」的答案只能由视图给出。这里曾用真实路径判断，导致视图里刚写出的
+    // 文件被判成不存在（`docs/architecture/principles.md` 铁律 4.4：一份事实只有一个
+    // 读取点，工具看到的文件系统就是视图）。
+    if !io_path.exists() {
         return ToolOutcome::Error(format!("File not found: {}", path.display()));
     }
 
     // `isbinaryfile` 对非普通文件（目录 / 设备等）抛
     // `Path provided was not a file!`。此前直接 `fs::read` 会返回平台相关的
     // 权限 / EISDIR 文案（Windows 是「拒绝访问。(os error 5)」）。
-    if !path.is_file() {
+    if !io_path.is_file() {
         return ToolOutcome::Error("Path provided was not a file!".to_string());
     }
 
     // xlsx / xlsm：绕过二进制检查与常规文本读取
     if is_xlsx {
         let sheet = input_str(input, "sheet").filter(|value| !value.is_empty());
-        return match read_xlsx_content(&path, offset, limit, sheet.as_deref()) {
+        return match read_xlsx_content(&io_path, offset, limit, sheet.as_deref()) {
             Ok(result) => ToolOutcome::Success(format_read_output(
                 &result.content,
                 result.start_line,
@@ -3423,7 +3478,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         };
     }
 
-    let bytes = match std::fs::read(&path) {
+    let bytes = match std::fs::read(&io_path) {
         Ok(bytes) => bytes,
         Err(err) => return ToolOutcome::Error(format!("Read failed: {err}")),
     };
@@ -3544,15 +3599,20 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(content) = input.get("content").and_then(Value::as_str) else {
         return ToolOutcome::Error("content is required".to_string());
     };
+    // 真实路径（对用户可见、用于输出与 diff）与 IO 路径（隔离视图里是视图内路径）
     let path = expand_path(&ctx.cwd, &file_path);
-    let action = if path.exists() { "update" } else { "create" };
+    let io_path = match ctx.io_path(&path) {
+        Ok(path) => path,
+        Err(reason) => return ToolOutcome::Error(format!("Write: {reason}")),
+    };
+    // 视图里「文件是否存在」看 io_path：隔离视图对话的基线来自磁盘，两者一致
+    let action = if io_path.exists() { "update" } else { "create" };
     // 写入前的原始内容（文件不存在时为 null），用于 UI 的 diff 展示与回滚
-    // 。
-    let before_content = std::fs::read_to_string(&path).ok();
+    let before_content = std::fs::read_to_string(&io_path).ok();
     // 读后失效守卫（specs/038 FR-001）：文件存在时必须「本会话读过且内容未变」。
     // 读原始字节而不是 `before_content`：后者在非法 UTF-8 上是 `None`，会被误判成
     // 「文件不存在」而放行覆盖。`before_content` 本身是给 UI 的 diff 用的。
-    let before_bytes = std::fs::read(&path).ok();
+    let before_bytes = std::fs::read(&io_path).ok();
     if let Some(message) = crate::read_guard::verify(
         &ctx.session_id,
         &ctx.cwd,
@@ -3562,19 +3622,18 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     ) {
         return ToolOutcome::Error(message);
     }
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = io_path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
             return ToolOutcome::Error(format!("Write: mkdir failed: {err}"));
         }
     }
-    match std::fs::write(&path, content) {
+    match std::fs::write(&io_path, content) {
         Ok(()) => {
             // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
             config::record_md_modification(&ctx.cwd, &path);
-            // 写成功后刷新读取记录（specs/038 FR-002）：读回磁盘字节，而不是直接用
-            // `content.as_bytes()`——记录必须与磁盘真实内容一致，否则下一次 Edit 会
-            // 被自己误拒。
-            if let Ok(written) = std::fs::read(&path) {
+            // 写成功后刷新读取记录（specs/038 FR-002）：读回字节，而不是直接用
+            // `content.as_bytes()`——记录必须与真实内容一致，否则下一次 Edit 会被自己误拒。
+            if let Ok(written) = std::fs::read(&io_path) {
                 crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
             }
             let line_count = content.split('\n').count();
@@ -4058,8 +4117,13 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let replace_all = resolve_replace_all(input.get("replace_all"));
     let offset = input_u64(input, "offset");
     let limit = input_u64(input, "limit");
+    // 真实路径（对用户可见、用于输出与 diff）与 IO 路径（隔离视图里是视图内路径）
     let path = expand_path(&ctx.cwd, &file_path);
-    let content = match std::fs::read_to_string(&path) {
+    let io_path = match ctx.io_path(&path) {
+        Ok(path) => path,
+        Err(reason) => return ToolOutcome::Error(format!("Edit: {reason}")),
+    };
+    let content = match std::fs::read_to_string(&io_path) {
         Ok(text) => text,
         // Edit 用 `fs.readFile` 读盘，文件不存在时 Node 抛
         // `ENOENT: no such file or directory, open '<path>'`。此前 Rust 返回
@@ -4207,13 +4271,13 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     let line_count = count_lines(&updated);
 
-    match std::fs::write(&path, updated) {
+    match std::fs::write(&io_path, updated) {
         Ok(()) => {
             // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
             config::record_md_modification(&ctx.cwd, &path);
             // 写成功后刷新读取记录（specs/038 FR-002）：同一会话里连续的多次 Edit
             // 不需要插一次 Read；记录用读回的磁盘字节，保证与真实落盘一致。
-            if let Ok(written) = std::fs::read(&path) {
+            if let Ok(written) = std::fs::read(&io_path) {
                 crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
             }
             let replacement = if replacements_made == 1 {
@@ -4459,9 +4523,20 @@ fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(pattern) = input_str(input, "pattern").filter(|value| !value.is_empty()) else {
         return ToolOutcome::Error("pattern is required and must be a string".to_string());
     };
-    let search_path = input_str(input, "path")
-        .map(|path| expand_path(&ctx.cwd, &path).to_string_lossy().to_string())
-        .unwrap_or_else(|| ctx.cwd.clone());
+    let search_path = match input_str(input, "path") {
+        Some(path) => {
+            let real = expand_path(&ctx.cwd, &path);
+            match ctx.io_path(&real) {
+                Ok(path) => path.to_string_lossy().to_string(),
+                Err(reason) => return ToolOutcome::Error(format!("Grep: {reason}")),
+            }
+        }
+        // 缺省在当前工作区搜索：`cwd` 也要经视图映射，否则隔离对话搜的是磁盘
+        None => match ctx.io_path(std::path::Path::new(&ctx.cwd)) {
+            Ok(path) => path.to_string_lossy().to_string(),
+            Err(reason) => return ToolOutcome::Error(format!("Grep: {reason}")),
+        },
+    };
     // 缺省 files_with_matches
     let mode = input_str(input, "output_mode").unwrap_or_else(|| "files_with_matches".to_string());
     let case_insensitive = input_bool(input, "-i").unwrap_or(false);
@@ -4664,9 +4739,21 @@ fn run_glob(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(pattern) = input_str(input, "pattern").filter(|value| !value.is_empty()) else {
         return ToolOutcome::Error("pattern is required and must be a string".to_string());
     };
-    let mut search_dir = input_str(input, "path")
-        .map(|path| expand_path(&ctx.cwd, &path).to_string_lossy().to_string())
-        .unwrap_or_else(|| ctx.cwd.clone());
+    // 搜索目录经视图映射：隔离对话的基线来自磁盘、改动在上层，只看磁盘会漏掉
+    // 本对话刚写出的文件（`docs/architecture/principles.md` 铁律 4.4）。
+    let mut search_dir = match input_str(input, "path") {
+        Some(path) => {
+            let real = expand_path(&ctx.cwd, &path);
+            match ctx.io_path(&real) {
+                Ok(path) => path.to_string_lossy().to_string(),
+                Err(reason) => return ToolOutcome::Error(format!("Glob: {reason}")),
+            }
+        }
+        None => match ctx.io_path(std::path::Path::new(&ctx.cwd)) {
+            Ok(path) => path.to_string_lossy().to_string(),
+            Err(reason) => return ToolOutcome::Error(format!("Glob: {reason}")),
+        },
+    };
     let mut search_pattern = pattern.clone();
     if is_absolute_like_node(&pattern) {
         let (base, relative) = extract_glob_base_directory(&pattern);
