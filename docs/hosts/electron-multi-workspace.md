@@ -256,12 +256,12 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 新对话按钮在活动工作目录下创建对话。
 - 底部文件浏览器分区（US-42 / US-43）：条目悬停显示修改时间、三种互斥的浏览模式与
   工具改动自动刷新（US-61 / US-62 / US-63）。模式是 `'tree' | 'doc' | 'changes'` 判别
-  联合（不写成两个布尔），按工作区记忆在 `localStorage` 的 `filesMode` 键里
-  （旧 `filesDocView` 布尔表只读兼容、不再写入）：
+  联合（不写成两个布尔），按工作区记忆在 `localStorage` 的 `filesMode` 键里（旧布尔表
+  只读兼容、不再写入）：
   - 目录树（默认）：懒加载全量目录，展开状态独立保存；
   - 文档视图：`git diff --numstat -M HEAD -- '*.md' '*.markdown'` + 未跟踪，行数徽标；
   - 全部变更：同一套取数与解析，pathspec 置空以覆盖全部类型；非 git 工作区返回
-    `not-a-git-workspace` 提示而不是空列表。
+    `not-a-git-workspace` 提示而不是空列表。三态由分区底部的分段 switch 选择（单选框语义，口径见 [host-matrix 第 6 节](host-matrix.md#6-宿主固有差异有意保留)）。
   两个变更视图共用同一套失效推送（reasons 同时带 `doc` / `changes`，渲染层按当前模式各取所需），
   触发源是 git 哨兵与工具旁路两条（口径见 [US-61](../features/user-stories/desktop.md#us-61-工具改动自动刷新文件树与变更视图)）。
   数据走 Electron 私有 IPC（`sidebar:files-list` / `sidebar:files-doc-list`（带 `scope`）/

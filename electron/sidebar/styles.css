@@ -541,6 +541,7 @@ body.sidebar-resizing { cursor: col-resize; }
 .files-section.expanded { flex: 0 0 50%; min-height: 0; }
 .files-section.expanded .files-body {
   display: block;
+  /* flex: 1 = 1 1 0%：列表以「剩余空间」为基准收缩，底下的分段 switch 行不被顶出 */
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -594,24 +595,53 @@ body.sidebar-resizing { cursor: col-resize; }
 }
 .files-section.expanded .files-refresh { display: flex; }
 .files-refresh:hover { background: rgba(255, 255, 255, 0.12); color: #e4e4e7; }
-/* 文档视图开关（specs/030）：与刷新按钮同款，仅在展开后出现；激活态高亮 */
-.files-doc-toggle {
+/* ── 浏览模式分段 switch（US-63）──
+   常驻分区底部（列表之下、分区之外不滚动）：列表先收缩，底栏固定占一行。
+   三段等宽定宽（--files-mode-seg-w），选中只换颜色 / 底色——切模式不会让
+   switch 或文字宽度跳动；整块在底栏内水平居中。 */
+.files-mode-row {
   display: none;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-right: 2px;
+  padding: 5px 8px;
+  border-top: 1px solid #26262c;
+}
+.files-section.expanded .files-mode-row { display: flex; }
+.files-mode-switch {
+  display: flex;
+  align-items: stretch;
+  /* 三段定宽：容纳「差异 / 文档」两个汉字 + 左右内边距，足够任何一段的高亮块 */
+  --files-mode-seg-w: 52px;
+  height: 22px;
+  padding: 1px;
+  box-sizing: border-box;
+  border: 1px solid #2e2e36;
+  border-radius: 5px;
+  background: #1f1f25;
+}
+.files-mode-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 var(--files-mode-seg-w);
+  min-width: 0;
+  padding: 0 4px;
   border: none;
+  border-radius: 3px;
   background: transparent;
   color: #a1a1aa;
-  border-radius: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  padding: 0;
+  transition: color 0.12s ease, background-color 0.12s ease;
 }
-.files-section.expanded .files-doc-toggle { display: flex; }
-.files-doc-toggle:hover { background: rgba(255, 255, 255, 0.12); color: #e4e4e7; }
-.files-doc-toggle.active { color: #7dd3fc; background: rgba(125, 211, 252, 0.14); }
+.files-mode-seg:hover { color: #e4e4e7; }
+/* 选中态：只换颜色与底色，不加粗（字重会改字宽，切换时肉眼可见跳动） */
+.files-mode-seg[aria-checked="true"] { color: #7dd3fc; background: rgba(125, 211, 252, 0.14); }
+.files-mode-seg:focus-visible { outline: 1px solid #6366f1; outline-offset: -1px; }
 /* 文档视图行尾的增删行数徽标（仅 git 口径显示；行是 flex 布局，margin-left:auto 顶到右缘） */
 .doc-count {
   margin-left: auto;
@@ -736,6 +766,12 @@ body.sidebar-resizing { cursor: col-resize; }
   .files-chevron { color: #71717a; }
   .files-refresh { color: #71717a; }
   .files-refresh:hover { background: rgba(0, 0, 0, 0.06); color: #18181b; }
+
+  .files-mode-row { border-top-color: #e4e4e7; }
+  .files-mode-switch { background: #ececf0; border-color: #e4e4e7; }
+  .files-mode-seg { color: #71717a; }
+  .files-mode-seg:hover { color: #18181b; }
+  .files-mode-seg[aria-checked="true"] { color: #0369a1; background: rgba(3, 105, 161, 0.12); }
 
   .file-row:hover { background: #f4f4f5; }
   /* #d4d5fd = rgba(99,102,241,0.18) 叠在浅灰侧栏上，与深色同一 indigo 透明度 */
