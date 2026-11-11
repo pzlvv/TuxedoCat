@@ -196,6 +196,73 @@ test('US-16 置顶条只铺内容区：不盖滚动条槽、无延伸层', async
   expect(Math.abs(edges.pinnedRight - edges.contentRight)).toBeLessThanOrEqual(1.5);
 });
 
+/**
+ * US-17 验收 2（specs/048）：多次压缩后逐层展开——N 次压缩对应 N 次点击，
+ * 每点一次在已显示内容之前补入更早一代，全部展开后按钮消失。
+ */
+test('US-17 压缩历史逐层展开：三次点击展开三代，末次后按钮消失', async () => {
+  const { page, host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+
+  // 会话加载：有归档，消息区是压缩后形态（最新一代摘要 + 保留区）
+  await host.setConversations([{
+    sessionId,
+    title: '压缩过三次的会话',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messageCount: 3,
+    hasCompactArchive: true,
+    messages: [
+      { type: 'user', uuid: 'sum-c', parentUuid: null, timestamp: Date.now(), isCompactSummary: true, message: { role: 'user', content: '摘要 C' } },
+      { type: 'user', uuid: 'r-1', parentUuid: 'sum-c', timestamp: Date.now(), message: { role: 'user', content: '保留区' } },
+    ],
+  }]);
+  await page.locator('button[title="对话历史"]').click();
+  const historyDropdown = page.locator('.conversation-dropdown');
+  await expect(historyDropdown.getByText('压缩过三次的会话')).toBeVisible();
+  await historyDropdown.getByText('压缩过三次的会话').click();
+  await expect(page.getByText('摘要 C', { exact: false })).toBeVisible({ timeout: 10_000 });
+
+  const expandButton = page.getByRole('button', { name: '展开压缩的对话历史' });
+  await expect(expandButton).toBeVisible();
+
+  // 三代归档的完整序列：各代原文 + 各代摘要，最后接保留区。分界落在上一代摘要上。
+  await host.setExpandedMessages([
+    { role: 'user', content: '第一代原文' },
+    { role: 'user', content: '摘要 A', isCompactSummary: true },
+    { role: 'user', content: '第二代原文' },
+    { role: 'user', content: '摘要 B', isCompactSummary: true },
+    { role: 'user', content: '第三代原文' },
+    { role: 'user', content: '摘要 C', isCompactSummary: true },
+    { role: 'user', content: '保留区' },
+  ], [0, 1, 3]);
+
+  // 第 1 次点击：只展开最新一代——更早的两代都还看不到
+  await expandButton.click();
+  await expect(page.getByText('第三代原文', { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('第一代原文', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('第二代原文', { exact: false })).toHaveCount(0);
+  await expect(expandButton).toBeVisible();
+
+  // 第 2 次点击：再多一代（不重新向宿主索取归档）
+  const expandRequests = (await host.sentAll()).filter((m) => m.type === 'expandCompact').length;
+  await expandButton.click();
+  await expect(page.getByText('第二代原文', { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('第一代原文', { exact: false })).toHaveCount(0);
+  // 断言消息走 expect 的第二参：Playwright 的 toBe 只收一个参数，写成
+  // toBe(value, message) 是 TS2554（check-types:e2e 拦下）
+  expect(
+    (await host.sentAll()).filter((m) => m.type === 'expandCompact').length,
+    '后续层用已取到的缓存，不再读盘',
+  ).toBe(expandRequests);
+
+  // 第 3 次点击：全部展开，按钮消失
+  await expandButton.click();
+  await expect(page.getByText('第一代原文', { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('button', { name: '展开压缩的对话历史' })).toHaveCount(0);
+});
+
 test('US-50 WebSearch / WebFetch 工具卡片渲染查询词与 URL', async () => {
   const { page, host } = handle;
   const started = await host.waitForSent('startNewConversation');

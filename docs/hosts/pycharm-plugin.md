@@ -128,5 +128,6 @@ fixture 测试锁定）。
 - `fetchProviderModels` 的协议探测按端点状态码分类（OpenAI / Anthropic / Responses），
   与 `shared/llm/apiTypes` 判定精神一致但未逐字段对齐——探测只服务面板默认值，不影响
   core 链路（有意的 v1 简化，注释留痕）。
-- `expandCompactDone` 的归档展开回包 v1 只带完成信号（紧凑 diff 的按需拉取走
-  `requestToolMeta`）；归档展开的完整回填面待后续 spec。
+- `expandCompactDone` 的归档展开回包 v1 只带完成信号（`messages` / `generationStarts`
+  恒为空数组，紧凑 diff 的按需拉取走 `requestToolMeta`）——webview 收到空载荷时保持可见
+  集合与展开层级、按钮保留；归档展开的完整回填面待后续 spec。

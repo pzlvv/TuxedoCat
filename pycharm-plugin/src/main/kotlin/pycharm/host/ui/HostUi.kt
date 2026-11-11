@@ -476,7 +476,10 @@ class HostUi(
                 ) { result -> buildJsonObject {
                     put("type", "expandCompactDone")
                     put("sessionId", str(message, "sessionId"))
-                    // 应答直接是 Message[] | null（coreFacts.ts: requestCompactArchive）
+                    // v1 只带完成信号：空载荷 = 取不到归档，webview 保持可见集合与展开层级、
+                    // 按钮保留（docs/hosts/pycharm-plugin.md 第 6 节）。
+                    put("messages", JsonArray(emptyList()))
+                    put("generationStarts", JsonArray(emptyList()))
                     if (result != null && result !is kotlinx.serialization.json.JsonNull) {
                         put("_expandPayload", result)
                     }

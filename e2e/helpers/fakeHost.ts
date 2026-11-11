@@ -48,8 +48,9 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     turn: { thinking: '', text: '', chunkDelayMs: 40, usage: null },
     // 界面语言（saveLLMConfig 后更新并随 llmConfigSaved 回传，驱动 US-41 立即生效）
     language: 'zh',
-    // expandCompact 的应答数据：整批替换后的消息（压缩历史展开场景）
+    // expandCompact 的应答数据：完整展开序列 + 每代起始下标（压缩历史逐层展开场景）
     expandedMessages: [],
+    expandedGenerationStarts: [],
     // 非空时，loadConversation 应答（conversationLoaded）之后**同批**补发一条
     // messagesReplaced：模拟「替换与加载落在同一帧窗口」——webview 的 rAF 必然晚于
     // 同一批 wire 消息处理，用来确定性复现加载窗口内的整批替换竞态
@@ -401,9 +402,14 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         break;
       }
       case 'expandCompact': {
-        // 压缩历史展开：宿主读归档后整批替换消息，再回展开完成（隐藏展开按钮）
-        send({ type: 'messagesReplaced', sessionId: msg.sessionId, messages: state.expandedMessages });
-        send({ type: 'expandCompactDone', sessionId: msg.sessionId });
+        // 压缩历史逐层展开：宿主把完整序列与每代起始下标一次交给 webview，
+        // 展开到第几层由 webview 自己决定（docs/features/compaction.md FR-005）
+        send({
+          type: 'expandCompactDone',
+          sessionId: msg.sessionId,
+          messages: state.expandedMessages,
+          generationStarts: state.expandedGenerationStarts,
+        });
         break;
       }
       default:
@@ -506,11 +512,20 @@ export class FakeHostDriver {
     );
   }
 
-  /** 改写 expandCompact 应答的整批消息（压缩历史展开场景） */
-  async setExpandedMessages(messages: Array<Record<string, unknown>>): Promise<void> {
+  /**
+   * 改写 expandCompact 应答的完整展开序列（压缩历史逐层展开场景）。
+   * 只给序列不给分界时按「单代」处理（起点 0），等价于改动前的一次点击。
+   */
+  async setExpandedMessages(
+    messages: Array<Record<string, unknown>>,
+    generationStarts: number[] = [0],
+  ): Promise<void> {
     await this.page.evaluate(
-      (list) => { (window as any).__fakeHost.state.expandedMessages = list; },
-      messages,
+      (payload: { messages: Array<Record<string, unknown>>; starts: number[] }) => {
+        (window as any).__fakeHost.state.expandedMessages = payload.messages;
+        (window as any).__fakeHost.state.expandedGenerationStarts = payload.starts;
+      },
+      { messages, starts: generationStarts },
     );
   }
 

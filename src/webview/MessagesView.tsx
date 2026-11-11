@@ -1689,11 +1689,12 @@ interface MessagesViewProps {
   forceScrollKey?: number;
   /** 流式渲染版本号：每次 streaming content 变化时递增，用于重建 segments 但维持 key 稳定 */
   streamingVersion?: number;
-  /** 是否存在压缩归档（显示"展开"按钮） */
-  hasCompactArchive?: boolean;
-  /** 压缩是否已展开 */
-  isCompactExpanded?: boolean;
-  /** 展开压缩回调 */
+  /**
+   * 「展开压缩的对话历史」按钮是否可见（还需要有没展开的代次，
+   * 判定在 `compactExpand.ts` 的 `canExpandCompact`）。
+   */
+  canExpandCompact?: boolean;
+  /** 展开压缩回调：每次点击加深一层 */
   onExpandCompact?: () => void;
   onNavigate?: (sessionId: string, workspaceId?: string | null) => void;
   /**
@@ -2027,8 +2028,7 @@ const MessagesView = memo(({
   colors,
   forceScrollKey,
   streamingVersion,
-  hasCompactArchive,
-  isCompactExpanded,
+  canExpandCompact,
   onExpandCompact,
   onNavigate,
   onRetryQuery,
@@ -2803,7 +2803,7 @@ const MessagesView = memo(({
           )}
 
           {/* Expand compact button */}
-          {hasCompactArchive && !isCompactExpanded && onExpandCompact && (
+          {canExpandCompact && onExpandCompact && (
             <div key="expand-compact" className="mb-4 flex justify-center">
               <button
                 onClick={() => {

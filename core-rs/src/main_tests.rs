@@ -2353,3 +2353,134 @@ fn work_view_files_request_reports_missing_arguments_and_unmounted_view() {
         "失败侧必须带非空 error：{response:?}"
     );
 }
+
+/// specs/048 FR-002：两代归档合并成一整条展开序列，并按代次给出下钻分界。
+#[test]
+fn compact_archive_display_merges_generations_with_start_indexes() {
+    let sandbox = Sandbox::new("main-archive-generations");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+
+    let user = |text: &str, uuid: &str| {
+        json!({
+            "type": "user",
+            "message": { "role": "user", "content": text },
+            "uuid": uuid,
+            "timestamp": 0u64,
+        })
+    };
+    let summary = |text: &str, uuid: &str| {
+        json!({
+            "type": "user",
+            "message": { "role": "user", "content": text },
+            "uuid": uuid,
+            "timestamp": 0u64,
+            "isCompactSummary": true,
+        })
+    };
+
+    // 第 1 代：两条原文 + 摘要 A
+    let summary_a = summary("摘要 A", "s-a");
+    let mut generation_one = vec![user("原文 1", "g1-1"), user("原文 2", "g1-2")];
+    generation_one.push(summary_a.clone());
+    history::append_compact_archive("s1", &project, &generation_one).unwrap();
+
+    // 第 2 代：上代摘要（归档区第一条）+ 一条原文 + 摘要 B
+    let generation_two = vec![
+        summary_a.clone(),
+        user("原文 3", "g2-1"),
+        summary("摘要 B", "s-b"),
+    ];
+    history::append_compact_archive("s1", &project, &generation_two).unwrap();
+
+    // 主 JSONL = [边界, 摘要 B, ...保留区]
+    history::replace_messages(
+        "s1",
+        &project,
+        &[
+            json!({ "type": "system", "subtype": "compact_boundary", "content": "b", "uuid": "b-1", "timestamp": 0u64 }),
+            summary_a.clone(),
+            summary("摘要 B", "s-b"),
+            user("保留区", "r-1"),
+        ],
+    )
+    .unwrap();
+
+    let display = compact_archive_display("s1");
+    let messages = display["messages"].as_array().unwrap();
+    let contents: Vec<&str> = messages
+        .iter()
+        .map(|message| message["message"]["content"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        contents,
+        vec!["原文 1", "原文 2", "摘要 A", "原文 3", "摘要 B", "保留区"],
+        "上代摘要只出现一次，两代按顺序铺开"
+    );
+    assert_eq!(
+        display["generationStarts"],
+        json!([0, 2]),
+        "第 1 代从 0 起；第 2 代从它的第一条（上代摘要 A）起——展开一层看到的是第 2 代 + 保留区"
+    );
+}
+
+/// specs/048 FR-004：旧格式归档（无摘要、无代次）读作第 1 代，主 JSONL 的摘要补在保留区之前。
+#[test]
+fn compact_archive_display_backfills_legacy_archives() {
+    let sandbox = Sandbox::new("main-archive-legacy");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation(
+        "s1",
+        &project,
+        json!({ "sessionId": "s1", "project": project, "title": "t" }),
+    )
+    .unwrap();
+    let path = history::compact_archive_path("s1", &project).unwrap();
+    let user = |text: &str, uuid: &str| {
+        json!({
+            "type": "user",
+            "message": { "role": "user", "content": text },
+            "uuid": uuid,
+            "timestamp": 0u64,
+        })
+    };
+    // 旧格式：无 compactGeneration、无摘要
+    let legacy = json!({
+        "uuid": "g1-1",
+        "parentUuid": Value::Null,
+        "timestamp": 0u64,
+        "message": user("旧格式原文", "g1-1"),
+    });
+    std::fs::write(&path, format!("{legacy}\n")).unwrap();
+    history::replace_messages(
+        "s1",
+        &project,
+        &[
+            json!({ "type": "system", "subtype": "compact_boundary", "content": "b", "uuid": "b-1", "timestamp": 0u64 }),
+            json!({
+                "type": "user",
+                "message": { "role": "user", "content": "本次摘要" },
+                "uuid": "s-1",
+                "timestamp": 0u64,
+                "isCompactSummary": true,
+            }),
+            user("保留区", "r-1"),
+        ],
+    )
+    .unwrap();
+
+    let display = compact_archive_display("s1");
+    let contents: Vec<&str> = display["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["message"]["content"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(contents, vec!["旧格式原文", "本次摘要", "保留区"]);
+    assert_eq!(display["generationStarts"], json!([0]), "旧归档算一代");
+}

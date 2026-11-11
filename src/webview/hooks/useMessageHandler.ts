@@ -11,6 +11,7 @@ import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolSta
 import { handleConversationRewoundDone, handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
+import type { CompactArchiveView } from '../compactExpand';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
 
 // Profiling helper
@@ -40,7 +41,10 @@ export interface UseMessageHandlerProps {
   setAnimationMode: (v: 'thinking' | 'compacting') => void;
   setHasActiveQuery: (v: boolean) => void;
   setHasCompactArchive: (v: boolean) => void;
-  setIsCompactExpanded: (v: boolean) => void;
+  /** 展开数据缓存（各代 + 保留区的完整显示序列与每代起始下标） */
+  setCompactArchiveView: (v: CompactArchiveView | null) => void;
+  /** 已展开几代（0 = 压缩后形态） */
+  setCompactExpandDepth: (v: number) => void;
   setConversations: React.Dispatch<React.SetStateAction<any[]>>;
   setConversationsLoading: (v: boolean) => void;
   /** 插件模式对话列表当前可见条数（滚动到底时追加一页） */

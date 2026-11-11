@@ -13,6 +13,7 @@ import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
 import { RewindConfirmDialog } from './components/RewindConfirmDialog';
 import { rewindPreview as computeRewindPreview } from './rewindTimeline';
+import { canExpandCompact as shouldShowCompactExpand, compactVisibleMessages, type CompactArchiveView } from './compactExpand';
 import { postMessage, getHasWorkspace, getInjectedSessionId, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
 import { getPlaceholderLogoUri, rotatePlaceholderLogo } from './placeholderLogo';
 import { DecorativeLogo } from './DecorativeLogo';
@@ -167,9 +168,16 @@ const App = () => {
   const [balance, setBalance] = useState<number | undefined>(undefined);
   const [balanceCurrency, setBalanceCurrency] = useState<string | undefined>(undefined);
   const [isUnlimited, setIsUnlimited] = useState<boolean | undefined>(undefined);
-  // 压缩展开状态
+  // 压缩展开状态（docs/features/compaction.md FR-005）
+  /** 会话是否有压缩归档（`conversationLoaded` / `compactEnd` 的事实投影） */
   const [hasCompactArchive, setHasCompactArchive] = useState(false);
-  const [isCompactExpanded, setIsCompactExpanded] = useState(false);
+  /**
+   * 展开数据缓存：宿主一次给出「全部代次 + 保留区」的完整序列与每代起始下标。
+   * 首次点击才请求，之后每点一次都在本地加深一层（不重复读盘）。
+   */
+  const [compactArchiveView, setCompactArchiveView] = useState<CompactArchiveView | null>(null);
+  /** 已展开几代（0 = 压缩后形态） */
+  const [compactExpandDepth, setCompactExpandDepth] = useState(0);
   // 会话工作模式（core `workModeChanged` / conversationLoaded 载荷的事实投影）：
   // spin = 主输入框禁用（specs/016 FR-004）；新对话与加载会话时随载荷重置。
   const [workMode, setWorkMode] = useState<'normal' | 'spin'>('normal');
@@ -591,7 +599,8 @@ const App = () => {
 
   const handlerProps = useMemo(() => ({
     setMessages, setShowThinkingAnimation, setAnimationMode, setHasActiveQuery,
-    setHasCompactArchive, setIsCompactExpanded, setConversations, setConversationsLoading,
+    setHasCompactArchive, setCompactArchiveView, setCompactExpandDepth,
+    setConversations, setConversationsLoading,
     setVisibleConversationCount, finishConversationLoad, resetConversationLoad,
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
@@ -636,14 +645,15 @@ const App = () => {
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode, setPromptMode,
-    modelRef, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
+    modelRef, webSearch, settingsDefaults,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
     setCurrentFile, setSelectedLines, setFileHidden, setConversations,
     setConversationsLoading, setConversationDropdownOpen, setConversationTitle,
     setCurrentSessionId, setParentSessionId, setCreator, setSubAgentRole, setHasActiveQuery, setContextLength,
     setMaxContextTokens, setAgentMode, setThinkingMode,
-    setModelRef, setWebSearch, setHasCompactArchive, setIsCompactExpanded, setQueuedMessage,
+    setModelRef, setWebSearch, setHasCompactArchive, setCompactArchiveView, setCompactExpandDepth,
+    setQueuedMessage,
     setDeleteConfirm, setMessages, setUserChoiceRequest, setForceScrollKey,
     setShowThinkingAnimation, setExpandedSubSessions, setNamingSessions,
     currentSessionIdRef, sessionStates, commandHistoryRef, cursorPositionRef,
@@ -658,7 +668,7 @@ const App = () => {
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
     promptMode,
-    modelRef, webSearch, settingsDefaults, hasCompactArchive, isCompactExpanded,
+    modelRef, webSearch, settingsDefaults,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
     sessionIdleVersion,
@@ -797,7 +807,8 @@ const App = () => {
     setContextLength(0);
     // 重置压缩状态（新对话没有压缩）
     setHasCompactArchive(false);
-    setIsCompactExpanded(false);
+    setCompactArchiveView(null);
+    setCompactExpandDepth(0);
     // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）。
     // settingsDefaults 尚未就绪（undefined）时保留当前值，不写入兜底默认值。
     const nextAgentMode = settingsDefaults.agentMode ?? agentMode;
@@ -919,15 +930,21 @@ const App = () => {
   // MessagesView 的回调保持引用稳定，避免 App 其他状态变化导致
   // MessagesView 默认 memo 比较失效而整体重渲染。
   const handleExpandCompact = useCallback(() => {
-    const sid = currentSessionIdRef.current;
-    if (sid && hasCompactArchive && !isCompactExpanded) {
-      setIsCompactExpanded(true);
-      postMessage({
-        type: 'expandCompact',
-        sessionId: sid,
-      });
+    // 已缓存完整序列：本地再加深一层（不读盘、不发请求）
+    if (compactArchiveView) {
+      const next = compactVisibleMessages<Message>(compactArchiveView, compactExpandDepth + 1);
+      if (next) {
+        setCompactExpandDepth(compactExpandDepth + 1);
+        setMessages(next);
+      }
+      return;
     }
-  }, [hasCompactArchive, isCompactExpanded]);
+    // 首次展开：向宿主索取完整序列，`expandCompactDone` 到达后铺第一层
+    const sid = currentSessionIdRef.current;
+    if (sid) {
+      postMessage({ type: 'expandCompact', sessionId: sid });
+    }
+  }, [compactArchiveView, compactExpandDepth]);
 
   // 失败 once 通知的「重试」（specs/036 FR-003 / FR-004）：本地立即剥除本视图的
   // once 节点（UI 决定表现，不等 core 回声；再次失败时新 once 替换），再上报宿主
@@ -1487,8 +1504,7 @@ onClick={handleNewConversation}
           colors={colors}
           forceScrollKey={forceScrollKey}
           streamingVersion={streamingVersion}
-          hasCompactArchive={hasCompactArchive}
-          isCompactExpanded={isCompactExpanded}
+          canExpandCompact={shouldShowCompactExpand(hasCompactArchive, compactExpandDepth, compactArchiveView)}
           onExpandCompact={handleExpandCompact}
           onNavigate={navigateToSession}
           onRetryQuery={handleRetryQuery}

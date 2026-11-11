@@ -143,7 +143,9 @@ UI 侧提前弹框会造成双重确认。
 
 **留在模块内的两处例外**：
 
-- `handleExpandCompact`：只读归档文件并把消息重放给 webview，不改 core 状态（纯显示）。
+- `handleExpandCompact`：只读归档文件，按 `generationStarts` 分段转换成显示消息后随
+  `expandCompactDone` 一次交给 webview，不改 core 状态（纯显示）。展开到第几层由 webview
+  决定——宿主不持有展开层级（多视图下会互相串味，也违反「UI 决定表现」）。
 - `handleSaveLLMConfig`：`settings.json` 的写经 `host.updateSettingsJson`（core 只读不写，
   见 [docs/architecture/contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)），其余仍是「组装 mutator + 回推协议消息」。
 

@@ -1619,38 +1619,58 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 展开压缩归档：把「归档消息 + 当前未压缩部分」整批替换 webview 的显示。
+   * 展开压缩归档：把「各代归档 + 当前未压缩部分」合并成的完整序列交给 webview，
+   * 展开到第几层由 webview 决定（它按层级取这条序列的尾部）。
    *
-   * Standalone 下归档与主 JSONL 都在 Core 侧，合并口径也在 Core 侧实现
-   * （`compact_archive_display`），宿主只负责转换与下发。
+   * Standalone 下归档与主 JSONL 都在 Core 侧，合并与去重口径也在 Core 侧实现
+   * （`compact_archive_display`）；宿主只做「持久化消息 → 显示消息」的转换。
+   *
+   * 转换必须**按代分段**：`buildReplayMessageData` 会丢掉压缩边界、空消息与纯
+   * `tool_result` 的 user 消息，整体转换后 Core 给的下标会错位。按段转换再累加长度，
+   * 段边界不受段内丢条影响（`docs/features/compaction.md` FR-005）。
    */
   private async handleExpandCompact(message: Extract<WebviewToHostMessage, { type: 'expandCompact' }>): Promise<void> {
     this.log(`[WebviewMessageHandler] expandCompact requested: ${message.sessionId}`);
     try {
-      const messagesToDisplay = await requestCompactArchive(message.sessionId);
-      if (!messagesToDisplay || messagesToDisplay.length === 0) {
+      const display = await requestCompactArchive(message.sessionId);
+      if (!display || display.messages.length === 0) {
         this.log(`[WebviewMessageHandler] No compact archive found for ${message.sessionId}`);
+        // 空载荷 = 取不到归档：webview 据此保持可见集合与展开层级不变，按钮保留
+        this.host.sendToWebview({
+          type: 'expandCompactDone',
+          sessionId: message.sessionId,
+          messages: [],
+          generationStarts: [],
+        });
         return;
       }
-      this.log(
-        `[WebviewMessageHandler] Expanding compact: ${messagesToDisplay.length} messages`,
-      );
 
-      // 整批替换 webview 当前显示：转换逻辑与 core 的压缩后重建共用同一个纯函数
-      // （`buildReplayMessageData`），不再在这里复制一份裁剪 / diffHunks 逻辑。
-      this.host.sendToWebview({
-        type: 'messagesReplaced',
-        sessionId: message.sessionId,
-        messages: buildReplayMessageData(messagesToDisplay),
+      const { messages, generationStarts } = display;
+      // 第 1 代起点固定为 0；其余分界原样保留（相邻两代可能落在同一下标：某代只含
+      // 已被去重的上代摘要时，该层可见集合不变但层级计数照常推进）
+      const bounds = generationStarts.map((start, index) => (index === 0 ? 0 : start));
+      const converted = bounds.map((start, index) => {
+        const end = index + 1 < bounds.length ? bounds[index + 1] : messages.length;
+        return buildReplayMessageData(messages.slice(start, end));
       });
+      const convertedStarts: number[] = [];
+      let offset = 0;
+      for (const segment of converted) {
+        convertedStarts.push(offset);
+        offset += segment.length;
+      }
 
-      // 通知 webview 展开完成（删除展开按钮）
+      this.log(
+        `[WebviewMessageHandler] Expanding compact: ${messages.length} messages / ${generationStarts.length} generations`,
+      );
       this.host.sendToWebview({
         type: 'expandCompactDone',
         sessionId: message.sessionId,
+        messages: converted.flat(),
+        generationStarts: convertedStarts,
       });
 
-      this.log(`[WebviewMessageHandler] Compact expanded for ${message.sessionId}: messages displayed from archive`);
+      this.log(`[WebviewMessageHandler] Compact archive sent for ${message.sessionId}`);
     } catch (err) {
       this.log(`[WebviewMessageHandler] Failed to expand compact for ${message.sessionId}: ${err}`);
     }

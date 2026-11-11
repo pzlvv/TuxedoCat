@@ -1364,3 +1364,95 @@ fn storage_of_session_defaults_to_workspace_when_absent() {
     assert_eq!(storage_of_session("s1"), WorkViewStorage::Workspace);
     assert_eq!(storage_of_session("missing"), WorkViewStorage::Workspace);
 }
+
+#[test]
+fn compact_archive_appends_generations_instead_of_overwriting() {
+    // 归档只增不改（specs/048 FR-001）：第二次压缩把第 2 代追加在末尾，
+    // 第 1 代的记录逐字节保留。
+    let _sandbox = Sandbox::new("history-archive-generations");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
+    let path = compact_archive_path("s1", PROJECT).unwrap();
+
+    let first_generation = vec![
+        user_message("第一代 1", "g1-a"),
+        user_message("第一代 2", "g1-b"),
+    ];
+    let generation = append_compact_archive("s1", PROJECT, &first_generation).unwrap();
+    assert_eq!(generation, 1, "首次压缩是第 1 代");
+    let after_first = std::fs::read_to_string(&path).unwrap();
+
+    let second_generation = vec![user_message("第二代 1", "g2-a")];
+    let generation = append_compact_archive("s1", PROJECT, &second_generation).unwrap();
+    assert_eq!(generation, 2, "代次 = 既有最大代次 + 1");
+
+    let after_second = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        after_second.starts_with(&after_first),
+        "第 1 代记录必须逐字节不变：{after_second}"
+    );
+
+    let records = load_compact_archive_records("s1", PROJECT);
+    assert_eq!(records.len(), 3, "两代记录都在");
+    assert_eq!(
+        records.iter().map(|r| r.generation).collect::<Vec<_>>(),
+        vec![1, 1, 2]
+    );
+    assert_eq!(records[2].message["message"]["content"], "第二代 1");
+}
+
+#[test]
+fn compact_archive_records_without_generation_read_as_the_first() {
+    // 旧格式（改动前写下的归档）没有 `compactGeneration`：按第 1 代读，
+    // 且升级后第一次压缩紧接着排第 2 代——不迁移、不改写旧行。
+    let _sandbox = Sandbox::new("history-archive-legacy");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
+    let path = compact_archive_path("s1", PROJECT).unwrap();
+    let legacy = json!({
+        "uuid": "legacy-1",
+        "parentUuid": Value::Null,
+        "timestamp": 1u64,
+        "message": user_message("旧格式原文", "legacy-1"),
+    });
+    std::fs::write(&path, format!("{legacy}\n")).unwrap();
+
+    let records = load_compact_archive_records("s1", PROJECT);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].generation, 1);
+
+    let generation =
+        append_compact_archive("s1", PROJECT, &[user_message("升级后第一条", "g2-a")]).unwrap();
+    assert_eq!(generation, 2, "旧格式占用第 1 代");
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let first_line = text.lines().next().unwrap();
+    assert_eq!(
+        first_line,
+        serde_json::to_string(&legacy).unwrap(),
+        "旧行不被重写"
+    );
+}
+
+#[test]
+fn compact_archive_skips_half_written_lines() {
+    // 进程在写一半时崩溃留下的半行不能毁掉整份归档，也不阻塞下一次追加。
+    let _sandbox = Sandbox::new("history-archive-truncated");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
+    let path = compact_archive_path("s1", PROJECT).unwrap();
+    append_compact_archive("s1", PROJECT, &[user_message("完整一条", "g1-a")]).unwrap();
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{{\"uuid\":\"half\"").unwrap();
+    }
+
+    let records = load_compact_archive_records("s1", PROJECT);
+    assert_eq!(records.len(), 1, "坏行跳过，完整行照常读出");
+    assert_eq!(records[0].message["message"]["content"], "完整一条");
+
+    let generation =
+        append_compact_archive("s1", PROJECT, &[user_message("下一次压缩", "g2-a")]).unwrap();
+    assert_eq!(generation, 2);
+}

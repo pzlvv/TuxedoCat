@@ -456,8 +456,12 @@ export function handleStreamCompressProgress(
             props.setAnimationMode('thinking');
             // 恢复压缩前的查询状态（自动压缩仍在查询中时保持 true，手动压缩恢复 false）
             props.setHasActiveQuery(restoredActiveQuery ?? false);
-            // 只有压缩成功才写出了归档文件，此时才显示「展开压缩」按钮
+            // 只有压缩成功才写出了归档文件，此时才显示「展开压缩」按钮。
+            // 新一轮压缩让旧的展开缓存失效：层级归零，按钮回到初始态
+            // （docs/features/compaction.md FR-005，specs/048 AC-7）。
             props.setHasCompactArchive(true);
+            props.setCompactArchiveView(null);
+            props.setCompactExpandDepth(0);
             // 刷新 token 使用量显示为压缩后的值
             if (msg.postCompactTokenCount !== undefined) {
               props.setContextLength(msg.postCompactTokenCount);

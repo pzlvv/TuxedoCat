@@ -9,6 +9,7 @@ import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
 import { buildConversationTitle } from '../../shared/utils/contentBlocks';
 import type { ModelRef } from '../../shared/llm/modelRef';
 import { t } from '../i18n';
+import type { CompactArchiveView } from '../compactExpand';
 
 const profileTag = '[Profile]';
 
@@ -37,8 +38,6 @@ export interface UseAppHandlersProps {
   webSearch: boolean | undefined;
   /** settings.json 中的默认值（新对话一次性使用） */
   settingsDefaults: SettingsDefaults;
-  hasCompactArchive: boolean;
-  isCompactExpanded: boolean;
   queuedMessage: QueuedMessagePayload | null;
   deleteConfirm: { sessionId: string; title: string } | null;
   userChoiceRequest: UserChoiceRequest | null;
@@ -70,7 +69,8 @@ export interface UseAppHandlersProps {
   setWebSearch: (v: boolean | undefined) => void;
   setModelRef: (v: ModelRef | undefined) => void;
   setHasCompactArchive: (v: boolean) => void;
-  setIsCompactExpanded: (v: boolean) => void;
+  setCompactArchiveView: (v: CompactArchiveView | null) => void;
+  setCompactExpandDepth: (v: number) => void;
   setQueuedMessage: (v: QueuedMessagePayload | null) => void;
   setDeleteConfirm: (v: { sessionId: string; title: string } | null) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -347,7 +347,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       }));
       // 重置压缩状态（新对话没有压缩）
       props.setHasCompactArchive(false);
-      props.setIsCompactExpanded(false);
+      props.setCompactArchiveView(null);
+      props.setCompactExpandDepth(0);
     }
 
     const messagePayload: SendMessageWire = {

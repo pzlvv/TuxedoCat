@@ -181,7 +181,7 @@ tui-rs/
 | `toolProgress` | 卡片输出替换（core 已按 4K 上限裁剪，原样转发） |
 | `toolArgsUpdated` | 显式忽略（文件引用 chips 数据面，v1 不渲染） |
 | `aiBegin` / `aiEnd` | thinking 动画开关；aiEnd 触发余额拉取（`balanceRequested`） |
-| `messagesReplaced` | 整批替换消息列表（压缩后重建 / 展开归档） |
+| `messagesReplaced` | 整批替换消息列表（压缩后重建 / 对话级回退截断）。TUI 没有归档展开入口 |
 | `queryBegin` / `queryEnd` | 查询计数去重（嵌套 begin/end 只表现一次）；queryEnd 收敛悬挂流式缓冲 + 刷新列表 |
 | `titleChanged` | 会话标题 |
 | `sessionCreated` | 显式忽略（`initSessionState` 对 TUI 无语义） |

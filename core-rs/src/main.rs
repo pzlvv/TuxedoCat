@@ -709,11 +709,6 @@ fn spin_design_save_payload(session_id: &str, data: &Value) -> Value {
     }
 }
 
-/// 展开压缩归档时要显示的完整消息序列（对齐 `handleExpandCompact` 的合并口径）。
-///
-/// - 没有归档 → `null`（宿主据此提示「没有可展开的内容」）；
-/// - 归档里已带摘要（新格式）→ `归档 + 当前保留区`；
-/// - 归档里没有摘要（旧格式）→ `归档 + 主 JSONL 里的摘要 + 当前保留区`。
 /// specs/032：锁拒绝的占用通知只对「他持 / 版本拒外」发——Io 失败（目录解析 /
 /// 磁盘错误）不是占用，发占用文案会误导；按技术错误原样上报。
 fn lock_rejection_notice(
@@ -762,46 +757,113 @@ fn ensure_space_unlocked(core: &Core, dir_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 展开压缩归档时要显示的完整序列 + 每代的起始下标。
+///
+/// - 没有归档 → `null`（宿主据此判定「没有可展开的内容」）；
+/// - 各代按代次升序拼接，按 `uuid` 去重（上一代末尾的摘要同时是下一代归档区的第一条，
+///   只保留首次出现）→ `{ messages, generationStarts }`；
+/// - 旧格式归档没有摘要 → 把主 JSONL 里的摘要补进来（同样去重），随后追加当前保留区。
+///
+/// `generationStarts[i]` 是第 `i+1` 代**第一条记录**在合并序列里的下标，单调不减。它是
+/// 「下钻一层的分界」，不是严格递增：某一代在归档里只含一条与上一代摘要相同、且被去重
+/// 的消息时，两代分界落在同一下标（展开这一层可见集合不变，但层级计数照常推进）。
 fn compact_archive_display(session_id: &str) -> Value {
     let Some(project) = history::project_of_session(session_id) else {
         return Value::Null;
     };
-    let archived = history::load_compact_archive(session_id, &project);
-    if archived.is_empty() {
+    let records = history::load_compact_archive_records(session_id, &project);
+    if records.is_empty() {
         return Value::Null;
     }
     let is_summary = |message: &Value| {
         message.get("type").and_then(Value::as_str) == Some("user")
             && message.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
     };
-    let summary_count = archived
-        .iter()
-        .filter(|message| is_summary(message))
-        .count();
+
+    // 按代次升序分组（文件顺序已是升序，这里按字段稳定排序兜底加固）
+    let mut ordered: Vec<history::CompactArchiveRecord> = records;
+    ordered.sort_by_key(|record| record.generation);
+    let mut generations: Vec<(u64, Vec<Value>)> = Vec::new();
+    for record in ordered {
+        match generations.last_mut() {
+            Some((generation, bucket)) if *generation == record.generation => {
+                bucket.push(record.message);
+            }
+            _ => generations.push((record.generation, vec![record.message])),
+        }
+    }
+
+    let mut display: Vec<Value> = Vec::new();
+    // uuid → 首次出现的下标；去重与「代次起始点回指上代摘要」共用这张表
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut generation_starts: Vec<usize> = Vec::new();
+    let mut summary_count = 0usize;
+    for (_, messages) in &generations {
+        // 代次分界取本代第一条在去重表里的位置：它就是上一代末尾那条摘要；
+        // 上代没有摘要（旧格式）时不会有命中，取当前末尾即可
+        let first_uuid = messages
+            .first()
+            .and_then(|message| message.get("uuid"))
+            .and_then(Value::as_str);
+        let mut start = first_uuid
+            .and_then(|uuid| seen.get(uuid).copied())
+            .unwrap_or(display.len());
+        // 单调不减：起始下标不得回退到上一层之前
+        if let Some(previous) = generation_starts.last() {
+            start = start.max(*previous);
+        }
+        generation_starts.push(start);
+
+        for message in messages {
+            if is_summary(message) {
+                summary_count += 1;
+            }
+            let uuid = message
+                .get("uuid")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(uuid) = uuid {
+                if seen.contains_key(&uuid) {
+                    continue;
+                }
+                seen.insert(uuid, display.len());
+            }
+            display.push(message.clone());
+        }
+    }
 
     let current = history::load_messages(session_id, &project);
-    let compressed_summaries: Vec<Value> = current
-        .iter()
-        .filter(|message| is_summary(message))
-        .cloned()
-        .collect();
+    // 旧格式归档不含摘要：主 JSONL 里的摘要补在归档之后、保留区之前
+    if summary_count == 0 {
+        for message in current.iter().filter(|message| is_summary(message)) {
+            if let Some(uuid) = message.get("uuid").and_then(Value::as_str) {
+                if seen.contains_key(uuid) {
+                    continue;
+                }
+                seen.insert(uuid.to_string(), display.len());
+            }
+            display.push(message.clone());
+        }
+    }
     // 只保留 user / assistant 且非压缩摘要的消息；`compact_boundary` 是 system 消息，
     // 已被类型条件排除。
-    let retained: Vec<Value> = current
-        .iter()
-        .filter(|message| {
-            let kind = message.get("type").and_then(Value::as_str).unwrap_or("");
-            (kind == "user" || kind == "assistant") && !is_summary(message)
-        })
-        .cloned()
-        .collect();
-
-    let mut display = archived;
-    if summary_count == 0 && !compressed_summaries.is_empty() {
-        display.extend(compressed_summaries);
+    for message in current.iter().filter(|message| {
+        let kind = message.get("type").and_then(Value::as_str).unwrap_or("");
+        (kind == "user" || kind == "assistant") && !is_summary(message)
+    }) {
+        if let Some(uuid) = message.get("uuid").and_then(Value::as_str) {
+            if seen.contains_key(uuid) {
+                continue;
+            }
+            seen.insert(uuid.to_string(), display.len());
+        }
+        display.push(message.clone());
     }
-    display.extend(retained);
-    Value::Array(display)
+
+    json!({
+        "messages": display,
+        "generationStarts": generation_starts,
+    })
 }
 
 /// UiEvent 分发（见 `src/core/initializeCoreEvents.ts` 的订阅清单）
