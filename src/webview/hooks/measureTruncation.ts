@@ -27,23 +27,21 @@ import { flushSync } from 'react-dom';
  */
 
 /**
- * 截断判定模式：
- * - 'lines'：按行数阈值（15 行）判定，用于子代理 From/To 消息（保持原有行为）；
- * - 'overflow'：元素已按折叠高度 clamp，直接看内容是否溢出（scrollHeight > clientHeight），
- *   用于真正的用户消息——折叠高度随消息区高度变化，必须按实际溢出判定。
+ * 截断判定的唯一口径：元素已按折叠高度 clamp，直接看内容是否溢出
+ * （scrollHeight > clientHeight）。折叠高度随消息区高度变化，必须按实际溢出判定。
+ *
+ * 只有真正的用户消息会登记测量：子代理 From/To 与后台任务通知都是一行折叠行
+ * （`docs/hosts/webview-ui.md` 第 11 节「自动消息折叠行」），不做截断折叠。
  */
-export type TruncationMode = 'lines' | 'overflow';
 
 interface Job {
   el: HTMLElement;
   apply: (truncated: boolean) => void;
-  mode: TruncationMode;
 }
 
-/** 元素最近一次登记的回写函数、判定模式与测量时的内容盒尺寸（用于过滤 ResizeObserver 的初始/重复回调） */
+/** 元素最近一次登记的回写函数与测量时的内容盒尺寸（用于过滤 ResizeObserver 的初始/重复回调） */
 interface Registration {
   apply: (truncated: boolean) => void;
-  mode: TruncationMode;
   /** 上次测量时元素的内容盒尺寸；初始回调与它一致时说明没有真实尺寸变化，跳过 */
   width: number;
   height: number;
@@ -74,7 +72,7 @@ function getResizeObserver(): ResizeObserver | null {
         // 尺寸没变（含 observe 后的首次回调）→ 无需重测
         const rect = entry.contentRect;
         if (Math.abs(registration.width - rect.width) < 1 && Math.abs(registration.height - rect.height) < 1) continue;
-        enqueue({ el, apply: registration.apply, mode: registration.mode });
+        enqueue({ el, apply: registration.apply });
       }
     });
   }
@@ -103,13 +101,8 @@ function flush(): void {
       registration.width = el.clientWidth;
       registration.height = el.clientHeight;
     }
-    if (jobs[i].mode === 'overflow') {
-      // 已按折叠高度 clamp：内容比可见高度多 1px 以上即视为截断（+1 容忍取整误差）
-      results[i] = el.scrollHeight > el.clientHeight + 1;
-    } else {
-      const lineHeight = parseFloat(getComputedStyle(el).lineHeight || '20');
-      results[i] = el.scrollHeight > lineHeight * 15;
-    }
+    // 已按折叠高度 clamp：内容比可见高度多 1px 以上即视为截断（+1 容忍取整误差）
+    results[i] = el.scrollHeight > el.clientHeight + 1;
   }
 
   // ── 只写阶段 ──
@@ -126,19 +119,18 @@ function flush(): void {
  * 同时把元素交给共享 ResizeObserver 观察，尺寸变化（折行数改变）时自动重测。
  * 对同一元素重复调用只更新回写函数与模式，不会重复触发初始观察。
  */
-export function measureTruncation(el: HTMLElement, apply: (truncated: boolean) => void, mode: TruncationMode = 'lines'): void {
+export function measureTruncation(el: HTMLElement, apply: (truncated: boolean) => void): void {
   // 复用已有登记：只更新回写函数与模式，保留上次测得的内容盒尺寸。
   // 首次登记时尺寸未知，先置 NaN；本次测量（flush 只读阶段）会补上，
   // 因此 observe 之后的首次回调能据此判定「尺寸未变」而跳过。
   const existing = registrations.get(el);
   if (existing) {
     existing.apply = apply;
-    existing.mode = mode;
   } else {
-    registrations.set(el, { apply, mode, width: NaN, height: NaN });
+    registrations.set(el, { apply, width: NaN, height: NaN });
   }
   getResizeObserver()?.observe(el);
-  enqueue({ el, apply, mode });
+  enqueue({ el, apply });
 }
 
 /**
