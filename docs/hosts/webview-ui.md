@@ -393,13 +393,14 @@ dropSession(sessionId: string): void {
 
 ## 11. 消息区视图行为
 
-下列纯 webview 渲染层行为（宿主类不参与，无新下行 wire / 事件；发送的入口语义见
+下表的纯 webview 渲染层行为（宿主类不参与，无新下行 wire / 事件；发送的入口语义见
 [docs/features/user-message-pipeline.md 第 2 节](../features/user-message-pipeline.md#2-功能需求)，
 一次性通知行的「重试」按钮是唯一的上行 wire 出口（`retryQuery`，见下方行内说明））：
 
 | 行为 | 规格 |
 | --- | --- |
 | 跳到底部 | 显示唯一入口是「一次向下的滚动手势」：消息区内相邻向下滚轮输入间隔 ≤150ms 归同一次手势，手势内累计的实际滚动位移（scroll 监听按 scrollTop 增量累加，以「用户已滚离 + 手势窗口活跃」双守卫排除流式跟随等程序化位移；回底即清零重新累计）超过消息区可视高度 1/3 且当前不在底部时，右下角（距右 / 底缘各 12px）以 150ms opacity 过渡淡入圆形按钮。触发源仅限滚轮——键盘、滚动条拖动、触摸产生的滚动不触发；滚动条拖动按下即隐藏且不自动恢复（按下命中 = 事件派发到容器本身且 offsetX 落在滚动条槽）。回底（distance ≤ 2，含点击回底 / End / 会话切换强制回底）、拖动按下、点击按钮、用户向上滚动（任意幅度，以 1s 内有真实用户滚动输入为前提——布局收缩的 scrollTop 回退不误判；同时清零手势累计）任一即隐藏。按钮常驻挂载：`data-hidden` 标记显隐，隐藏态 `pointer-events: none` 不拦点击、不进 a11y 树、不可聚焦；z 序 30——所有真实用户消息常驻 `user-msg-pin` 的 zIndex 10 且消息容器后于按钮绘制，同 z 序会被落进按钮区域的消息盖住，故高于吸附容器（10）、低于会话加载遮罩（40）。点击清滚离抑制并强制回底、恢复自动跟随。自动滚动抑制（滚离标志）与按钮显隐解耦——滚轮上滚仍抑制自动跟随但不再显示按钮；不带未读计数 |
+| 发送回底 | 真实用户消息到达即复位滚离抑制并强制回底、恢复自动跟随，判据是「末位是新的真实用户消息」（`isPinnableUserMessage` 且对象实例与上次判定过的不同），与末位之前那条消息的角色 / 来源无关——末位是后台 Bash 通知（`origin=bash`）、子代理 From（`origin=agent`）、压缩摘要（`isCompactSummary`）这类 `role=user` 的系统自动消息，或上一条真实用户气泡时同样回底（specs/defects/user-message-arrival-skips-scroll-to-bottom.md）。系统自动消息自己到达不复位滚离、不把视口拉回底部。会话加载与 `forceScrollKey` 是另外两条强制回底通道 |
 | 选择框回底 | 选择框（AskUserQuestion 逐题选择框、权限确认框）弹出时强制回底（问题必须被看到）；应答提交——逐题答案提交、权限点选与文本应答——是用户动作，与发送消息同权，同样复位滚离抑制并强制回底，后续新内容恢复自动跟随。两条路径都经 `forceScrollKey` 通道；应答经工具结果回传、不产生用户消息，「真正的用户消息到达」复位入口不覆盖这里，须由应答提交显式触发（`useAppHandlers` 的三条应答回调） |
 | 发送模式 | 发送按钮为 split 形态：主按钮恒为立即发送；小三角下拉含「立即发送 / 空闲发送」，两项为当次动作（不记住选择），禁用口径与主按钮一致（无内容 / 输入禁用 / 连接或配置加载中 / 已有忙碌排队项或空闲挂起项）。空闲挂起的语义（webview 本地挂起、快照触发、中止回填、清除与重载丢失）见 FR-003 |
 | 自动消息折叠行 | 系统自动消息——后台 Bash 完成通知（`origin = 'bash'`）与子代理 From / To 消息（`origin = 'agent'`）——固定渲染为一行折叠行：`message-square` 图标 + 标题 + 单行摘要 + 右侧附注 + chevron，正文默认收起，点整行（或聚焦后 Enter / 空格）展开。摘要由正文派生、派生只有一份纯函数 `src/webview/autoMessageCard.ts`：完成通知按 core 文案的 `Description:` 行解析出结论（`completed` / `failed` / `stopped`，认不出即 `unknown` 并原样显示该行）与命令描述（摘要里用括号包住），`Duration:` 行作为右侧附注；From 消息取正文首个非空行（去掉标题 / 列表 / 引用 / 强调标记）。标题只表达结论文案（`messagesView.backgroundCompleted` / `backgroundFailed` / `backgroundStopped` / `backgroundNotice`（`unknown` 时的中性标题，不宣称成功或失败）/ `fromAgent`），**颜色与图标不随状态变化**——失败任务与成功任务视觉完全同构。展开态显示原始通知全文（`Task:` / `Description:` / `Duration:` / `Output (first 500 chars):`，stdout 按 `AnsiText` 还原 ANSI 色）或完整 markdown，From 消息额外保留跳转到子代理对话的入口（`messagesView.openAgentConversation`）。这两类消息不参与截断折叠（不挂 `measureTruncation`，避免出现两层「显示完整内容」），也不参与滚动置顶（`isPinnableUserMessage` 排除）。 |

@@ -2442,11 +2442,14 @@ const MessagesView = memo(({
   }, [handleContentToggle, schedulePinnedMeasure]);
 
   /**
-   * useLayoutEffect: handles the "structural" scroll triggers that ResizeObserver
-   * doesn't cover — new messages appearing, force-scroll events, initial load.
-   * Content-size changes (streaming updates) are handled by ResizeObserver.
+   * 上一次提交判定过的末位「真实用户消息」（对象实例）。
+   *
+   * 「新的真实用户消息到达」以消息身份为键，不看末位角色是否发生 user 转变：末位可能
+   * 本来就是 `role=user` 的系统自动消息（后台 Bash 完成通知 / 子代理 From / 压缩摘要）
+   * 或上一条真实用户气泡，此时角色判据恒为「没有变化」，用户上翻后发的消息就永远不复位
+   * 滚离、也不回底（specs/defects/user-message-arrival-skips-scroll-to-bottom.md）。
    */
-  const lastMsgRoleRef = useRef<string | undefined>(undefined);
+  const lastPinnableUserMsgRef = useRef<Message | undefined>(undefined);
   const prevMsgCountRef = useRef(0);
   const prevForceScrollKeyRef = useRef<number | undefined>(undefined);
   /**
@@ -2463,6 +2466,11 @@ const MessagesView = memo(({
    */
   const lastMessage = messages[messages.length - 1];
 
+  /**
+   * useLayoutEffect: handles the "structural" scroll triggers that ResizeObserver
+   * doesn't cover — new messages appearing, force-scroll events, initial load.
+   * Content-size changes (streaming updates) are handled by ResizeObserver.
+   */
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) {
@@ -2472,7 +2480,7 @@ const MessagesView = memo(({
 
     const prevCount = prevMsgCountRef.current;
     const lastMsg = lastMessage;
-    profileLog(`[AutoScroll] layoutEffect len=${messages.length} prevCount=${prevCount} lastRole=${lastMsg?.role} prevRole=${lastMsgRoleRef.current} showThinking=${showThinkingAnimation} animationMode=${animationMode} streamingVer=${streamingVersion} forceKey=${forceScrollKey} prevForceKey=${prevForceScrollKeyRef.current} hasRunningTools=${hasRunningTools} userScrolledAway=${userScrolledAwayRef.current}`);
+    profileLog(`[AutoScroll] layoutEffect len=${messages.length} prevCount=${prevCount} lastRole=${lastMsg?.role} showThinking=${showThinkingAnimation} animationMode=${animationMode} streamingVer=${streamingVersion} forceKey=${forceScrollKey} prevForceKey=${prevForceScrollKeyRef.current} hasRunningTools=${hasRunningTools} userScrolledAway=${userScrolledAwayRef.current}`);
     if (prevCount === 0 && messages.length > 0) {
       profileLog(`[AutoScroll] FIRST_MESSAGE role=${lastMsg?.role} container=${container.scrollHeight}/${container.clientHeight} scrollTop=${container.scrollTop}`);
     }
@@ -2483,7 +2491,7 @@ const MessagesView = memo(({
     //   残留，导致新会话首批消息完全无法自动滚动。
     if (messages.length === 0) {
       prevMsgCountRef.current = 0;
-      lastMsgRoleRef.current = undefined;
+      lastPinnableUserMsgRef.current = undefined;
       userScrolledAwayRef.current = false;
       if (!showThinkingAnimation) {
         profileLog('[AutoScroll] layoutEffect empty return (no thinking animation)');
@@ -2495,14 +2503,20 @@ const MessagesView = memo(({
     const hasNewMessage = messages.length > prevMsgCountRef.current;
     prevMsgCountRef.current = messages.length;
 
-    // Detect new user message (role transition to 'user').
+    // Detect new user message by identity, not by role transition.
     // 只有「真正的用户消息」才允许重置滚离状态并强制滚底（用户滚动优先级最高）：
     // 后台 Bash 通知（origin=bash）、子代理 From 消息（origin=agent）、压缩摘要
     // 虽然都是 role=user，但属于系统自动消息——用户正在上方翻阅历史时它们到达，
     // 不能把视口拉回底部。判定与滚动置顶共用 isPinnableUserMessage。
-    const isNewUserMessage = isPinnableUserMessage(lastMsg) && lastMsgRoleRef.current !== 'user';
-    if (lastMsg) {
-      lastMsgRoleRef.current = lastMsg.role;
+    //
+    // 判据用「末位是新的真实用户消息」（对象实例与上次判定过的不同）：只看末位角色
+    // 是否发生 user 转变会漏掉「末位本来就是 role=user」的四种时间线——末位是上述
+    // 系统自动消息，或末位是上一条真实用户气泡（快速连发）；此时角色恒为 user，
+    // 用户上翻后发的消息不会复位滚离、也不回底
+    // （specs/defects/user-message-arrival-skips-scroll-to-bottom.md）。
+    const isNewUserMessage = isPinnableUserMessage(lastMsg) && lastMsg !== lastPinnableUserMsgRef.current;
+    if (isPinnableUserMessage(lastMsg)) {
+      lastPinnableUserMsgRef.current = lastMsg;
     }
 
     // forceScrollKey changed → always scroll (external trigger, e.g. "expand compact")
