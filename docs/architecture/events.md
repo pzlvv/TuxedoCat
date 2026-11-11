@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-12
 ---
 
 # 规格：AssistantEventBus 与事件词汇表
@@ -159,7 +159,7 @@ export type CoreRequestHandlers = {
 | 25 | `notice` | `sessionId`, `key`, `params`, `level` | `commands.rs`、`spin.rs`、`spin_host.rs`、`engine.rs`（瞬时状态提示：键 + 参数；`engine.rs` 是会话被其他实例占用的占用提示，specs/032） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
 | 26 | `conversationSpaceCleared` | `dirName`（对话空间目录名）, `result`（`complete` 带删除统计 / `error` 带原因） | `main.rs`（`conversationSpaceCleared` UiEvent 清空完成 / 失败后的执行回执） | `onConversationSpaceCleared` | `conversationSpaceCleared`（`complete`）/ `conversationSpacesError`（`error`）——设置面板解除「删除中」的唯一信号 |
 | 27 | `workspaceFileChanged` | `watchId`, `path`, `kind`（`changed` / `deleted` / `error`）, `mtimeMs`, `size`, `error`（无错误为 `null`） | `file_watch.rs`（notify + 50ms 去抖；文件目标监听父目录并按 basename 过滤，目录目标监听目录本身；按目标最终状态判定 changed / deleted，watcher 错误报 error） | `onWorkspaceFileChanged`（转交宿主，不投递 webview） | 无（不投递到 webview） |
-| 28 | `crossWorkspaceAgentReplyRequested` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `engine.rs`（目标工作区 Core 的 `deliver_agent_reply`：跨工作区子代理调用 Reply 工具，目标会话不在本进程） | `onCrossWorkspaceAgentReplyRequested`（转成 `UiEvent.agentReplyReceived`，按会话路由回发起方 Connection） | 无（跨 Core 转发，不投递 webview） |
+| 28 | `crossWorkspaceAgentReplyRequested` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `engine.rs`（目标工作区 Core 的 `deliver_agent_reply`：跨工作区子代理调用 Reply 工具，目标会话不在本进程；`Core::notify_creator_of_cancel`：该子代理被用户中止后的取消回报） | `onCrossWorkspaceAgentReplyRequested`（转成 `UiEvent.agentReplyReceived`，按会话路由回发起方 Connection） | 无（跨 Core 转发，不投递 webview） |
 | 29 | `crossWorkspaceAgentAbortRequested` | `sessionId`（远程子代理会话 id） | `engine.rs`（`abort_session_scope`：对登记为远程的子代理发中止请求） | `onCrossWorkspaceAgentAbortRequested`（按 link 表找到目标 Connection 下发 `UiEvent.abortRequested`） | 无（跨 Core 转发） |
 | 30 | `crossWorkspaceAgentEnded` | `sessionId`（发起方会话）, `subSessionId` | `engine.rs`（`run_sub_agent` 收尾：跨工作区子代理结束 / 中止 / 失败） | `onCrossWorkspaceAgentEnded`（转成 `UiEvent.crossWorkspaceAgentCompleted`） | 无（跨 Core 转发） |
 | 31 | `todosChanged` | `sessionId`, `todos: readonly TodoEntry[]` | `engine.rs`（`emit_tool_outcome`：TodoWrite 成功后推送全量清单） | `onTodosChanged` | `sessionTodos`（空数组即该会话没有 Todo，按钮不渲染） |
@@ -226,7 +226,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 23 | `conversationRewound` | `sessionId`, `targetUuid` | `rewindConversation`（时间线节点右键「从这里继续」，specs/039；webview 只在 `idle` 时放行） | `main.rs` 的 `handle_conversation_rewind`（先按 `Core::is_session_idle` 判忙、再调 `rewind.rs` 的 `rewind` 截断 + 文件回滚） |
 | 23 | `bashBackgroundRequested` | `sessionId`, `toolUseId` | `backgroundBashTool`（Bash 卡片「转后台」按钮，[docs/features/background-bash.md](../features/background-bash.md)） | `Core::on_bash_background_requested`——按 `toolUseId` 触发该次前台执行转入后台，结果照常进上下文但暂停下一轮 LLM 请求；没有匹配的前台执行时幂等忽略 |
 | 24 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `originWorkspaceId`, `originSessionId`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，目标 Core 全量应用不按角色裁剪，specs/024 FR-004 / specs/025 FR-005；提示词模式不携带——目标会话恒 normal，specs/025 FR-005） | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建顶层普通会话 + 写 `creator` meta + 组装 SystemPrompt + 起后台消费循环，specs/025 FR-001/FR-002/FR-006） |
-| 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径） |
+| 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径；目标会话已中止时只落上下文与消息流，不拉起新一轮） |
 | 26 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
 | 27 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
 | 28 | `storageChanged` | `sessionId`, `storage` | `setConversationStorage`（新建对话空状态的勾选框） | Core 的 `Core::set_session_storage`（改内存态归属；`meta.json` 已存在即忽略——归属仍是一次写定，[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)） |

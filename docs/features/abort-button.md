@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-12
 ---
 
 # 规格：abort 按钮
@@ -37,6 +37,10 @@ webview 侧投影见 [docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md
   - **AC-12**（FR-004）：GIVEN 悬停未满 1 秒即移出 WHEN 计时到期 THEN 浮层不出现；GIVEN 浮层已显示 WHEN 指针移出或离开黄色态 THEN 浮层立即隐藏
   - **AC-13**（FR-004）：GIVEN 红色 / 灰色态或恢复态 spin（两组明细皆空） WHEN 悬停超过 1 秒 THEN 无浮层
   - **AC-14**（FR-004）：GIVEN 浮层显示中 WHEN 点击浮层条目 THEN 不产生任何上行消息；GIVEN 快照更新到达 THEN 浮层内容跟随刷新、两组皆空即关闭
+- 场景 7：被取消的子代理回报创建者
+  - **AC-15**（FR-002）：GIVEN 子代理运行中 WHEN 用户 abort 使其停止 THEN 创建者会话收到一条「已被用户取消、不会再 `Reply`」的自动消息（`origin='agent'`、带 From 头），创建者空闲时立刻以它拉起一轮
+  - **AC-16**（FR-002）：GIVEN 创建者与其子代理一同被中止 WHEN 取消回报投递 THEN 消息进上下文与消息流，但创建者的 `cancel` 保持置位、`running` 保持假（中止不被自身回报复活）
+  - **AC-17**（FR-002）：GIVEN 子代理已调用过 `Reply`、驱动已收尾、或本次是会话关闭 / 删除 / 静默中止 WHEN 收尾 THEN 不发取消回报；同一子代理重复 abort 只回报一次
 
 ## 2. 功能需求
 
@@ -76,12 +80,19 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
    - 恢复态 spin（没有运行中的 SpinLoop 且完全空闲）不做任何事（幂等）。
 2. **前台有工作**（`query` 或 `compacting`）→ 只中止前台：
    - 置该会话的中止标记，使正在消费的查询与后续新建的 LLM 请求立即失效；
+   - 被中止的会话本身若是子代理，同样向创建者回报取消（前台已停、不会再有 `Reply`）；
    - 丢弃尚未消费的排队用户消息、后台任务完成通知与过期 reminder；
    - 中止当前活动的 LLM 请求。
    - 该会话的后台 Bash 任务与子代理**保持运行**。
 3. **前台无工作，但仍有后台 Bash 任务或子代理** → 中止它们：
    - 该会话的后台 Bash 任务全部终止，被中止任务的结果不再通知 LLM；
    - 已登记子代理递归中止：每个子代理的前台查询、后台任务与下层子代理一并停止；
+   - 被中止的子代理向创建者回报一条「已被用户取消、不会再 `Reply`」的自动消息
+     （`origin='agent'`，落盘 / 进上下文 / 上消息流）；创建者空闲时立刻拉起一轮，
+     创建者自身也在本次中止范围内时只落上下文与消息流，不拉起新一轮。
+     已调用过 `Reply` 或驱动已收尾的子代理不再回报；会话关闭 / 删除与静默中止
+     不是用户取消，不回报。跨工作区子代理由运行它的 Core 经
+     [cross-workspace-agent.md](cross-workspace-agent.md) FR-003 的既有回投通道发出。
    - **跨工作区子代理**（[cross-workspace-agent.md](cross-workspace-agent.md) FR-006）不在本进程：
      发 `CoreEvent.crossWorkspaceAgentAbortRequested` 由宿主转发到目标工作区 Core；
      目标不可达时按已结束收敛，不永久停在黄色态。
@@ -180,6 +191,6 @@ US-52（黄灯悬停预览后台任务与子代理，
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
 | FR-001 | `src/host/abortButtonState.ts` 的 `resolveAbortButtonState` | `src/test/abortButtonState.test.ts`（三态 + spin 黄色）；e2e `e2e/webview/conversation.spec.ts`（三态） | 自动 |
-| FR-002 | `Core::on_abort`（`core-rs/src/engine.rs`，spin 子代理范围 + 两阶段判定） | `core-rs/src/engine_tests.rs` 的 `abort_request_stops_foreground_before_background` / `abort_during_running_spin_aborts_sub_agents` / `abort_does_not_exit_restored_spin_mode_of_idle_session`；整应用 e2e `e2e/electron/assistant.spec.ts`（两阶段中止、网关不回响应头时中止） | 自动 |
+| FR-002 | `Core::on_abort`（`core-rs/src/engine.rs`，spin 子代理范围 + 两阶段判定）、`Core::notify_creator_of_cancel`（取消回报） | `core-rs/src/engine_tests.rs` 的 `abort_request_stops_foreground_before_background` / `abort_during_running_spin_aborts_sub_agents` / `abort_does_not_exit_restored_spin_mode_of_idle_session` / `aborted_sub_agent_reports_cancel_notice_to_its_creator` / `whole_tree_abort_reports_cancel_without_resurrecting_the_creator`；整应用 e2e `e2e/electron/assistant.spec.ts`（两阶段中止、网关不回响应头时中止） | 自动 |
 | FR-003 | `UiEvent.abortRequested` 载荷（`src/shared/AssistantEventBus.ts`） | `src/test/sessionBusyLevel.test.ts`（快照根事实的宿主派生） | 自动 |
 | FR-004 | `src/webview/InputArea.tsx` 悬停浮层 + `App.tsx` 明细推导 + 快照成员 `backgroundTasks` / `subAgentDescription`（`src/shared/AssistantEventBus.ts`、`core-rs/src/engine.rs` 的 `emit_runtime`） | `core-rs/src/engine_tests.rs` 的 `runtime_snapshot_*` 三用例；`src/test/sessionBusyLevel.test.ts`（`collectRunningSubAgents`）；e2e `e2e/webview/conversation.spec.ts`（US-52 悬停用例） | 自动 |
