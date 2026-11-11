@@ -458,7 +458,7 @@ export function handleStreamCompressProgress(
             props.setHasActiveQuery(restoredActiveQuery ?? false);
             // 只有压缩成功才写出了归档文件，此时才显示「展开压缩」按钮。
             // 新一轮压缩让旧的展开缓存失效：层级归零，按钮回到初始态
-            // （docs/features/compaction.md FR-005，specs/047 AC-7）。
+            // （docs/features/compaction.md FR-005，specs/048 AC-7）。
             props.setHasCompactArchive(true);
             props.setCompactArchiveView(null);
             props.setCompactExpandDepth(0);

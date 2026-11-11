@@ -1,5 +1,5 @@
 /**
- * 压缩归档的逐层展开（`docs/features/compaction.md` FR-005，specs/047）。
+ * 压缩归档的逐层展开（`docs/features/compaction.md` FR-005，specs/048）。
  *
  * 三个纯函数把「展开到第几层」变成可单测的判定：
  * `compactGenerations` 数代次、`compactVisibleMessages` 取该层的可见集合、

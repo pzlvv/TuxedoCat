@@ -282,7 +282,7 @@ fn repeated_compact_keeps_the_global_user_input_head() {
     crate::compact::reset_for_test();
 }
 
-/// 多次压缩：归档按代次累积（specs/047 FR-001）——第二次压缩不覆盖第一次的原文，
+/// 多次压缩：归档按代次累积（specs/048 FR-001）——第二次压缩不覆盖第一次的原文，
 /// 两代记录都在文件里，代次 1 / 2 单调递增。
 #[test]
 fn repeated_compact_appends_a_second_archive_generation() {

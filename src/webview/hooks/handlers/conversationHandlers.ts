@@ -578,7 +578,7 @@ export function handleConversationSmartNamingResult(
 }
 
 /**
- * 压缩归档展开数据到达（specs/047 FR-002）。
+ * 压缩归档展开数据到达（specs/048 FR-002）。
  *
  * 宿主一次给出「全部代次 + 保留区」的完整序列与每代起始下标；这里铺第 1 层（最新一代），
  * 之后每次点击都在本地加深一层（`App.handleExpandCompact` 读缓存）。

@@ -1367,7 +1367,7 @@ fn storage_of_session_defaults_to_workspace_when_absent() {
 
 #[test]
 fn compact_archive_appends_generations_instead_of_overwriting() {
-    // 归档只增不改（specs/047 FR-001）：第二次压缩把第 2 代追加在末尾，
+    // 归档只增不改（specs/048 FR-001）：第二次压缩把第 2 代追加在末尾，
     // 第 1 代的记录逐字节保留。
     let _sandbox = Sandbox::new("history-archive-generations");
     create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();

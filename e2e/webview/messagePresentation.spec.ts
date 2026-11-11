@@ -197,7 +197,7 @@ test('US-16 置顶条只铺内容区：不盖滚动条槽、无延伸层', async
 });
 
 /**
- * US-17 验收 2（specs/047）：多次压缩后逐层展开——N 次压缩对应 N 次点击，
+ * US-17 验收 2（specs/048）：多次压缩后逐层展开——N 次压缩对应 N 次点击，
  * 每点一次在已显示内容之前补入更早一代，全部展开后按钮消失。
  */
 test('US-17 压缩历史逐层展开：三次点击展开三代，末次后按钮消失', async () => {
@@ -250,9 +250,12 @@ test('US-17 压缩历史逐层展开：三次点击展开三代，末次后按�
   await expandButton.click();
   await expect(page.getByText('第二代原文', { exact: false })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('第一代原文', { exact: false })).toHaveCount(0);
+  // 断言消息走 expect 的第二参：Playwright 的 toBe 只收一个参数，写成
+  // toBe(value, message) 是 TS2554（check-types:e2e 拦下）
   expect(
     (await host.sentAll()).filter((m) => m.type === 'expandCompact').length,
-  ).toBe(expandRequests, '后续层用已取到的缓存，不再读盘');
+    '后续层用已取到的缓存，不再读盘',
+  ).toBe(expandRequests);
 
   // 第 3 次点击：全部展开，按钮消失
   await expandButton.click();

@@ -2354,7 +2354,7 @@ fn work_view_files_request_reports_missing_arguments_and_unmounted_view() {
     );
 }
 
-/// specs/047 FR-002：两代归档合并成一整条展开序列，并按代次给出下钻分界。
+/// specs/048 FR-002：两代归档合并成一整条展开序列，并按代次给出下钻分界。
 #[test]
 fn compact_archive_display_merges_generations_with_start_indexes() {
     let sandbox = Sandbox::new("main-archive-generations");
@@ -2429,7 +2429,7 @@ fn compact_archive_display_merges_generations_with_start_indexes() {
     );
 }
 
-/// specs/047 FR-004：旧格式归档（无摘要、无代次）读作第 1 代，主 JSONL 的摘要补在保留区之前。
+/// specs/048 FR-004：旧格式归档（无摘要、无代次）读作第 1 代，主 JSONL 的摘要补在保留区之前。
 #[test]
 fn compact_archive_display_backfills_legacy_archives() {
     let sandbox = Sandbox::new("main-archive-legacy");

@@ -3,7 +3,7 @@ import type { CompactArchiveView } from '../../src/webview/compactExpand';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
- * 压缩归档逐层展开的判定（`src/webview/compactExpand.ts`，specs/047 FR-002 / FR-004）。
+ * 压缩归档逐层展开的判定（`src/webview/compactExpand.ts`，specs/048 FR-002 / FR-004）。
  *
  * 覆盖点：代次数、每层的可见集合（从最新一代往更早补）、超界返回 null、
  * 按钮显隐三态（无归档 / 还没取数据 / 已展开到最深层）。
