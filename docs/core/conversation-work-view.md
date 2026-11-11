@@ -3,9 +3,9 @@ owner: pzlvv
 last_reviewed: 2026-11-09
 ---
 
-# 规格：对话隔离工作视图
+# 规格：Overlay 对话工作视图
 
-本文描述「对话隔离视图」的执行形态：一个对话的 Read / Write / Edit / Bash / Grep 看到
+本文描述「Overlay 对话」的执行形态：一个对话的 Read / Write / Edit / Bash / Grep 看到
 「真实工作区 + 本对话改动」的叠加结果，改动不污染磁盘，对话之间互不可见。磁盘是唯一基线
 事实——磁盘上后来新增、修改、删除的文件，对话中立即可见，不需要任何同步动作。
 
@@ -17,7 +17,7 @@ last_reviewed: 2026-11-09
 
 | 字段 | 含义 | 判据 |
 | --- | --- | --- |
-| `isolatedWorkView` | 能否为对话建立隔离工作视图 | 用户命名空间可建 + overlayfs 可挂（含 `userxattr`） |
+| `isolatedWorkView` | 能否为对话建立 Overlay 工作视图 | 用户命名空间可建 + overlayfs 可挂（含 `userxattr`） |
 | `reason` | 不可用的原因；可用时为空串 | 依次点名平台 / 用户命名空间 / overlayfs 哪一项不满足 |
 
 界面在 `isolatedWorkView` 为 true 时才渲染入口。为 false 时整块入口不出现——不给「勾选后
@@ -25,6 +25,20 @@ last_reviewed: 2026-11-09
 
 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但
 Core 是。
+
+### 1.1 按会话读取视图内容
+
+宿主进程看不到 Core 私有挂载命名空间里的视图（读挂载点得到空目录），直接读 `upper/`
+也不成立（whiteout 让删掉的文件仍可见、未改动的文件在 `lowerdir` 看不到）。侧栏的文件
+资源管理器因此经两个只读请求取内容：
+
+| 请求 | 载荷 | 应答 |
+| --- | --- | --- |
+| `UiRequest.workViewFilesRequested` | `sessionId`、`dir`（`'/'` 分隔相对路径，`''` 为视图根） | `{ ok: true, entries }` 或 `{ ok: false, error }` |
+| `UiRequest.workViewFileReadRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, content }` 或 `{ ok: false, error }` |
+
+视图尚未建立（会话还没调用过工具）时两者都回 `ok: false`：由宿主决定显示磁盘基线还是
+报错，Core 不替它决定。`dir` / `path` 越界（绝对路径、`..`）一律拒绝。
 
 ## 2. 归属
 
@@ -57,7 +71,7 @@ Core 是。
 
 ## 3. 视图结构
 
-每个隔离视图对话一份，位于 `<configHome>/work-views/<key>/`：
+每个Overlay 对话一份，位于 `<configHome>/work-views/<key>/`：
 
 | 路径 | 内容 |
 | --- | --- |
@@ -105,7 +119,7 @@ run_core() 最早（单线程）
 `CLONE_NEWUSER` 必须在单线程时执行：内核要求调用者 `mm_users == 1`，进程一旦有第二个
 线程就必然 `EINVAL`。位置因此固定在 `run_core()` 开头、任何后台线程启动之前。
 
-进命名空间失败不阻塞 Core 启动：能力探测据此回不可用，隔离视图对话退回真实磁盘执行。
+进命名空间失败不阻塞 Core 启动：能力探测据此回不可用，Overlay 对话退回真实磁盘执行。
 
 ## 5. 工具语义
 

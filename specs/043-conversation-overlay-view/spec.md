@@ -24,20 +24,20 @@ status: 实施中
 
 ## 用户场景与验收标准
 
-- 场景 1：新建对话时选择隔离视图
-  - **AC-1**（FR-001）：GIVEN 新建对话的空状态 WHEN 用户在 logo 下方勾选「对话隔离视图」THEN 创建出的对话带该归属并在会话列表显示标记
+- 场景 1：新建对话时选择 Overlay 视图
+  - **AC-1**（FR-001）：GIVEN 新建对话的空状态 WHEN 用户在 logo 下方勾选「Overlay 对话」THEN 创建出的对话带该归属并在会话列表显示标记
   - **AC-2**（FR-001）：GIVEN 运行 Core 的平台不支持该能力 WHEN 用户查看新建对话空状态 THEN 不渲染勾选框，不出现勾选后静默无效的形态
-  - **AC-3**（FR-007）：GIVEN 能力可用但视图首次建立失败 WHEN 用户在隔离视图对话里执行工具 THEN 工具按真实磁盘执行，且会话内可见失败原因
-- 场景 2：隔离视图里的读写
-  - **AC-4**（FR-002）：GIVEN 一个隔离视图对话 WHEN 执行 Write 新建文件 THEN 该文件在同一对话的 Read 与 Bash 与 Grep 中立即可见
-  - **AC-5**（FR-002）：GIVEN 一个隔离视图对话 WHEN 修改磁盘上已存在的文件 THEN 对话内读到新内容而磁盘上的文件内容不变
-  - **AC-6**（FR-003）：GIVEN 磁盘工作区有 node_modules 与 .git 与 target WHEN 在隔离视图对话里列这些目录 THEN 都能列出内容
-  - **AC-7**（FR-003）：GIVEN 隔离视图对话已打开 WHEN 磁盘上被其他进程新增或修改文件 THEN 该对话内立即可见新内容而无需同步动作
+  - **AC-3**（FR-007）：GIVEN 能力可用但视图首次建立失败 WHEN 用户在 Overlay 视图对话里执行工具 THEN 工具按真实磁盘执行，且会话内可见失败原因
+- 场景 2：Overlay 视图里的读写
+  - **AC-4**（FR-002）：GIVEN 一个 Overlay 视图对话 WHEN 执行 Write 新建文件 THEN 该文件在同一对话的 Read 与 Bash 与 Grep 中立即可见
+  - **AC-5**（FR-002）：GIVEN 一个 Overlay 视图对话 WHEN 修改磁盘上已存在的文件 THEN 对话内读到新内容而磁盘上的文件内容不变
+  - **AC-6**（FR-003）：GIVEN 磁盘工作区有 node_modules 与 .git 与 target WHEN 在 Overlay 视图对话里列这些目录 THEN 都能列出内容
+  - **AC-7**（FR-003）：GIVEN Overlay 视图对话已打开 WHEN 磁盘上被其他进程新增或修改文件 THEN 该对话内立即可见新内容而无需同步动作
 - 场景 3：对话之间隔离
-  - **AC-8**（FR-004）：GIVEN 对话 A 在隔离视图里新建了 a.txt WHEN 在对话 B 里列目录 THEN 看不到 a.txt
+  - **AC-8**（FR-004）：GIVEN 对话 A 在 Overlay 视图里新建了 a.txt WHEN 在对话 B 里列目录 THEN 看不到 a.txt
   - **AC-9**（FR-004）：GIVEN 对话 A 修改了磁盘上已有的 f.txt WHEN 对话 B 读 f.txt THEN 读到磁盘原内容而不是 A 的改动
 - 场景 4：删除与生命周期
-  - **AC-10**（FR-005）：GIVEN 隔离视图对话 WHEN 删除磁盘上已存在的文件或目录 THEN 该对话内不再可见而磁盘上的文件与目录仍在
+  - **AC-10**（FR-005）：GIVEN Overlay 视图对话 WHEN 删除磁盘上已存在的文件或目录 THEN 该对话内不再可见而磁盘上的文件与目录仍在
   - **AC-11**（FR-006）：GIVEN 对话被关闭 WHEN 重新打开同一对话 THEN 之前的改动仍在
   - **AC-12**（FR-006）：GIVEN 对话被删除 WHEN 清理该对话 THEN 其私有上层目录一并回收
 
@@ -54,7 +54,7 @@ Core 经 `UiRequest.storageCapabilitiesRequested` 应答 `{ isolatedWorkView, re
 
 ### FR-002：叠加视图是工具的唯一事实来源
 
-隔离视图对话里，Read / Write / Edit / Bash / Grep / Glob 看到的都是「磁盘 + 本次对话改动」
+Overlay 视图对话里，Read / Write / Edit / Bash / Grep / Glob 看到的都是「磁盘 + 本次对话改动」
 的叠加结果，与不带隔离的对话在**工具语义上无差别**：同样的路径、同样的相对路径解析、同样的
 `cwd` 行为。工具实现不因归属而分叉——差异只在视图本身。
 
@@ -74,7 +74,7 @@ Core 经 `UiRequest.storageCapabilitiesRequested` 应答 `{ isolatedWorkView, re
 
 ### FR-005：删除的正确表达
 
-隔离视图内删除磁盘上已有的文件或目录时，该对话内不可见，磁盘保持不变。上层需要能表达
+Overlay 视图内删除磁盘上已有的文件或目录时，该对话内不可见，磁盘保持不变。上层需要能表达
 「此处曾有一个基线条目，现已删除」，包括目录。
 
 ### FR-006：生命周期与回收

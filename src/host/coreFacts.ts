@@ -22,7 +22,11 @@ import type {
 import type { SpinDesign } from '../shared/spin/Types.js';
 import { getSystemLocale, setHostLocale, setHostUiLanguage } from './i18n.js';
 import type { ConversationMetadata } from '../shared/history/Conversation.js';
-import type { StorageCapabilities } from '../shared/AssistantEventBus.js';
+import type {
+  StorageCapabilities,
+  WorkViewFileResult,
+  WorkViewFilesResult,
+} from '../shared/AssistantEventBus.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
 import type { McpServerInfo } from '../shared/webviewTypes.js';
 import type { Message, TodoEntry } from '../shared/types.js';
@@ -117,11 +121,36 @@ export async function requestMcpServers(sessionId: string | undefined): Promise<
 /**
  * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/043 FR-001）。
  *
- * 界面据此决定是否渲染「对话隔离视图」入口；不满足时 `reason` 写明缺哪项前提，
+ * 界面据此决定是否渲染「Overlay 对话」入口；不满足时 `reason` 写明缺哪项前提，
  * 由 Core 判断——宿主平台回答不了这个问题。
  */
 export async function requestStorageCapabilities(): Promise<StorageCapabilities> {
   return requireEventBus().requestCore({ type: 'storageCapabilitiesRequested' });
+}
+
+/**
+ * 列 Overlay 对话的叠加视图目录（`UiRequest.workViewFilesRequested`，specs/044 FR-002）。
+ *
+ * 视图挂在 Core 私有的挂载命名空间里，宿主进程读挂载点是空目录——侧栏的文件资源管理器
+ * 因此只能经这里取。`dir` 是 '/' 分隔的相对路径，`''` 表示视图根。
+ */
+export async function requestWorkViewFiles(
+  sessionId: string,
+  dir: string,
+): Promise<WorkViewFilesResult> {
+  return requireEventBus().requestCore({ type: 'workViewFilesRequested', sessionId, dir });
+}
+
+/**
+ * 读 Overlay 对话里某个文件的文本（`UiRequest.workViewFileReadRequested`，specs/044 FR-003）。
+ *
+ * 与目录列举同一理由必须经 Core：宿主读不到 Core 私有挂载命名空间里的视图。
+ */
+export async function requestWorkViewFile(
+  sessionId: string,
+  path: string,
+): Promise<WorkViewFileResult> {
+  return requireEventBus().requestCore({ type: 'workViewFileReadRequested', sessionId, path });
 }
 
 /**

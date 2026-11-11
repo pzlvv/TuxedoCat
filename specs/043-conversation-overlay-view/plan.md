@@ -1,6 +1,6 @@
 # 实施方案：对话级 overlay 工作视图
 
-需求见 [spec.md](spec.md)。技术路线一句话：**Core 在启动早期进用户命名空间，每个隔离视图
+需求见 [spec.md](spec.md)。技术路线一句话：**Core 在启动早期进用户命名空间，每个 Overlay 视图
 对话各自维护一份「真实工作区（lower）+ 私有上层（upper）」的 overlay 挂载；工具与 Bash 在
 该挂载的私有挂载命名空间副本里执行，路径字符串保持真实工作区路径不变。**
 
@@ -51,7 +51,7 @@
 
 ### 3. 视图的实体
 
-每个隔离视图对话一份：
+每个 Overlay 视图对话一份：
 
 | 路径 | 内容 |
 | --- | --- |
@@ -74,7 +74,7 @@ userxattr          ← 删除目录必需
 ### 4. 工具如何落到视图里
 
 工具（`run_read` / `run_write` / `run_edit` / `grep` / `glob`）目前直接用 `std::fs` 操作
-`ctx.cwd` 下的路径。**不为隔离视图改这些实现**：视图的作用方式是让 `ctx.cwd` 指向挂载点，
+`ctx.cwd` 下的路径。**不为 Overlay 视图改这些实现**：视图的作用方式是让 `ctx.cwd` 指向挂载点，
 路径拼接方式完全不变。
 
 具体做法：`ToolContext` 新增 `work_view: Option<WorkViewHandle>`。工具执行前，若该会话有

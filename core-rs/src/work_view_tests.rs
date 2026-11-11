@@ -504,3 +504,129 @@ fn work_view_mount_after_release_is_refused() {
         );
     });
 }
+
+// ==================== 列视图目录（specs/044）====================
+
+/// 列出的条目名（按名字排序，方便断言）。
+fn entry_names(entries: &[serde_json::Value]) -> Vec<String> {
+    let mut names: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| entry.get("name").and_then(|name| name.as_str()))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names
+}
+
+/// 视图目录列出的是叠加结果：对话内新建的文件在，磁盘上的同目录没有它（specs/044 FR-002）。
+#[test]
+fn work_view_lists_overlay_directory() {
+    in_namespace("work-view-lists", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-lists";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+
+        // 对话内新建（只落 upper，磁盘上没有）
+        let in_view = view.mount_point().expect("挂载点").join("only-in-view.txt");
+        std::fs::write(&in_view, "view\n").expect("写视图");
+
+        let entries = crate::work_view::list_view_dir(session, "").expect("列视图根");
+        let names = entry_names(&entries);
+        assert!(
+            names.contains(&"only-in-view.txt".to_string()),
+            "对话内新建的文件必须列出：{names:?}"
+        );
+        assert!(
+            names.contains(&"existing.txt".to_string()),
+            "磁盘基线里的文件也必须列出：{names:?}"
+        );
+        assert!(
+            !sandbox.workspace.join("only-in-view.txt").exists(),
+            "该文件不得出现在真实磁盘上"
+        );
+
+        // 条目形态与本地 / SFTP 的 DirectoryEntry 一致
+        let entry = entries
+            .iter()
+            .find(|entry| entry.get("name").and_then(|name| name.as_str()) == Some("only-in-view.txt"))
+            .expect("条目");
+        assert_eq!(entry.get("kind").and_then(|kind| kind.as_str()), Some("file"));
+        assert!(
+            entry.get("mtimeMs").map(|value| !value.is_null()).unwrap_or(false),
+            "mtimeMs 必须给出（取不到时才用 null）：{entry:?}"
+        );
+    });
+}
+
+/// 子目录列举与越界拒绝（specs/044 FR-002 / 边界表）。
+#[test]
+fn work_view_lists_subdirectory_and_rejects_escape() {
+    in_namespace("work-view-lists-sub", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-lists-sub";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+
+        // node_modules 来自 lowerdir：子目录列举必须能进去
+        let entries = crate::work_view::list_view_dir(session, "node_modules").expect("列子目录");
+        assert_eq!(entry_names(&entries), vec!["dep.js".to_string()]);
+
+        for bad in ["..", "../etc", "/etc", "a/../../b"] {
+            assert!(
+                crate::work_view::list_view_dir(session, bad).is_err(),
+                "越界路径 {bad} 必须被拒绝"
+            );
+        }
+    });
+}
+
+/// 视图未建立（会话还没调用过工具）时列目录报错，不偷偷退回磁盘（specs/044 FR-004）。
+#[test]
+fn work_view_lists_nothing_when_view_not_mounted() {
+    in_namespace("work-view-lists-unmounted", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-lists-unmounted";
+        crate::work_view::WorkView::register(&workspace, session).expect("登记");
+
+        let result = crate::work_view::list_view_dir(session, "");
+        assert!(result.is_err(), "未挂载时不得返回磁盘内容：{result:?}");
+
+        // 未登记过的会话同样报错
+        assert!(crate::work_view::list_view_dir("sess-never-registered", "").is_err());
+    });
+}
+
+/// 读视图文件：对话内新建的能读、磁盘上没有（specs/044 FR-003）。
+#[test]
+fn work_view_reads_file_from_overlay() {
+    in_namespace("work-view-read-file", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-read-file";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+
+        // 对话内新建
+        let in_view = view.mount_point().expect("挂载点").join("only-in-view.txt");
+        std::fs::write(&in_view, "view-content\n").expect("写视图");
+        assert_eq!(
+            crate::work_view::read_view_file(session, "only-in-view.txt").expect("读"),
+            "view-content\n"
+        );
+        assert!(!sandbox.workspace.join("only-in-view.txt").exists());
+
+        // 磁盘基线里的文件也能读
+        assert_eq!(
+            crate::work_view::read_view_file(session, "existing.txt").expect("读基线"),
+            "from-workspace\n"
+        );
+
+        // 越界 / 根目录 / 不存在的文件都报错
+        assert!(crate::work_view::read_view_file(session, "../etc/passwd").is_err());
+        assert!(crate::work_view::read_view_file(session, "/etc/passwd").is_err());
+        assert!(crate::work_view::read_view_file(session, "").is_err());
+        assert!(crate::work_view::read_view_file(session, "nope.txt").is_err());
+        // 未挂载的会话
+        assert!(crate::work_view::read_view_file("sess-never", "a.txt").is_err());
+    });
+}

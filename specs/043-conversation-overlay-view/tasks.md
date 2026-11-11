@@ -68,7 +68,7 @@
       完成判据：`npm run test:unit -- hostCoreFacts` 通过。
 
 - [x] **T013**（FR-001）：新建对话勾选框 —— webview 空状态在 logo 下方按能力渲染
-      「对话隔离视图」勾选框，`conversationStarted` 带上选择。依赖：T012；完成判据：
+      「Overlay 对话」勾选框，`conversationStarted` 带上选择。依赖：T012；完成判据：
       `npm run check-types` 与 `npm run build:webview` 通过。
 
 - [x] **T014**（FR-006）：生命周期接线 —— `conversationClosed` 释放视图、
@@ -80,6 +80,6 @@
       的能力成员、`docs/core/session-runtime.md` 的释放路径；`docs/README.md` 地图补新文档。
       依赖：T001–T014；完成判据：`npm run test:unit -- docs-lint` 通过。
 
-- [x] **T016**（FR-001–FR-007）：宿主侧标记与回归 —— 侧栏会话列表显示隔离视图标记
+- [x] **T016**（FR-001–FR-007）：宿主侧标记与回归 —— 侧栏会话列表显示 Overlay 视图标记
       （与既有分支图标同一渲染口径）；`npm run test:unit` 全绿。依赖：T012–T014；
       完成判据：`npm run test:unit` 通过。

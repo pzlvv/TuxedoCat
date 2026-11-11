@@ -342,7 +342,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             let workspace = request.get("workspacePath").and_then(Value::as_str);
             Ok(Value::Array(history::load_conversation_list(workspace)))
         }
-        // 文件存储能力（specs/043 FR-001）：宿主据此决定是否渲染「对话隔离视图」入口。
+        // 文件存储能力（specs/043 FR-001）：宿主据此决定是否渲染「Overlay 对话」入口。
         // 能力由 Core 自己给出——宿主平台回答不了这个问题（Windows 宿主连 Linux 远端
         // Core 时宿主不是 Linux，但 Core 是）。
         "storageCapabilitiesRequested" => {
@@ -352,6 +352,39 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 // 不可用的原因；可用时为空串（契约成员全必选，「没有」用空串而非 null）
                 "reason": capabilities.reason,
             }))
+        }
+        // 列 Overlay 对话的叠加视图目录（specs/044 FR-002）：宿主看不到 Core 私有挂载
+        // 命名空间里的视图，文件资源管理器只能经这里取。缺参数时报错，不静默取默认值。
+        "workViewFilesRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFilesRequested without sessionId".to_string())?;
+            let dir = request
+                .get("dir")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFilesRequested without dir".to_string())?;
+            match crate::work_view::list_view_dir(session_id, dir) {
+                Ok(entries) => Ok(json!({ "ok": true, "entries": entries })),
+                // 失败回判别联合的失败侧而不是 Err：宿主据此显示错误行（FR-006），
+                // 与「请求本身非法」（缺参数）走不同的通道
+                Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+            }
+        }
+        // 读 Overlay 对话里的文件文本（specs/044 FR-003）：与目录列举同一理由必须经 Core。
+        "workViewFileReadRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileReadRequested without sessionId".to_string())?;
+            let path = request
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileReadRequested without path".to_string())?;
+            match crate::work_view::read_view_file(session_id, path) {
+                Ok(content) => Ok(json!({ "ok": true, "content": content })),
+                Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+            }
         }
         "smartNamingRequested" => {
             let session_id = request

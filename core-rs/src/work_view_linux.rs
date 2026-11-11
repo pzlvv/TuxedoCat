@@ -520,6 +520,90 @@ impl WorkViewHandle {
     }
 }
 
+/// 列某个 Overlay 对话的叠加视图目录（specs/044 FR-002）。
+///
+/// 宿主侧的文件资源管理器用它在自己进程里拿不到的结果：视图挂在 Core 私有的挂载命名空间
+/// 里（`docs/core/conversation-work-view.md` 第 4 节），宿主读挂载点是空目录；直接读
+/// `upper/` 也不成立（whiteout 让删掉的文件仍可见、未改动的文件在 `lowerdir` 看不到）。
+///
+/// 返回未排序的条目：排序由调用方按自己的比较器做，与远程 SFTP 的 `listDirectory`
+/// 同一分工（`src/host/standalone/sshClient.ts`）。
+///
+/// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：视图未建立时回 `Err` 而不是
+/// 偷偷列磁盘——那是两个不同的事实，由宿主决定怎么呈现（FR-004 定的是回基线，FR-006 定的
+/// 是失败明确，选择权在调用方）。
+pub fn list_view_dir(session_id: &str, dir: &str) -> Result<Vec<serde_json::Value>, String> {
+    let handle = WorkViewHandle::of(session_id)
+        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let relative = sanitize_view_relative(dir)?;
+    let target = handle.mount_point().join(&relative);
+    let entries = std::fs::read_dir(&target)
+        .map_err(|error| format!("读取视图目录 {} 失败：{error}", target.display()))?;
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+        // 符号链接按目标归类、断链跳过——与本地 listDirectory 和 SFTP listDirectory
+        // 同一语义（渲染层没有「未知类型」的图标位）
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        out.push(serde_json::json!({
+            "name": name,
+            "kind": if metadata.is_dir() { "directory" } else { "file" },
+            // 取不到时间用 null（不猜值），与本地 stat 失败的条目同形
+            "mtimeMs": metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_millis() as u64),
+        }));
+    }
+    Ok(out)
+}
+
+/// 把 `'/'` 分隔的相对路径解析成可安全拼到挂载点上的相对路径。
+///
+/// 拒绝绝对路径与 `..` 分量：渲染层传来的字符串不可信，越界会读到视图之外
+/// （与 `electron/sidebarFiles.ts::resolveWithinRoot` 同一口径，那边用
+/// `path.relative` 的回跳结果判，这里按分量判——Core 侧不引路径库的平台差异）。
+fn sanitize_view_relative(dir: &str) -> Result<PathBuf, String> {
+    let mut relative = PathBuf::new();
+    for segment in dir.split('/') {
+        match segment {
+            // 空串来自开头的 '/' 或 '//'；'.' 是无操作
+            "" | "." => continue,
+            ".." => return Err(format!("路径 {dir} 越界：不允许 '..' 分量")),
+            other => {
+                if other.contains('\\') {
+                    // 反斜杠在 POSIX 上是合法文件名字符，但渲染层约定 '/' 分隔——
+                    // 出现反斜杠说明调用方拼错了，拒绝而不是猜它想表达什么
+                    return Err(format!("路径 {dir} 含反斜杠：约定用 '/' 分隔"));
+                }
+                relative.push(other);
+            }
+        }
+    }
+    Ok(relative)
+}
+
+/// 读某个 Overlay 对话里某个文件的文本内容（specs/044 FR-003）。
+///
+/// 与 `list_view_dir` 同一理由必须经 Core（宿主读不到 Core 的挂载命名空间）。
+/// 只支持文本：调用方按文件类型分流，二进制在 Overlay 对话里不支持打开——系统应用
+/// 打不开视图里的路径，回错误比打开磁盘上的旧内容诚实。
+pub fn read_view_file(session_id: &str, path: &str) -> Result<String, String> {
+    let handle = WorkViewHandle::of(session_id)
+        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let relative = sanitize_view_relative(path)?;
+    if relative.as_os_str().is_empty() {
+        return Err("读文件时 path 不能是视图根".to_string());
+    }
+    let target = handle.mount_point().join(&relative);
+    std::fs::read_to_string(&target)
+        .map_err(|error| format!("读取视图文件 {} 失败：{error}", target.display()))
+}
+
 /// 释放某会话的视图（会话关闭时调用）：卸载挂载，**保留**上层目录——改动要跨 Core 重启
 /// 保留（specs/043 FR-006）。
 pub fn release(workspace: &str, session_id: &str) {

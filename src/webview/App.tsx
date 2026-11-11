@@ -203,7 +203,7 @@ const App = () => {
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
   /**
-   * 对话隔离视图能力（specs/043 FR-001）：由宿主转发 Core 的应答。`null` 是等待态
+   * Overlay 对话能力（specs/043 FR-001）：由宿主转发 Core 的应答。`null` 是等待态
    * ——能力未到达前**不渲染**勾选框（不猜 false，也不猜 true）。
    */
   const [workViewCapable, setWorkViewCapable] = useState<boolean | null>(null);
@@ -217,7 +217,7 @@ const App = () => {
   /** 新建对话空状态的勾选状态；只在「还没发过消息」时有意义 */
   const [workViewSelected, setWorkViewSelected] = useState(false);
   /**
-   * 勾选「对话隔离视图」（specs/043 FR-001）。
+   * 勾选「Overlay 对话」（specs/043 FR-001）。
    *
    * 必须补发一条消息：勾选框在 `startNewConversation` **之后**才渲染（该消息已经带着
    * 初始归属 `workspace` 发出去了），只改本地状态的话 Core 永远不知道用户勾了。

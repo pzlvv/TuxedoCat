@@ -33,6 +33,8 @@ async function run(): Promise<void> {
   const sent: UiRequest[] = [];
   const handlers: UiRequestHandlers = {
     storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, reason: '测试桩' }),
+    workViewFilesRequested: async () => ({ ok: false as const, error: '测试桩' }),
+    workViewFileReadRequested: async () => ({ ok: false as const, error: '测试桩' }),
     conversationListRequested: async (req) => {
       sent.push(req);
       return [{ sessionId: 'c1', title: 't' } as never];

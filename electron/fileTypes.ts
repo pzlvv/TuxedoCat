@@ -45,6 +45,15 @@ export const FILE_BINARY_EXTS: ReadonlySet<string> = new Set([
  */
 export const REMOTE_BINARY_UNSUPPORTED = 'remote-binary-unsupported';
 
+/**
+ * Overlay 对话里图片 / 二进制文件的打开请求以此消息拒绝（specs/044 FR-003）。
+ *
+ * 与 `REMOTE_BINARY_UNSUPPORTED` 同一理由：系统应用打不开 Core 私有挂载命名空间里的
+ * 视图路径，回错误比打开磁盘上的旧内容诚实。IPC 层识别它后回
+ * `{ ok: false, error: 'overlay-binary-unsupported' }` 且不弹框。
+ */
+export const OVERLAY_BINARY_UNSUPPORTED = 'overlay-binary-unsupported';
+
 /** 双击打开的分流结果：sniff = 扩展名不认识，要先嗅探内容再定（文本还是二进制） */
 export type FileOpenKind = 'image' | 'markdown' | 'text' | 'binary' | 'sniff';
 

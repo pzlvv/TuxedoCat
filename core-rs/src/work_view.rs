@@ -25,7 +25,8 @@
 //! 平台：只在 Linux 上提供能力。其它平台编译出同签名类型，能力恒回不可用。
 
 pub use imp::{
-    bind_view_onto_workspace, capabilities, enter, release, remove, WorkView, WorkViewHandle,
+    bind_view_onto_workspace, capabilities, enter, list_view_dir, read_view_file, release, remove,
+    WorkView, WorkViewHandle,
 };
 
 /// 本能力的应答（`UiRequest.storageCapabilitiesRequested`，specs/043 FR-001）。

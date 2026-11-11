@@ -61,6 +61,7 @@ import {
   FILE_IMAGE_EXTS,
   FILE_MARKDOWN_EXTS,
   FILE_TEXT_EXTS,
+  OVERLAY_BINARY_UNSUPPORTED,
   REMOTE_BINARY_UNSUPPORTED,
 } from '../fileTypes.js';
 // 三态模式与取数范围的纯逻辑（specs/041 FR-001 / FR-002）：模式、localStorage 迁移、
@@ -180,6 +181,13 @@ interface SidebarAPI {
   // rel 一律是 '/' 分隔的相对路径（约定格式，见 electron/sidebarFiles.ts）；
   // root 是侧栏工作区项的稳定 id（refKey），主进程按 id 回查打开集合里的工作区引用
   filesList: (workspaceId: string, dir: string) => Promise<FilesListResult>;
+  /**
+   * 列 Overlay 对话的叠加视图目录（specs/044 FR-002）。
+   *
+   * 与 `filesList` 分两条通道：视图挂在 Core 私有的挂载命名空间里、宿主读不到，
+   * 必须由 Core 列。
+   */
+  filesListOverlay: (sessionId: string, dir: string) => Promise<FilesListResult>;
   /** 在系统文件资源管理器中定位（只作用于单个条目） */
   filesReveal: (workspaceId: string, relPath: string) => Promise<FilesOpResult>;
   /** 在该目录打开系统命令行（只作用于单个目录；本地工作区专属） */
@@ -191,6 +199,16 @@ interface SidebarAPI {
   /** 双击打开（US-42 验收 6）：主进程按类型分流——文本 / 图片进内置窗口，二进制调系统应用。
    * `source` 是打开来源（specs/040 FR-003）：目录树 / 变更视图 / 工具卡片链接决定初始视图 */
   filesOpen: (workspaceId: string, relPath: string, source: 'tree' | 'changes') => Promise<FilesOpResult>;
+  /**
+   * 打开 Overlay 对话里的文件（specs/044 FR-003）：内容经 Core 读视图路径，
+   * 编辑器标签仍以真实工作区路径标识。
+   */
+  filesOpenOverlay: (
+    workspaceId: string,
+    sessionId: string,
+    relPath: string,
+    source: 'tree' | 'changes',
+  ) => Promise<FilesOpResult>;
   /** 变更清单取数（specs/030 FR-003 / FR-004 / specs/041 FR-002）：scope 决定 pathspec */
   filesDocList: (workspaceId: string, scope: 'doc' | 'all') => Promise<DocListResult>;
   /** 文件浏览器模式上报（specs/041 FR-001）：主进程据此挂 / 摘 git 哨兵监听 */
@@ -220,6 +238,8 @@ const filesRefreshBtn = document.getElementById('filesRefresh') as HTMLButtonEle
 const filesDocToggleBtn = document.getElementById('filesDocToggle') as HTMLButtonElement;
 const filesAllChangesToggleBtn = document.getElementById('filesAllChangesToggle') as HTMLButtonElement;
 const filesTreeEl = document.getElementById('filesTree')!;
+/** 分区标题：Overlay 对话下追加 `(overlay)` 后缀（specs/044 FR-001） */
+const filesTitleEl = document.getElementById('filesTitle')!;
 // 侧栏宽度拖拽手柄（US-44，吸附在侧栏右缘）
 const resizeHandleEl = document.getElementById('resizeHandle')!;
 
@@ -391,7 +411,7 @@ function renderEmptyState(): void {
 
 /* ── SVG 图标（与 webview 版本一致，智能命名使用 Sparkles） ── */
 /**
- * 对话隔离视图标记（specs/043 FR-001）：三层堆叠 = 「磁盘基线 + 对话上层」的叠加语义。
+ * Overlay 对话标记（specs/043 FR-001）：三层堆叠 = 「磁盘基线 + 对话上层」的叠加语义。
  *
  * 不复用分支图标：分支表达「另一条历史」，隔离视图表达「同一基线上的临时上层」，
  * 两者语义不同，用同一个图形会让用户以为是同一件事。
@@ -649,9 +669,9 @@ function itemHtml(
   // 标题区域：重命名时显示行内输入框。
   // 子代理（subagent）行首带「sub」标记，与 webview 对话列表（ConversationTreeItem）一致
   const subTagHtml = depth > 0 ? '<span class="sub-tag">sub</span>' : '';
-  // 对话隔离视图标记（specs/043）：改动只留在本对话，与「直接改磁盘」区分开
+  // Overlay 对话标记（specs/043）：改动只留在本对话，与「直接改磁盘」区分开
   const isolatedTagHtml = c.storage === 'isolated'
-    ? `<span class="isolated-tag" title="对话隔离视图（改动只留在这个对话，磁盘不变）">${ICON_ISOLATED}</span>`
+    ? `<span class="isolated-tag" title="Overlay 对话（改动只留在这个对话，磁盘不变）">${ICON_ISOLATED}</span>`
     : '';
   const titleHtml = isRenaming
     ? `<input class="rename-input" type="text" value="${escapeHtml(renameValue)}" spellcheck="false" />`
@@ -822,6 +842,33 @@ function setActive(sessionId: string | null): void {
   listEl.querySelectorAll<HTMLElement>('.item').forEach((el) => {
     el.classList.toggle('active', el.dataset.sessionId === sessionId);
   });
+  syncOverlaySession();
+}
+
+/**
+ * 把活动对话的归属同步到文件浏览器状态（specs/044 FR-005）。
+ *
+ * 唯一的重算点：`setActive` 与列表回包都调它，别处不再各自推导。归属变化时清空该工作区
+ * 的树缓存并 `generation += 1`——两条来源的同一路径内容不同，复用缓存会把磁盘内容
+ * 显示成 overlay 内容（反之亦然）。在途回包靠代次作废。
+ */
+function syncOverlaySession(): void {
+  if (activeFilesId === null) return;
+  const files = filesStateByWorkspace.get(activeFilesId);
+  if (!files) return;
+  // 归属来自列表里活动对话那一条的 storage（侧栏已消费该字段）
+  const active = conversations?.find((c) => c.sessionId === activeSessionId);
+  const next = active?.storage === 'isolated' ? active.sessionId : null;
+  if (files.overlaySessionId === next) return;
+  files.overlaySessionId = next;
+  files.tree.clear();
+  files.expandedDirs.clear();
+  files.selected.clear();
+  files.anchor = null;
+  files.pendingScrollTop = null;
+  files.generation += 1;
+  if (files.expanded) loadDir(activeFilesId, '');
+  renderFiles();
 }
 
 /**
@@ -896,6 +943,7 @@ function subscribe(): void {
     for (const sid of [...namingSessions]) {
       if (!ids.has(sid)) namingSessions.delete(sid);
     }
+    syncOverlaySession();
     render();
   });
   window.sidebarAPI.onSessionStatesUpdated((states) => {
@@ -940,6 +988,7 @@ function subscribe(): void {
       .then((list) => {
         if (generation !== listGeneration) return; // 目录已再次变化，丢弃过期回包
         conversations = list;
+        syncOverlaySession();
         render();
       })
       .catch((err) => console.error('[sidebar] reload conversations failed:', err));
@@ -1018,6 +1067,15 @@ interface WorkspaceFilesState {
   docGeneration: number;
   /** 是否已发起过取数（false = 渲染时才发起首取，避免给从未开过文档视图的工作区预取） */
   docRequested: boolean;
+  /**
+   * 该工作区当前活动对话若是 Overlay 对话，这里是它的 sessionId；否则 null
+   * （specs/044 FR-005）。
+   *
+   * 取数来源由它决定：非 null 时目录列举与打开文件走 Core 的视图通道，null 时走磁盘。
+   * 值变化必须清树缓存（`syncOverlaySession` 负责）——两条来源的同一路径内容不同，
+   * 复用缓存会把磁盘内容显示成 overlay 内容。
+   */
+  overlaySessionId: string | null;
 }
 
 /** 折叠状态落 localStorage 的键（值是「工作区 id → 是否展开」的 JSON 表，US-42 验收 1） */
@@ -1111,6 +1169,7 @@ function filesStateFor(id: string): WorkspaceFilesState {
       docScope: scopeForMode(mode),
       docGeneration: 0,
       docRequested: false,
+      overlaySessionId: null,
     };
     filesStateByWorkspace.set(id, state);
   }
@@ -1224,6 +1283,9 @@ function docRowHtml(files: WorkspaceFilesState, row: DocViewRow): string {
 function renderFiles(): void {
   const id = activeFilesId;
   const files = activeFilesState();
+  // 标题标注（specs/044 FR-001）：Overlay 对话下注明取数来源，普通对话保持原文案。
+  // 折叠态也要更新——标题在分区条上，折叠时照样可见。
+  filesTitleEl.textContent = files?.overlaySessionId != null ? '文件资源管理器 (overlay)' : '文件资源管理器';
   // 分区折叠时不渲染也不读目录：折叠期渲染会经 renderDirRows 触发根目录的懒加载，
   // 把「启动时刻」的目录内容缓存下来，用户之后展开时命中陈旧缓存（US-42 的懒加载
   // 语义是「点开才读这层」，根目录的第一个读取点必须是首次展开）。
@@ -1335,8 +1397,14 @@ function loadDir(workspaceId: string, rel: string): void {
   if (existing && existing.state !== 'error') return;
   const generation = files.generation;
   files.tree.set(rel, { state: 'loading', entries: [] });
-  window.sidebarAPI?.filesList(workspaceId, rel)
-    .then((res) => {
+  // 取数来源分流（specs/044 FR-002）：Overlay 对话走 Core 的视图通道，普通对话走磁盘。
+  // 视图挂在 Core 私有的挂载命名空间里，宿主读不到，只能由 Core 列。
+  const overlaySessionId = files.overlaySessionId;
+  const request = overlaySessionId !== null
+    ? window.sidebarAPI?.filesListOverlay(overlaySessionId, rel)
+    : window.sidebarAPI?.filesList(workspaceId, rel);
+  request
+    ?.then((res) => {
       // 回包时该工作区已关闭（状态丢弃）或已刷新（代次变化）：丢弃
       if (filesStateByWorkspace.get(workspaceId) !== files || files.generation !== generation) return;
       if (res.ok) files.tree.set(rel, { state: 'loaded', entries: res.entries });
@@ -1345,6 +1413,7 @@ function loadDir(workspaceId: string, rel: string): void {
     })
     .catch((err) => {
       if (filesStateByWorkspace.get(workspaceId) !== files || files.generation !== generation) return;
+      // 失败如实显示（FR-006）：不回退成磁盘内容，那会把两个事实混成一个
       files.tree.set(rel, { state: 'error', entries: [], error: String(err) });
       if (workspaceId === activeFilesId) renderFiles();
     });
@@ -1386,6 +1455,9 @@ function setFilesWorkspace(state: WorkspacesState | null): void {
   // 变更视图开启的工作区重挂哨兵（重载 / 重开后渲染层状态从 localStorage 恢复，
   // 主进程侧的监听需要重新上报；模式上报幂等，重复上报无害——specs/030 FR-003 / specs/041）
   if (files.mode !== 'tree') window.sidebarAPI?.filesModeWatch(active.id, files.mode);
+  // 切工作区后活动对话也变了：归属可能不同，先同步再决定要不要补读根目录
+  // （syncOverlaySession 清缓存后自己会重读，这里不重复发请求）
+  syncOverlaySession();
   if (changed) {
     closeFilesMenu();
     renderFiles();
@@ -1636,18 +1708,30 @@ function deleteSelectedFiles(): void {
  * 双击文件行：打开方式（内置文本 / 图片窗口 / 系统应用）由主进程按类型分流。
  * 远程工作区的已知二进制在这里直接跳过（US-42 验收 6：远程二进制不支持打开），
  * 不发 IPC——避免为「注定打不开」的文件去做 SFTP 嗅探；未知扩展名仍交给主进程嗅探。
+ *
+ * Overlay 对话（specs/044 FR-003）走另一条通道：内容由 Core 从视图读出，宿主不读盘。
+ * 图片 / 二进制在 Overlay 对话里不支持（系统应用打不开视图里的路径），这里直接跳过，
+ * 与远程二进制同一口径。
  */
 function openFileRow(rel: string): void {
   const id = activeFilesId;
   if (!id) return;
-  if (filesRemote && classifyFileForOpen(rel) === 'binary') return;
   const files = filesStateByWorkspace.get(id);
+  const overlaySessionId = files?.overlaySessionId ?? null;
+  if (overlaySessionId !== null) {
+    if (classifyFileForOpen(rel) === 'binary' || classifyFileForOpen(rel) === 'image') return;
+  } else if (filesRemote && classifyFileForOpen(rel) === 'binary') {
+    return;
+  }
   // 打开来源决定初始视图（specs/040 FR-003）：变更视图双击 → 'changes'（非新增文件落
   // 差异视图）；目录树 / 文档视图双击 → 'tree'
   const source: 'tree' | 'changes' = files?.mode === 'changes' ? 'changes' : 'tree';
-  window.sidebarAPI?.filesOpen(id, rel, source)
-    .then((res) => {
-      if (!res.ok && res.error !== REMOTE_BINARY_UNSUPPORTED) {
+  const request = overlaySessionId !== null
+    ? window.sidebarAPI?.filesOpenOverlay(id, overlaySessionId, rel, source)
+    : window.sidebarAPI?.filesOpen(id, rel, source);
+  request
+    ?.then((res) => {
+      if (!res.ok && res.error !== REMOTE_BINARY_UNSUPPORTED && res.error !== OVERLAY_BINARY_UNSUPPORTED) {
         console.error('[sidebar] open file failed:', res.error);
       }
     })

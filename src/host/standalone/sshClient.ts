@@ -28,14 +28,15 @@ export interface SshTarget {
   password: string;
 }
 
-/** 远端目录项（SFTP readdir 的归类结果，与本地文件树同一形态） */
-export interface DirectoryEntry {
-  name: string;
-  kind: 'file' | 'directory';
-  /** 修改时间（毫秒时间戳；SFTP attrs 的秒级 mtime × 1000，specs/030 FR-002）。
-   *  「取不到」用 null（本地 stat 失败的条目同形），不用可选成员 */
-  mtimeMs: number | null;
-}
+/**
+ * 远端目录项（SFTP readdir 的归类结果）。
+ *
+ * 类型已下沉到 `src/shared/DirectoryEntry.ts`：它同时出现在总线契约
+ * （`WorkViewFilesResult`）里，而 `src/shared/` 不能 import `src/host/`。
+ * 这里 re-export 保持既有 import 点不变。
+ */
+export type { DirectoryEntry } from '../../shared/DirectoryEntry.js';
+import type { DirectoryEntry } from '../../shared/DirectoryEntry.js';
 
 /** 一次远端命令的执行结果 */
 export interface SshExecResult {

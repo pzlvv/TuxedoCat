@@ -136,7 +136,9 @@ import {
 } from './terminalShells.js';
 import {
   openLocalWorkspaceFile,
+  openOverlayWorkspaceFile,
   openRemoteWorkspaceFile,
+  OVERLAY_BINARY_UNSUPPORTED,
   REMOTE_BINARY_UNSUPPORTED,
   type FileOpenBridge,
   type OpenSource,
@@ -172,7 +174,7 @@ import { tt, onHostLocaleChanged, getHostLocale } from '../src/host/i18n.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { getPreferenceDialogHtml, type PreferenceDialogState } from './preferenceDialogHtml.js';
 import { clampSoundVolume, readSoundSettings, type SoundSettings } from './soundSettings.js';
-import { requestSmartNaming } from '../src/host/coreFacts.js';
+import { requestSmartNaming, requestWorkViewFile, requestWorkViewFiles } from '../src/host/coreFacts.js';
 
 /**
  * e2e 专用的侧栏列表延迟注入开关（`<envPrefix>_E2E_SLOW_LIST_MS`）。
@@ -5355,9 +5357,31 @@ function setupIpc(): void {
     }
   });
 
-  // 文档视图（specs/030 FR-003 / FR-004）：git 口径（本地直跑 / 远程 SSH exec——git
-  // 输出永远产生在文件所在的那台机器上）与非 git 记录口径（workspace.meta.json，
-  // 本地 fs / 远程 SFTP，只读）分流取数
+  // 列 Overlay 对话的叠加视图目录（specs/044 FR-002）。
+  //
+  // 必须经 Core：视图挂在 Core 私有的挂载命名空间里
+  // （docs/core/conversation-work-view.md 第 4 节），宿主进程读挂载点得到的是空目录；
+  // 直接读 upper/ 也不成立（whiteout 让删掉的文件仍可见、未改动的文件在 lowerdir 看不到）。
+  //
+  // 与 sidebar:files-list 分两条通道而不是给那条加参数：取数来源是两条不同的事实，
+  // 失败语义也不同（磁盘读失败 vs 视图未建立），塞进可选参数会把差异藏起来
+  // （docs/architecture/principles.md 第 2 节）。
+  ipcMain.handle('sidebar:files-list-overlay', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-list-overlay');
+    const p = (payload ?? {}) as { sessionId?: unknown; dir?: unknown };
+    if (typeof p.sessionId !== 'string' || p.sessionId.length === 0) {
+      return { ok: false, error: 'invalid-arguments' };
+    }
+    if (typeof p.dir !== 'string') return { ok: false, error: 'invalid-arguments' };
+    try {
+      return await requestWorkViewFiles(p.sessionId, p.dir);
+    } catch (err) {
+      // Core 不可用 / 会话已关闭：如实回错误，不回退成磁盘内容（FR-006）
+      const message = err instanceof Error ? err.message : String(err);
+      fileLogger.warn('sidebar-files', `overlay list failed (${p.sessionId}/${p.dir}): ${message}`);
+      return { ok: false, error: message };
+    }
+  });
   const remoteGitRunner = (client: SshClient, root: string): GitCommandRunner => {
     const shQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
     const posixJoin = (a: string, b: string): string => `${a.replace(/\/+$/, '')}/${b}`;
@@ -5667,6 +5691,69 @@ function setupIpc(): void {
       }
       // 打不开（读盘失败 / 系统应用拒绝 / 越界）如实回报：日志落盘 + 自绘提示框
       fileLogger.warn('sidebar-files', `open failed (${refDisplay(ref)}/${p.path}): ${message}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        void showStyledMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: [tt('确定', 'OK')],
+          defaultId: 0,
+          cancelId: 0,
+          message: tt(`无法打开「${p.path}」`, `Cannot open "${p.path}"`),
+          detail: message,
+        });
+      }
+      return { ok: false, error: message };
+    }
+  });
+
+  // 打开 Overlay 对话里的文件（specs/044 FR-003）。
+  //
+  // 内容必须经 Core 读视图路径（宿主看不到挂载），但编辑器标签仍以**真实工作区路径**
+  // 标识——与工具输出的口径一致（docs/core/conversation-work-view.md 第 5 节）。
+  //
+  // 只接内置文本 / Markdown 查看器的内容注入：这两条是「宿主读盘再渲染」，换成 Core
+  // 提供的内容即可。图片与「系统应用打开」需要真实文件路径（系统应用打不开视图里的
+  // 路径），Overlay 对话里这两种明确不支持，回错误而不是打开磁盘上的旧内容。
+  ipcMain.handle('sidebar:files-open-overlay', async (event, payload: unknown) => {
+    if (!isSidebarSender(event.sender)) throw new Error('unauthorized: sidebar:files-open-overlay');
+    const p = (payload ?? {}) as {
+      workspaceId?: unknown;
+      sessionId?: unknown;
+      path?: unknown;
+      source?: unknown;
+    };
+    const ref = resolveFilesRef(p.workspaceId);
+    if (!ref) return { ok: false, error: 'workspace-unavailable' };
+    if (typeof p.sessionId !== 'string' || p.sessionId.length === 0) {
+      return { ok: false, error: 'invalid-arguments' };
+    }
+    if (typeof p.path !== 'string' || p.path.length === 0) return { ok: false, error: 'invalid-arguments' };
+    if (!uiHost) return { ok: false, error: 'no-host' };
+    const sessionId = p.sessionId;
+    try {
+      const source: OpenSource = p.source === 'changes' ? 'changes' : 'tree';
+      await openOverlayWorkspaceFile(
+        fileOpenBridge,
+        {
+          sessionId,
+          readText: async (rel) => {
+            const result = await requestWorkViewFile(sessionId, rel);
+            if (!result.ok) throw new Error(result.error);
+            return result.content;
+          },
+        },
+        ref.path,
+        p.path,
+        source,
+      );
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // 图片 / 二进制在 Overlay 对话里不支持打开是预期行为：不弹框，渲染层静默忽略
+      if (message === OVERLAY_BINARY_UNSUPPORTED) {
+        fileOpLog(`overlay binary open skipped (${sessionId}/${p.path})`);
+        return { ok: false, error: message };
+      }
+      fileLogger.warn('sidebar-files', `overlay open failed (${sessionId}/${p.path}): ${message}`);
       if (mainWindow && !mainWindow.isDestroyed()) {
         void showStyledMessageBox(mainWindow, {
           type: 'warning',

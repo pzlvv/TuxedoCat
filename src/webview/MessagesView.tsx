@@ -1523,7 +1523,7 @@ interface MessagesViewProps {
   /** App 模式（Electron）下正在加载对话：空状态显示 loading 动画替代静态 Logo */
   isLoadingConversation?: boolean;
   /**
-   * 新对话空状态是否渲染「对话隔离视图」勾选框（specs/043 FR-001）。
+   * 新对话空状态是否渲染「Overlay 对话」勾选框（specs/043 FR-001）。
    * 由 App 按 Core 的能力应答决定：能力不可用时为 false，勾选框整体不出现。
    */
   showWorkViewOption?: boolean;
@@ -2592,7 +2592,7 @@ const MessagesView = memo(({
           ) : (
             <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
           )}
-          {/* 对话隔离视图入口（specs/043 FR-001）：只在**新对话、还没发过消息**时出现，
+          {/* Overlay 对话入口（specs/043 FR-001）：只在**新对话、还没发过消息**时出现，
               位置固定在 logo 正下方。能力不可用时整块不渲染——不给「勾了却静默无效」的
               形态。 */}
           {showWorkViewOption ? (

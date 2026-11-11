@@ -71,6 +71,18 @@ pub fn remove(_workspace: &str, _session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 非 Linux 上永远取不到句柄（`WorkViewHandle::of` 恒 `None`），列目录必然失败。
+///
+/// 保留这个签名是为了让两个平台实现同一组符号，`main.rs` 的请求分支不必到处 `cfg`。
+pub fn list_view_dir(_session_id: &str, _dir: &str) -> Result<Vec<serde_json::Value>, String> {
+    Err("Overlay 对话只在 Linux Core 上可用".to_string())
+}
+
+/// 同 `list_view_dir`：非 Linux 上没有 Overlay 对话，读文件必然失败。
+pub fn read_view_file(_session_id: &str, _path: &str) -> Result<String, String> {
+    Err("Overlay 对话只在 Linux Core 上可用".to_string())
+}
+
 /// 非 Linux 上永远不会被调用：`capabilities()` 恒回不可用，因此不会有会话归属为
 /// `isolated`，Bash 的 bind 分支（`tools.rs` 的 `#[cfg(target_os = "linux")]`）也就
 /// 走不到。保留这个签名是为了让两个平台实现同一组符号，调用方不必到处 `cfg`。
