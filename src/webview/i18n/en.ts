@@ -19,6 +19,7 @@ export const enDict: Record<string, string> = {
   'app.newChat': 'New Chat',
   'app.closeChat': 'Close this conversation (release resources)',
   'app.openWorkspaceHint': 'Open a workspace to continue',
+  'app.workViewOption': 'Overlay conversation',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': 'Are you sure you want to delete "{title}"?',

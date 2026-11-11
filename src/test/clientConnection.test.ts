@@ -468,7 +468,7 @@ async function run(): Promise<void> {
   {
     const harness = createClientHarness();
     harness.client.openWorkspace(emptyWorkspaceRef());
-    harness.client.emitToCore({ type: 'conversationStarted', sessionId: 's-empty' });
+    harness.client.emitToCore({ type: 'conversationStarted', sessionId: 's-empty', storage: 'workspace' });
     check('空态会话登记到占位 Connection', harness.client.workspacePathForSession('s-empty') === '');
 
     harness.client.openWorkspace(WS_A);

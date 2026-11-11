@@ -1,7 +1,7 @@
 //! `history` 的单元测试：会话文件读写、消息回放、标题推导。
 
 use super::*;
-use crate::engine::SessionCreator;
+use crate::engine::{SessionCreator, WorkViewStorage};
 use crate::test_support::Sandbox;
 use serde_json::json;
 
@@ -652,7 +652,15 @@ fn touch_metadata_refreshes_timestamp_and_count() {
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     append_message("s1", PROJECT, &user_message("again", "u2"), None).unwrap();
 
-    touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        true,
+        None,
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 2);
     assert!(metadata["updatedAt"].as_u64().unwrap() > 1_600_000_000_000);
@@ -673,7 +681,15 @@ fn touch_metadata_keeps_updated_at_for_background_messages() {
     .unwrap();
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
 
-    touch_metadata("s1", PROJECT, false, Some("minimal"), &SessionCreator::User).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        false,
+        Some("minimal"),
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 1);
     assert_eq!(metadata["updatedAt"], 111);
@@ -709,7 +725,15 @@ fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
     assert_eq!(metadata[ONCE_MESSAGE_KEY]["role"], "system");
 
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
-    touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        true,
+        None,
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
     assert!(
         load_metadata("s1", PROJECT)
             .unwrap()
@@ -1144,7 +1168,15 @@ fn conversation_list_excludes_workspace_manifest() {
     append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
     // messageCount 由引擎在 append 后刷新（append_message 本身不写 meta）；
     // messageCount == 0 的空对话不进列表
-    touch_metadata("s1", PROJECT, true, None, &SessionCreator::User).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        true,
+        None,
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
 
     let list = load_conversation_list(Some(PROJECT));
     assert_eq!(list.len(), 1, "清单不能混进会话列表：{list:?}");
@@ -1230,7 +1262,15 @@ fn metadata_writes_land_both_timestamps() {
     )
     .unwrap();
     append_message("s2", PROJECT, &user_message("hi", "u1"), None).unwrap();
-    touch_metadata("s2", PROJECT, false, None, &SessionCreator::User).unwrap();
+    touch_metadata(
+        "s2",
+        PROJECT,
+        false,
+        None,
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
 
     let legacy = read_raw("s2");
     assert!(
@@ -1258,4 +1298,69 @@ fn delete_conversation_keeps_workspace_manifest() {
         dir.join("workspace.meta.json").exists(),
         "清单不是会话，不能被删"
     );
+}
+
+#[test]
+fn touch_metadata_persists_isolated_storage() {
+    // 缺陷回归（specs/045 FR-001）：`conversationStarted` 只登记内存态，meta.json 由
+    // 首条消息创建。建档时不写 `storage`，Core 重启后归属读不回来，隔离视图的对话
+    // 就退回真实磁盘——用户看到的现象是「勾了隔离，改动照样落在磁盘上」。
+    let _sandbox = Sandbox::new("history-storage-isolated");
+    append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        true,
+        None,
+        &SessionCreator::User,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+
+    let metadata = load_metadata("s1", PROJECT).unwrap();
+    assert_eq!(
+        metadata["storage"], "isolated",
+        "建档必须写下归属：{metadata}"
+    );
+    assert_eq!(storage_of_session("s1"), WorkViewStorage::Isolated);
+}
+
+#[test]
+fn touch_metadata_keeps_existing_storage() {
+    // 归属只写一次：meta.json 里已有值一律保留。否则会话被重开、状态从默认值重建后
+    // 再落一条消息，就会把 `isolated` 覆盖成 `workspace`，隔离视图静默失效。
+    let _sandbox = Sandbox::new("history-storage-keep");
+    create_conversation(
+        "s1",
+        PROJECT,
+        json!({ "sessionId": "s1", "storage": "isolated" }),
+    )
+    .unwrap();
+    append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        true,
+        None,
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
+
+    let metadata = load_metadata("s1", PROJECT).unwrap();
+    assert_eq!(
+        metadata["storage"], "isolated",
+        "已有归属不得被覆盖：{metadata}"
+    );
+}
+
+#[test]
+fn storage_of_session_defaults_to_workspace_when_absent() {
+    // 存量会话没有 `storage` 字段（该字段随 specs/045 引入）：读侧必须按真实工作区
+    // 处理，与 `conversationStarted` 缺字段的口径一致。
+    let _sandbox = Sandbox::new("history-storage-legacy");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
+
+    assert_eq!(storage_of_session("s1"), WorkViewStorage::Workspace);
+    assert_eq!(storage_of_session("missing"), WorkViewStorage::Workspace);
 }

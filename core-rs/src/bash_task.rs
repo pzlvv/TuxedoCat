@@ -568,6 +568,24 @@ pub fn spawn_background(
     // 后台命令与前台命令看同一份 PATH：都经 `$SHELL` 起，用 shell 自己的形式
     // （`docs/core/standalone-core.md` 第 3.2 节）
     crate::shell_env::apply(&mut cmd)?;
+    // 隔离视图对话（specs/045）：后台命令同样在私有挂载命名空间里执行，
+    // 否则同一条对话的前台 / 后台 Bash 会看到一个在视图、一个在磁盘。
+    if let Some(handle) = crate::work_view::WorkViewHandle::of(session_id) {
+        let mount_point = handle.mount_point();
+        let workspace = std::path::PathBuf::from(cwd);
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(move || {
+                crate::work_view::bind_view_onto_workspace(&mount_point, &workspace)
+                    .map_err(|reason| std::io::Error::other(reason))
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (mount_point, workspace);
+        }
+    }
 
     let child = cmd.spawn().map_err(|err| err.to_string())?;
     let pid = child.id();

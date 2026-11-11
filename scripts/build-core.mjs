@@ -461,13 +461,42 @@ function buildableOnHost(target) {
  *   `-nologo` 口径，必须用 VS 的 lib.exe（cc-rs 自己定位，lib.exe 对目标架构
  *   不敏感），`zig ar` 是 GNU ar 口径对不上。
  */
+
+/**
+ * Rust 三元组的架构段 → Node 的 `process.arch`。
+ *
+ * 只用来判断「目标架构是否就是宿主架构」：同架构时系统 cc 够用，交叉时才需要 zig。
+ * 名字不一致（`x86_64` vs `x64`、`aarch64` vs `arm64`）必须显式映射，不能直接比字符串。
+ */
+const TRIPLE_ARCH_TO_NODE_ARCH = {
+  x86_64: 'x64',
+  aarch64: 'arm64',
+};
+
 function crossToolchainEnv(triple) {
   const isLinuxTriple = triple.endsWith('-linux-musl') || triple.endsWith('-linux-gnu');
   const isLinuxGnu = triple.endsWith('-linux-gnu');
-  const isWindowsArm64 = triple === 'aarch64-pc-windows-msvc';
-  if (!isLinuxTriple && !isWindowsArm64) return {};
-  // 本机就是 Linux 时不注入：系统自带的 cc 能直接编 musl / gnu（装了 musl-tools 的话）。
-  if (isLinuxTriple && process.platform === 'linux') return {};
+  // Windows 目标的 C 依赖（`ring` 的 C / 汇编）交给 `cargo xwin`：它自带整套
+  // Windows SDK（CRT 头文件 + 库），而 Linux 宿主上没有 MSVC 的 `lib.exe`。
+  // 早先 arm64 经 zig 编：zig 不带 SDK 库，x64 更是完全没配——两者都只在「ring 产物
+  // 恰好在缓存里」时能通过，一旦 cargo 判定依赖图变化就失败。
+  const isWindowsMsvc = triple.endsWith('-pc-windows-msvc');
+  if (isWindowsMsvc) return {};
+  if (!isLinuxTriple) return {};
+  // 本机是 Linux **且目标架构与本机一致**时不注入：系统自带的 cc 能直接编该目标的
+  // C 依赖（装了 musl-tools 的话）。
+  //
+  // 架构必须一起判：Linux 宿主上的系统 cc 是宿主架构（x86_64），交叉到 arm64 时它
+  // 编不出 aarch64 目标文件——`ring` 的 C 部分会以
+  // `failed to find tool "aarch64-linux-musl-gcc"` 失败。这类交叉构建与「本机不是
+  // Linux」同样需要 zig。
+  if (
+    isLinuxTriple &&
+    process.platform === 'linux' &&
+    TRIPLE_ARCH_TO_NODE_ARCH[triple.split('-')[0]] === process.arch
+  ) {
+    return {};
+  }
 
   const zig = process.env.ZIG || 'zig';
   const probe = spawnSync(zig, ['version'], { stdio: 'ignore', shell: false });
@@ -493,7 +522,9 @@ function crossToolchainEnv(triple) {
     [`CC_${key}`]: `${zig} cc`,
     [`CFLAGS_${key}`]: `--target=${zigTarget}`,
   };
-  if (!isWindowsArm64) env[`AR_${key}`] = `${zig} ar`;
+  // 走到这里的只有 Linux 目标（Windows 在函数开头就返回了，见 `isWindowsMsvc`），
+  // 两类 Linux 目标都用 `zig ar` 打包静态库。
+  env[`AR_${key}`] = `${zig} ar`;
   // gnu 没有像 musl 那样的自包含 crt / libc（见 core-rs/.cargo/config.toml），链接
   // 必须由 zig 的 cc 驱动完成；cargo 的 linker 只能是一个可执行文件，故经包装脚本转接
   if (isLinuxGnu) {
@@ -672,7 +703,12 @@ function buildTarget(target, options) {
   // cwd 必须是 crate 目录：cargo 只从**当前目录**往上找 `.cargo/config.toml`，
   // 而 musl 的链接器（rust-lld）就配在 `core-rs/.cargo/config.toml` 里。
   // target 目录不受影响（由 manifest 所在的 workspace 决定）。
-  const result = spawnSync('cargo', cargoArgs, {
+  // Windows 目标用 `cargo xwin`：它把 Windows SDK 的 include / lib 路径接进 cc-rs 与
+  // 链接器，等价于一个「不需要装 MSVC 的 msvc 工具链」。其余目标走原生 cargo。
+  const isWindowsMsvc = triple.endsWith('-pc-windows-msvc');
+  const runner = isWindowsMsvc ? 'cargo' : 'cargo';
+  const runnerArgs = isWindowsMsvc ? ['xwin', ...cargoArgs] : cargoArgs;
+  const result = spawnSync(runner, runnerArgs, {
     stdio: 'inherit',
     cwd: dirname(manifestPath),
     env,

@@ -260,17 +260,17 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   （旧 `filesDocView` 布尔表只读兼容、不再写入）：
   - 目录树（默认）：懒加载全量目录，展开状态独立保存；
   - 文档视图：`git diff --numstat -M HEAD -- '*.md' '*.markdown'` + 未跟踪，行数徽标；
-  - 全部变更：同一套取数与解析，pathspec 置空（`--` 之后不含过滤器）以覆盖全部类型；
-    非 git 工作区返回 `not-a-git-workspace` 提示而不是空列表。
-  两个变更视图共用同一套失效推送（reasons 同时带 `doc` / `changes`，渲染层按当前模式各取
-  所需），触发源是 git 哨兵与工具旁路两条（口径见
-  [US-61](../features/user-stories/desktop.md#us-61-工具改动自动刷新文件树与变更视图)）。
+  - 全部变更：同一套取数与解析，pathspec 置空以覆盖全部类型；非 git 工作区返回
+    `not-a-git-workspace` 提示而不是空列表。
+  两个变更视图共用同一套失效推送（reasons 同时带 `doc` / `changes`，渲染层按当前模式各取所需），
+  触发源是 git 哨兵与工具旁路两条（口径见 [US-61](../features/user-stories/desktop.md#us-61-工具改动自动刷新文件树与变更视图)）。
   数据走 Electron 私有 IPC（`sidebar:files-list` / `sidebar:files-doc-list`（带 `scope`）/
   `sidebar:files-mode-watch` / `sidebar:files-open`（带 `source`）/
   `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与记录读取复用 §14.5
   的共享连接池。Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层
   独立，首连失败后不会自连，不推就停在「读取失败，点击重试」
   （`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
+- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录与打开文件走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）。
 
 ### 9.1 空态
 

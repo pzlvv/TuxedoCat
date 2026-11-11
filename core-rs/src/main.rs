@@ -61,6 +61,7 @@ mod tool_input;
 mod tools;
 mod util;
 mod web_search;
+mod work_view;
 
 #[cfg(test)]
 mod file_watch_tests;
@@ -104,6 +105,12 @@ fn main() {
 
 /// 单进程 Core 模式：读 `hello` → 回 `ready` → 进入帧循环。
 fn run_core() {
+    // 对话工作视图的命名空间（specs/045）：`unshare(CLONE_NEWUSER)` 要求调用者
+    // `mm_users == 1`，进程一旦有第二个线程就必然 EINVAL，所以位置必须在**一切线程启动
+    // 之前**——包括下面的父进程看门狗。失败不阻塞启动：能力探测据此回不可用，隔离视图
+    // 对话退回真实磁盘执行（FR-007）。
+    crate::work_view::enter();
+
     // 父进程（宿主）消失后自行退出：扩展升级替换 / 崩溃时 `deactivate` 可能不执行，
     // 标准输入 EOF 也可能因主线程卡在同步处理而迟到。看门狗只按「父进程不存在」判定，
     // 不依赖宿主配合（缺陷 specs/defects/orphan-core-processes-after-host-exit.md）。
@@ -328,6 +335,50 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
         "conversationListRequested" => {
             let workspace = request.get("workspacePath").and_then(Value::as_str);
             Ok(Value::Array(history::load_conversation_list(workspace)))
+        }
+        // 文件存储能力（specs/045 FR-001）：宿主据此决定是否渲染「Overlay 对话」入口。
+        // 能力由 Core 自己给出——宿主平台回答不了这个问题（Windows 宿主连 Linux 远端
+        // Core 时宿主不是 Linux，但 Core 是）。
+        "storageCapabilitiesRequested" => {
+            let capabilities = crate::work_view::capabilities();
+            Ok(json!({
+                "isolatedWorkView": capabilities.isolated_work_view,
+                // 不可用的原因；可用时为空串（契约成员全必选，「没有」用空串而非 null）
+                "reason": capabilities.reason,
+            }))
+        }
+        // 列 Overlay 对话的叠加视图目录（specs/046 FR-002）：宿主看不到 Core 私有挂载
+        // 命名空间里的视图，文件资源管理器只能经这里取。缺参数时报错，不静默取默认值。
+        "workViewFilesRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFilesRequested without sessionId".to_string())?;
+            let dir = request
+                .get("dir")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFilesRequested without dir".to_string())?;
+            match crate::work_view::list_view_dir(session_id, dir) {
+                Ok(entries) => Ok(json!({ "ok": true, "entries": entries })),
+                // 失败回判别联合的失败侧而不是 Err：宿主据此显示错误行（FR-006），
+                // 与「请求本身非法」（缺参数）走不同的通道
+                Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+            }
+        }
+        // 读 Overlay 对话里的文件文本（specs/046 FR-003）：与目录列举同一理由必须经 Core。
+        "workViewFileReadRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileReadRequested without sessionId".to_string())?;
+            let path = request
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileReadRequested without path".to_string())?;
+            match crate::work_view::read_view_file(session_id, path) {
+                Ok(content) => Ok(json!({ "ok": true, "content": content })),
+                Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+            }
         }
         "smartNamingRequested" => {
             let session_id = request
@@ -829,11 +880,24 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         "conversationStarted" => {
             start_conversation(core, &session_id, &event);
         }
+        // 勾选框在 `conversationStarted` 之后才渲染，用户勾选必然晚于创建：这里补写
+        // 内存态的归属（specs/045 FR-001）。归属仍是一次写定——`meta.json` 已存在
+        // （也就是已经有消息落盘）时忽略改动，见 `engine::Core::set_session_storage`。
+        "storageChanged" => {
+            let storage =
+                engine::work_view_storage_from_text(event.get("storage").and_then(Value::as_str));
+            core.set_session_storage(&session_id, storage);
+        }
         "conversationOpened" => {
             core.on_conversation_opened(&session_id);
         }
         "conversationClosed" => {
             core.on_conversation_closed(&session_id);
+            // 释放挂载但**保留**上层目录：改动要跨 Core 重启与重开对话保留
+            // （specs/045 FR-006）。
+            if let Ok(project) = core.project_of(&session_id) {
+                crate::work_view::release(&project, &session_id);
+            }
         }
         "conversationRenamed" => {
             let title = event.get("title").and_then(Value::as_str).unwrap_or("");
@@ -841,6 +905,13 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
         }
         "conversationDeleted" => {
             core.on_conversation_deleted(&session_id);
+            // 隔离工作视图的上层只属于这个对话，随对话一起回收（specs/045 FR-006）。
+            // 失败只记日志：残留目录可以事后清理，对话删除本身不能因此失败。
+            if let Ok(project) = core.project_of(&session_id) {
+                if let Err(reason) = crate::work_view::remove(&project, &session_id) {
+                    eprintln!("[core] 会话 {session_id} 的工作视图回收失败：{reason}");
+                }
+            }
         }
         "conversationSpaceCleared" => {
             // `dirName` 是**对话空间目录名**，清空整个空间。
@@ -1202,7 +1273,7 @@ fn clear_memory_sessions_of_space(core: &Arc<Core>, dir_name: &str) {
 /// `meta.json` / `.jsonl` 只在第一条消息持久化（`appendMessage`）时创建，
 /// 否则「点了新建但没发消息」会在磁盘上留下一个空对话并出现在列表里。
 /// 没有工作目录时直接静默返回（不报错）。
-fn start_conversation(core: &Arc<Core>, session_id: &str, _event: &Value) {
+fn start_conversation(core: &Arc<Core>, session_id: &str, event: &Value) {
     if session_id.is_empty() {
         return;
     }
@@ -1213,8 +1284,27 @@ fn start_conversation(core: &Arc<Core>, session_id: &str, _event: &Value) {
         return;
     }
 
-    let state = core.session(session_id);
-    state.lock().unwrap().project = Some(project);
+    // 文件存储归属（specs/045 FR-001）：创建时一次写定，之后不变。缺失即真实工作区
+    // （宿主版本较旧 / 存量会话），与落盘口径一致。
+    let storage = engine::work_view_storage_from_text(event.get("storage").and_then(Value::as_str));
+    {
+        let state = core.session(session_id);
+        let mut guard = state.lock().unwrap();
+        guard.project = Some(project.clone());
+        guard.storage = storage;
+    }
+    // 隔离视图只**登记**，不建目录、不挂载：真正需要是在第一次工具调用时
+    // （`ensure_work_view`），纯声明性对话（只发一条消息就关）不留任何磁盘痕迹。
+    if storage == engine::WorkViewStorage::Isolated {
+        match crate::work_view::WorkView::register(&project, session_id) {
+            Ok(_) => {}
+            // 能力不可用 / 已登记：记日志即可，工具按真实磁盘执行（FR-007 的设计允许降级，
+            // 但必须留痕，不能静默）
+            Err(reason) => eprintln!(
+                "[core] 会话 {session_id} 的隔离工作视图登记失败：{reason}（工具按真实工作区执行）"
+            ),
+        }
+    }
     core.emit_runtime();
 }
 

@@ -48,6 +48,7 @@ fn context(sandbox: &Sandbox) -> ToolContext {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     }
 }
 
@@ -550,6 +551,7 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     let handle = std::thread::spawn(move || {
         execute(
@@ -759,6 +761,7 @@ fn bash_sleep_timeout_is_the_default_deadline_when_below_the_sleep_duration() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
 
     let outcome = execute(
@@ -862,6 +865,7 @@ fn bash_abort_kills_a_sleep_command() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
     std::thread::spawn(move || {
@@ -949,6 +953,7 @@ fn bash_abort_still_lands_while_a_grandchild_holds_the_pipe() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
     std::thread::spawn(move || {
@@ -995,6 +1000,7 @@ fn bash_completion_wins_over_a_cancel_that_lands_after_the_shell_exits() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     let flag = std::sync::Arc::clone(&cancel);
     // shell 毫秒级退出，abort 在它退出之后才置位（宽限 1s 内工具已收尾）
@@ -1124,6 +1130,7 @@ fn background_context(
         background: Some(background_hooks(&captured)),
         subagent: None,
         transfer: None,
+        work_view: None,
     }
 }
 
@@ -1436,6 +1443,7 @@ fn bash_reports_streaming_progress() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
 
     let outcome = execute(
@@ -1479,6 +1487,7 @@ fn bash_progress_preview_is_capped_at_four_kilobytes() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
 
     // 输出远大于 4K：`fullOutput` 必须带上省略标记，`totalBytes` 仍是完整长度
@@ -2552,6 +2561,7 @@ fn todo_write_updates_the_session_table() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     let outcome = execute(
         "TodoWrite",
@@ -2590,6 +2600,7 @@ fn todo_write_empty_list_clears_the_table() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     execute(
         "TodoWrite",
@@ -2619,6 +2630,7 @@ fn todo_write_failure_keeps_the_previous_table() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     execute(
         "TodoWrite",
@@ -2791,6 +2803,7 @@ fn ask_context(sandbox: &Sandbox, response: Value) -> ToolContext {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     }
 }
 
@@ -2905,6 +2918,7 @@ fn ask_user_question_sends_question_payload() {
         background: None,
         subagent: None,
         transfer: None,
+        work_view: None,
     };
     execute(
         "AskUserQuestion",
@@ -4177,6 +4191,7 @@ fn agent_target_selects_remote_spawn_hook() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
+        work_view: None,
     };
 
     // 不带 target：本机钩子
@@ -4239,6 +4254,7 @@ fn agent_over_limit_queues_and_returns_immediately() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
+        work_view: None,
     };
 
     // 占满槽位（绕过工具直取：测试自身承担 acquire/release 的配对责任）
@@ -4305,6 +4321,7 @@ fn agent_cancelled_before_dispatch_does_not_queue() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
+        work_view: None,
     };
 
     let outcome = execute(
@@ -4342,6 +4359,7 @@ fn agent_empty_target_is_rejected() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
+        work_view: None,
     };
     let outcome = execute(
         "Agent",
@@ -4373,6 +4391,7 @@ fn agent_target_rejected_when_host_does_not_support_it() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
+        work_view: None,
     };
     // 单测进程没有宿主环境快照 → cross_workspace_agent() 为 false
     let outcome = execute(
@@ -4678,6 +4697,7 @@ fn transfer_test_context(
         background: None,
         subagent: None,
         transfer: hook,
+        work_view: None,
     }
 }
 
@@ -4702,6 +4722,7 @@ fn agent_dispatch_appends_transfer_reminder() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
+        work_view: None,
     };
 
     let remote_input = json!({ "prompt": "x", "agentRole": "Master", "target": "HOST:/b" });

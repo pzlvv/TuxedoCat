@@ -2206,3 +2206,45 @@ fn conversation_load_clears_unread_completions() {
         0
     );
 }
+
+/// `workViewFilesRequested` 的请求分支（specs/046 FR-002 / FR-006）。
+///
+/// 真实列目录在 `work_view_tests` 里跑（要进命名空间）。这里覆盖请求分支的两条通道：
+/// 缺参数是「请求非法」（Err），没有已挂载视图是「业务失败」（回判别联合的失败侧）。
+#[test]
+fn work_view_files_request_reports_missing_arguments_and_unmounted_view() {
+    // 缺 sessionId / dir：请求本身非法，走 Err 而不是回失败侧
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "workViewFilesRequested", "dir": "" })
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &test_core(),
+        &json!({ "type": "workViewFilesRequested", "sessionId": "s1" })
+    )
+    .is_err());
+
+    // 会话存在但没有已挂载的视图：回 { ok: false, error }，宿主据此显示错误行
+    let response = dispatch_ui_request(
+        &test_core(),
+        &json!({
+            "type": "workViewFilesRequested",
+            "sessionId": "sess-no-view",
+            "dir": "",
+        }),
+    )
+    .expect("请求合法时必须回响应而不是 Err");
+    assert_eq!(
+        response.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "{response:?}"
+    );
+    assert!(
+        response
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "失败侧必须带非空 error：{response:?}"
+    );
+}

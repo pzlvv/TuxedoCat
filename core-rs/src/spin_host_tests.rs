@@ -273,6 +273,7 @@ fn spin_ready_bootstraps_list_timestamps() {
         false,
         None,
         &crate::engine::SessionCreator::User,
+        crate::engine::WorkViewStorage::Workspace,
     )
     .unwrap();
 

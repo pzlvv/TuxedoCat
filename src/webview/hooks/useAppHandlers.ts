@@ -219,7 +219,8 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       webSearch: nextWebSearch,
       modelRef: nextModelRef,
     }));
-    postMessage({ type: 'startNewConversation', sessionId: newSessionId });
+    // 启动自动建的空对话从「未勾选」开始：归属默认真实工作区（specs/045 FR-001）
+    postMessage({ type: 'startNewConversation', sessionId: newSessionId, storage: 'workspace' });
     // 聚焦输入框
     setTimeout(() => {
       props.mainInputRef.current?.focus();

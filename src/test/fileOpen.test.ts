@@ -4,7 +4,9 @@ import * as path from 'path';
 import { classifyFileForOpen } from '../../electron/fileTypes';
 import {
   openLocalWorkspaceFile,
+  openOverlayWorkspaceFile,
   openRemoteWorkspaceFile,
+  OVERLAY_BINARY_UNSUPPORTED,
   resolveInitialView,
   REMOTE_BINARY_UNSUPPORTED,
   type FileOpenBridge,
@@ -145,6 +147,57 @@ runTests('fileOpen + markdown 预览', async () => {
 
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // ── Overlay 对话分流（specs/046 FR-003）──
+  {
+    // 内容由 Core 提供（宿主不读盘），这里用假读取原语记录请求过的相对路径
+    const requested: string[] = [];
+    const overlayReader = {
+      sessionId: 'sess-overlay',
+      readText: async (rel: string) => {
+        requested.push(rel);
+        return `overlay:${rel}`;
+      },
+    };
+    const overlayRoot = path.join(os.tmpdir(), 'tuxedo-overlay-root');
+
+    const mdCalls: { method: string; init: unknown }[] = [];
+    await openOverlayWorkspaceFile(recordingBridge(mdCalls), overlayReader, overlayRoot, 'doc.md', 'tree');
+    check('Overlay md → Markdown 预览出口', mdCalls.length === 1 && mdCalls[0].method === 'markdown');
+    check('Overlay md 内容来自 Core 而非磁盘',
+      (mdCalls[0]?.init as { content: string }).content === 'overlay:doc.md');
+    check('Overlay 视图不给 watchTarget（视图路径宿主看不到）',
+      (mdCalls[0]?.init as { watchTarget: unknown }).watchTarget === null);
+    check('Overlay 视图不给 diffSource（HEAD 是磁盘事实，对比会产生伪差异）',
+      (mdCalls[0]?.init as { diffSource: unknown }).diffSource === null);
+
+    const txtCalls: { method: string; init: unknown }[] = [];
+    await openOverlayWorkspaceFile(recordingBridge(txtCalls), overlayReader, overlayRoot, 'note.txt', 'changes');
+    check('Overlay 文本 → 文本查看器出口', txtCalls.length === 1 && txtCalls[0].method === 'text');
+    check('Overlay 文本初始视图恒为全文（没有可对比的磁盘版本）',
+      (txtCalls[0]?.init as { initialView: string }).initialView === 'full');
+    check('请求的相对路径是约定格式', requested.includes('note.txt'));
+
+    // 图片 / 二进制在 Overlay 对话里不支持打开
+    for (const name of ['logo.png', 'a.zip']) {
+      let rejected = '';
+      try {
+        await openOverlayWorkspaceFile(recordingBridge([]), overlayReader, overlayRoot, name, 'tree');
+      } catch (err) {
+        rejected = err instanceof Error ? err.message : String(err);
+      }
+      check(`Overlay 拒绝打开 ${name}`, rejected === OVERLAY_BINARY_UNSUPPORTED);
+    }
+
+    // 越界路径与本地同一份校验
+    let escaped = '';
+    try {
+      await openOverlayWorkspaceFile(recordingBridge([]), overlayReader, overlayRoot, '../etc/passwd', 'tree');
+    } catch (err) {
+      escaped = err instanceof Error ? err.message : String(err);
+    }
+    check('Overlay 拒绝越界路径', escaped.includes('escapes the workspace root'));
   }
 
   // ── 远程分流 ──

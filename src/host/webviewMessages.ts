@@ -444,6 +444,11 @@ export type HostToWebviewMessage = {
   type: 'clearQueuedMessage';
   sessionId: string;
 } | {
+  /** 文件存储能力（specs/045 FR-001）：`isolatedWorkView` 为 false 时不渲染入口。 */
+  type: 'setStorageCapabilities';
+  isolatedWorkView: boolean;
+  reason: string;
+} | {
   type: 'setSkills';
   /** Skill 列表 */
   skills: Array<{ name: string; description: string; isBuiltin?: boolean }>;
@@ -709,8 +714,32 @@ export type WebviewToHostMessage = {
   /** 多视图宿主：顶栏「+」新开一个「新建对话」视图 */
   type: 'openNewConversation';
 } | {
+  /**
+   * 请求本 Core 的文件存储能力（specs/045 FR-001）。宿主转发 Core 的应答，
+   * 再以 `setStorageCapabilities` 推回。
+   */
+  type: 'requestStorageCapabilities';
+} | {
   type: 'startNewConversation';
   sessionId: string;
+  /**
+   * 文件存储归属（specs/045 FR-001）：新建对话时一律显式给出。
+   *
+   * 必选而不是可选：勾选框在「新建对话」之后才渲染，用户勾选的时刻晚于本消息，
+   * 所以这里的值只是**初始**归属，随后的勾选取 `setConversationStorage` 补发。
+   */
+  storage: 'workspace' | 'isolated';
+} | {
+  /**
+   * 改会话的文件存储归属（specs/045 FR-001）。
+   *
+   * 只在「新建对话、还没有任何消息」时有意义：勾选框在 `startNewConversation`
+   * 之后才出现，用户勾选时必须补发一次，否则 Core 记的仍是初始的 `workspace`。
+   * Core 侧按「meta.json 已存在即忽略」拒绝改动，归属因此仍然是写一次不变。
+   */
+  type: 'setConversationStorage';
+  sessionId: string;
+  storage: 'workspace' | 'isolated';
 } | {
   type: 'deleteConversation';
   sessionId: string;
