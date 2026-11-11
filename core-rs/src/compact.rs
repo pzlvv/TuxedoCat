@@ -997,12 +997,14 @@ fn compact_conversation_inner(
         "result": { "status": "complete", "postCompactTokenCount": result.post_compact_tokens },
     }));
 
-    // 归档：被摘要掉的消息 + 新摘要（保留区不进归档，展开时与归档一起重放）
+    // 归档：被摘要掉的消息 + 新摘要（保留区不进归档，展开时与归档一起重放）。
+    // 按代次追加而不是覆盖：多次压缩后每次展开都还能看到更早的原文
+    // （`docs/features/compaction.md` FR-005）。
     if let Ok(project) = core.project_of(session_id) {
         let mut archive = messages_to_summarize.clone();
         archive.push(result.summary_messages[0].clone());
-        if let Err(error) = history::save_compact_archive(session_id, &project, &archive) {
-            eprintln!("[core] compact: failed to save compact archive: {error}");
+        if let Err(error) = history::append_compact_archive(session_id, &project, &archive) {
+            eprintln!("[core] compact: failed to append compact archive: {error}");
         }
     }
 

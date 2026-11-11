@@ -486,8 +486,15 @@ export type HostToWebviewMessage = {
   type: 'smartNamingResult';
   sessionId: string;
 } | {
+  /**
+   * 压缩归档展开数据（`docs/features/compaction.md` FR-005）：各代与当前保留区合并成的
+   * **完整**显示序列 + 每代在其中的起始下标。展开到第几层由 webview 决定；取不到归档时
+   * 两个字段都是空数组（webview 据此保持展开按钮不变、可见集合不变）。
+   */
   type: 'expandCompactDone';
   sessionId: string;
+  messages: MessageData[];
+  generationStarts: number[];
 } | {
   type: 'balanceUpdate';
   sessionId: string;

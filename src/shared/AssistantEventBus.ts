@@ -748,8 +748,10 @@ export type UiRequest =
    */
   | { type: 'balanceRequested'; sessionId?: string }
   /**
-   * 压缩归档展开：归档消息 + 当前未压缩部分（`loadCompactArchive` + 主 JSONL 的合并）。
-   * 返回 `null` 表示该会话没有归档。
+   * 压缩归档展开：各代归档 + 当前未压缩部分合并成的**完整**展开序列，附带每代的起始下标
+   * （`docs/features/compaction.md` FR-005）。返回 `null` 表示该会话没有归档。
+   *
+   * 展开到第几层由 UI 决定：宿主只把这条序列交给 webview，webview 按层级取尾部。
    */
   | { type: 'compactArchiveRequested'; sessionId: string }
   /**
@@ -819,6 +821,25 @@ export type WatchWorkspaceFileResult =
   | { ok: true }
   | { ok: false; error: string };
 
+/**
+ * 压缩归档的展开序列（`UiRequest.compactArchiveRequested` 的应答，
+ * `docs/features/compaction.md` FR-005）。
+ *
+ * 各代按代次升序拼接、按 `uuid` 去重后，再追加当前保留区——这是「展开到全部代次」的
+ * 完整显示序列；宿主按 `generationStarts` 分段转换成显示消息，webview 按展开层级取尾部。
+ */
+export interface CompactArchiveDisplay {
+  /** 完整展开序列（各代按代次升序 + 当前保留区，已按 `uuid` 去重） */
+  messages: Message[];
+  /**
+   * 每代第一条记录在 `messages` 里的下标，按代次升序、单调不减；长度即归档代次数。
+   *
+   * 第 `i` 代的第一条通常是上一代的摘要（同一条消息只保留首次出现），因此分界落在它上面：
+   * 展开到第 `depth` 层时从 `generationStarts[length - depth]` 开始显示。
+   */
+  generationStarts: number[];
+}
+
 /** 会话加载结果（`UiRequest.conversationLoadRequested`） */
 export interface LoadedConversation {
   messages: Message[];
@@ -876,7 +897,7 @@ export type UiRequestResultMap = {
     isUnlimited: boolean;
     fetchedAt: number;
   } | null;
-  compactArchiveRequested: Message[] | null;
+  compactArchiveRequested: CompactArchiveDisplay | null;
   mcpServersRequested: McpServerInfo[];
   conversationSpacesRequested: ConversationSpaceInfo[];
   flushSessionRequested: null;

@@ -141,7 +141,7 @@ export type CoreRequestHandlers = {
 | 7 | `toolProgress` | `sessionId`, `toolUseId`, `progress: ToolProgressData` | `engine.rs` | `onToolProgress` | `toolProgress` |
 | 8 | `aiBegin` | `sessionId` | `engine.rs`（每轮 LLM 调用开始） | `onAIBegin` | `aiBegin` + `showThinkingAnimation` |
 | 9 | `aiEnd` | `sessionId` | `engine.rs`（每轮 LLM 调用结束） | `onAIEnd` | `aiEnd` + `showThinkingAnimation` + `balance_update` |
-| 10 | `messagesReplaced` | `sessionId`, `messages: readonly MessageData[]` | `replay.rs`（压缩后重建）、`main.rs`（对话级回退截断后重发） | `onMessagesReplaced` | `messagesReplaced`（整批替换消息列表；宿主 `expandCompact` 也投递同一条 wire message） |
+| 10 | `messagesReplaced` | `sessionId`, `messages: readonly MessageData[]` | `replay.rs`（压缩后重建）、`main.rs`（对话级回退截断后重发） | `onMessagesReplaced` | `messagesReplaced`（整批替换消息列表） |
 | 11 | `queryBegin` | `sessionId` | `engine.rs`（主查询与子代理轮次） | `onQueryBegin` | `queryBegin` + `showThinkingAnimation` |
 | 12 | `queryEnd` | `sessionId` | 同上 | `onQueryEnd` | `queryEnd` + `showThinkingAnimation` |
 | 13 | `titleChanged` | `sessionId`, `title` | `engine.rs`（`update_conversation_title`：重命名与 spin 改名）；新会话以空标题建档，不发本事件 | `onTitleChanged` | `setTitle` |
@@ -256,7 +256,7 @@ MCP 引用；两条事件都在发出前先登记会话工作目录（新会话�
 | 环境查询 | `requestTheme` / `requestContextLimit` | 只读宿主环境并回包，不涉及 core 状态；按 `ctx.sender` 定向投递（`sender` 为 `null` 走默认路由，见[docs/architecture/host-ui-modules.md 第 3 节](host-ui-modules.md#3-webviewmessagehandler)） |
 | 列表查询 | `getConversations` | 走 `WebViewUiPort.refreshConversations()` → `ConversationManager.refresh()`（唯一产出 `conversationsData` 的地方，见[contracts.md 第 4 节](contracts.md#4-对话相关数据conversationmanager)） |
 | 请求响应 | `respondUserChoice` | 走 `CoreRequest.userChoice` 的 Promise 回传 |
-| 纯显示操作 | `expandCompact` | 只读归档文件 + 重放消息到 webview，不改任何 core 状态（LLM 仍只看压缩后的消息） |
+| 纯显示操作 | `expandCompact` | 只读归档文件，回一条带「各代 + 保留区」完整序列与每代起始下标的 `expandCompactDone`（逐层展示由 webview 决定），不改任何 core 状态（LLM 仍只看压缩后的消息） |
 
 ## 3. 两侧订阅
 

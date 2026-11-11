@@ -282,6 +282,51 @@ fn repeated_compact_keeps_the_global_user_input_head() {
     crate::compact::reset_for_test();
 }
 
+/// 多次压缩：归档按代次累积（specs/047 FR-001）——第二次压缩不覆盖第一次的原文，
+/// 两代记录都在文件里，代次 1 / 2 单调递增。
+#[test]
+fn repeated_compact_appends_a_second_archive_generation() {
+    let sandbox = Sandbox::new("engine-compact-archive-generations");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+    harness.core.request_compact("s1");
+
+    let archive_path = crate::history::compact_archive_path("s1", &project).unwrap();
+    let after_first = std::fs::read_to_string(&archive_path).unwrap();
+    let first_records = crate::history::load_compact_archive_records("s1", &project);
+    assert!(
+        first_records.iter().all(|record| record.generation == 1),
+        "首次压缩全部落第 1 代"
+    );
+
+    // 追加消息触发第二次压缩：本代归档区从「上一次的摘要」开始
+    append_messages(&harness, "s1", &project, 40, 40);
+    harness.core.request_compact("s1");
+
+    let after_second = std::fs::read_to_string(&archive_path).unwrap();
+    assert!(
+        after_second.starts_with(&after_first),
+        "第 1 代记录必须逐字节保留"
+    );
+    let records = crate::history::load_compact_archive_records("s1", &project);
+    let generations: Vec<u64> = records.iter().map(|record| record.generation).collect();
+    assert!(
+        generations.contains(&1) && generations.contains(&2),
+        "两代都在：{generations:?}"
+    );
+    assert!(
+        generations.windows(2).all(|pair| pair[0] <= pair[1]),
+        "代次按文件顺序单调不减：{generations:?}"
+    );
+
+    crate::compact::reset_for_test();
+}
+
 /// 手动压缩：没有可压缩的消息时**什么都不做**（不发事件、不替换、不排队）。
 #[test]
 fn manual_compact_is_a_noop_without_compactable_messages() {

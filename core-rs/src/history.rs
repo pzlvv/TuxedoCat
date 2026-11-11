@@ -38,24 +38,63 @@ pub fn metadata_path(session_id: &str, project: &str) -> Result<PathBuf, String>
         .join(session_file_name(session_id, ".meta.json")?))
 }
 
-/// 读取压缩归档：返回归档里的 `message` 对象。
+/// 压缩归档里的一条记录。
+///
+/// `generation` 是压缩代次（1 起，见 `docs/features/compaction.md` FR-005）。
+/// 读不到代次标识的记录属于「按代次累积」之前的旧格式，一律按第 1 代处理。
+pub struct CompactArchiveRecord {
+    pub generation: u64,
+    pub message: Value,
+}
+
+/// 文件缺代次标识时的代次：改动前写下的归档天然是最早的一代。
+const LEGACY_COMPACT_GENERATION: u64 = 1;
+
+/// 解析归档 JSONL 文本。
+///
+/// 口径与 `parse_messages` 一致：空行跳过、坏行跳过（进程在写一半时崩溃留下的半行
+/// 不能让整份归档读不出来），孤立代理项转义先清洗。
+fn parse_compact_archive(text: &str) -> Vec<CompactArchiveRecord> {
+    text.lines()
+        .filter(|line| !util::js_trim(line).is_empty())
+        .filter_map(|line| {
+            let stored =
+                serde_json::from_str::<Value>(&util::sanitize_json_surrogates(line)).ok()?;
+            let message = stored.get("message")?.clone();
+            let generation = stored
+                .get("compactGeneration")
+                .and_then(Value::as_u64)
+                .unwrap_or(LEGACY_COMPACT_GENERATION);
+            Some(CompactArchiveRecord {
+                generation,
+                message,
+            })
+        })
+        .collect()
+}
+
+fn read_compact_archive_records(path: &std::path::Path) -> Vec<CompactArchiveRecord> {
+    let Ok(text) = util::read_to_string_lossy(path) else {
+        return Vec::new();
+    };
+    parse_compact_archive(&text)
+}
+
+/// 读取压缩归档：返回每代记录的 `message` 对象与所属代次。
 ///
 /// 文件不存在或读取失败时返回空表（调用方据此判定「没有归档」）。
-pub fn load_compact_archive(session_id: &str, project: &str) -> Vec<Value> {
+pub fn load_compact_archive_records(session_id: &str, project: &str) -> Vec<CompactArchiveRecord> {
     let Ok(path) = compact_archive_path(session_id, project) else {
         return Vec::new();
     };
-    let Ok(text) = util::read_to_string_lossy(&path) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            // 与 `parse_messages` 同口径：宿主写入的行可能带孤立代理项转义，清洗后再解析
-            serde_json::from_str::<Value>(&util::sanitize_json_surrogates(line))
-                .ok()
-                .and_then(|stored| stored.get("message").cloned())
-        })
+    read_compact_archive_records(&path)
+}
+
+/// 读取压缩归档：只取 `message` 对象（按文件顺序，跨代拼接）。
+pub fn load_compact_archive(session_id: &str, project: &str) -> Vec<Value> {
+    load_compact_archive_records(session_id, project)
+        .into_iter()
+        .map(|record| record.message)
         .collect()
 }
 
@@ -864,18 +903,32 @@ pub fn replace_messages(session_id: &str, project: &str, messages: &[Value]) -> 
     Ok(())
 }
 
-/// 保存压缩归档：被摘要掉的消息 + 新摘要。
+/// 追加一代压缩归档：被摘要掉的消息 + 本代摘要。
 ///
 /// 保留区（最近 N 条）**不**进归档——它们仍在会话文件里，展开时与归档一起重放。
-pub fn save_compact_archive(
+///
+/// 归档只增不改（`docs/features/compaction.md` FR-005）：既有代次的记录逐字节保留，
+/// 本代追加在文件末尾，记录带 `compactGeneration`（1 起）。代次序号取「既有最大代次 + 1」，
+/// 旧格式记录按第 1 代计入，因此升级后第一次压缩就是第 2 代。
+pub fn append_compact_archive(
     session_id: &str,
     project: &str,
     messages: &[Value],
-) -> Result<(), String> {
+) -> Result<u64, String> {
     validate_session_id(session_id)?;
     config::ensure_project_conversation_dir(project)?;
     let path = compact_archive_path(session_id, project)?;
 
+    let _guard = WRITE_LOCK.lock().unwrap();
+    // 先在锁内读既有代次：并发两次压缩各自算代次会撞号
+    let generation = read_compact_archive_records(&path)
+        .iter()
+        .map(|record| record.generation)
+        .max()
+        .unwrap_or(LEGACY_COMPACT_GENERATION - 1)
+        + 1;
+
+    // `parentUuid` 只在本代内串起来；跨代的父子链没有意义，分代依据是 `compactGeneration`
     let mut lines = String::new();
     let mut previous_uuid: Option<String> = None;
     for message in messages {
@@ -892,6 +945,7 @@ pub fn save_compact_archive(
             "uuid": uuid,
             "parentUuid": previous_uuid,
             "timestamp": timestamp,
+            "compactGeneration": generation,
             "message": message,
         });
         lines.push_str(&serde_json::to_string(&record).map_err(|err| err.to_string())?);
@@ -899,8 +953,15 @@ pub fn save_compact_archive(
         previous_uuid = Some(uuid);
     }
 
-    let _guard = WRITE_LOCK.lock().unwrap();
-    std::fs::write(&path, lines).map_err(|err| format!("write {} failed: {err}", path.display()))
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|err| format!("open {} failed: {err}", path.display()))?;
+    file.write_all(lines.as_bytes())
+        .map_err(|err| format!("append {} failed: {err}", path.display()))?;
+    Ok(generation)
 }
 
 /// 追加一行 JSONL 到该会话的消息文件

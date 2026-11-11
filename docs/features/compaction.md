@@ -30,7 +30,8 @@ last_reviewed: 2026-11-10
   - **AC-7**（FR-004）：GIVEN 会话已经历多次压缩 WHEN 再次压缩 THEN 会话**最初**的 4 条真实用户输入仍出现在摘要的用户输入历史中
   - **AC-8**（FR-004）：GIVEN 保留区里的用户输入 WHEN 生成历史章节 THEN 不列入（避免与上下文重复）
 - 场景 5：归档展开
-  - **AC-9**（FR-005）：GIVEN 已压缩会话 WHEN 用户展开 THEN 只读重放「归档 + 保留区」给 webview，不改任何 core 状态，LLM 上下文不变
+  - **AC-9**（FR-005）：GIVEN 已压缩会话 WHEN 用户展开 THEN 只读重放「各代归档 + 保留区」给 webview，不改任何 core 状态，LLM 上下文不变
+  - **AC-14**（FR-005）：GIVEN 会话已压缩 N 次 WHEN 用户第 k 次点击「展开压缩的对话历史」THEN 消息区显示第 N-k+1 到第 N 代 + 保留区，第 N 次点击后按钮消失
 - 场景 6：运行中后台任务
   - **AC-10**（FR-006）：GIVEN 压缩开始时本会话有运行中的后台 Bash 任务 WHEN 生成摘要消息 THEN 正文含这些任务的 `taskId` 与描述，按注册序列出
   - **AC-11**（FR-006）：GIVEN 运行中任务数超过上限 WHEN 生成章节 THEN 只列出上限内的任务并报出剩余条数
@@ -81,7 +82,8 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
    摘要正文带用户输入历史章节（FR-004）与运行中后台任务章节（FR-006）。
 5. 组装压缩后的消息：`[边界标记, 摘要消息, ...保留区]`（`build_post_compact_messages`）。
 6. `compactEnd`（`complete`，带压缩后上下文占用的重算值）与归档写盘（`history.rs` 的
-   `save_compact_archive`：归档区 + 摘要）在 `compact_conversation` 内完成；返回后整文件
+   `append_compact_archive`：本代归档区 + 摘要，追加在第 N 代之后）在 `compact_conversation`
+   内完成；返回后整文件
    重写 jsonl、标记 `meta.json` 的 `context.isCompacted = true` / `isExpanded = false`，
    最后 `replay.rs` 的 `replay_messages_to_ui` 投递 `messagesReplaced` 整批替换 UI 消息区。
 
@@ -136,9 +138,28 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 归档文件（`compact archive`）只保存被摘要掉的归档区消息 + 本次摘要消息，**不含保留区**
 （保留区仍可见，展开时与归档一起重放）。
 
-- 展开（`expandCompact`）是**只读**操作：宿主读归档文件并把「归档 + 保留区」重放给
+**归档按代次累积、只增不改**：一次压缩对应一代，记录带 `compactGeneration`（1 起），
+新的一代追加在文件末尾，既有代次的记录逐字节保留（`history.rs` 的
+`append_compact_archive`）。代次序号 = 既有最大代次 + 1；读不到代次标识的记录属于
+「按代次累积」之前的旧格式，按第 1 代处理，因此旧会话升级后第一次压缩就是第 2 代，
+不需要迁移。
+
+**展开是逐层的**：`UiRequest.compactArchiveRequested` 应答
+`{ messages, generationStarts } | null`——`messages` 是「各代按代次升序拼接 + 当前保留区」
+的完整序列（按 `uuid` 去重，上一代末尾的摘要同时是下一代归档区的第一条，只出现一次），
+`generationStarts[i]` 是第 `i+1` 代第一条在该序列里的下标（升序、单调不减，重合表示该代
+归档区只含已被去重的上代摘要）。webview 按展开层级 `depth`（已展开几代，0 = 压缩后形态）
+取 `generationStarts[代次数 - depth]` 起的尾部：每点一次「展开压缩的对话历史」加深一层，
+在已显示内容**之前**补入一代更早的内容，`depth === 代次数` 后按钮消失。
+层级只存在 webview 内存，换会话 / 新建对话 / 又完成一次压缩都归零。
+
+- 展开（`expandCompact`）是**只读**操作：宿主读归档文件并把合并后的完整序列交给
   webview，不改任何 core 状态；LLM 仍只看压缩后的消息（[principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)）。
+- 宿主按 `generationStarts` **分段**调用 `buildReplayMessageData` 再累加下标：该转换会丢掉
+  压缩边界、空消息与纯 `tool_result` 的 user 消息，整体转换后 Core 给的下标会错位。
 - 归档读取经 `UiRequest.compactArchiveRequested`（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)）。
+- 取不到归档（无文件 / 读失败 / 空结果）时 `expandCompactDone` 回空载荷：可见集合与展开
+  层级都不动，按钮保留。
 
 ### FR-006：运行中后台任务随压缩携带
 
@@ -194,7 +215,7 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
                     ├─ 组装 [边界, 摘要, ...保留区]
                     ├─ 重算压缩后占用（估算）
                     ├─ compactEnd ──▶ UI（进度提示 complete / error + 用量按新值刷新）
-                    ├─ save_compact_archive（归档区 + 摘要）
+                    ├─ append_compact_archive（本代归档区 + 摘要，追加在第 N 代之后）
                     ├─ 整文件重写 jsonl + meta 标记 + totalContextTokens 写回
                     └─ replay_messages_to_ui ──messagesReplaced──▶ UI（整批替换消息区）
 ```
@@ -209,6 +230,14 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 - **孤立工具调用**：截断导致的配对断裂由 `sanitize_tool_pairing` 修复（AC-6）。
 - **运行中后台任务**：压缩开始时按任务登记表现算一次并进摘要消息（FR-006）；
   登记表为空时不出章节。章节不随后续完成 / 中止回写（AC-13）。
+- **归档写盘失败**：`compactEnd` 仍是 `complete`；展开取不到归档 → 展开回空载荷，
+  可见集合与层级不变、按钮保留。
+- **归档尾部半行**：进程写一半崩溃留下的坏行跳过，其余记录照常读出，下一次压缩照常追加新代。
+- **归档被外部删除**：展开取不到归档 → 同上；`hasCompactArchive` 在下一次会话加载时变假。
+- **展开中会话被其他实例持有**：归档读取是纯读，不受会话锁限制（与压缩写入口不同）。
+- **代次分界重合**：某代归档区只含已被去重的上代摘要时，两代分界落在同一下标——该层
+  可见集合不变，但层级计数照常推进，展开到最后仍会露出全部代次。
+- **会话回退（`rewindConversation`）**：不回写也不回收归档，各代仍是压缩那一刻的事实。
 
 ## 5. 非目标
 
@@ -228,5 +257,5 @@ US-17（压缩历史展开）；无新增 US。
 | FR-002 | `core-rs/src/main.rs` 的 `compactRequested` 分发（空闲立即 / 非空闲延后） | `core-rs/src/compact_engine_tests.rs`（手动 / 自动触发、延后执行） | 自动 |
 | FR-003 | `core-rs/src/compact.rs` 的 `compact_conversation` / `sanitize_tool_pairing` | `core-rs/src/compact_engine_tests.rs`；`core-rs/src/compact_tests.rs` | 自动 |
 | FR-004 | `core-rs/src/compact.rs` 的 `select_user_input_history` | `core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_keeps_the_global_user_input_head` | 自动 |
-| FR-005 | 宿主 `expandCompact`（`src/host/ui/webviewMessageHandler.ts`）+ `UiRequest.compactArchiveRequested` 应答 | e2e `e2e/webview/messagePresentation.spec.ts`（展开） | 自动 |
+| FR-005 | `core-rs/src/history.rs` 的 `append_compact_archive`（按代次追加）+ `core-rs/src/main.rs` 的 `compact_archive_display`（合并与每代起始下标）+ 宿主 `expandCompact`（`src/host/ui/webviewMessageHandler.ts`，分段转换）+ `src/webview/compactExpand.ts`（层级 → 可见集合 / 按钮显隐） | `core-rs/src/history_tests.rs`（追加不覆盖 / 旧格式 / 半行）、`core-rs/src/main_tests.rs` 的 `compact_archive_display_*`、`core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_appends_a_second_archive_generation`、`src/test/compactExpand.test.ts`、e2e `e2e/webview/messagePresentation.spec.ts`（US-17 逐层展开） | 自动 |
 | FR-006 | `core-rs/src/compact.rs` 的 `compact_conversation_inner` / `generate_compact_user_message` / `strip_running_tasks_section`；`core-rs/src/bash_task.rs` 的 `build_running_tasks_section` / `RUNNING_TASKS_HEADING`；`core-rs/src/engine.rs` 的 `enqueue_agent_message` 的 `compacting` 守卫 | `core-rs/src/bash_task_tests.rs` 的 `running_tasks_section_*` 五条；`core-rs/src/compact_tests.rs` 的 `strip_running_tasks_tests` 三条；`core-rs/src/compact_engine_tests.rs` 的 `compact_carries_the_running_background_tasks_into_the_summary_message` / `compact_without_running_tasks_adds_no_section`；`core-rs/src/engine_tests.rs` 的 `agent_message_during_compaction_is_queued_without_starting_the_consumer`；对照表 `core-rs/fixtures/compact.json` 的 `compactUserMessages` | 自动 |

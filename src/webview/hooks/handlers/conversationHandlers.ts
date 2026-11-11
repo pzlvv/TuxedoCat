@@ -4,9 +4,10 @@ import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { resolveTitle } from '../../i18n';
 import { createSessionState } from '../../sessionState';
-import { AgentMode, QueuedMessagePayload, SessionRuntimeState } from '../../types';
+import { AgentMode, Message, QueuedMessagePayload, SessionRuntimeState } from '../../types';
 import { postMessage, setConversationListOwner } from '../../webviewEnv';
 import { applyLoadedConversationState, replayBufferedToolStatusIntoMessages, restoreMessagesFromConversation, toUiMessage } from './shared';
+import { compactGenerations, compactVisibleMessages } from '../../compactExpand';
 
 /**
  * webview 消息处理的 conversation 域 handler。
@@ -213,9 +214,11 @@ export function handleConversationConversationLoaded(
             postMessage({ type: 'requestSessionTodos', sessionId: loadedSessionId });
             // 恢复该会话的排队消息横幅（若有）
             props.setQueuedMessage(props.queuedMessageRef.current.get(loadedSessionId) ?? null);
-            // 设置压缩状态
+            // 设置压缩状态：展开层级与缓存属于视图内状态，换会话即归零
+            // （docs/features/compaction.md FR-005）
             props.setHasCompactArchive(wire.hasCompactArchive === true);
-            props.setIsCompactExpanded(false);
+            props.setCompactArchiveView(null);
+            props.setCompactExpandDepth(0);
             // 记录父会话 ID（本地子对话时有值；跨工作区对话无父会话，specs/025 FR-002）
             props.setParentSessionId(wire.parentSessionId || null);
             // 会话创建者（specs/025 FR-002）：返回按钮按它跳发起方（跨工作区）或父会话（本地）
@@ -488,7 +491,8 @@ export function handleConversationMessagesReplaced(
   ctx: HandlerContext,
 ): void {
   const { props, scrollToBottomBeforeRender, sessionId } = ctx;
-          // 整批替换本地消息列表（core 的压缩后重建 / 宿主的展开归档共用这一条）。
+          // 整批替换本地消息列表（压缩后重建 / 对话级回退截断共用这一条；展开归档走
+          // `expandCompactDone`，因为它需要同时带展开层级信息）。
           // 与 addMessage 的差别：这里不追加、不处理排队消息与 token 累加，
           // 只把整批历史消息铺成当前列表。
           if (msg.sessionId && msg.sessionId !== sessionId) {
@@ -573,14 +577,35 @@ export function handleConversationSmartNamingResult(
           return;
 }
 
+/**
+ * 压缩归档展开数据到达（specs/047 FR-002）。
+ *
+ * 宿主一次给出「全部代次 + 保留区」的完整序列与每代起始下标；这里铺第 1 层（最新一代），
+ * 之后每次点击都在本地加深一层（`App.handleExpandCompact` 读缓存）。
+ *
+ * 空载荷 = 取不到归档：可见集合与展开层级都不动，按钮保持可见（AC-13）。
+ */
 export function handleConversationExpandCompactDone(
   msg: Extract<HostToWebviewWire, { type: 'expandCompactDone' }>,
   ctx: HandlerContext,
 ): void {
-  const { props } = ctx;
-          // 展开完成，隐藏展开按钮
-          props.setHasCompactArchive(false);
-          props.setIsCompactExpanded(true);
+  const { props, scrollToBottomBeforeRender, fromCurrentSession } = ctx;
+  // 只作用于当前展示的会话：别的会话的展开数据不能铺到当前消息区
+  if (!fromCurrentSession) return;
+  if (msg.messages.length === 0 || compactGenerations(msg) === 0) {
+    return;
+  }
+  // 缓存转换后的显示消息：后续每次点击只切片、不再重复转换（AC-9）
+  const view = {
+    messages: msg.messages.map(toUiMessage),
+    generationStarts: msg.generationStarts,
+  };
+  const visible = compactVisibleMessages<Message>(view, 1);
+  if (!visible) return;
+  props.setCompactArchiveView(view);
+  props.setCompactExpandDepth(1);
+  scrollToBottomBeforeRender();
+  props.setMessages(visible);
 }
 
 /**

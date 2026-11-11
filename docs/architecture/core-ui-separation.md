@@ -146,7 +146,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | `conversationListRequested` | 会话列表元数据 |
 | `smartNamingRequested` | 读会话 + 调 LLM + 解析标题 |
 | `balanceRequested` | 按 provider 的 Key 查余额 |
-| `compactArchiveRequested` | 归档与主 JSONL 合并 |
+| `compactArchiveRequested` | 各代归档与主 JSONL 合并成完整展开序列 + 每代起始下标（展开到第几层由 UI 决定） |
 
 配置读写不在其中：写归 UI（第 4 节），读经快照（第 4.3 节）。
 

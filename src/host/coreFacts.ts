@@ -13,6 +13,7 @@
 
 import { requireEventBus } from '../shared/AssistantEventBus.js';
 import type {
+  CompactArchiveDisplay,
   LoadedConversation,
   SkillListItem,
   SpinDesignReadResult,
@@ -29,7 +30,7 @@ import type {
 } from '../shared/AssistantEventBus.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
 import type { McpServerInfo } from '../shared/webviewTypes.js';
-import type { Message, TodoEntry } from '../shared/types.js';
+import type { TodoEntry } from '../shared/types.js';
 import { getSettingsStore, type UiLanguage, type UiFontSize } from './SettingsStore.js';
 
 export type { UiLanguage, UiFontSize };
@@ -100,11 +101,13 @@ export async function requestBalance(
 }
 
 /**
- * 压缩归档展开要显示的消息序列（`归档 + [旧格式的摘要] + 当前保留区`）。
+ * 压缩归档的完整展开序列（各代按代次升序 + 当前保留区）与每代起始下标。
  *
- * 没有归档时返回 `null`。
+ * 没有归档时返回 `null`。展开到第几层是 UI 的决定，这里只给完整事实。
  */
-export async function requestCompactArchive(sessionId: string): Promise<Message[] | null> {
+export async function requestCompactArchive(
+  sessionId: string,
+): Promise<CompactArchiveDisplay | null> {
   return requireEventBus().requestCore({ type: 'compactArchiveRequested', sessionId });
 }
 
