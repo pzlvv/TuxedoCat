@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-12
 ---
 
 # 规格：Electron 多工作目录
@@ -270,7 +270,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   的共享连接池。Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层
   独立，首连失败后不会自连，不推就停在「读取失败，点击重试」
   （`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
-- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录与打开文件走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）。
+- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录 / 变更清单 / 打开文件都走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）：目录树 → `sidebar:files-list-overlay`；文档视图 / 全部变更 → `sidebar:files-doc-list-overlay`（磁盘上的 git 看不到只落私有上层目录的改动，Core 在该对话视图里跑 git，行集与徽标和磁盘口径同一套解析与组装）；双击打开 → `sidebar:files-open-overlay`（一次给出视图内容与视图里 HEAD 的版本）。归属变化即清缓存并重取；视图未建立 / Core 不可用 / git 失败显示错误行，不回退磁盘清单。Overlay 来源下不挂磁盘 `.git` 哨兵（HEAD 与改动都在视图里，宿主看不到）。
 
 ### 9.1 空态
 

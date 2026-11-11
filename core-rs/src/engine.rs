@@ -293,6 +293,12 @@ pub struct SessionState {
     /// 与 `sub_agent_driver_done` 的差别：本标记在 Reply 工具执行的**当轮**置位
     /// （早于驱动退出），盖住「Reply 之后、驱动收尾之前」的窗口。普通会话恒为假。
     pub sub_agent_reply_called: bool,
+    /// 已向创建者回报过「本子代理被用户取消」（`specs/defects/subagent-abort-reports-no-cancel-notice`）。
+    ///
+    /// 只由 [`Core::notify_creator_of_cancel`] 置位，重置只随会话重建：中止是单向的，
+    /// 同一子代理不会「取消两次」，重复 abort（两阶段各命中一次）只回报一次。
+    /// 普通会话恒为假。
+    pub cancel_notice_sent: bool,
     /// 工作模式（`QueryEngine.workMode`）：`spin` 期间子代理 Reply 不进消费队列
     /// （见 `deliver_agent_reply` 的 spin 分支），由 SpinLoop 消费。单向：进入后
     /// 不再写回 `Normal`。
@@ -482,6 +488,7 @@ impl SessionState {
             silent_abort: false,
             sub_agent_driver_done: false,
             sub_agent_reply_called: false,
+            cancel_notice_sent: false,
             work_mode: WorkMode::Normal,
             spin_sub_agents: HashSet::new(),
             spin_replied: HashSet::new(),
@@ -1073,7 +1080,7 @@ impl Core {
         // 对齐 `releaseSessionResources` 的第 1 步（`Integration.abortSessionTree`）：
         // 会话关闭时中止整棵工作树（前台查询 + 后台 Bash + 递归子代理），
         // 避免孤儿进程 / 子代理继续跑。
-        self.abort_session_scope(session_id, &mut HashSet::new());
+        self.abort_session_scope(session_id, &mut HashSet::new(), &mut Vec::new());
         self.drop_session(session_id);
         tools::clear_session_todos(session_id);
         // MCP：会话关闭 → 释放该会话的全部引用（归零的 server 进延迟回收）
@@ -1092,7 +1099,9 @@ impl Core {
     /// - 前台空闲但仍有后台 Bash 任务或子代理 → 中止它们（含递归子代理）。
     ///
     /// 阶段判定读与 `sessionRuntimeChanged` 同一批事实，与 UI 按钮三态同源。
-    pub fn on_abort(&self, session_id: &str) {
+    /// 中止范围内被取消的子代理向创建者回报「已被取消」
+    /// （`docs/features/abort-button.md` FR-002）。
+    pub fn on_abort(self: &Arc<Self>, session_id: &str) {
         if let Some(state) = self.session_if_exists(session_id) {
             let work_mode = state.lock().unwrap().work_mode;
             if work_mode == WorkMode::Spin {
@@ -1101,7 +1110,9 @@ impl Core {
                     // 运行中的 spin：没有 query engine 可中止，范围只含子代理与后台任务。
                     // 父会话的 `cancel` 由 `abort_session_scope` 一并置位，SpinLoop 据此
                     // 在下一个检查点停下；`work_mode` 保持 Spin。
-                    self.abort_session_scope(session_id, &mut HashSet::new());
+                    let mut canceled = Vec::new();
+                    self.abort_session_scope(session_id, &mut HashSet::new(), &mut canceled);
+                    self.report_canceled_sub_agents(&canceled);
                 }
                 return;
             }
@@ -1118,9 +1129,25 @@ impl Core {
             })
             .unwrap_or(false);
         if foreground_busy {
+            // 同 `abort_session_scope`：先采样「中止前是否已收尾」，再置 cancel。
+            let finished_before = self
+                .session_if_exists(session_id)
+                .map(|state| {
+                    let guard = state.lock().unwrap();
+                    guard.sub_agent_reply_called || guard.sub_agent_driver_done
+                })
+                .unwrap_or(true);
             self.abort_foreground(session_id);
+            // 本会话自己若是子代理（在它的对话视图里点了 abort），前台停了就不会再有
+            // Reply：向创建者回报取消。普通会话由 `notify_creator_of_cancel` 自行
+            // no-op；本会话的子代理只停前台、继续跑，不回报。
+            if !finished_before {
+                self.notify_creator_of_cancel(session_id);
+            }
         } else {
-            self.abort_session_scope(session_id, &mut HashSet::new());
+            let mut canceled = Vec::new();
+            self.abort_session_scope(session_id, &mut HashSet::new(), &mut canceled);
+            self.report_canceled_sub_agents(&canceled);
         }
     }
 
@@ -1134,6 +1161,101 @@ impl Core {
             // 出口，残留标记否则会在下一轮查询的工具批后错误地暂停循环。
             state.pause_loop.clear();
         }
+    }
+
+    /// 子代理被用户取消后向创建者回报（`docs/features/abort-button.md` FR-002）。
+    ///
+    /// 创建者据此知道「不必再等这个子代理」——`Agent` 的结果文案与系统提示词都承诺
+    /// 「子代理会自己回报」，取消因此也走同一条投递通道。幂等：同一子代理只回报一次
+    /// （`cancel_notice_sent`）；已 `Reply` 过或驱动已收尾的子代理不再回报，它们有
+    /// 各自的结束路径。
+    fn notify_creator_of_cancel(self: &Arc<Self>, sub_session_id: &str) {
+        let Some(state) = self.session_if_exists(sub_session_id) else {
+            return;
+        };
+        let (creator, content) = {
+            let mut guard = state.lock().unwrap();
+            // `sub_agent_driver_done` 不在这里判：调用方在**置 cancel 之前**采样过
+            // 「中止前是否已收尾」，之后驱动线程会因 cancel 立刻收尾，此刻再读它只会
+            // 把「正是被这次 abort 中止的」误判成「早就结束了」。
+            if guard.silent_abort
+                || guard.sub_agent_reply_called
+                || guard.cancel_notice_sent
+                || !guard.is_sub_agent_session()
+            {
+                return;
+            }
+            guard.cancel_notice_sent = true;
+            let content =
+                sub_agent_cancel_notice(sub_session_id, guard.sub_agent_description.as_deref());
+            (guard.creator.clone(), content)
+        };
+        let creator_session_id = match &creator {
+            SessionCreator::Agent { session_id, .. } => session_id.clone(),
+            SessionCreator::User => return,
+        };
+        // 运行子代理的 Core 与创建者不在同一个进程时，只能经宿主回投
+        // （`docs/features/cross-workspace-agent.md` FR-003 的既有通道，零新增事件）。
+        if matches!(
+            &creator,
+            SessionCreator::Agent {
+                workspace_id: Some(_),
+                ..
+            }
+        ) {
+            self.emit(json!({
+                "type": "crossWorkspaceAgentReplyRequested",
+                "sessionId": creator_session_id,
+                "fromSessionId": sub_session_id,
+                "content": content,
+            }));
+            return;
+        }
+        let Some(creator_state) = self.session_if_exists(&creator_session_id) else {
+            self.log(&format!(
+                "cancel notice for {sub_session_id} dropped: creator {creator_session_id} is not open"
+            ));
+            return;
+        };
+        let (creator_canceled, creator_spin) = {
+            let guard = creator_state.lock().unwrap();
+            (
+                guard.cancel.load(Ordering::Relaxed),
+                guard.work_mode == WorkMode::Spin,
+            )
+        };
+        // spin 期间父对话由 SpinLoop 程序驱动、不收自动消息
+        // （docs/features/user-message-pipeline.md 第 3.3 节）。
+        if creator_spin {
+            self.log(&format!(
+                "cancel notice for {sub_session_id} dropped: creator {creator_session_id} is in spin mode"
+            ));
+            return;
+        }
+        let item = AgentMessage {
+            content,
+            origin: "agent".to_string(),
+            from_session_id: sub_session_id.to_string(),
+        };
+        if creator_canceled {
+            // 创建者自己也在这次中止范围内（整棵树被中止）：回报只落上下文与消息流。
+            // 入队会拉起新一轮并把刚置位的 `cancel` 复位——中止不许被自身的回报复活。
+            persist_auto_message(self, &creator_session_id, &creator_state, &item);
+        } else {
+            self.enqueue_agent_message(
+                &creator_session_id,
+                &item.content,
+                &item.origin,
+                &item.from_session_id,
+            );
+        }
+        // 与 `Reply` 同口径：创建者前台若有 `sleep` 在等这个子代理，立刻转后台，
+        // 不再白等到超时（`tools.rs` 里 `sleep` 的 `on_reply_delivered` 监听）。
+        crate::subagent::emit_reply_delivered(
+            &creator_session_id,
+            &item.from_session_id,
+            &item.content,
+        );
     }
 
     /// `UiEvent.bashBackgroundRequested`：用户把某台**正在前台运行**的 Bash 命令
@@ -1177,16 +1299,38 @@ impl Core {
     /// 中止会话及其递归子代理的运行中工作（abort 第二阶段 / 会话关闭）。
     ///
     /// 前台查询、后台 Bash 任务、
-    /// 子代理三条路径都走，幂等。
-    fn abort_session_scope(&self, session_id: &str, visited: &mut HashSet<String>) {
+    /// 子代理三条路径都走，幂等。被取消的本地子代理 id 追加进 `canceled`，由调用方
+    /// 决定是否向创建者回报「已被取消」（`User abort` 回报，会话关闭 / 删除 /
+    /// 静默中止不回报——`docs/features/abort-button.md` FR-002）。
+    fn abort_session_scope(
+        &self,
+        session_id: &str,
+        visited: &mut HashSet<String>,
+        canceled: &mut Vec<String>,
+    ) {
         if session_id.is_empty() || !visited.insert(session_id.to_string()) {
             return;
         }
+        // 「中止前是否已收尾」必须在置 cancel **之前**采样：置位之后驱动线程会立刻
+        // 收尾并写 `sub_agent_driver_done`，那一刻再读就分不清「早就结束」与「被这次
+        // abort 中止」。已 Reply / 已收尾的子代理有各自的结束路径，不再回报取消。
+        let finished_before = self
+            .session_if_exists(session_id)
+            .map(|state| {
+                let guard = state.lock().unwrap();
+                guard.sub_agent_reply_called || guard.sub_agent_driver_done
+            })
+            .unwrap_or(true);
         self.abort_foreground(session_id);
         self.abort_background_tasks(session_id);
-        for child in crate::subagent::list_for_creator(session_id) {
+        // 先递归子代理、后收集本会话：回报顺序与中止顺序一致（子代理逐层向自己的
+        // 创建者回报，最内层先发）
+        let children = crate::subagent::list_for_creator(session_id);
+        for child in children {
             // specs/023 FR-006：跨工作区子代理的运行时在目标工作区，本地没有它的会话
-            // 状态；发中止事件由宿主转发，不递归本地（递归只会 no-op）。
+            // 状态；发中止事件由宿主转发，不递归本地（递归只会 no-op）。取消回报由
+            // 目标工作区 Core 在收到该中止后自行回投（同一 `crossWorkspaceAgentReplyRequested`
+            // 通道），发起方无需代发。
             if crate::subagent::is_remote(&child) {
                 self.emit(json!({
                     "type": "crossWorkspaceAgentAbortRequested",
@@ -1194,7 +1338,22 @@ impl Core {
                 }));
                 continue;
             }
-            self.abort_session_scope(&child, visited);
+            self.abort_session_scope(&child, visited, canceled);
+        }
+        // 被中止的会话本身若是子代理，它也要向创建者回报取消（在子代理全部处理完之后，
+        // 保证回报顺序与中止顺序一致）
+        if !finished_before && crate::subagent::creator_of(session_id).is_some() {
+            canceled.push(session_id.to_string());
+        }
+    }
+
+    /// 用户中止后逐个回报被取消的子代理（`docs/features/abort-button.md` FR-002）。
+    ///
+    /// 回报在递归中止全部完成后统一做：投递要读创建者会话状态，与中止的写锁分开，
+    /// 避免「持子会话锁去锁创建者」的锁序。
+    fn report_canceled_sub_agents(self: &Arc<Self>, canceled: &[String]) {
+        for sub_session_id in canceled {
+            self.notify_creator_of_cancel(sub_session_id);
         }
     }
 
@@ -1217,7 +1376,9 @@ impl Core {
             }
             state.silent_abort = true;
         }
-        self.abort_session_scope(session_id, &mut HashSet::new());
+        // 静默中止是业务主动结束（子代理首次 Reply 后停自身），不是用户取消：
+        // 不向创建者回报取消。
+        self.abort_session_scope(session_id, &mut HashSet::new(), &mut Vec::new());
     }
 
     /// 中止某会话所有运行中的后台 Bash 任务，并同步 `background` 事实。
@@ -2078,7 +2239,25 @@ impl Core {
                 self.request_silent_abort(from_session_id);
             }
         } else {
-            self.enqueue_agent_message(target_session_id, content, "agent", from_session_id);
+            // 目标会话已被中止（用户 abort 之后的收尾窗口）：迟到 / 取消回报只落
+            // 上下文与消息流，不拉起新一轮——`enqueue_agent_message` 会复位 `cancel`
+            // 并置 `running`，那等于让中止被一条消息复活
+            // （`docs/features/abort-button.md` FR-002）。
+            let canceled = state.lock().unwrap().cancel.load(Ordering::Relaxed);
+            if canceled {
+                persist_auto_message(
+                    self,
+                    target_session_id,
+                    &state,
+                    &AgentMessage {
+                        content: content.to_string(),
+                        origin: "agent".to_string(),
+                        from_session_id: from_session_id.to_string(),
+                    },
+                );
+            } else {
+                self.enqueue_agent_message(target_session_id, content, "agent", from_session_id);
+            }
             // 供前台 `sleep` 命令监听：等待期间收到子代理 Reply 时立刻转入后台
             crate::subagent::emit_reply_delivered(target_session_id, from_session_id, content);
         }
@@ -2257,7 +2436,8 @@ impl Core {
             }
         }
         for id in &closure {
-            self.abort_session_scope(id, &mut HashSet::new());
+            // 删除不是用户取消：不回报取消
+            self.abort_session_scope(id, &mut HashSet::new(), &mut Vec::new());
             self.drop_session(id);
             tools::clear_session_todos(id);
             // MCP：释放引用 + 清掉会话级启用覆盖（对齐 `clearSessionMcpOverride`）
@@ -4310,6 +4490,18 @@ const INTERRUPTED_MESSAGE: &str = "Command was interrupted";
 
 /// 用户中断文案
 const USER_INTERRUPTED_MESSAGE: &str = "*User Interrupted*";
+
+/// 子代理被取消的回报正文（落盘 / 进上下文的英文常量，
+/// `docs/features/abort-button.md` FR-002）：
+/// `Sub-agent <id> was canceled by the user and will not reply`，有描述时附
+/// ` (<description>)` 供创建者消歧。创建者据此知道「不必再等这个子代理」。
+fn sub_agent_cancel_notice(sub_session_id: &str, description: Option<&str>) -> String {
+    let suffix = description
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" ({value})"))
+        .unwrap_or_default();
+    format!("Sub-agent {sub_session_id}{suffix} was canceled by the user and will not reply")
+}
 
 /// 构造工具流式进度回调：把 `BashProgress` 转成 `toolProgress` 帧
 /// 。

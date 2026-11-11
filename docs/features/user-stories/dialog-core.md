@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-31
+last_reviewed: 2026-11-12
 ---
 
 # 用户故事分册：对话与输入
@@ -41,6 +41,9 @@ last_reviewed: 2026-10-31
 4. 中止后 `*User Interrupted*` 以 once 通知显示（[webview-ui.md 第 11 节](../../hosts/webview-ui.md#11-消息区视图行为)）：
    停在时间线末位、下一条消息出现即消失；core 把它记进 `meta.json` 的 `onceMessage`
    （一个对话至多一条），重开 / 刷新会话时恢复到末位。
+5. 子代理被中止时向创建者回报一条「已被用户取消、不会再 `Reply`」的自动消息
+   （[abort-button.md FR-002](../abort-button.md#fr-002中止范围)）：创建者空闲时立刻以它
+   拉起一轮；创建者自身也在本次中止范围内时只落上下文与消息流，不拉起新一轮。
 
 ### US-3 消息排队
 

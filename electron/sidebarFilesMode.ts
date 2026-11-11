@@ -121,3 +121,14 @@ export const NOT_A_GIT_WORKSPACE = 'not-a-git-workspace';
 export function needsGitSentinel(mode: FilesMode): boolean {
   return mode !== 'tree';
 }
+
+/**
+ * 该模式的变更清单要不要挂**磁盘** git 哨兵（specs/047 FR-003）。
+ *
+ * 两个条件缺一不可：模式依赖 git（不是目录树），且取数来源是磁盘。Overlay 对话的两个
+ * 变更视图取的是 Core 视图里的 git 事实——视图的 HEAD 在 Core 私有挂载命名空间里，
+ * 宿主侧 `fs.watch` 磁盘 `.git` 既看不到它、也不该在别处 commit 时替它重取。
+ */
+export function shouldWatchGitSentinel(mode: FilesMode, overlaySessionId: string | null): boolean {
+  return needsGitSentinel(mode) && overlaySessionId === null;
+}

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-12
 ---
 
 # 规格：Overlay 对话工作视图
@@ -30,15 +30,37 @@ Core 是。
 
 宿主进程看不到 Core 私有挂载命名空间里的视图（读挂载点得到空目录），直接读 `upper/`
 也不成立（whiteout 让删掉的文件仍可见、未改动的文件在 `lowerdir` 看不到）。侧栏的文件
-资源管理器因此经两个只读请求取内容：
+资源管理器因此经只读请求取内容：
 
 | 请求 | 载荷 | 应答 |
 | --- | --- | --- |
 | `UiRequest.workViewFilesRequested` | `sessionId`、`dir`（`'/'` 分隔相对路径，`''` 为视图根） | `{ ok: true, entries }` 或 `{ ok: false, error }` |
-| `UiRequest.workViewFileReadRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, content }` 或 `{ ok: false, error }` |
+| `UiRequest.workViewChangesRequested` | `sessionId`、`scope`（`doc` / `all`，与侧栏同一判别值） | `{ ok: true, entries }` 或 `{ ok: false, kind: 'not-a-git-workspace' \| 'error', error }` |
+| `UiRequest.workViewFileDiffRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, kind: 'git', before: string \| null, after }`、`{ ok: true, kind: 'not-a-git-workspace', after }` 或 `{ ok: false, error }` |
 
-视图尚未建立（会话还没调用过工具）时两者都回 `ok: false`：由宿主决定显示磁盘基线还是
-报错，Core 不替它决定。`dir` / `path` 越界（绝对路径、`..`）一律拒绝。
+视图尚未建立（会话还没调用过工具）时三者都回失败侧：由宿主决定显示磁盘基线还是报错，
+Core 不替它决定。`dir` / `path` 越界（绝对路径、`..`）一律拒绝。
+
+`workViewChangesRequested` 列出该对话视图里相对 HEAD 的改动：改磁盘已有文件、对话内新建、
+以及只用 Bash 写出的文件都进清单——判据是「视图内容 vs HEAD」，不是工具旁路的记录。
+`workViewFileDiffRequested` 一次给出两侧原文：`after` 是视图内容、`before` 是**视图里** HEAD
+的版本（`null` = 该文件没有 HEAD 版本）。`not-a-git-workspace` 是事实而不是界面文案
+（[docs/architecture/principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)）。
+
+### 1.2 视图取数的执行形态
+
+两个 git 取数走与 Bash 同一条通路：子进程在私有挂载命名空间里把视图 bind 到真实工作区
+路径上，再在**那个路径**上 exec git。这样向上找 `.git` 与磁盘同一套规则，输出的路径也天然是
+工作区相对（直接在挂载点上跑 git 找不到仓库；`--git-dir` + `--work-tree` 会让 `diff` 与
+`ls-files --others` 的路径口径分叉）。
+
+取数**不写入视图**：git 在 stat 信息陈旧时会重写 `.git/index`，那样对话私有层里会多出用户
+没改过的条目。索引因此落在视图外的 `git-scratch/`（挂载点的兄弟目录），用 `GIT_INDEX_FILE`
+指过去，并关掉 `core.untrackedCache` / `core.fsmonitor`；有 HEAD 时先用 `git read-tree HEAD`
+按**视图里的** HEAD 重建这份索引，因此对话内自己 `git commit` 过也不会把已提交的文件当成
+未跟踪文件；`before` 侧用 `git show HEAD:./<rel>` 读，不碰索引。
+
+HEAD 以**视图**为准：对话内自己 `git commit` 之后变更清单随之清空，磁盘 HEAD 不变。
 
 ## 2. 归属
 
@@ -78,6 +100,7 @@ Core 是。
 | `upper/` | 本对话的写入（普通目录） |
 | `work/` | overlay 的 `workdir`（overlay 自身要求） |
 | `mount/` | 挂载点（`merged`），工具与 Bash 看到的内容 |
+| `git-scratch/` | git 取数的索引副本（第 1.2 节；不在 overlay 上层、也不在挂载结果里） |
 
 `key` 由工作区路径 + 会话 id 派生，跨 Core 重启稳定。
 
@@ -151,6 +174,8 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 | 用户命名空间不可用（seccomp / 容器限制） | 同上，原因点名该项 |
 | overlayfs 不支持 `userxattr` | 同上；不做「删文件可用、删目录失败」的半成品 |
 | 视图建立失败（磁盘不可写等） | 工具按真实磁盘执行，原因记进 Core 日志 |
+| 视图未建立时的只读请求（列目录 / 变更清单 / 两侧原文） | 回失败侧（变更清单带 `kind: 'error'`），由宿主显示错误行；不退回磁盘，也不替调用方建视图 |
+| 视图里跑 git 失败（可执行缺失 / 子命令非零退出） | 回失败侧并带上失败原因，不回退磁盘清单 |
 | 会话删除时回收失败 | 删除照常完成，日志记录残留路径 |
 
 所有降级都**留痕**：不静默把「看起来隔离、实际写磁盘」的形态交给用户。

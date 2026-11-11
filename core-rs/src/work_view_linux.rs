@@ -508,6 +508,20 @@ impl WorkViewHandle {
         self.mount.clone()
     }
 
+    /// 视图外的临时目录（git 取数的索引副本放这里，保证取数不写视图）。
+    ///
+    /// 放在视图根下、挂载点的**兄弟**位置：既不在 overlay 上层里，也不在挂载结果里。
+    fn scratch_dir(&self) -> Result<PathBuf, String> {
+        let dir = self
+            .mount
+            .parent()
+            .ok_or_else(|| format!("视图挂载点 {} 没有父目录", self.mount.display()))?
+            .join("git-scratch");
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| format!("建取数临时目录 {} 失败：{error}", dir.display()))?;
+        Ok(dir)
+    }
+
     /// 把真实路径换成视图路径；路径不在工作区内时报错。
     ///
     /// 工具层经 `ToolContext::io_path` 调用它：所有「该读哪个文件」都从这里过，视图因此
@@ -589,23 +603,6 @@ fn sanitize_view_relative(dir: &str) -> Result<PathBuf, String> {
     Ok(relative)
 }
 
-/// 读某个 Overlay 对话里某个文件的文本内容（specs/046 FR-003）。
-///
-/// 与 `list_view_dir` 同一理由必须经 Core（宿主读不到 Core 的挂载命名空间）。
-/// 只支持文本：调用方按文件类型分流，二进制在 Overlay 对话里不支持打开——系统应用
-/// 打不开视图里的路径，回错误比打开磁盘上的旧内容诚实。
-pub fn read_view_file(session_id: &str, path: &str) -> Result<String, String> {
-    let handle = WorkViewHandle::of(session_id)
-        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
-    let relative = sanitize_view_relative(path)?;
-    if relative.as_os_str().is_empty() {
-        return Err("读文件时 path 不能是视图根".to_string());
-    }
-    let target = handle.mount_point().join(&relative);
-    std::fs::read_to_string(&target)
-        .map_err(|error| format!("读取视图文件 {} 失败：{error}", target.display()))
-}
-
 /// 释放某会话的视图（会话关闭时调用）：卸载挂载，**保留**上层目录——改动要跨 Core 重启
 /// 保留（specs/045 FR-006）。
 pub fn release(workspace: &str, session_id: &str) {
@@ -641,6 +638,41 @@ pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
             .map_err(|error| format!("回收视图目录 {} 失败：{error}", root.display()))?;
     }
     Ok(())
+}
+
+/// 视图里的 git 取数（specs/047 FR-001 / FR-004）。
+///
+/// 走与 Bash 同一条通路：子进程私有命名空间里把视图 bind 到真实工作区路径上再跑 git
+/// （理由与临时索引见 `work_view_changes.rs` 的模块注释）。
+pub fn changes(session_id: &str, scope: &str) -> Result<super::ChangesOutcome, String> {
+    let handle = WorkViewHandle::of(session_id)
+        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let scope = super::ChangeScope::parse(scope)?;
+    let scratch = handle.scratch_dir()?;
+    let view = super::GitView {
+        workspace: handle.workspace.as_path(),
+        mount: handle.mount.as_path(),
+        scratch: scratch.as_path(),
+    };
+    view.changes(scope)
+}
+
+/// 取视图里某个文件的两侧原文（specs/047 FR-004）。`path` 不能是视图根。
+pub fn file_diff(session_id: &str, path: &str) -> Result<super::FileDiffOutcome, String> {
+    let handle = WorkViewHandle::of(session_id)
+        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let relative = sanitize_view_relative(path)?;
+    if relative.as_os_str().is_empty() {
+        return Err("取文件两侧原文时 path 不能是视图根".to_string());
+    }
+    let rel = relative.to_string_lossy().to_string();
+    let scratch = handle.scratch_dir()?;
+    let view = super::GitView {
+        workspace: handle.workspace.as_path(),
+        mount: handle.mount.as_path(),
+        scratch: scratch.as_path(),
+    };
+    view.file_diff(&rel)
 }
 
 /// 视图目录名：工作区 + 会话 id 的稳定短哈希，跨 Core 重启一致。

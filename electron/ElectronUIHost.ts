@@ -25,7 +25,7 @@ import { PRODUCT_NAME } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/shared/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
-import { watchWorkspaceFile, unwatchWorkspaceFile } from '../src/host/coreFacts.js';
+import { requestWorkViewFileDiff, watchWorkspaceFile, unwatchWorkspaceFile } from '../src/host/coreFacts.js';
 import { viewerWindowWebPreferences } from './viewerWindowPrefs.js';
 import { tt } from '../src/host/i18n.js';
 import { imageMimeFor, classifyFileForOpen } from './fileTypes.js';
@@ -352,7 +352,7 @@ export class ElectronUIHost implements UIHost {
         watchTarget: { kind: 'local', filePath },
         selectedLines: target ?? undefined,
         initialView: gitFile ? resolveInitialView('toolLink', !gitFile.hasHead) : 'full',
-        diffSource: gitFile ? { root: gitFile.root, rel: gitFile.rel } : null,
+        diffSource: gitFile ? { kind: 'disk', root: gitFile.root, rel: gitFile.rel } : null,
         canDiff: gitFile !== null,
       });
       return;
@@ -366,7 +366,7 @@ export class ElectronUIHost implements UIHost {
       title: path.basename(filePath),
       watchTarget: { kind: 'local', filePath },
       initialView: gitFile ? resolveInitialView('toolLink', !gitFile.hasHead) : 'full',
-      diffSource: gitFile ? { root: gitFile.root, rel: gitFile.rel } : null,
+      diffSource: gitFile ? { kind: 'disk', root: gitFile.root, rel: gitFile.rel } : null,
       canDiff: gitFile !== null,
     });
   }
@@ -968,6 +968,17 @@ export class ElectronUIHost implements UIHost {
       const requestId = (payload as { requestId?: unknown } | null)?.requestId;
       const result = await (async () => {
         try {
+          // 两条来源是不同的事实（specs/047 FR-004）：磁盘侧由主进程跑 git + 读盘；
+          // Overlay 对话两侧原文都由 Core 在视图里取（宿主读不到视图里的 `.git`）。
+          if (source.kind === 'overlay') {
+            const diff = await requestWorkViewFileDiff(source.sessionId, source.rel);
+            if (!diff.ok) return { kind: 'error' as const, message: diff.error };
+            // 非 git 工作区不该走到这里（调用方不给 overlay 来源），如实报错而不是给空态
+            if (diff.kind !== 'git') {
+              return { kind: 'error' as const, message: '该工作区不在 git 仓库内，无法显示变更' };
+            }
+            return buildDiffResult(diff.before, diff.after);
+          }
           const runner = localFileContentRunner(localGitRunner(source.root));
           const [head, current] = await Promise.all([
             runner.showAtHead(source.rel),
