@@ -209,7 +209,9 @@ const App = () => {
   const [workViewCapable, setWorkViewCapable] = useState<boolean | null>(null);
   /**
    * 能力查询在挂载后跑一次：Core 的能力在它的生命周期内不变，不需要重复问。
-   * 查询失败按不可用处理（不渲染入口）——不猜一个 true 让用户勾了却静默无效。
+   * 应答按来源视图投递（`WebviewMessageHandler` 用 `ctx.sender` 定向），所以预热视图在
+   * 后台发起也能收到，不必等被切到前台再补问。未到达（含查询失败）保持等待态：不猜
+   * false、也不猜 true——不渲染入口，也不给「勾了却静默无效」的形态。
    */
   useEffect(() => {
     postMessage({ type: 'requestStorageCapabilities' });

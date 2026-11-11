@@ -305,7 +305,7 @@ export class WebviewMessageHandler {
       // 会话 Todo 清单：core 持有事实，视图切换 / 重挂载时拉一次（按来源回包）
       entry('requestSessionTodos', (msg, ctx) => this.handleRequestSessionTodos(msg, ctx)),
       entry('requestMcpServers', (msg) => this.handleRequestMcpServers(msg)),
-      entry('requestStorageCapabilities', () => this.handleRequestStorageCapabilities()),
+      entry('requestStorageCapabilities', (_msg, ctx) => this.handleRequestStorageCapabilities(ctx.sender)),
       entry('getConversations', () => this.handleGetConversations()),
       // 会话运行时状态全量快照：状态流只在「变化」时推，视图创建 / 激活不会补发，
       // 新视图会错过广播；webview 启动 / 切到单视图时主动拉一次（按来源回包）。
@@ -429,14 +429,25 @@ export class WebviewMessageHandler {
    *
    * 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，
    * 但 Core 是。不可用时带上原因，界面据此不渲染入口——不出现「勾选后静默无效」。
+   *
+   * 投递：`sender` 指定句柄时直发该视图。Electron 多视图下请求方不一定是活动视图
+   * （后台预热视图在挂载时就问，等它被切到前台再答会永远错过），走默认路由会让勾选框
+   * 在该视图里恒不出现。`sender` 为 null 时走默认路由（单视图宿主）。
    */
-  private async handleRequestStorageCapabilities(): Promise<void> {
+  private async handleRequestStorageCapabilities(
+    sender: WebviewRequestContext['sender'],
+  ): Promise<void> {
     const capabilities = await requestStorageCapabilities();
-    this.host.sendToWebview({
+    const message: Extract<HostToWebviewMessage, { type: 'setStorageCapabilities' }> = {
       type: 'setStorageCapabilities',
       isolatedWorkView: capabilities.isolatedWorkView,
       reason: capabilities.reason,
-    });
+    };
+    if (sender) {
+      this.host.sendToWebviewView(sender, message);
+    } else {
+      this.host.sendToWebview(message);
+    }
   }
 
   private async handleRequestMcpServers(message: Extract<WebviewToHostMessage, { type: 'requestMcpServers' }>): Promise<void> {
