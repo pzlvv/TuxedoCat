@@ -8,7 +8,7 @@ status: 已修
 Windows x64 目标时直接失败：
 
 ```
-[build-core] cargo build --manifest-path D:\git\TuxedoCat\core-rs\Cargo.toml --target x86_64-pc-windows-msvc --release (fingerprint 3601b47d…)
+[build-core] cargo build --manifest-path <repo>\core-rs\Cargo.toml --target x86_64-pc-windows-msvc --release (fingerprint 3601b47d…)
 error: no such command: `xwin`
 [build-core] cargo 构建失败（exit 101）。
  ERROR  npm failed with exit code 101

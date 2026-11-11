@@ -480,9 +480,60 @@ function zigTargetTriple(triple) {
   return triple.replace(/-(unknown|pc)-/, '-');
 }
 
-/** 按需探测 zig，缺了直接报错（不静默降级到「试试看系统 cc」） */
+/**
+ * zig 可执行文件名：`ZIG` 覆盖（Dockerfile 用它指包装脚本），否则走 PATH 上的 `zig`。
+ *
+ * 只给判据填 `CC` / `AR` 的值用，**不探测**是否存在——「本机有没有装」不是判据的一部分，
+ * 见 `crossToolchainEnv` 的说明。
+ */
+function zigCommand() {
+  return process.env.ZIG || 'zig';
+}
+
+/**
+ * 该目标的 C 工具链来源：`'zig'` 表示要注入 zig，`'none'` 表示用默认工具链。
+ *
+ * 判据的唯一来源：`crossToolchainEnv`（算注入哪些变量）与 `requiresZig`（要不要检查本机
+ * 装了 zig）都从这里读，不各写一套分支——两处判据分叉会出现「要 zig 却用本机 cc 编」。
+ */
+function toolchainKind(triple, hostPlatform, hostArch) {
+  const isLinuxTriple = triple.endsWith('-linux-musl') || triple.endsWith('-linux-gnu');
+  if (triple.endsWith('-pc-windows-msvc')) {
+    // 非 Windows 宿主没有 MSVC 的 lib.exe 与 Windows SDK 库，整条 C 工具链由
+    // `cargo xwin` 提供（它自带整套 SDK）。Windows 宿主 x64 由 rustc 经 Visual Studio
+    // 定位 cl.exe / lib.exe，也够用；只有 arm64 的 C / 汇编要 clang（ring 的硬性要求）。
+    if (hostPlatform !== 'win32') return 'none';
+    return triple === 'aarch64-pc-windows-msvc' ? 'zig' : 'none';
+  }
+  if (!isLinuxTriple) return 'none';
+  // 本机是 Linux **且目标架构与本机一致**时用系统自带 cc（装了 musl-tools 的话）。
+  //
+  // 架构必须一起判：Linux 宿主上的系统 cc 是宿主架构（x86_64），交叉到 arm64 时它
+  // 编不出 aarch64 目标文件——`ring` 的 C 部分会以
+  // `failed to find tool "aarch64-linux-musl-gcc"` 失败。这类交叉构建与「本机不是
+  // Linux」同样需要 zig。
+  if (
+    hostPlatform === 'linux' &&
+    TRIPLE_ARCH_TO_NODE_ARCH[triple.split('-')[0]] === hostArch
+  ) {
+    return 'none';
+  }
+  return 'zig';
+}
+
+/**
+ * 该目标要不要 zig（构建入口据此决定是否探测本机工具链）。
+ *
+ * 与 `crossToolchainEnv` 同源（`toolchainKind`）：判据本身不依赖本机装没装 zig，
+ * 只有真正去构建时才探测。
+ */
+export function requiresZig(triple, hostPlatform = process.platform, hostArch = process.arch) {
+  return toolchainKind(triple, hostPlatform, hostArch) === 'zig';
+}
+
+/** 崩在缺 zig 上时给出的安装指引（不静默降级到「试试看系统 cc」） */
 function requireZig(triple) {
-  const zig = process.env.ZIG || 'zig';
+  const zig = zigCommand();
   const probe = spawnSync(zig, ['version'], { stdio: 'ignore', shell: false });
   if (probe.error || probe.status !== 0) {
     console.error(
@@ -502,6 +553,9 @@ function requireZig(triple) {
  * `hostPlatform` / `hostArch` 是入参而不是直接读 `process.platform` / `process.arch`：
  * 判据必须能被测试从两个方向驱动，否则「Windows 宿主也走 xwin」这类缺陷只有落在对应
  * 宿主的机器上才会暴露。
+ *
+ * 纯判据：只回答「该目标要注入什么」，不探测本机装没装 zig（见
+ * `specs/defects/core-toolchain-criteria-requires-local-zig.md`）。
  */
 export function crossToolchainEnv(
   triple,
@@ -510,40 +564,12 @@ export function crossToolchainEnv(
 ) {
   const isLinuxTriple = triple.endsWith('-linux-musl') || triple.endsWith('-linux-gnu');
   const isLinuxGnu = triple.endsWith('-linux-gnu');
-  const isWindowsMsvc = triple.endsWith('-pc-windows-msvc');
   const key = triple.replace(/-/g, '_');
-  if (isWindowsMsvc) {
-    // 非 Windows 宿主没有 MSVC 的 lib.exe 与 Windows SDK 库，整条 C 工具链由
-    // `cargo xwin` 提供（它自带整套 SDK）。这里注入 CC 会覆盖 xwin 的 clang-cl
-    // 包装，所以必须留空。
-    if (hostPlatform !== 'win32') return {};
-    // Windows 宿主 x64：rustc 经 Visual Studio 定位 cl.exe / lib.exe，够用。
-    if (triple !== 'aarch64-pc-windows-msvc') return {};
-    // Windows 宿主 arm64：只有 C / 汇编要 clang（ring 的硬性要求），链接与静态库
-    // 打包仍归本机 MSVC。
-    const zig = requireZig(triple);
-    return {
-      [`CC_${key}`]: `${zig} cc`,
-      [`CFLAGS_${key}`]: `--target=${zigTargetTriple(triple)}`,
-    };
-  }
+  if (toolchainKind(triple, hostPlatform, hostArch) === 'none') return {};
 
-  if (!isLinuxTriple) return {};
-  // 本机是 Linux **且目标架构与本机一致**时不注入：系统自带的 cc 能直接编该目标的
-  // C 依赖（装了 musl-tools 的话）。
-  //
-  // 架构必须一起判：Linux 宿主上的系统 cc 是宿主架构（x86_64），交叉到 arm64 时它
-  // 编不出 aarch64 目标文件——`ring` 的 C 部分会以
-  // `failed to find tool "aarch64-linux-musl-gcc"` 失败。这类交叉构建与「本机不是
-  // Linux」同样需要 zig。
-  if (
-    hostPlatform === 'linux' &&
-    TRIPLE_ARCH_TO_NODE_ARCH[triple.split('-')[0]] === hostArch
-  ) {
-    return {};
-  }
-
-  const zig = requireZig(triple);
+  // 判据只说「该目标要 zig」，本机装没装由构建入口（`requireZig`）负责：这条函数是纯
+  // 判据，调用方（含单测）不必先在本机备好工具链才能算它。
+  const zig = zigCommand();
   // cc-rs 认「命令 + 子命令」形式的 `zig cc`（按空白切成可执行文件 + 参数），
   // Linux 目标的 C 依赖（ring 与 mimalloc-sys）都经它编译，不需要额外的垫片。
   //
@@ -555,6 +581,9 @@ export function crossToolchainEnv(
     [`CC_${key}`]: `${zig} cc`,
     [`CFLAGS_${key}`]: `--target=${zigTarget}`,
   };
+  // 非 Linux 目标（Windows 宿主的 arm64）到此为止：静态库归 VS 的 lib.exe（`-out:` /
+  // `-nologo` 是 MSVC 口径），`zig ar` 的 GNU ar 口径对不上。
+  if (!isLinuxTriple) return env;
   // 两类 Linux 目标都用 `zig ar` 打包静态库。
   env[`AR_${key}`] = `${zig} ar`;
   // gnu 没有像 musl 那样的自包含 crt / libc（见 core-rs/.cargo/config.toml），链接
@@ -728,6 +757,10 @@ function buildTarget(target, options) {
   const profile = options.asan ? ASAN_PROFILE : options.debug ? 'debug' : 'release';
   // asan 变体的实际三元组可能与发布产物不同（Linux x64 是 gnu，见 ASAN_TRIPLES）
   const triple = options.asan ? asanTripleFor(target) : target.triple;
+
+  // 真要构建时才检查本机工具链：判据（`crossToolchainEnv`）只回答「该目标要什么」，
+  // 「本机有没有」在这里落实——缺 zig 直接报错退出，不静默降级到系统 cc。
+  if (requiresZig(triple)) requireZig(triple);
 
   // 指纹在构建前计算：它只依赖源码与编译器身份，不依赖产物；
   // 同时经 CORE_FINGERPRINT 传给 cargo，由 core-rs 的 build.rs 烧进二进制

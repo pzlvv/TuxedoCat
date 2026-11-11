@@ -46,8 +46,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      # musl 目标的 ring（C / 汇编）与分配器 mimalloc 需要 C 编译器
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # musl 目标的 ring（C / 汇编）与分配器 mimalloc 需要 C 编译器；
+      # 源解析抖动由 composite action 退避重试（`.github/actions/apt-install`）
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
       # playwright.config.ts 在配置加载期校验 Core 产物（Linux 宿主必查），先建
       - run: npm run build:core:linux-x64
       - run: npm run build:webview
@@ -111,8 +114,11 @@ jobs:
       - run: chmod -R u+x dist/resources/core resources/core
       # Electron 需要 X 显示与 Chromium 的运行时库：xvfb 提供前者，
       # install-deps 提供后者（Ubuntu 24.04 的 t64 包名由 Playwright 自己处理）；
-      # openbox 补窗口管理器——最大化 / 焦点语义（US-31 等）在只有显示没有 WM 的裸 X 里不成立
-      - run: sudo apt-get update && sudo apt-get install -y xvfb openbox
+      # openbox 补窗口管理器——最大化 / 焦点语义（US-31 等）在只有显示没有 WM 的裸 X 里不成立。
+      # 源解析抖动由 composite action 退避重试（`.github/actions/apt-install`）
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: xvfb openbox
       - run: npx playwright install-deps chromium
       - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-app"
       # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
@@ -143,7 +149,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # 源解析抖动由 composite action 退避重试（`.github/actions/apt-install`）
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
       - run: npm run test:e2e:tui
       # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
       - uses: actions/upload-artifact@v4
