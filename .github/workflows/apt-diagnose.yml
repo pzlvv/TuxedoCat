@@ -1,0 +1,35 @@
+# 临时诊断：查清 GitHub 托管 runner 上 Ubuntu 源的解析 / 连通情况。
+# 用完即删，不入库。
+name: apt-diagnose
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          set -x
+          cat /etc/apt/apt-mirrors.txt 2>&1 | head -20
+          echo '--- sources ---'
+          cat /etc/apt/sources.list.d/*.sources 2>/dev/null | head -40
+          cat /etc/apt/sources.list 2>/dev/null | head -20
+      - run: |
+          set -x
+          for h in archive.ubuntu.com security.ubuntu.com azure.archive.ubuntu.com \
+                   mirrors.edge.kernel.org mirror.enzu.com ftp.ubuntu.com \
+                   packages.microsoft.com registry.npmjs.org github.com; do
+            printf '=== %s\n' "$h"
+            getent hosts "$h" || echo "  resolve FAILED"
+          done
+      - run: |
+          set -x
+          cat /etc/resolv.conf
+          echo '--- curl A record via 1.1.1.1 ---'
+          (curl -s -m 10 -H 'accept: application/dns-json' \
+            'https://1.1.1.1/dns-query?name=archive.ubuntu.com&type=A' || echo curl-failed) | head -5
+      - run: |
+          set -x
+          time sudo apt-get update 2>&1 | tail -25
+          sudo apt-get install -y musl-tools 2>&1 | tail -25
