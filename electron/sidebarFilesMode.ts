@@ -85,13 +85,18 @@ function migrateLegacyDocView(raw: string | null): StoredModes {
 }
 
 /**
- * 点按钮后的新模式（specs/041 AC-2）：点当前模式回到目录树，点另一模式直接切换。
+ * 分段 switch 的显示顺序（与 `electron/sidebar/index.html` 里三段按钮的 DOM 顺序一致）：
+ * 全部（目录树）/ 差异（全部变更）/ 文档（文档视图）。
  *
- * 三种模式的按钮语义一致——「按下去」表示「正在看它」，「再按一下」是退出到默认视图，
- * 而不是在另外两态之间轮转（用户点「文档视图」时想要的是文档视图，不是第三个模式）。
+ * 方向键切换与单测都按这份顺序走，避免在渲染层再写一遍「上一段 / 下一段」的字面量。
  */
-export function toggleFilesMode(current: FilesMode, target: FilesMode): FilesMode {
-  return current === target ? 'tree' : target;
+export const FILES_MODE_ORDER: readonly FilesMode[] = ['tree', 'changes', 'doc'];
+
+/** 方向键在分段 switch 内的移动（左右环绕；`delta` 只取 ±1） */
+export function stepFilesMode(current: FilesMode, delta: 1 | -1): FilesMode {
+  const index = FILES_MODE_ORDER.indexOf(current);
+  const next = (index + delta + FILES_MODE_ORDER.length) % FILES_MODE_ORDER.length;
+  return FILES_MODE_ORDER[next] ?? current;
 }
 
 /** 空态文案（specs/041 FR-002：文案按 scope 分叉，不共用一个泛化的「没有内容」） */

@@ -623,7 +623,7 @@ test('US-63 specs/030 AC-7/AC-8 文档视图：git 口径列出变更 md、增�
 
   const sb = await sidebar();
   await expandFiles(sb);
-  await sb.locator('#filesDocToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
   await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible({ timeout: 15_000 });
 
   const readmeCounts = await sb.locator(`${FILE_ROWS}[data-path="readme.md"] .doc-count`).innerText();
@@ -640,8 +640,8 @@ test('US-63 specs/030 AC-7/AC-8 文档视图：git 口径列出变更 md、增�
   await expect(sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`)).toHaveCount(0);
   await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toHaveCount(0);
 
-  // 再点一次回普通树：未变更条目回来了
-  await sb.locator('#filesDocToggle').click();
+  // 点「全部」段回普通树：未变更条目回来了（单选框语义——不是再点当前段退出）
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="tree"]').click();
   await expect(sb.locator(`${FILE_ROWS}[data-path="notes.txt"]`)).toBeVisible();
 });
 
@@ -650,7 +650,7 @@ test('US-63 specs/030 AC-14 外部终端 commit 后文档视图自动刷新（gi
   await fs.promises.writeFile(path.join(workspaceDir, 'readme.md'), 'l1\nl2\nl3\n');
   const sb = await sidebar();
   await expandFiles(sb);
-  await sb.locator('#filesDocToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
   await expect(sb.locator(`${FILE_ROWS}[data-path="readme.md"]`)).toBeVisible({ timeout: 15_000 });
 
   // 测试进程直接执行 git（等价用户在产品外的终端 commit）：哨兵捕获 → 视图自动刷新
@@ -663,7 +663,7 @@ test('US-63 specs/030 AC-14 外部终端 commit 后文档视图自动刷新（gi
 test('US-63 specs/030 AC-15/16 非 git 记录口径：工具写入的 md 自动列出（无行数徽标）', async () => {
   const sb = await sidebar();
   await expandFiles(sb);
-  await sb.locator('#filesDocToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
   await expect(sb.getByText('没有记录的修改文档')).toBeVisible({ timeout: 15_000 });
 
   await runWriteTool('story.md');
@@ -677,8 +677,8 @@ test('US-63 specs/030 AC-11 文档视图开关按工作区记忆（切走再切�
   await expandFiles(sb);
 
   // W1 开文档视图（非 git 仓走记录口径空态）
-  await sb.locator('#filesDocToggle').click();
-  await expect(sb.locator('#filesDocToggle.active')).toHaveCount(1);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
+  await expect(sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]')).toHaveAttribute('aria-checked', 'true');
 
   // 添加 W2（会切换活动工作区）：显式落在 W2 上并展开分区，断言它是普通树
   await sb.evaluate((p) => {
@@ -688,12 +688,12 @@ test('US-63 specs/030 AC-11 文档视图开关按工作区记忆（切走再切�
   await openWorkspaceByPath(sb, secondDir);
   await sb.locator('#filesHeader').click();
   // 展开后按钮 class 才同步目标工作区的开关状态（折叠期按钮整体隐藏）
-  await expect(sb.locator('#filesDocToggle.active')).toHaveCount(0);
+  await expect(sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]')).toHaveAttribute('aria-checked', 'false');
   await expect(sb.locator(`${FILE_ROWS}[data-path="other.md"]`)).toBeVisible({ timeout: 15_000 });
 
   // 切回 W1：分区仍展开、仍是文档视图（按工作区记忆）
   await openWorkspaceByPath(sb, workspaceDir);
-  await expect(sb.locator('#filesDocToggle.active')).toHaveCount(1);
+  await expect(sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]')).toHaveAttribute('aria-checked', 'true');
 });
 
 // ==================== 全部变更视图（specs/041） ====================
@@ -705,35 +705,108 @@ test('US-63 specs/041 AC-1/FR-002 全部变更：非 Markdown 的 .ts 改动也�
 
   const sb = await sidebar();
   await expandFiles(sb);
-  await sb.locator('#filesAllChangesToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
   const row = sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`);
   await expect(row).toBeVisible({ timeout: 15_000 });
   const counts = await row.locator('.doc-count').innerText();
   expect(counts).toContain('+3');
   expect(counts).toContain('-1');
   // 同一改动在文档视图里看不到（它只看 Markdown）
-  await sb.locator('#filesDocToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
   await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toHaveCount(0, { timeout: 15_000 });
 });
 
-test('US-63 specs/041 AC-2/FR-001 三个模式互斥往返：点当前模式回到目录树', async () => {
+test('US-63 specs/041 AC-2/FR-001 三段互斥：恰好一段选中，点当前段不退出，切回「全部」回目录树', async () => {
   const sb = await sidebar();
   await expandFiles(sb);
+  const seg = (mode: string) => sb.locator(`#filesModeSwitch .files-mode-seg[data-mode="${mode}"]`);
+  const checkedModes = async (): Promise<string[]> => {
+    const all = await sb.locator('#filesModeSwitch .files-mode-seg').evaluateAll((els) =>
+      els.filter((el) => el.getAttribute('aria-checked') === 'true').map((el) => (el as HTMLElement).dataset.mode ?? ''));
+    return all;
+  };
 
-  // 目录树 → 文档视图 → 全部变更 → 目录树（点当前模式即退出）
-  await sb.locator('#filesDocToggle').click();
-  await expect(sb.locator('#filesDocToggle')).toHaveAttribute('aria-pressed', 'true');
-  await expect(sb.locator('#filesAllChangesToggle')).toHaveAttribute('aria-pressed', 'false');
-
-  await sb.locator('#filesAllChangesToggle').click();
-  await expect(sb.locator('#filesAllChangesToggle')).toHaveAttribute('aria-pressed', 'true');
-  await expect(sb.locator('#filesDocToggle')).toHaveAttribute('aria-pressed', 'false');
-
-  await sb.locator('#filesAllChangesToggle').click();
-  await expect(sb.locator('#filesAllChangesToggle')).toHaveAttribute('aria-pressed', 'false');
-  await expect(sb.locator('#filesDocToggle')).toHaveAttribute('aria-pressed', 'false');
-  // 回到目录树：根目录条目重新可见
+  // 默认落在目录树（第一段「全部」选中）
+  await expect(seg('tree')).toHaveAttribute('aria-checked', 'true');
   await expect(sb.locator(`${FILE_ROWS}[data-path="src"]`)).toBeVisible({ timeout: 15_000 });
+
+  // 目录树 → 文档 → 差异：任何时刻恰好一段选中（单选框语义，不是两布尔组合）
+  await seg('doc').click();
+  await expect(seg('doc')).toHaveAttribute('aria-checked', 'true');
+  await expect(seg('changes')).toHaveAttribute('aria-checked', 'false');
+  expect(await checkedModes()).toEqual(['doc']);
+
+  await seg('changes').click();
+  await expect(seg('changes')).toHaveAttribute('aria-checked', 'true');
+  await expect(seg('doc')).toHaveAttribute('aria-checked', 'false');
+  expect(await checkedModes()).toEqual(['changes']);
+
+  // 再点当前段是空操作（没有「再点一次退出」）：仍停在差异
+  await seg('changes').click();
+  await expect(seg('changes')).toHaveAttribute('aria-checked', 'true');
+  expect(await checkedModes()).toEqual(['changes']);
+
+  // 切回「全部」才回目录树：根目录条目重新可见
+  await seg('tree').click();
+  await expect(seg('tree')).toHaveAttribute('aria-checked', 'true');
+  expect(await checkedModes()).toEqual(['tree']);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src"]`)).toBeVisible({ timeout: 15_000 });
+});
+
+test('US-63 specs/041 AC-2/FR-001 分段 switch 用方向键切换（radiogroup 焦点跟随）', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+  const seg = (mode: string) => sb.locator(`#filesModeSwitch .files-mode-seg[data-mode="${mode}"]`);
+
+  await seg('tree').focus();
+  await sb.keyboard.press('ArrowRight');
+  await expect(seg('changes')).toHaveAttribute('aria-checked', 'true');
+  await expect(seg('changes')).toBeFocused();
+  await sb.keyboard.press('ArrowRight');
+  await expect(seg('doc')).toHaveAttribute('aria-checked', 'true');
+  await expect(seg('doc')).toBeFocused();
+  // 右移越过最后一段回到第一段
+  await sb.keyboard.press('ArrowRight');
+  await expect(seg('tree')).toHaveAttribute('aria-checked', 'true');
+  // 左移从第一段绕到最后一段
+  await sb.keyboard.press('ArrowLeft');
+  await expect(seg('doc')).toHaveAttribute('aria-checked', 'true');
+  await seg('tree').click();
+});
+
+test('US-63 specs/041 AC-2/FR-001 分段 switch 常驻分区底栏：列表滚动时不随内容滚走，选中宽度不变', async () => {
+  const sb = await sidebar();
+  await expandFiles(sb);
+  const row = sb.locator('#filesModeRow');
+  await expect(row).toBeVisible();
+  // 展开有 0.22s 入场动画（.files-anim 下 #filesBody 的 translateY(10px)）：
+  // 动画期间量到的是位移中的位置，等它结束再量布局（main.ts 的 300ms 摘类时长）
+  await expect(sb.locator('#filesSection.files-anim')).toHaveCount(0, { timeout: 5_000 });
+
+  // 底栏在滚动容器（#filesBody）之外：列表底缘与底栏上缘贴合，不重叠
+  const box = await sb.evaluate(() => {
+    const body = document.getElementById('filesBody')!.getBoundingClientRect();
+    const bar = document.getElementById('filesModeRow')!.getBoundingClientRect();
+    const sec = document.getElementById('filesSection')!.getBoundingClientRect();
+    return { bodyBottom: body.bottom, barTop: bar.top, barBottom: bar.bottom, secBottom: sec.bottom };
+  });
+  expect(box.bodyBottom).toBeLessThanOrEqual(box.barTop + 0.5);
+  expect(box.barBottom).toBeLessThanOrEqual(box.secBottom + 0.5);
+
+  // 三段定宽：切换选中不改变 switch 与各段宽度（选中只换颜色，不换布局）
+  const widths = async (): Promise<{ sw: number; segs: number[] }> => sb.evaluate(() => ({
+    sw: document.getElementById('filesModeSwitch')!.getBoundingClientRect().width,
+    segs: [...document.querySelectorAll('#filesModeSwitch .files-mode-seg')]
+      .map((el) => (el as HTMLElement).getBoundingClientRect().width),
+  }));
+  const before = await widths();
+  expect(before.segs.length).toBe(3);
+  expect(new Set(before.segs).size).toBe(1);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
+  const after = await widths();
+  expect(after.sw).toBeCloseTo(before.sw, 1);
+  expect(after.segs).toEqual(before.segs);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="tree"]').click();
 });
 
 test('US-63 specs/041 AC-3/FR-001 模式按工作区记忆：切走再切回仍是全部变更', async () => {
@@ -741,8 +814,8 @@ test('US-63 specs/041 AC-3/FR-001 模式按工作区记忆：切走再切回仍�
   const sb = await sidebar();
   await expandFiles(sb);
 
-  await sb.locator('#filesAllChangesToggle').click();
-  await expect(sb.locator('#filesAllChangesToggle.active')).toHaveCount(1);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+  await expect(sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]')).toHaveAttribute('aria-checked', 'true');
 
   await sb.evaluate((p) => {
     (window as unknown as { sidebarAPI?: { addWorkspaces: (paths?: string[]) => void } })
@@ -751,16 +824,16 @@ test('US-63 specs/041 AC-3/FR-001 模式按工作区记忆：切走再切回仍�
   await openWorkspaceByPath(sb, secondDir);
   await sb.locator('#filesHeader').click();
   // W2 是普通树（按工作区独立记忆）
-  await expect(sb.locator('#filesAllChangesToggle.active')).toHaveCount(0);
+  await expect(sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]')).toHaveAttribute('aria-checked', 'false');
 
   await openWorkspaceByPath(sb, workspaceDir);
-  await expect(sb.locator('#filesAllChangesToggle.active')).toHaveCount(1);
+  await expect(sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]')).toHaveAttribute('aria-checked', 'true');
 });
 
 test('US-63 specs/041 AC-7/FR-003 非 git 工作区的全部变更给出提示而不是空列表', async () => {
   const sb = await sidebar();
   await expandFiles(sb);
-  await sb.locator('#filesAllChangesToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
   // 提示态（不是「没有变更的文件」空态）
   await expect(sb.getByText('不在 git 仓库内，无法列出变更')).toBeVisible({ timeout: 15_000 });
   await expect(sb.getByText('没有变更的文件')).toHaveCount(0);
@@ -772,7 +845,7 @@ test('US-63 specs/041 AC-9/FR-004 提交后全部变更视图自动刷新（与�
 
   const sb = await sidebar();
   await expandFiles(sb);
-  await sb.locator('#filesAllChangesToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
   await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible({ timeout: 15_000 });
 
   // 测试进程直接 commit（等价产品外终端）：哨兵推送 → 全部变更视图自动清空

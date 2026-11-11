@@ -750,7 +750,7 @@ test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行�
   await expect(sb.locator('#filesTree .file-row[data-path="a.md"]')).toBeVisible({ timeout: 90_000 });
 
   // 切到文档视图：git 判定与行数统计在远端执行（ssh exec），记录经 SFTP 读
-  await sb.locator('#filesDocToggle').click();
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
   const aRow = sb.locator('#filesTree .file-row[data-path="a.md"]');
   await expect(aRow).toBeVisible({ timeout: 60_000 });
   await expect(aRow.locator('.doc-plus')).toHaveText('+2');

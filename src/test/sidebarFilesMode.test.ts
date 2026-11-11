@@ -1,10 +1,11 @@
 import {
   emptyTextForMode,
+  FILES_MODE_ORDER,
   modeForScope,
   needsGitSentinel,
   parseStoredModes,
   scopeForMode,
-  toggleFilesMode,
+  stepFilesMode,
 } from '../../electron/sidebarFilesMode';
 import { pathspecFor } from '../../electron/sidebarDocView';
 import { createChecker, runTests } from './helpers/harness';
@@ -16,7 +17,7 @@ import { createChecker, runTests } from './helpers/harness';
  * - `parseStoredModes` 的旧布尔兼容（specs/030 的存储形态迁移，AC-3 的持久化前提）
  *   与损坏值的丢弃；
  * - `scopeForMode` / `modeForScope` 的双向映射，与 `pathspecFor` 的判别值闭合；
- * - `toggleFilesMode` 的三态转移（AC-2：点当前模式回目录树、点另一模式直接切）；
+ * - 分段 switch 的顺序与方向键步进（`stepFilesMode`，US-63：单选框语义，左环绕）；
  * - 空态文案按 scope 分叉（FR-002）。
  *
  * 运行方式：npm run test:unit -- sidebar-files-mode
@@ -67,13 +68,22 @@ runTests('sidebarFilesMode', async () => {
   check('doc 模式限定 Markdown', JSON.stringify(pathspecFor('doc')) === JSON.stringify(['*.md', '*.markdown']));
   check('all 模式不带 pathspec', pathspecFor('all').length === 0);
 
-  // ---------- 三态转移（AC-2） ----------
-  check('tree 点 doc → doc', toggleFilesMode('tree', 'doc') === 'doc');
-  check('tree 点 changes → changes', toggleFilesMode('tree', 'changes') === 'changes');
-  check('doc 再点 doc → tree', toggleFilesMode('doc', 'doc') === 'tree');
-  check('doc 点 changes → changes（直接切换，不轮转）', toggleFilesMode('doc', 'changes') === 'changes');
-  check('changes 点 doc → doc', toggleFilesMode('changes', 'doc') === 'doc');
-  check('changes 再点 changes → tree', toggleFilesMode('changes', 'changes') === 'tree');
+  // ---------- 分段 switch（US-63）：顺序与方向键步进 ----------
+  // 显示顺序必须与 index.html 里三段的 DOM 顺序一致（全部 / 差异 / 文档）
+  check('三段顺序是 全部 → 差异 → 文档', JSON.stringify(FILES_MODE_ORDER) === JSON.stringify(['tree', 'changes', 'doc']));
+  check('三段覆盖三种模式且不重复', new Set(FILES_MODE_ORDER).size === 3);
+
+  // 方向键在组内环绕：右移一格、右移走到头回到第一段、左移从第一段绕到最后
+  check('tree 右移 → changes', stepFilesMode('tree', 1) === 'changes');
+  check('changes 右移 → doc', stepFilesMode('changes', 1) === 'doc');
+  check('doc 右移环绕回 tree', stepFilesMode('doc', 1) === 'tree');
+  check('tree 左移环绕到 doc', stepFilesMode('tree', -1) === 'doc');
+  check('doc 左移 → changes', stepFilesMode('doc', -1) === 'changes');
+  check('changes 左移 → tree', stepFilesMode('changes', -1) === 'tree');
+  // 步进后的值必须仍是合法模式（判别联合闭合：不会步进出一个第四态）
+  for (const mode of FILES_MODE_ORDER) {
+    check(`${mode} 左右步进都落在三段内`, FILES_MODE_ORDER.includes(stepFilesMode(mode, 1)) && FILES_MODE_ORDER.includes(stepFilesMode(mode, -1)));
+  }
 
   // ---------- 哨兵挂摘（specs/030 FR-003 / specs/041 FR-004） ----------
   check('目录树不挂 git 哨兵', needsGitSentinel('tree') === false);

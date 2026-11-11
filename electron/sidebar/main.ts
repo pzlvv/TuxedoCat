@@ -64,14 +64,14 @@ import {
   OVERLAY_BINARY_UNSUPPORTED,
   REMOTE_BINARY_UNSUPPORTED,
 } from '../fileTypes.js';
-// 三态模式与取数范围的纯逻辑（specs/041 FR-001 / FR-002）：模式、localStorage 迁移、
-// 按钮转移与空态文案都在 sidebarFilesMode.ts 一处，本文件只做「读状态 → 调纯函数 → 写回」
+// 三态模式与取数范围的纯逻辑（US-63）：模式、localStorage 迁移、方向键步进与空态文案
+// 都在 sidebarFilesMode.ts 一处，本文件只做「读状态 → 调纯函数 → 写回」
 import {
   emptyTextForMode,
   NOT_A_GIT_WORKSPACE,
   parseStoredModes,
   scopeForMode,
-  toggleFilesMode as toggleFilesModePure,
+  stepFilesMode,
   type FilesMode,
   type StoredModes,
 } from '../sidebarFilesMode.js';
@@ -235,8 +235,9 @@ const filesSectionEl = document.getElementById('filesSection')!;
 const filesHeaderEl = document.getElementById('filesHeader')!;
 const filesBodyEl = document.getElementById('filesBody')!;
 const filesRefreshBtn = document.getElementById('filesRefresh') as HTMLButtonElement;
-const filesDocToggleBtn = document.getElementById('filesDocToggle') as HTMLButtonElement;
-const filesAllChangesToggleBtn = document.getElementById('filesAllChangesToggle') as HTMLButtonElement;
+/** 底部分段 switch（US-63）：容器负责 radiogroup 语义，三段各自是 radio */
+const filesModeSwitchEl = document.getElementById('filesModeSwitch')!;
+const filesModeSegs = Array.from(filesModeSwitchEl.querySelectorAll<HTMLButtonElement>('.files-mode-seg'));
 const filesTreeEl = document.getElementById('filesTree')!;
 /** 分区标题：Overlay 对话下追加 `(overlay)` 后缀（specs/046 FR-001） */
 const filesTitleEl = document.getElementById('filesTitle')!;
@@ -1293,11 +1294,9 @@ function renderFiles(): void {
     filesTreeEl.innerHTML = '';
     return;
   }
-  // 三个模式按钮的按下态各自独立（互斥由三态状态机保证，不是两个布尔）
-  filesDocToggleBtn.classList.toggle('active', files.mode === 'doc');
-  filesDocToggleBtn.setAttribute('aria-pressed', files.mode === 'doc' ? 'true' : 'false');
-  filesAllChangesToggleBtn.classList.toggle('active', files.mode === 'changes');
-  filesAllChangesToggleBtn.setAttribute('aria-pressed', files.mode === 'changes' ? 'true' : 'false');
+  // 分段 switch 的选中态：三段按当前模式写 aria-checked，恰好一段为 true（互斥由
+  // 三态判别联合保证）。样式与无障碍语义共用同一个属性，视觉态与朗读态不会漂。
+  renderFilesModeSwitch(files.mode);
   // 变更视图（specs/030 FR-003 / specs/041 FR-001）：只渲染命中的行集；切回目录树时
   // 原展开状态原样恢复（变更视图从未动过 expandedDirs / tree 缓存）
   if (files.mode !== 'tree') {
@@ -1548,18 +1547,33 @@ function loadDocList(workspaceId: string): void {
     });
 }
 
-/** 切换文件浏览器模式（specs/041 FR-001）：点当前模式回目录树、点另一模式直接切换。
+/** 分段 switch 的选中态：按当前模式写 aria-checked（三段恰好一段为 true）。
  *
- * 三态的唯一转移点（AC-2）；模式状态只有 `filesStateByWorkspace` 一份，localStorage 是
- * 它的持久化投影。切到任一变更视图即重取数据，回目录树时既有展开状态原样恢复。 */
-function toggleFilesMode(target: FilesMode): void {
+ * 单选框语义（US-63）——没有「再点一次退出」，所以选中态直接从 `files.mode` 推导，
+ * 不另存一份 UI 状态。每段也是 roving tabindex：Tab 只停在当前段上，左右方向键切换。
+ */
+function renderFilesModeSwitch(mode: FilesMode): void {
+  for (const seg of filesModeSegs) {
+    const checked = seg.dataset.mode === mode;
+    seg.setAttribute('aria-checked', checked ? 'true' : 'false');
+    seg.tabIndex = checked ? 0 : -1;
+  }
+}
+
+/**
+ * 切换文件浏览模式（US-63）：唯一转移点。
+ *
+ * 模式状态只有 `filesStateByWorkspace` 一份，localStorage 是它的持久化投影。切到任一
+ * 变更视图即重取数据（并挂 git 哨兵），回目录树时既有展开状态原样恢复；点已选中的段
+ * 不做事（单选框语义，不是 toggle）。
+ */
+function setFilesMode(target: FilesMode): void {
   const id = activeFilesId;
   if (!id) return;
   const files = filesStateFor(id);
-  const next = toggleFilesModePure(files.mode, target);
-  if (next === files.mode) return;
-  files.mode = next;
-  files.docScope = scopeForMode(next);
+  if (files.mode === target) return;
+  files.mode = target;
+  files.docScope = scopeForMode(target);
   // 换范围即作废在途回包，并把「已取过」重置：新模式的首取由 renderDocFiles 触发
   files.docGeneration += 1;
   files.docRequested = false;
@@ -1750,15 +1764,24 @@ function bindFilesEvents(): void {
     e.stopPropagation();
     refreshFiles();
   });
-  filesDocToggleBtn.addEventListener('click', (e) => {
-    // 文档视图开关（specs/030 FR-003）：与刷新按钮同一处置，阻止冒泡到分区条
+  // 分段 switch（US-63）：容器在分区内，点击不要顺带展开 / 折叠分区；
+  // 点已选中的段是空操作（单选框语义），模式转移只在 setFilesMode 一处。
+  filesModeSwitchEl.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleFilesMode('doc');
+    const seg = (e.target as HTMLElement).closest<HTMLElement>('.files-mode-seg');
+    const mode = seg?.dataset.mode;
+    if (mode === 'tree' || mode === 'changes' || mode === 'doc') setFilesMode(mode);
   });
-  filesAllChangesToggleBtn.addEventListener('click', (e) => {
-    // 全部变更视图开关（specs/041 FR-001）：同一处三态状态机，不另写一份互斥逻辑
+  // 键盘：左右方向键在 radiogroup 内环绕切换并跟随焦点（WAI-ARIA radio 组口径）
+  filesModeSwitchEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
     e.stopPropagation();
-    toggleFilesMode('changes');
+    const files = activeFilesState();
+    if (!files) return;
+    const next = stepFilesMode(files.mode, e.key === 'ArrowRight' ? 1 : -1);
+    setFilesMode(next);
+    filesModeSegs.find((seg) => seg.dataset.mode === next)?.focus();
   });
 
   filesTreeEl.addEventListener('click', (e) => {
