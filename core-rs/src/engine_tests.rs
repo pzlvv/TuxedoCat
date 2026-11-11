@@ -9777,3 +9777,268 @@ fn isolated_session_bash_writes_stay_in_the_view() {
         "隔离会话的 Bash 不得写到真实磁盘"
     );
 }
+
+// ==================== 子代理被中止后的取消回报 ====================
+
+/// 取消回报的判据：`origin='agent'` 且正文含 `canceled`（落盘文本为英文常量）。
+fn is_cancel_notice(message: &Value) -> bool {
+    message.get("origin").and_then(Value::as_str) == Some("agent")
+        && message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+            .and_then(Value::as_str)
+            .map(|text| text.contains("canceled"))
+            .unwrap_or(false)
+}
+
+/// 会话状态快照（避免跨断言持锁：断言失败时会话锁不会被毒化，Harness 收尾才跑得完）。
+struct CancelNoticeSnapshot {
+    cancel: bool,
+    running: bool,
+    queued: usize,
+    notices: Vec<Value>,
+}
+
+fn cancel_notice_snapshot(core: &Arc<Core>, session_id: &str) -> CancelNoticeSnapshot {
+    let state = core.session(session_id);
+    let state = state.lock().unwrap();
+    CancelNoticeSnapshot {
+        cancel: state.cancel.load(Ordering::Relaxed),
+        running: state.running,
+        queued: state.agent_messages.len(),
+        notices: state
+            .messages
+            .iter()
+            .filter(|message| is_cancel_notice(message))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// RT-1：本地子代理被 abort 后向创建者回报取消（创建者忙碌 → 进自动消息队列，只投一次）。
+#[test]
+fn aborted_sub_agent_reports_cancel_notice_to_its_creator() {
+    let sandbox = Sandbox::new("engine-sub-agent-cancel-notice");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    let parent = harness.core.session("s-cancel-parent");
+    {
+        let mut state = parent.lock().unwrap();
+        state.project = Some(project.clone());
+        // 创建者忙碌：取消回报只入队，由下一轮边界消费
+        state.running = true;
+    }
+    let child = harness.core.session("sub_cancel_local");
+    {
+        let mut state = child.lock().unwrap();
+        state.project = Some(project.clone());
+        state.parent_session_id = Some("s-cancel-parent".to_string());
+        state.creator = crate::engine::SessionCreator::Agent {
+            workspace_id: None,
+            session_id: "s-cancel-parent".to_string(),
+        };
+        state.running = true;
+    }
+    crate::subagent::register("sub_cancel_local", "s-cancel-parent");
+
+    harness.core.on_abort("sub_cancel_local");
+    harness.core.on_abort("sub_cancel_local");
+
+    let queued = parent.lock().unwrap().agent_messages.clone();
+    crate::subagent::reset_for_test();
+    assert_eq!(queued.len(), 1, "取消回报只投一次");
+    assert_eq!(queued[0].origin, "agent");
+    assert_eq!(queued[0].from_session_id, "sub_cancel_local");
+    assert!(
+        queued[0].content.contains("canceled"),
+        "取消回报应说明子代理已被取消：{}",
+        queued[0].content
+    );
+
+    parent.lock().unwrap().running = false;
+    child.lock().unwrap().running = false;
+}
+
+/// RT-2：黄灯态 abort 整棵树（创建者 + 运行中的子代理）——取消回报落进创建者上下文与
+/// 消息流，但不复活刚被中止的创建者。
+#[test]
+fn whole_tree_abort_reports_cancel_without_resurrecting_the_creator() {
+    let sandbox = Sandbox::new("engine-sub-agent-cancel-tree");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    history::create_conversation(
+        "s-tree-parent",
+        &project,
+        json!({ "sessionId": "s-tree-parent", "creator": { "kind": "user" } }),
+    )
+    .unwrap();
+    let harness = EngineHarness::allow_all();
+    harness.core.ensure_loaded("s-tree-parent").unwrap();
+    let parent = harness.core.session("s-tree-parent");
+    parent.lock().unwrap().project = Some(project.clone());
+    let child = harness.core.session("sub_tree_child");
+    {
+        let mut state = child.lock().unwrap();
+        state.project = Some(project.clone());
+        state.parent_session_id = Some("s-tree-parent".to_string());
+        state.creator = crate::engine::SessionCreator::Agent {
+            workspace_id: None,
+            session_id: "s-tree-parent".to_string(),
+        };
+        state.running = true;
+    }
+    crate::subagent::register("sub_tree_child", "s-tree-parent");
+
+    // 创建者前台空闲、子代理在跑：命中「中止已登记子代理」
+    harness.core.on_abort("s-tree-parent");
+
+    let snapshot = cancel_notice_snapshot(&harness.core, "s-tree-parent");
+    let ui_notice =
+        harness.sink.events_of("message").into_iter().any(|event| {
+            event["sessionId"] == "s-tree-parent" && event["data"]["origin"] == "agent"
+        });
+    crate::subagent::reset_for_test();
+    child.lock().unwrap().running = false;
+
+    assert!(
+        snapshot.cancel,
+        "整棵树被中止，创建者的 cancel 必须保持置位"
+    );
+    assert!(!snapshot.running, "取消回报不得复活被中止的创建者");
+    assert_eq!(snapshot.queued, 0, "不得为被中止的创建者排新轮次");
+    assert_eq!(
+        snapshot.notices.len(),
+        1,
+        "上下文应有一条取消回报：{:?}",
+        snapshot.notices
+    );
+    assert_ne!(
+        snapshot.notices[0]["silent"],
+        json!(true),
+        "取消回报是可见的自动消息，不是 silent reminder"
+    );
+    assert!(ui_notice, "取消回报应上报 UI");
+}
+
+/// RT-3：跨工作区子代理被 abort → 经 `crossWorkspaceAgentReplyRequested` 回报发起方。
+#[test]
+fn aborted_cross_workspace_sub_agent_reports_cancel_to_the_origin_workspace() {
+    let sandbox = Sandbox::new("engine-remote-sub-agent-cancel");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    let child = harness.core.session("sub_remote_cancel");
+    {
+        let mut state = child.lock().unwrap();
+        state.project = Some(project.clone());
+        state.creator = crate::engine::SessionCreator::Agent {
+            workspace_id: Some("HOST:/origin".to_string()),
+            session_id: "origin-session".to_string(),
+        };
+        state.running = true;
+    }
+    crate::subagent::register("sub_remote_cancel", "origin-session");
+    crate::subagent::mark_remote_origin("sub_remote_cancel", "origin-session");
+
+    harness.core.on_abort("sub_remote_cancel");
+
+    let event = harness
+        .sink
+        .events()
+        .into_iter()
+        .rev()
+        .find(|event| event["type"] == "crossWorkspaceAgentReplyRequested");
+    crate::subagent::reset_for_test();
+    child.lock().unwrap().running = false;
+    let event = event.expect("跨工作区取消回报事件");
+    assert_eq!(event["sessionId"], "origin-session");
+    assert_eq!(event["fromSessionId"], "sub_remote_cancel");
+    assert!(
+        event["content"].as_str().unwrap_or("").contains("canceled"),
+        "取消回报应说明子代理已被取消：{event}"
+    );
+}
+
+/// RT-4：发起方刚被中止时收到另一工作区的取消回报——落上下文与消息流，但不复活。
+#[test]
+fn cancel_notice_from_another_workspace_does_not_restart_an_aborted_creator() {
+    let sandbox = Sandbox::new("engine-remote-cancel-notice");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    history::create_conversation(
+        "s-remote-origin",
+        &project,
+        json!({ "sessionId": "s-remote-origin", "creator": { "kind": "user" } }),
+    )
+    .unwrap();
+    let harness = EngineHarness::allow_all();
+    harness.core.ensure_loaded("s-remote-origin").unwrap();
+    let parent = harness.core.session("s-remote-origin");
+    {
+        let mut state = parent.lock().unwrap();
+        state.project = Some(project.clone());
+        state.running = true;
+    }
+    // 发起方自己先被中止：`cancel` 置位，消费循环随后退出（这里手工收敛 `running`，
+    // 模拟「中止已生效、会话静止」的收尾窗口）
+    harness.core.on_abort("s-remote-origin");
+    parent.lock().unwrap().running = false;
+
+    harness.core.on_agent_reply_received(
+        "s-remote-origin",
+        "sub_remote_late",
+        "Sub-agent sub_remote_late was canceled by the user and will not reply",
+    );
+
+    let snapshot = cancel_notice_snapshot(&harness.core, "s-remote-origin");
+    crate::subagent::reset_for_test();
+    assert!(snapshot.cancel, "迟到的取消回报不得清掉中止标记");
+    assert!(!snapshot.running, "迟到回报不得拉起新一轮");
+    assert_eq!(snapshot.queued, 0, "迟到回报不得排进自动消息队列");
+    assert_eq!(
+        snapshot.notices.len(),
+        1,
+        "回报应落进上下文：{:?}",
+        snapshot.notices
+    );
+}
+
+/// RT-5：已调用过 `Reply` / 驱动已收尾的子代理被 abort 时不回报取消——它们有各自的
+/// 结束路径，取消回报只是噪声（会话关闭 / 删除 / 静默中止同样不回报，见 `abort_session_scope`
+/// 的调用点）。
+#[test]
+fn finished_sub_agent_does_not_report_cancel() {
+    let sandbox = Sandbox::new("engine-sub-agent-cancel-finished");
+    crate::subagent::reset_for_test();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(project.clone()));
+    let harness = EngineHarness::allow_all();
+    let parent = harness.core.session("s-finished-parent");
+    parent.lock().unwrap().project = Some(project.clone());
+    let child = harness.core.session("sub_finished_child");
+    {
+        let mut state = child.lock().unwrap();
+        state.project = Some(project.clone());
+        state.parent_session_id = Some("s-finished-parent".to_string());
+        state.creator = crate::engine::SessionCreator::Agent {
+            workspace_id: None,
+            session_id: "s-finished-parent".to_string(),
+        };
+        // 已 Reply 过并已收尾：abort 不再改变任何东西
+        state.sub_agent_reply_called = true;
+        state.sub_agent_driver_done = true;
+    }
+    crate::subagent::register("sub_finished_child", "s-finished-parent");
+
+    harness.core.on_abort("sub_finished_child");
+
+    let snapshot = cancel_notice_snapshot(&harness.core, "s-finished-parent");
+    crate::subagent::reset_for_test();
+    assert_eq!(snapshot.queued, 0, "已收尾的子代理不回报取消");
+    assert_eq!(snapshot.notices.len(), 0, "已收尾的子代理不回报取消");
+}
