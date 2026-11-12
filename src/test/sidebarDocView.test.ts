@@ -1,7 +1,9 @@
+import * as docViewModule from '../../electron/sidebarDocView';
 import {
   buildDocRows,
   collectGitEntries,
   countLines,
+  gitTail,
   normalizeRenamedPath,
   parseLsFiles,
   parseNumstat,
@@ -20,18 +22,42 @@ import { createChecker, runTests } from './helpers/harness';
  * 运行方式：npm run test:all -- sidebarDocView
  */
 
-/** 脚本化假 runner：按命令前缀给出回包（剥掉 `-c core.quotepath=false` 前缀后匹配）；
- * 未命中的 run 抛错（暴露编排里的意外命令） */
+/** 脚本化假 runner：按命令前缀给出回包（剥掉 `GIT_COMMON_ARGS` 前缀后匹配）；
+ * 未命中的 run 抛错（暴露编排里的意外命令）。
+ *
+ * `runBatch` 逐条委托给 `run`：修复后 `collectGitEntries` 只发批处理，脚本表照旧按
+ * 子命令匹配，用例读起来与逐条调用时一致。`lineCounts` 用同一份假内容计行。 */
 function fakeRunner(scripts: Array<{ match: string[]; code?: number; stdout?: string; stderr?: string }>): GitCommandRunner {
   const run = async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
-    const stripped = args[0] === '-c' ? args.slice(2) : args;
-    const hit = scripts.find((s) => s.match.every((token, index) => stripped[index] === token));
+    const stripped = gitTail(args);
+    // 前缀匹配 + 最长优先：`ls-files` 与 `ls-files --others` 都以 `ls-files` 开头，
+    // 按 token 数降序取第一条（同长度保持声明顺序，即稳定排序）
+    const hit = scripts
+      .map((script, order) => ({ script, order }))
+      .filter((entry) => entry.script.match.every((token, index) => stripped[index] === token))
+      .sort((a, b) => (b.script.match.length - a.script.match.length) || (a.order - b.order))
+      .map((entry) => entry.script)[0];
     if (!hit) throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
     return { code: hit.code ?? 0, stdout: hit.stdout ?? '', stderr: hit.stderr ?? '' };
   };
+  const readFile = async (rel: string): Promise<string | null> =>
+    (rel === 'missing.md' ? null : 'l1\nl2\nl3');
   return {
     run,
-    readFile: async (rel) => (rel === 'missing.md' ? null : 'l1\nl2\nl3'),
+    runBatch: async (commands) => {
+      const replies: Array<{ code: number; stdout: string; stderr: string }> = [];
+      for (const args of commands) replies.push(await run(args));
+      return replies;
+    },
+    readFile,
+    lineCounts: async (rels) => {
+      const counts = new Map<string, number>();
+      for (const rel of rels) {
+        const content = await readFile(rel);
+        if (content !== null) counts.set(rel, countLines(content));
+      }
+      return counts;
+    },
     exists: async (rel) => rel !== 'deleted.md' && rel !== 'missing.md',
   };
 }
@@ -108,22 +134,25 @@ runTests('sidebarDocView', async () => {
     { match: ['rev-parse'], stdout: 'abc123\n' },
     {
       match: ['diff'],
-      stdout: '3\t1\tdocs/a.md\n0\t0\told.md => new.md\n2\t2\tdeleted.md\n',
+      // 已删除条目不再出现在这里：`--diff-filter=d` 让 git 自己剔掉（RT-1 的 exists=0）
+      stdout: '3\t1\tdocs/a.md\n0\t0\told.md => new.md\n',
     },
-    { match: ['ls-files', '--others'], stdout: 'new.md\nmissing.md\n' },
+    { match: ['ls-files', '--others'], stdout: 'new.md\n' },
+    { match: ['ls-files'], stdout: '' },
   ]));
-  check('git 口径：numstat 收集 + 未跟踪计行 + 删除文件过滤',
+  check('git 口径：numstat 收集 + 未跟踪计行（纯重命名跳过）',
     gitFlow.ok === true
     && gitFlow.mode === 'git'
     && gitFlow.ok && gitFlow.entries.length === 2
     && gitFlow.entries[0].path === 'docs/a.md' && gitFlow.entries[0].plus === 3
     && gitFlow.entries[1].path === 'new.md' && gitFlow.entries[1].plus === 3 && gitFlow.entries[1].minus === 0
-    && !gitFlow.entries.some((e) => e.path === 'deleted.md'));
+    && !gitFlow.entries.some((e) => e.path === 'old.md'));
 
   const unborn = await collectGitEntries(fakeRunner([
     { match: ['rev-parse'], code: 1, stderr: '' },
-    { match: ['ls-files'], stdout: 'staged.md\n' },
+    { match: ['diff'], code: 128, stderr: 'fatal: bad revision' },
     { match: ['ls-files', '--others'], stdout: '' },
+    { match: ['ls-files'], stdout: 'staged.md\n' },
   ]));
   check('无 HEAD 新仓：索引内文件按全文行数计新增',
     unborn.ok === true
@@ -133,6 +162,8 @@ runTests('sidebarDocView', async () => {
   const diffFail = await collectGitEntries(fakeRunner([
     { match: ['rev-parse'], stdout: 'abc\n' },
     { match: ['diff'], code: 129, stderr: 'boom' },
+    { match: ['ls-files', '--others'], stdout: '' },
+    { match: ['ls-files'], stdout: '' },
   ]));
   check('git 命令失败转错误态（不静默空列表）',
     diffFail.ok === false && (!diffFail.ok && diffFail.error.includes('boom')));
@@ -153,16 +184,17 @@ runTests('sidebarDocView', async () => {
   check('buildDocRows：空条目给空行集', buildDocRows([]).length === 0);
 
   // ---------- 取数范围参数化（specs/041 FR-002 / FR-003） ----------
-  // 三处 git 调用的 args 逐字断言：pathspec 只由 `pathspecFor` 定义，`all` 时 `--` 之后为空。
+  // 各处 git 调用的 args 逐字断言：pathspec 只由 `pathspecFor` 定义，`all` 时 `--` 之后为空。
+  // 取数走一次批处理，因此记录点在 `runBatch`（命令逐条记平）。
   {
     const calls: string[][] = [];
     const recordingRunner = (scripts: Array<{ match: string[]; stdout?: string }>): GitCommandRunner => {
       const base = fakeRunner(scripts.map((s) => ({ ...s, code: 0 })));
       return {
         ...base,
-        run: async (args) => {
-          calls.push(args);
-          return base.run(args);
+        runBatch: async (commands) => {
+          for (const args of commands) calls.push(args);
+          return base.runBatch(commands);
         },
       };
     };
@@ -171,6 +203,7 @@ runTests('sidebarDocView', async () => {
       { match: ['rev-parse'], stdout: 'abc\n' },
       { match: ['diff'], stdout: '1\t1\tsrc/app.ts\n' },
       { match: ['ls-files', '--others'], stdout: 'new.ts\n' },
+      { match: ['ls-files'], stdout: '' },
     ]), 'all');
     const diffCall = calls.find((args) => args.includes('diff')) ?? [];
     const untrackedCall = calls.find((args) => args.includes('--others')) ?? [];
@@ -188,6 +221,7 @@ runTests('sidebarDocView', async () => {
       { match: ['rev-parse'], stdout: 'abc\n' },
       { match: ['diff'], stdout: '' },
       { match: ['ls-files', '--others'], stdout: '' },
+      { match: ['ls-files'], stdout: '' },
     ]), 'doc');
     const docDiffCall = calls.find((args) => args.includes('diff')) ?? [];
     const docUntrackedCall = calls.find((args) => args.includes('--others')) ?? [];
@@ -201,14 +235,16 @@ runTests('sidebarDocView', async () => {
   {
     // 无 HEAD 分支的 pathspec 也按 scope 走
     const calls: string[][] = [];
-    const recorder = async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
-      calls.push(args);
-      if (args.includes('rev-parse')) return { code: 1, stdout: '', stderr: '' };
-      return { code: 0, stdout: '', stderr: '' };
-    };
     await collectGitEntries({
-      run: recorder,
+      run: async () => ({ code: 0, stdout: '', stderr: '' }),
+      runBatch: async (commands) => {
+        for (const args of commands) calls.push(args);
+        return commands.map((args) => (args.includes('rev-parse')
+          ? { code: 1, stdout: '', stderr: '' }
+          : { code: 0, stdout: '', stderr: '' }));
+      },
       readFile: async () => '',
+      lineCounts: async () => new Map(),
       exists: async () => true,
     }, 'all');
     const lsFilesCall = calls.find((args) => args.includes('ls-files') && !args.includes('--others')) ?? [];
@@ -216,29 +252,197 @@ runTests('sidebarDocView', async () => {
       JSON.stringify(lsFilesCall.slice(lsFilesCall.indexOf('--'))) === JSON.stringify(['--']));
   }
   {
-    // `all` 下纯重命名（numstat 0/0）与已删除文件仍被剔除（AC-6）
+    // `all` 下纯重命名（numstat 0/0）跳过；已删除由 `--diff-filter=d` 交给 git，
+    // 因此 git 的 numstat 输出里本来就没有它（这条断言的是「照样剔得干净」）。
     const allWithRenames = await collectGitEntries({
-      // 这套脚本要断言「已删除文件被存在性过滤」，所以 exists 只对 gone.ts 返回 false
       run: async (args: string[]) => {
-        const stripped = args[0] === '-c' ? args.slice(2) : args;
+        const stripped = gitTail(args);
         if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
         if (stripped[0] === 'diff') {
           return {
             code: 0,
-            stdout: '0\t0\told.ts => new.ts\n2\t2\tgone.ts\n1\t0\tkept.ts\n',
+            stdout: '0\t0\told.ts => new.ts\n1\t0\tkept.ts\n',
             stderr: '',
           };
         }
         if (stripped[0] === 'ls-files') return { code: 0, stdout: '', stderr: '' };
         throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
       },
+      runBatch: async (commands) => commands.map((args) => {
+        const stripped = gitTail(args);
+        if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
+        if (stripped[0] === 'diff') {
+          return { code: 0, stdout: '0\t0\told.ts => new.ts\n1\t0\tkept.ts\n', stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }),
       readFile: async () => '',
-      exists: async (rel) => rel !== 'gone.ts',
+      lineCounts: async () => new Map(),
+      exists: async () => true,
     }, 'all');
     check('scope=all：纯重命名与已删除文件仍被剔除',
       allWithRenames.ok === true
       && allWithRenames.entries.length === 1
       && allWithRenames.entries[0].path === 'kept.ts');
+  }
+
+  // ---------- 远程往返次数（specs/defects/remote-change-list-n-plus-one-round-trips.md） ----------
+  // 缺陷：远程工作区上每个变更条目各付一次 SFTP 往返（未跟踪整文件读回本地数行数、
+  // 已删除逐条 stat），加上数条独立 git exec。这里用「调用次数」把往返次数钉住：
+  // 一次 git 口径的取数只允许一次批处理 + 一次批量计行。
+  {
+    /**
+     * 记录调用次数的 runner。
+     *
+     * 新增的两个成员（`runBatch` / `lineCounts`）在修复前不在 `GitCommandRunner` 里，
+     * 这里按交叉类型声明：修复前它们只是被记录、永不被调用（量到就是缺陷），
+     * 修复后成为真实契约成员。
+     */
+    type BatchRunner = GitCommandRunner & {
+      runBatch: (commands: string[][]) => Promise<Array<{ code: number; stdout: string; stderr: string }>>;
+      lineCounts: (rels: string[]) => Promise<Map<string, number>>;
+    };
+    const counting = (untracked: string = 'new.md') => {
+      const counts = { run: 0, runBatch: 0, lineCounts: 0, exists: 0, readFile: 0 };
+      const batchCalls: string[][] = [];
+      const replies = (args: string[]): { code: number; stdout: string; stderr: string } => {
+        const stripped = gitTail(args);
+        if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
+        if (stripped[0] === 'diff') return { code: 0, stdout: '3\t1\tdocs/a.md\n', stderr: '' };
+        if (stripped[0] === 'ls-files') {
+          // 索引内容段（无 HEAD 才用）与未跟踪段（`--others`）分开给：未跟踪才有行数
+          return { code: 0, stdout: stripped.includes('--others') ? untracked : '', stderr: '' };
+        }
+        throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
+      };
+      const runner: BatchRunner = {
+        run: async (args) => {
+          counts.run += 1;
+          return replies(args);
+        },
+        runBatch: async (commands) => {
+          counts.runBatch += 1;
+          for (const args of commands) batchCalls.push(args);
+          return commands.map(replies);
+        },
+        lineCounts: async (rels) => {
+          counts.lineCounts += 1;
+          return new Map(rels.map((rel) => [rel, 4]));
+        },
+        readFile: async () => {
+          counts.readFile += 1;
+          return 'l1\nl2\n';
+        },
+        exists: async () => {
+          counts.exists += 1;
+          return true;
+        },
+      };
+      return { runner, counts, batchCalls };
+    };
+
+    const first = counting();
+    const result = await collectGitEntries(first.runner, 'all');
+    check('RT-1 git 口径：四条事实一次往返取回，不再逐条 stat / 逐文件读',
+      result.ok === true
+      && first.counts.runBatch === 1
+      && first.counts.run === 0
+      && first.counts.exists === 0
+      && first.counts.readFile === 0);
+
+    const headOf = (args: string[]): string => gitTail(args)[0] ?? '';
+    check('RT-2 diff 带 --diff-filter=d 与 --relative',
+      (() => {
+        const diffArgs = first.batchCalls.find((args) => headOf(args) === 'diff');
+        if (!diffArgs) return false;
+        return diffArgs.includes('--diff-filter=d') && diffArgs.includes('--relative');
+      })());
+
+    check('RT-2 批处理：四条命令同序（HEAD / diff / 索引 / 未跟踪），一次发出',
+      first.counts.runBatch === 1
+      && first.batchCalls.length === 4
+      && first.batchCalls.map(headOf).slice(0, 3).join(',') === 'rev-parse,diff,ls-files'
+      && first.batchCalls[3].includes('--others'));
+
+    check('RT-3 未跟踪行数：一次批量计行，不逐文件读回内容',
+      first.counts.lineCounts === 1
+      && first.counts.readFile === 0
+      && result.ok === true
+      && result.entries.some((entry) => entry.path === 'new.md' && entry.plus === 4 && entry.minus === 0));
+
+    check('RT-4 git 口径：取数命令带只读锁参数',
+      (() => {
+        const anyCall = first.batchCalls[0] ?? [];
+        return anyCall.includes('--no-optional-locks')
+          && anyCall.includes('core.untrackedCache=false')
+          && anyCall.includes('core.fsmonitor=false');
+      })());
+
+    // 无未跟踪文件时不发这次批量计行（不白付一次往返）
+    const noUntracked = counting('');
+    const emptyUntracked = await collectGitEntries(noUntracked.runner, 'doc');
+    check('RT-3 无未跟踪文件：不发批量计行',
+      emptyUntracked.ok === true && noUntracked.counts.lineCounts === 0);
+
+    const failed = await collectGitEntries({
+      run: async () => ({ code: 129, stdout: '', stderr: 'boom' }),
+      runBatch: async () => [
+        { code: 0, stdout: 'abc\n', stderr: '' },
+        { code: 129, stdout: '', stderr: 'boom' },
+        { code: 0, stdout: '', stderr: '' },
+        { code: 0, stdout: '', stderr: '' },
+      ],
+      lineCounts: async () => new Map(),
+      readFile: async () => null,
+      exists: async () => false,
+    } as BatchRunner);
+    check('RT-5 git 失败：带 stderr 原文的错误态，不静默空列表',
+      failed.ok === false && failed.error.includes('boom'));
+  }
+
+  // 批处理脚本与输出解析是可单测的纯函数
+  {
+    const batch = docViewModule as unknown as {
+      buildGitBatchScript?: (commands: string[][]) => string;
+      parseGitBatchOutput?: (
+        stdout: string,
+        commandCount: number,
+      ) => Array<{ code: number; stdout: string; stderr: string }>;
+    };
+    const script = batch.buildGitBatchScript?.([['rev-parse', '--verify', '-q', 'HEAD']]);
+    check('RT-6 批处理脚本：每条命令带独立标记段',
+      typeof script === 'string'
+      && script.includes('rev-parse')
+      && /__GIT_BATCH_BEGIN_[0-9]+__/.test(script)
+      && /__GIT_BATCH_CODE_[0-9]+__/.test(script));
+
+    const stdoutSample = [
+      '__GIT_BATCH_BEGIN_0__',
+      'true',
+      '__GIT_BATCH_CODE_0__0',
+      '__GIT_BATCH_ERR_0__',
+      '__GIT_BATCH_ERREND_0__',
+      '__GIT_BATCH_BEGIN_1__',
+      '3\t1\tdocs/a.md',
+      '__GIT_BATCH_CODE_1__0',
+      '__GIT_BATCH_ERR_1__',
+      'warn',
+      '__GIT_BATCH_ERREND_1__',
+    ].join('\n') + '\n';
+    const parsed = batch.parseGitBatchOutput?.(stdoutSample, 2) ?? [];
+    check('RT-6 批处理输出：按标记还原 code / stdout / stderr',
+      parsed.length === 2
+      && parsed[0].code === 0 && parsed[0].stdout === 'true\n'
+      && parsed[1].code === 0 && parsed[1].stdout === '3\t1\tdocs/a.md\n'
+      && parsed[1].stderr === 'warn\n');
+
+    let mismatch = false;
+    try {
+      batch.parseGitBatchOutput?.('__GIT_BATCH_BEGIN_0__\ntrue\n__GIT_BATCH_CODE_0__0\n', 3);
+    } catch {
+      mismatch = true;
+    }
+    check('RT-6 批处理输出：命令数不匹配时报错而不是错位还原', mismatch);
   }
 
   finish();

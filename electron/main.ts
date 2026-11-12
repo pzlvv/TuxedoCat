@@ -110,9 +110,11 @@ import {
 } from './sidebarFilesRemote.js';
 import {
   buildDocRows,
+  buildGitBatchScript,
   collectGitEntries,
   collectRecordEntries,
   localGitRunner,
+  parseGitBatchOutput,
   probeGitWorkspace,
   type ChangeScope,
   type GitCommandRunner,
@@ -5390,12 +5392,24 @@ function setupIpc(): void {
   const remoteGitRunner = (client: SshClient, root: string): GitCommandRunner => {
     const shQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
     const posixJoin = (a: string, b: string): string => `${a.replace(/\/+$/, '')}/${b}`;
+    /** 一条 git 命令的远端 shell 片段（参数逐个单引号转义：`*.md` pathspec 必须原样到达 git） */
+    const gitCall = (args: readonly string[]): string =>
+      `git -C ${shQuote(root)} ${args.map(shQuote).join(' ')}`;
     return {
       run: async (args) => {
-        // 参数逐个单引号转义：不经 shell 展开（*.md pathspec 必须原样到达 git）
-        const out = await client.exec(`git -C ${shQuote(root)} ${args.map(shQuote).join(' ')}`);
+        const out = await client.exec(gitCall(args));
         if (out.code === null) throw new Error('远端 git 命令超时或未给出退出码');
         return { code: out.code, stdout: out.stdout, stderr: out.stderr };
+      },
+      // 多条命令一次 exec：每条之间往返一次就是几百毫秒固定开销，而变更清单一次就要
+      // 三条事实（specs/defects/remote-change-list-n-plus-one-round-trips.md）。
+      // 脚本由纯函数生成（`buildGitBatchScript`），输出按标记还原，单条命令非零退出
+      // 不影响其它段。
+      runBatch: async (commands) => {
+        if (commands.length === 0) return [];
+        const out = await client.exec(buildGitBatchScript(commands));
+        if (out.code === null) throw new Error('远端 git 批处理超时或未给出退出码');
+        return parseGitBatchOutput(out.stdout, commands.length);
       },
       readFile: async (rel) => {
         try {
@@ -5403,6 +5417,41 @@ function setupIpc(): void {
         } catch {
           return null;
         }
+      },
+      // 行数留在远端数：逐文件 readFile 会把整份文件经 SFTP 拉回宿主只为数行数。
+      // `grep -a -c ''` 与 `countLines` 同口径（末行无换行不另计、空文件 0 行、CRLF 按行）；
+      // `-Z` 让文件名与计数之间用 NUL 分隔，路径里有空格 / 制表符也不会错位。
+      lineCounts: async (rels) => {
+        const counts = new Map<string, number>();
+        if (rels.length === 0) return counts;
+        const script = [
+          'cd "$1" || exit 1',
+          'shift',
+          'for rel in "$@"; do',
+          '  if [ -f "$rel" ]; then',
+          '    n=$(grep -a -c \'\' -- "$rel" 2>/dev/null); [ -z "$n" ] && n=0',
+          '  else',
+          '    n=0',
+          '  fi',
+          '  printf \'%s\\t%s\\n\' "$n" "$rel"',
+          'done',
+        ].join('\n');
+        // 相对路径逐个位置传参（不经 shell 展开，且不受参数总长以外的限制）
+        const out = await client.exec(
+          `sh -c ${shQuote(script)} ${shQuote(root)} ${rels.map(shQuote).join(' ')}`,
+        );
+        if (out.code !== 0) {
+          throw new Error(`远端计行失败: ${out.stderr.trim() || `退出码 ${out.code}`}`);
+        }
+        for (const line of out.stdout.split('\n')) {
+          if (line.length === 0) continue;
+          const tab = line.indexOf('\t');
+          if (tab <= 0) continue;
+          const value = Number.parseInt(line.slice(0, tab), 10);
+          if (!Number.isFinite(value)) continue;
+          counts.set(line.slice(tab + 1), value);
+        }
+        return counts;
       },
       exists: async (rel) => {
         try {
