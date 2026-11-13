@@ -245,8 +245,9 @@ async function launchWithRemoteWorkspace(remotePath: string): Promise<Awaited<Re
     console.log(`[诊断] 启动远程工作区失败（${remotePath}）`);
     console.log(`[诊断] 现有页面（${urls.length}）：\n${urls.join('\n')}`);
     console.log(`[诊断] 主进程日志末 ${logTail.length} 行：\n${logTail.join('\n')}`);
-    const daemon = await sshExec('ls -la ~/.tuxedo-cat/run/ 2>/dev/null; ps -eo pid,etime,cmd | grep "[t]uxedo-cat-core" | head -5')
-      .catch(() => null);
+    const daemon = await sshExec(
+      `ls -la ~/${CONFIG_DIR_NAME}/run/ 2>/dev/null; ps -eo pid,etime,cmd | grep '[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1)}' | head -5`,
+    ).catch(() => null);
     console.log(`[诊断] 远端 daemon：\n${daemon?.stdout.trim() ?? '<查询失败>'}`);
     console.log(`[诊断] 沙箱 home（含日志）：${app.homeDir}`);
     throw err;

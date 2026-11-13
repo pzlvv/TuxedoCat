@@ -213,4 +213,5 @@ e2e/
     超时」的成因（见 `close` 的原注释），于是泄漏会让后续用例继续握手超时。现在启动失败走
     与 `close` 同一个 `killSpawnedApp`（taskkill `/T /F` + 轮询等进程树真正退出 + 删沙箱）。
     排查残留：`Get-CimInstance Win32_Process -Filter "Name='electron.exe'"` 看
-    `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的 `Tuxedo Cat.exe`）。
+    `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的应用进程：沙箱实例的可执行
+    文件在仓库的 node_modules 下，真实安装的在用户目录的 Programs 下）。

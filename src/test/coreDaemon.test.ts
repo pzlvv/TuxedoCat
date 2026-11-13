@@ -263,6 +263,37 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<boo
   return predicate();
 }
 
+/**
+ * 等子进程真正退出（`exit` 已触发）。
+ *
+ * `child.kill()` 只是投递终止信号：Windows 上进程随后还要释放自己打开过的文件句柄，
+ * 紧接着删它的临时目录会拿到 EPERM。已经退出（`exitCode !== null`）时立即返回。
+ */
+function waitForExit(child: { exitCode: number | null; once: (event: 'exit', cb: () => void) => void }, timeoutMs = 5_000): Promise<void> {
+  if (child.exitCode !== null) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/** 删临时目录；句柄尚未释放（Windows EPERM / EBUSY）时重试几次再放弃 */
+async function rmWithRetry(dir: string, attempts = 10): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= attempts || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY')) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    }
+  }
+}
+
 // ==================== 真实产物 smoke ====================
 
 /**
@@ -553,8 +584,12 @@ async function run(): Promise<void> {
         await bus.shutdown();
         await daemon.shutdown();
       } finally {
-        child.kill();
-        fs.rmSync(home, { recursive: true, force: true });
+        // 先等子进程真正退出再删临时 HOME：Windows 上 `kill()` 只是投递终止信号，
+        // 进程尚未释放它写过的状态文件句柄，紧接着 `rmSync` 会报 EPERM（实测偶发，
+        // 全量单测时表现为 coreDaemon 失败在收尾、而 32 条断言全绿）。
+        await waitForExit(child);
+        // 仍有残留句柄时重试几次：删除失败不该把「断言全绿」的用例判成红
+        await rmWithRetry(home);
       }
     }
   }
