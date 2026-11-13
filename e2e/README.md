@@ -192,3 +192,25 @@ e2e/
     标识符从 `src/config/project.ts` 取、不写字面量（`remoteSshExecution.spec.ts` 的
     `CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`，`remoteChangeList.spec.ts` 的
     `afterAll` 同一套）。
+12. **链路抖动会以「产品错误态」的形式出现在界面里**：已知坑 10 那 3% 的瞬时失败若落在
+    **被测代码**发起的那次 exec 上（不是用例脚手架），侧栏会进入既定的错误态「读取失败，
+    点击重试」——这是产品应有的行为（不静默空列表，见
+    [「全部变更」视图规格](../docs/archive/specs/041-sidebar-all-changes-view/spec.md) 的 FR-003），
+    不是回归。用例
+    只等目标行出现就会把抖动判成缺陷（`remoteChangeList.spec.ts` 首轮全量跑即如此：RT-2
+    红在 `keep.md` 不出现，单跑与复跑都绿）。等待助手因此替用户点掉 `[data-retry-doc]`
+    的重试，并在判定「取数不得报错」时按日志把传输层失败与非传输层失败分开计数：只有后者
+    算红。判据不因此放宽——持续报错的真失败仍然红。
+13. **点「重试」会真的重发一次远端取数，必须限次退避**：错误态的重试不是幂等的空操作，
+    它重跑整条取数链路。按固定间隔轮询点击会自己造一场往返风暴——`remoteChangeList.spec.ts`
+    的等待助手上一版每 250ms 点一次，链路持续抖动时 120 秒里点了 324 次（诊断日志
+    `runBatch: 324`），既拖长用例又把后续用例的取数计数基线搅乱。现在最多重试 3 次、
+    间隔 1s / 2s / 4s 指数退避，且只在错误态出现时点（加载中点没用，还会作废在途回包）。
+14. **启动阶段失败必须自己收尸，否则会自我放大**：`launchApp` 的 CDP 握手（3 次 × 60s）
+    全超时时，`AppHandle` 还没返回、`close` 也不存在——早前没有任何人负责杀进程与清沙箱，
+    实测留下过完整的 Electron 进程树（主进程 + GPU + 网络 + 两个渲染进程）与
+    `tuxedo-e2e-home-*`。而垂死的 Electron 进程与下一个实例争 CPU 正是「时序敏感断言偶发
+    超时」的成因（见 `close` 的原注释），于是泄漏会让后续用例继续握手超时。现在启动失败走
+    与 `close` 同一个 `killSpawnedApp`（taskkill `/T /F` + 轮询等进程树真正退出 + 删沙箱）。
+    排查残留：`Get-CimInstance Win32_Process -Filter "Name='electron.exe'"` 看
+    `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的 `Tuxedo Cat.exe`）。

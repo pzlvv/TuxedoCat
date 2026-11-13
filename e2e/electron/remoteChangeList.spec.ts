@@ -170,17 +170,29 @@ test.beforeEach(async () => {
   }
 });
 
-test.afterAll(async () => {
-  // 收尾分三步（远端是共享机器，用例结束不留目录也不留后台进程）：
-  // 1) 删本轮唯一目录；2) 杀残留 daemon；3) 删 daemon 状态文件
-  // ——上一轮被杀时 daemon 可能还在空闲退出倒计时里，状态文件留着会让下一轮建链
-  // 挂在一个半死的 daemon 上（与 remoteSshExecution.spec.ts 的清场同一做法）。
-  if (remoteWs) await sshExec(`rm -rf ${remoteWs}`).catch(() => undefined);
-  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+/**
+ * 远端 daemon 清场：杀进程 + 删本指纹槽位的状态文件。
+ *
+ * 为什么每轮都要清（而不是只在 `afterAll`）：上一条用例结束时宿主关窗，远端 daemon
+ * 仍可能处在空闲退出倒计时里，`run/core-daemon-<fingerprint>.json` 也还在。下一条用例
+ * 立刻建链时若命中这个半死的 daemon，握手就挂在那儿，表现为「等待活动聊天视图超时
+ * （候选 0 个）」——首轮复跑即如此（RT-3 红在启动阶段，前后两条用例都绿）。这是
+ * `e2e/README.md` 已知坑 11 记的同一件事，`remoteSshExecution.spec.ts` 的冷部署用例
+ * 也在 `beforeAll` 之外各自清场。
+ */
+async function resetRemoteDaemon(): Promise<void> {
+  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`).catch(() => undefined);
   const fingerprint = localCoreFingerprint();
   if (fingerprint) {
     await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
   }
+}
+
+test.afterAll(async () => {
+  // 收尾分三步（远端是共享机器，用例结束不留目录也不留后台进程）：
+  // 1) 删本轮唯一目录；2) 杀残留 daemon；3) 删 daemon 状态文件
+  if (remoteWs) await sshExec(`rm -rf ${remoteWs}`).catch(() => undefined);
+  await resetRemoteDaemon();
 });
 
 test.afterEach(async () => {
@@ -190,6 +202,9 @@ test.afterEach(async () => {
   }
   mockLlm?.close();
   mockLlm = null;
+  // 关窗之后远端 daemon 才进入空闲退出倒计时：在这里清，下一条用例的建链才不会撞上
+  // 一个正在退出的 daemon（见 resetRemoteDaemon 的注释）
+  await resetRemoteDaemon();
 });
 
 /**
@@ -220,7 +235,22 @@ async function launchWithRemoteWorkspace(remotePath: string): Promise<Awaited<Re
     agentMode: 'auto',
   });
   // 远程工作区冷部署（SSH 引导上传 Core / ripgrep）要走完整预算
-  await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 240_000);
+  try {
+    await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 240_000);
+  } catch (err) {
+    // 启动阶段失败时「候选 0 个」本身不含任何可诊断信息：把当前页面清单、沙箱 home 里的
+    // 主进程日志与远端 daemon 状态一起打出来，否则只能靠反复重跑猜（实测踩过多次）
+    const urls = app.context.pages().map((p) => p.url());
+    const logTail = appLog().split('\n').slice(-25);
+    console.log(`[诊断] 启动远程工作区失败（${remotePath}）`);
+    console.log(`[诊断] 现有页面（${urls.length}）：\n${urls.join('\n')}`);
+    console.log(`[诊断] 主进程日志末 ${logTail.length} 行：\n${logTail.join('\n')}`);
+    const daemon = await sshExec('ls -la ~/.tuxedo-cat/run/ 2>/dev/null; ps -eo pid,etime,cmd | grep "[t]uxedo-cat-core" | head -5')
+      .catch(() => null);
+    console.log(`[诊断] 远端 daemon：\n${daemon?.stdout.trim() ?? '<查询失败>'}`);
+    console.log(`[诊断] 沙箱 home（含日志）：${app.homeDir}`);
+    throw err;
+  }
   return app.sidebarPage();
 }
 
@@ -259,12 +289,21 @@ function appLog(): string {
   }
 }
 
-/** 日志里某个工作区路径的 doc-list 失败次数（哨兵连环重扫 / 取数失败都表现为这些行） */
-function docListFailureCount(workspacePath: string): number {
-  return appLog()
+/**
+ * 日志里某个工作区的 doc-list 失败行，按成因分两类返回。
+ *
+ * 分类是必须的：这台远端链路有约 3% 的瞬时失败（见文件头 `sshExec` 的实测），落在取数
+ * 那一次 exec 上时同样会写一行 `doc-list failed`——那是链路抖动，不是取数形态的缺陷。
+ * 用例要判的是「取数本身有没有失败」（`--diff-filter=d` 的批处理是否整批炸掉），所以
+ * 只有**非传输层**的失败才算数；传输层失败单独计数并打印，用于区分「真红」与「链路抖」。
+ */
+function docListFailures(workspacePath: string): { total: number; transport: number } {
+  const lines = appLog()
     .split('\n')
-    .filter((line) => line.includes('[sidebar-files]') && line.includes('doc-list failed') && line.includes(workspacePath))
-    .length;
+    .filter((line) => line.includes('[sidebar-files]') && line.includes('doc-list failed') && line.includes(workspacePath));
+  const transport = lines.filter((line) =>
+    /SSH connection to .* failed|ECONNRESET|handshake|connection closed|Timed out while waiting/i.test(line)).length;
+  return { total: lines.length, transport };
 }
 
 /**
@@ -310,12 +349,89 @@ function diffOps(before: RemoteGitOps, after: RemoteGitOps): RemoteGitOps {
   };
 }
 
-/** 等变更视图稳定出结果：给定选择器可见（取数完成的可视判据） */
+/**
+ * 等一个「取数已出结果」的判据成立：期间替用户点掉错误态的重试，返回退避耗掉的毫秒数。
+ *
+ * 为什么需要重试而不是放宽超时：这台远端链路有约 3% 的瞬时失败（见文件头 `sshExec`
+ * 的同一段实测）。失败落在取数那一次 exec 上时，侧栏进入既定错误态「读取失败，点击
+ * 重试」——这是产品**应有**的行为（不静默空列表，specs/041 FR-003），不是缺陷。用例
+ * 若只等结果出现，就会把链路抖动判成产品回归（首轮全量跑即如此：RT-2 红在 `keep.md`
+ * 不出现，而单跑与复跑都绿）。
+ *
+ * **重试必须有上限与退避**：每点一次「重试」都真的重发一次远端取数。上一版按 250ms
+ * 轮询点击，链路持续抖动时 120 秒里点了 324 次（诊断日志里的 `runBatch: 324`），等于
+ * 用例自己造了一场往返风暴，还会把后续用例的取数计数基线搅乱。现在：最多重试 3 次、
+ * 间隔指数退避（1s / 2s / 4s），且只在**错误态**出现时点——加载中不点（那时点了没用，
+ * 还会作废在途回包）。
+ *
+ * **返回退避耗掉的毫秒数**：调用方的计时断言量的是「取数本身的耗时」，抖动触发的重试
+ * 退避（最多 7 秒）不是取数的一部分。把它从墙钟里扣掉，计时判据才仍然只反映取数形态
+ * ——否则一次抖动就能让 121 条那次凭空多出几秒、把计时断言打成假红（实测发生过一次）。
+ *
+ * `settled` 是「取数已出结果」的判据（行可见 / 徽标文本符合），返回 true 即完成；
+ * 只读一次快照、不阻塞，轮询与退避都由本函数控制。
+ */
+async function waitForDocResult(
+  sb: Awaited<ReturnType<AppHandle['sidebarPage']>>,
+  what: string,
+  settled: () => Promise<boolean>,
+): Promise<number> {
+  // 错误态的重试行只在「非 not-a-git-workspace」时带 data-retry-doc（见 sidebar 的 renderDocFiles）
+  const retry = sb.locator(`${FILES_TREE} .file-error[data-retry-doc]`);
+  const deadline = Date.now() + 120_000;
+  /** 已点过的重试次数（上限 3：3% 的抖动连中四次的概率可以忽略） */
+  let retries = 0;
+  /** 退避累计（调用方从耗时里扣掉，见上面的注释） */
+  let backoffMs = 0;
+  for (;;) {
+    if (await settled()) return backoffMs;
+    if (retries < 3 && await retry.isVisible().catch(() => false)) {
+      retries += 1;
+      console.log(`[诊断] 等 ${what} 时侧栏报错，第 ${retries} 次点重试`);
+      await retry.click({ timeout: 10_000 }).catch(() => undefined);
+      // 指数退避：给远端一次真正重新建链 / 重取的机会，别把重试打成风暴
+      const waitMs = 1_000 * 2 ** (retries - 1);
+      backoffMs += waitMs;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
+    if (Date.now() > deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  // 预算用尽：先把现场打出来（否则只剩「元素不存在」，看不出是取数失败、空集还是没触发），
+  // 再用短超时的 expect 报错，让失败信息里带 locator 的完整现场
+  const logTail = appLog()
+    .split('\n')
+    .filter((line) => line.includes('[sidebar-files]') || line.includes('[ssh]'))
+    .slice(-15);
+  console.log(`[诊断] 等 ${what} 超时（重试 ${retries} 次）；侧栏当前态：${await sb.locator(FILES_TREE).textContent().catch(() => '<读不到>')}`);
+  console.log(`[诊断] 主进程日志末 ${logTail.length} 行：\n${logTail.join('\n')}`);
+  console.log(`[诊断] 远端取数计数：${JSON.stringify(await remoteGitOps().catch(() => null))}`);
+  expect(await settled(), `等待 ${what} 超时`).toBe(true);
+  return backoffMs;
+}
+
+/** 等某一行出现在变更清单里（取数完成的可视判据），返回抖动退避耗时 */
 async function expectRowVisible(
   sb: Awaited<ReturnType<AppHandle['sidebarPage']>>,
   rel: string,
-): Promise<void> {
-  await expect(sb.locator(`${FILES_TREE} .file-row[data-path="${rel}"]`)).toBeVisible({ timeout: 120_000 });
+): Promise<number> {
+  const row = sb.locator(`${FILES_TREE} .file-row[data-path="${rel}"]`);
+  return waitForDocResult(sb, rel, () => row.isVisible().catch(() => false));
+}
+
+/** 等某一行带某段徽标文本（`+N` / `-M`），返回抖动退避耗时 */
+async function expectBadge(
+  sb: Awaited<ReturnType<AppHandle['sidebarPage']>>,
+  rel: string,
+  badge: '.doc-plus' | '.doc-minus',
+  text: string,
+): Promise<number> {
+  const target = sb.locator(`${FILES_TREE} .file-row[data-path="${rel}"] ${badge}`);
+  return waitForDocResult(sb, `${rel} ${badge}=${text}`, async () => {
+    const actual = await target.textContent().catch(() => null);
+    return actual === text;
+  });
 }
 
 // ==================== RT-1 / RT-2 / RT-3：往返次数与条目数解耦 ====================
@@ -356,12 +472,13 @@ test('RT-1/RT-2/RT-3 远端 120 条改动一次取数：往返次数与条目数
   const startedAt = Date.now();
   await openFilesMode(sb, 'changes');
   // 取数完成的判据：一条已跟踪 md、一条未跟踪 md、一个其它类型都在清单里
-  await expectRowVisible(sb, 't1.md');
-  await expectRowVisible(sb, 'u60.md');
-  await expectRowVisible(sb, 'notes.txt');
-  const bulkMs = Date.now() - startedAt;
+  //（三次等待各自返回它用掉的抖动退避，下面从墙钟里扣掉：计时判据只量取数形态）
+  const bulkBackoff = (await expectRowVisible(sb, 't1.md'))
+    + (await expectRowVisible(sb, 'u60.md'))
+    + (await expectRowVisible(sb, 'notes.txt'));
+  const bulkMs = Date.now() - startedAt - bulkBackoff;
   const bulkOps = diffOps(beforeBulk, await remoteGitOps());
-  const failureCount = docListFailureCount(repo);
+  const bulkFailures = docListFailures(repo);
 
   // 行数口径：已跟踪 md 的 +2/-0、未跟踪 md 的 +3/-0（全文行数）、notes.txt 的 +1/-1
   const row = (rel: string) => sb.locator(`${FILES_TREE} .file-row[data-path="${rel}"]`);
@@ -380,14 +497,16 @@ test('RT-1/RT-2/RT-3 远端 120 条改动一次取数：往返次数与条目数
   const beforeSingle = await remoteGitOps();
   const singleStartedAt = Date.now();
   await sb.locator('#filesRefresh').click();
-  await expect(row('t1.md').locator('.doc-plus')).toHaveText('+1', { timeout: 120_000 });
-  const singleMs = Date.now() - singleStartedAt;
+  // 徽标等待同样走抖动重试助手（否则一次抖动就让这次测量挂到 120s 超时），退避从墙钟扣掉
+  const singleBackoff = await expectBadge(sb, 't1.md', '.doc-plus', '+1');
+  const singleMs = Date.now() - singleStartedAt - singleBackoff;
   const singleOps = diffOps(beforeSingle, await remoteGitOps());
 
   console.log(
     `[RT-1] 121 条改动：${bulkMs}ms，远端调用 ${JSON.stringify(bulkOps)}；`
     + `1 条改动：${singleMs}ms，远端调用 ${JSON.stringify(singleOps)}；`
-    + `单次 RTT 实测 ${MEASURED_SSH_RTT_MS}ms；doc-list 失败行 ${failureCount} 条`,
+    + `单次 RTT 实测 ${MEASURED_SSH_RTT_MS}ms；doc-list 失败 ${bulkFailures.total} 行`
+    + `（其中链路抖动 ${bulkFailures.transport} 行）`,
   );
 
   // 判定一（确定性，缺陷的定义）：两种规模的远端调用次数**相同**且与条目数无关。
@@ -406,7 +525,11 @@ test('RT-1/RT-2/RT-3 远端 120 条改动一次取数：往返次数与条目数
 
   // 判定二（量级）：条目数从 121 降到 1 时的耗时差不得随条目数线性增长。
   // 旧形态 121 条未跟踪文件 × 195ms ≈ 23.6 秒；新形态两次都在常数级。
-  expect(failureCount, `取数不得报错（doc-list failed 行数为 ${failureCount}）`).toBe(0);
+  expect(
+    bulkFailures.total - bulkFailures.transport,
+    `取数本身不得报错（doc-list 非传输层失败 ${bulkFailures.total - bulkFailures.transport} 行；`
+    + `另有链路抖动 ${bulkFailures.transport} 行，不计入判据）`,
+  ).toBe(0);
   expect(
     bulkMs - singleMs,
     `121 条与 1 条的取数耗时差应远小于条目数 × RTT（旧形态 ≥23 秒）；实测差 ${bulkMs - singleMs}ms`,
@@ -448,8 +571,14 @@ test('RT-2 远端删掉已跟踪 md：两个变更视图都不出现该行，同
   await expect(sb.locator(`${FILES_TREE} .file-row[data-path="doomed.md"]`)).toHaveCount(0);
   await expect(sb.locator(`${FILES_TREE} .file-row[data-path="keep.md"]`)).toBeVisible();
 
-  // 取数没有退化成「整批失败」：日志里没有该工作区的 doc-list 失败行
-  expect(docListFailureCount(repo), '删除剔除不得伴随取数失败').toBe(0);
+  // 取数没有退化成「整批失败」：日志里没有该工作区的非传输层 doc-list 失败行
+  //（链路抖动会自己恢复、且在视图里表现为可点重试的错误态，不是「整批失败」）
+  const failures = docListFailures(repo);
+  expect(
+    failures.total - failures.transport,
+    `删除剔除不得伴随取数失败（非传输层失败 ${failures.total - failures.transport} 行；`
+    + `另有链路抖动 ${failures.transport} 行）`,
+  ).toBe(0);
 
   await sshExec(`rm -rf ${shQuote(repo)}`).catch(() => undefined);
 });
@@ -586,7 +715,12 @@ test('RT-4 远端取数不改写 .git/index，也不触发自己触发的全量�
   const after = await indexState();
   console.log(`[RT-4] 取数前索引 ${before.replace(/\n/g, ' | ')}；取数后 ${after.replace(/\n/g, ' | ')}`);
   expect(after, '取数不得改写远端 .git/index（内容哈希与 mtime 都要保持不变）').toBe(before);
-  expect(docListFailureCount(repo), '取数不得报错').toBe(0);
+  // 取数本身不得报错（链路抖动不计：它同样会让一次取数失败，但不改索引、也不是取数形态问题）
+  const failures = docListFailures(repo);
+  expect(
+    failures.total - failures.transport,
+    `取数不得报错（非传输层失败 ${failures.total - failures.transport} 行；另有链路抖动 ${failures.transport} 行）`,
+  ).toBe(0);
 
   await sshExec(`rm -rf ${shQuote(repo)}`).catch(() => undefined);
 });

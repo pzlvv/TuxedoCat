@@ -134,8 +134,10 @@ git 只占 4 次 exec，其余每个变更条目各付一次 SFTP 请求——�
 | 类型与风格 | `npm run check-types` / `npm run lint` | 绿 | 三份 tsconfig（含 webview / electron）与 eslint 均无输出 |
 | 文档同步 | `npm run test:unit -- docs-lint` | 绿 | 49 通过 / 0 失败；`docsLintLocalOnlyPaths` 6 通过 |
 | e2e 车道（修复前） | `npx playwright test -c e2e/playwright.config.ts --project=electron-ssh remoteChangeList` | 红 | 6 失败 / 1 通过（9.8 分钟）：RT-1 / RT-2 / RT-3 ×2 / RT-7 / RT-4 全红；只有「非 git 工作区」一条通过（它不取 git 口径）。失败形态是侧栏「读取失败，点击重试」——该真机同时暴露了本 spec 之外的两个缺陷（`remote-git-batch-drops-worktree-cwd` / `remote-line-counts-shifts-cwd-into-first-path`） |
-| e2e 车道（修复后） | 同上 | 绿 | 7 通过 / 0 失败（1.8 分钟）。关键读数：**121 条改动的取数 = 远端 3 次调用**（`run` 1 次工作区探测 + `runBatch` 1 次 + `lineCounts` 1 次），无逐条 `readFile` / `exists`；1 条改动的取数 = 2 次调用（无未跟踪文件时不发批量计行）；121 条 1193ms vs 1 条 379ms |
-| e2e 车道（RT-4 哨兵） | 同上 | 绿 | 取数前后远端 `.git/index` 的内容哈希与 mtime 完全一致（`3e61899…` / `1794572610.'.git/index'`）；`[sidebar-files] doc-list failed` 行数为 0（没有「取数 → 哨兵失效 → 全量重扫」的连环） |
+| e2e 车道（修复后） | 同上 | 绿 | 7 通过 / 0 失败（2.7 分钟）。关键读数：**121 条改动的取数 = 远端 3 次调用**（`run` 1 次工作区探测 + `runBatch` 1 次 + `lineCounts` 1 次），无逐条 `readFile` / `exists`；1 条改动的取数 = 2 次调用（无未跟踪文件时不发批量计行）；121 条 960ms vs 1 条 239ms |
+| e2e 车道（RT-4 哨兵） | 同上 | 绿 | 取数前后远端 `.git/index` 的内容哈希与 mtime 完全一致（`9b32c35…` / `1794580388.'.git/index'`）；`[sidebar-files] doc-list failed` 行数为 0（没有「取数 → 哨兵失效 → 全量重扫」的连环） |
 | e2e 车道（RT-7 子目录） | 同上 | 绿 | 工作区 `<repo>/sub` 时 `x.md` / `new.md` 都在清单里且 `data-path` 是工作区相对；`sub/x.md` 与仓库根的 `other.md` 都不出现 |
 | e2e 车道（已删除剔除） | 同上 | 绿 | 未暂存删除的 `doomed.md` 在文档与差异两个视图都不出现，同批的 `keep.md` / `new.md` / `notes.txt` 照常列出（剔除 ≠ 整批失败） |
-| 实测：ElapsedTime 收益 | e2e 车道的远端调用计数（`<envPrefix>_E2E_REMOTE_GIT_OPS`） | 绿 | 修复前 121 条改动约 185 次远端往返（4 次 `run` + 60 次 `readFile` + 121 次 `exists`）；修复后恒为 3 次。计时侧：121 条 1193ms vs 1 条 379ms（差 0.8 秒，与条目数无关） |
+| e2e 车道（12MB 未跟踪文件） | 同上 | 绿 | 12MB / 40 万行的未跟踪文件取数 833ms，`+400000`；判定阈值 6 秒（SFTP 实测 ≈1.4MB/s，旧形态单这一条就要 8 秒以上） |
+| 实测：ElapsedTime 收益 | e2e 车道的远端调用计数（`<envPrefix>_E2E_REMOTE_GIT_OPS`） | 绿 | 修复前 121 条改动约 185 次远端往返（4 次 `run` + 60 次 `readFile` + 121 次 `exists`）；修复后恒为 3 次。计时侧：121 条 960ms vs 1 条 239ms（差 0.7 秒，与条目数无关） |
+| 实测：远端链路抖动 | 同一用例重复跑（3 次单跑 + 多次全量） | 绿 | 该远端建链有约 3% 瞬时失败（同机 `ssh` 命令行也复现），落在取数那次 exec 上时侧栏进入既定错误态「读取失败，点击重试」。用例侧处理：等待助手限次退避重试（最多 3 次，1s/2s/4s）、退避耗时从计时里扣除、`doc-list failed` 按传输层 / 非传输层分开计数（只有后者算红）。判据未放宽：持续报错的真失败仍然红。见 `e2e/README.md` 已知坑 10 / 12 / 13 |
