@@ -121,15 +121,21 @@ git 只占 4 次 exec，其余每个变更条目各付一次 SFTP 请求——�
 | --- | --- | --- | --- |
 | 基线（修复前） | `npm run test:unit -- sidebar-doc-view` | 绿 | 21 通过 / 0 失败；`sidebarDocViewGit` 4 通过 / 1 段跳过（Windows 文件名分支） |
 | 回归用例（修复前） | `npm run test:unit -- sidebar-doc-view` | 红 | `sidebarDocView` 23 通过 / 8 失败；`sidebarDocViewGit` 4 通过 / 1 失败。失败项：RT-1（`runBatch` 未被调用，实际 4 次 `run` + 2 次 `exists` + 2 次 `readFile`）、RT-2 两条（`diff` 缺 `--diff-filter=d` / `--relative`；无批处理）、RT-3（`lineCounts` 未被调用）、RT-4（缺只读锁参数）、RT-6 三条（`buildGitBatchScript` / `parseGitBatchOutput` 不存在）、RT-7（子目录工作区只列出 `new.md`，`x.md` 被存在性过滤丢掉） |
-| 实测：`git diff` 是否写索引 | 临时仓 + `fs.watch(.git)` | not-run | 诊断记录：默认 `git diff --numstat -M HEAD --` 触发 6 个事件、`.git/index` 内容改变；加 `--no-optional-locks` 后 stat 新鲜时 0 事件，stat 陈旧时仍写一次 |
+| 实测：`git diff` 是否写索引 | 临时仓 + `fs.watch(.git)` | not-run | 诊断记录：默认 `git diff --numstat -M HEAD --` 触发 6 个事件、`.git/index` 内容改变；加 `--no-optional-locks` 后 stat 新鲜时 0 事件，stat 陈旧时仍写一次。真机复测（Ubuntu 24.04 / git 2.43）见「e2e 车道（RT-4）」行 |
 | 实测：远端工具可用性 | `grep -a -c ''` / `xargs -0` / `mktemp` | not-run | 诊断记录：`grep -c` 与 `countLines` 对「末行无换行 / 空文件 / CRLF」逐项同值；`-Z` 输出 `path\0count\n` |
 | 实测：子目录工作区现状 | `collectGitEntries(localGitRunner(<repo>/sub))` | not-run | 诊断记录：修复前返回 `[{ path: 'new.md', plus: 1 }]`——`sub/x.md` 的改动整条消失（对应 RT-7） |
-| 回归用例（修复后） | `npm run test:unit -- sidebar-doc-view` | 绿 | `sidebarDocView` 31 通过 / 0 失败；`sidebarDocViewGit` 5 通过 / 1 段跳过（Windows 文件名分支，既有） |
+| 实测：远端单次往返 | ssh2 同一连接上串行 exec 20 次 | 绿 | **≈195ms／次**（ICMP 平均 29ms；SSH 建 exec 会话的额外开销远大于 ICMP）。旧形态 121 条未跟踪文件 × 195ms ≈ 23.6 秒，是缺陷「条目一多就慢到不可用」的量级来源 |
+| 实测：远端批量计行吞吐 | 单个 12MB / 40 万行文件 | 绿 | 远端 `grep -a -c ''` 单独一条 exec 约 0.26 秒；同文件经 SFTP 拉回宿主 ≈1.4MB/s（≈8.6 秒）——这是「内容不出远端」省下的量级 |
+| 回归用例（修复后） | `npm run test:unit -- sidebar-doc-view` | 绿 | `sidebarDocView` 34 通过 / 0 失败（含新增的远端拼装 3 项）；`sidebarDocViewGit` 5 通过 / 0 失败 / 1 段跳过（Windows 文件名分支，既有） |
 | 批处理端到端（修复后） | `sh -c buildGitBatchScript(...)` + `parseGitBatchOutput` | 绿 | 有 HEAD 仓四段全 0 退出，stdout / stderr 各自还原且行尾换行保留；无 HEAD 仓第 0 段 `code=1`、第 1 段 `code=128` + `fatal: bad revision 'HEAD'`，第 2 段给出索引内容——单条命令失败不影响其它段 |
 | 远端计行脚本（修复后） | `sh -c` 跑 `lineCounts` 那段脚本 | 绿 | 末行无换行 `2`、空文件 `0`、前导空格文件名 ` lead.md` 命中 `1`、缺失文件 `0`，与 `countLines` 同口径 |
 | 变更视图取数 | `npm run test:unit -- git-file-content` | 绿 | 13 通过 / 0 失败（`GIT_COMMON_ARGS` 统一到 `sidebarDocView.ts` 唯一一份后，参数逐字断言改为按 `gitTail` 比对子命令部分） |
-| 全量单测 | `npm run test:unit` | 绿 | 退出码 0（112 个测试文件） |
+| 全量单测 | `npm run test:unit` | 绿 | 退出码 0 |
 | 类型与风格 | `npm run check-types` / `npm run lint` | 绿 | 三份 tsconfig（含 webview / electron）与 eslint 均无输出 |
-| 文档同步 | `npm run test:unit -- docs-lint` | 绿 | 49 通过 / 0 失败；`docsLintLocalOnlyPaths` 6 通过。`docs/hosts/electron-multi-workspace.md` 保持在 500 行上限内（499 行） |
-| 实测：ElapsedTime 收益 | — | not-run | 本机无可用 SSH 远端，远程真实往返次数未计时；往返次数的减少由 RT-1（批处理 1 次、`exists` / `readFile` 均为 0）与 RT-3（`lineCounts` 1 次）在调用次数层面锁定 |
-| e2e 车道 | `npm run test:e2e:local` | not-run | 本次未跑；车道需先构建 `dist/webview` / `dist-electron` / Core 产物 |
+| 文档同步 | `npm run test:unit -- docs-lint` | 绿 | 49 通过 / 0 失败；`docsLintLocalOnlyPaths` 6 通过 |
+| e2e 车道（修复前） | `npx playwright test -c e2e/playwright.config.ts --project=electron-ssh remoteChangeList` | 红 | 6 失败 / 1 通过（9.8 分钟）：RT-1 / RT-2 / RT-3 ×2 / RT-7 / RT-4 全红；只有「非 git 工作区」一条通过（它不取 git 口径）。失败形态是侧栏「读取失败，点击重试」——该真机同时暴露了本 spec 之外的两个缺陷（`remote-git-batch-drops-worktree-cwd` / `remote-line-counts-shifts-cwd-into-first-path`） |
+| e2e 车道（修复后） | 同上 | 绿 | 7 通过 / 0 失败（1.8 分钟）。关键读数：**121 条改动的取数 = 远端 3 次调用**（`run` 1 次工作区探测 + `runBatch` 1 次 + `lineCounts` 1 次），无逐条 `readFile` / `exists`；1 条改动的取数 = 2 次调用（无未跟踪文件时不发批量计行）；121 条 1193ms vs 1 条 379ms |
+| e2e 车道（RT-4 哨兵） | 同上 | 绿 | 取数前后远端 `.git/index` 的内容哈希与 mtime 完全一致（`3e61899…` / `1794572610.'.git/index'`）；`[sidebar-files] doc-list failed` 行数为 0（没有「取数 → 哨兵失效 → 全量重扫」的连环） |
+| e2e 车道（RT-7 子目录） | 同上 | 绿 | 工作区 `<repo>/sub` 时 `x.md` / `new.md` 都在清单里且 `data-path` 是工作区相对；`sub/x.md` 与仓库根的 `other.md` 都不出现 |
+| e2e 车道（已删除剔除） | 同上 | 绿 | 未暂存删除的 `doomed.md` 在文档与差异两个视图都不出现，同批的 `keep.md` / `new.md` / `notes.txt` 照常列出（剔除 ≠ 整批失败） |
+| 实测：ElapsedTime 收益 | e2e 车道的远端调用计数（`<envPrefix>_E2E_REMOTE_GIT_OPS`） | 绿 | 修复前 121 条改动约 185 次远端往返（4 次 `run` + 60 次 `readFile` + 121 次 `exists`）；修复后恒为 3 次。计时侧：121 条 1193ms vs 1 条 379ms（差 0.8 秒，与条目数无关） |

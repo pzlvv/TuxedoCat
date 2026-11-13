@@ -299,6 +299,71 @@ export function buildChangeCommands(scope: ChangeScope): string[][] {
 /** 批处理输出里每条命令的段标记（`parseGitBatchOutput` 与脚本共用的唯一定义处） */
 const BATCH_MARK = '__GIT_BATCH_';
 
+/** 单引号转义：`'` → `'\''`（参数原样到达 git，不被 shell 展开或拆开） */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 给一条 git 子命令补上工作目录：`-C <root>`。
+ *
+ * 逐条 `run` 与批量 `runBatch` 的**唯一**工作目录来源。两份各自拼接时漏掉一处就会
+ * 在远端登录目录跑 git（`fatal: not a git repository`），而本地实现因为 spawn 带
+ * `-C` 不会暴露——缺陷只在远程可见
+ * （`specs/defects/remote-git-batch-drops-worktree-cwd.md`）。
+ */
+function withWorktreeCwd(root: string, args: readonly string[]): string[] {
+  return ['-C', root, ...args];
+}
+
+/** 远端单条 git 命令的 shell 片段（`git -C <root> <args…>`，参数逐个单引号转义） */
+export function buildRemoteGitCommand(root: string, args: readonly string[]): string {
+  return `git ${withWorktreeCwd(root, args).map(shQuote).join(' ')}`;
+}
+
+/**
+ * 远端批量 git 命令的批处理脚本：每条命令都经 `withWorktreeCwd` 补 `-C <root>`。
+ *
+ * 与 `buildRemoteGitCommand` 同一份工作目录拼接——批处理少一次 `-C` 就是「远程变更
+ * 清单整条失败」这个级别的事故（见 `withWorktreeCwd` 注释）。
+ */
+export function buildRemoteGitBatchScript(root: string, commands: readonly string[][]): string {
+  return buildGitBatchScript(commands.map((args) => withWorktreeCwd(root, args)));
+}
+
+/**
+ * 远端批量计行的脚本正文（`lineCounts` 的远端实现用）。
+ *
+ * `grep -a -c ''` 与宿主 `countLines` 同口径：末行无换行不另计、空文件 0 行、CRLF 按行。
+ * 读不到的路径按 0 行（与 `readFile` 返回 null 同口径）。
+ */
+const LINE_COUNT_SCRIPT = [
+  'cd "$1" || exit 1',
+  'shift',
+  'for rel in "$@"; do',
+  '  if [ -f "$rel" ]; then',
+  '    n=$(grep -a -c \'\' -- "$rel" 2>/dev/null); [ -z "$n" ] && n=0',
+  '  else',
+  '    n=0',
+  '  fi',
+  '  printf \'%s\\t%s\\n\' "$n" "$rel"',
+  'done',
+].join('\n');
+
+/**
+ * 远端批量计行的完整 shell 命令：`sh -c <脚本> sh <root> <rels…>`。
+ *
+ * `sh -c` 之后的**第一个**参数是脚本的 `$0`，必须显式占位（这里给 `sh`）：少了它，
+ * 工作区根会被吃成 `$0`，脚本里 `cd "$1"` 就跳到第一个相对路径上——任何带未跟踪文件
+ * 的远程取数都以「远端计行失败」告终
+ * （`specs/defects/remote-line-counts-shifts-cwd-into-first-path.md`）。
+ * 相对路径逐个单引号转义后位置传参（不经 shell 展开）。
+ */
+export function buildRemoteLineCountsCommand(root: string, rels: readonly string[]): string {
+  return `sh -c ${shQuote(LINE_COUNT_SCRIPT)} ${shQuote('sh')} ${shQuote(root)}`
+    + (rels.length > 0 ? ` ${rels.map(shQuote).join(' ')}` : '');
+}
+
 /**
  * 把 N 条 git 命令拼成一段 POSIX sh 脚本，供远程一次 exec 执行。
  *
@@ -313,7 +378,6 @@ const BATCH_MARK = '__GIT_BATCH_';
  * 脚本整体退出码恒为 0：判定交给每条命令自己的 `CODE_i` 段，与逐条 `run` 的语义一致。
  */
 export function buildGitBatchScript(commands: readonly string[][]): string {
-  const shQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
   const lines: string[] = [];
   commands.forEach((args, index) => {
     lines.push(`printf '%s\\n' "${BATCH_MARK}BEGIN_${index}__"`);

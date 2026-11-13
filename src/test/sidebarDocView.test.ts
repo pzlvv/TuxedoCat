@@ -445,5 +445,42 @@ runTests('sidebarDocView', async () => {
     check('RT-6 批处理输出：命令数不匹配时报错而不是错位还原', mismatch);
   }
 
+  // 远端拼装：批处理与逐条调用必须用同一份工作目录（`-C <root>`）。
+  // 批处理漏掉 `-C` 时远端在 SSH 登录目录跑 git，两个变更视图在远程工作区上整条
+  // 报错；本地实现带 `-C` 不会暴露，因此只能在这一层锁定
+  //（specs/defects/remote-git-batch-drops-worktree-cwd.md）。
+  {
+    const remote = docViewModule as unknown as {
+      buildRemoteGitCommand?: (root: string, args: string[]) => string;
+      buildRemoteGitBatchScript?: (root: string, commands: string[][]) => string;
+    };
+    const root = '/home/u/work space/sub';
+    const prefix = `git '-C' '/home/u/work space/sub' `;
+    const single = remote.buildRemoteGitCommand?.(root, ['diff', '--numstat', 'HEAD', '--']);
+    check('RT-1 远端单条命令：`git -C <root>` 且工作目录单引号转义',
+      typeof single === 'string'
+      && single.startsWith(prefix)
+      && single.includes("'diff'"));
+
+    const batchScript = remote.buildRemoteGitBatchScript?.(root, [
+      ['rev-parse', '--verify', '-q', 'HEAD'],
+      ['diff', '--numstat', '-M', '--relative', '--diff-filter=d', 'HEAD', '--'],
+    ]) ?? '';
+    const gitLines = batchScript.split('\n').filter((line) => line.startsWith('git '));
+    check('RT-2 远端批处理：每条命令都带 `-C <root>`（与单条同一份拼接）',
+      gitLines.length === 2
+      && gitLines.every((line) => line.startsWith(prefix))
+      && (gitLines[1] ?? '').includes("'--relative'"));
+
+    const lineCountsCmd = docViewModule
+      .buildRemoteLineCountsCommand('/home/u/work space/sub', ['new.md', "we'ird.md"]) ?? '';
+    // `sh -c <脚本> sh <root> <rels…>`：`-c` 之后第一个参数必须是 `$0` 占位，否则脚本里
+    // 的 `cd "$1"` 会 cd 到第一个相对路径（specs/defects/remote-line-counts-shifts-cwd-into-first-path.md）
+    check('RT-3 远端计行：`sh -c` 的 `$0` 已占位，工作区根是 `$1`',
+      lineCountsCmd.startsWith(`sh -c '`)
+      && lineCountsCmd.includes(`' 'sh' '/home/u/work space/sub' 'new.md' 'we'\\''ird.md'`)
+      && lineCountsCmd.includes('cd "$1"'));
+  }
+
   finish();
 });
