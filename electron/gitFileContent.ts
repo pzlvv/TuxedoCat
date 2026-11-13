@@ -9,10 +9,7 @@
  * 刻意不 import electron：单测直接驱动（`src/test/gitFileContent.test.ts`）。
  */
 
-import type { GitCommandRunner } from './sidebarDocView.js';
-
-/** `git -c core.quotepath=false`：与 `sidebarDocView.ts` 同一份 git 口径 */
-const GIT_COMMON_ARGS = ['-c', 'core.quotepath=false'];
+import { GIT_COMMON_ARGS, type GitCommandRunner } from './sidebarDocView.js';
 
 /**
  * 变更视图的取数接口。

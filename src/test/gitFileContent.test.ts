@@ -1,5 +1,5 @@
 import { fileContentRunner } from '../../electron/gitFileContent';
-import type { GitCommandRunner } from '../../electron/sidebarDocView';
+import { gitTail, type GitCommandRunner } from '../../electron/sidebarDocView';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
@@ -19,15 +19,22 @@ function fakeRunner(
   scripts: Array<{ match: string[]; code?: number; stdout?: string; stderr?: string }>,
   calls: string[][] = [],
 ): GitCommandRunner {
+  const run = async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+    calls.push(args);
+    const stripped = gitTail(args);
+    const hit = scripts.find((entry) => entry.match.every((token, index) => stripped[index] === token));
+    if (!hit) throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
+    return { code: hit.code ?? 0, stdout: hit.stdout ?? '', stderr: hit.stderr ?? '' };
+  };
   return {
-    async run(args) {
-      calls.push(args);
-      const stripped = args[0] === '-c' ? args.slice(2) : args;
-      const hit = scripts.find((entry) => entry.match.every((token, index) => stripped[index] === token));
-      if (!hit) throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
-      return { code: hit.code ?? 0, stdout: hit.stdout ?? '', stderr: hit.stderr ?? '' };
+    run,
+    runBatch: async (commands) => {
+      const replies: Array<{ code: number; stdout: string; stderr: string }> = [];
+      for (const args of commands) replies.push(await run(args));
+      return replies;
     },
     readFile: async () => null,
+    lineCounts: async () => new Map(),
     exists: async () => true,
   };
 }
@@ -46,7 +53,7 @@ runTests('gitFileContent', async () => {
     check('HEAD 有该文件：返回原文', text === 'old content\n');
     const showCall = calls.find((args) => args.includes('show')) ?? [];
     check('show 的参数逐字（含 HEAD:<rel>）',
-      JSON.stringify(showCall) === JSON.stringify(['-c', 'core.quotepath=false', 'show', 'HEAD:src/a.ts']));
+      JSON.stringify(gitTail(showCall)) === JSON.stringify(['show', 'HEAD:src/a.ts']));
   }
   {
     const runner = fileContentRunner(fakeRunner([
@@ -85,7 +92,7 @@ runTests('gitFileContent', async () => {
     check('有 HEAD 版本 → true', (await runner.hasHeadVersion('a.ts')) === true);
     const catCall = calls.find((args) => args.includes('cat-file')) ?? [];
     check('cat-file 的参数逐字',
-      JSON.stringify(catCall) === JSON.stringify(['-c', 'core.quotepath=false', 'cat-file', '-e', 'HEAD:a.ts']));
+      JSON.stringify(gitTail(catCall)) === JSON.stringify(['cat-file', '-e', 'HEAD:a.ts']));
   }
   {
     const runner = fileContentRunner(fakeRunner([
@@ -111,7 +118,7 @@ runTests('gitFileContent', async () => {
     check('diff --quiet 退出 0 → 无改动', (await runner.isClean('a.ts')) === true);
     const diffCall = calls.find((args) => args.includes('diff')) ?? [];
     check('diff 的参数逐字（HEAD + -- + rel）',
-      JSON.stringify(diffCall) === JSON.stringify(['-c', 'core.quotepath=false', 'diff', '--quiet', 'HEAD', '--', 'a.ts']));
+      JSON.stringify(gitTail(diffCall)) === JSON.stringify(['diff', '--quiet', 'HEAD', '--', 'a.ts']));
   }
   {
     const runner = fileContentRunner(fakeRunner([

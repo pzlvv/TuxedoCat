@@ -110,9 +110,13 @@ import {
 } from './sidebarFilesRemote.js';
 import {
   buildDocRows,
+  buildRemoteGitBatchScript,
+  buildRemoteGitCommand,
+  buildRemoteLineCountsCommand,
   collectGitEntries,
   collectRecordEntries,
   localGitRunner,
+  parseGitBatchOutput,
   probeGitWorkspace,
   type ChangeScope,
   type GitCommandRunner,
@@ -188,6 +192,41 @@ import {
  * project.json，源码不出现产品字面量。
  */
 const E2E_SLOW_LIST_ENV = `${ENV_PREFIX}_E2E_SLOW_LIST_MS`;
+
+/**
+ * e2e 专用的远端取数计数开关（`<envPrefix>_E2E_REMOTE_GIT_OPS`）。
+ *
+ * 置为非空值时，远程工作区的 `remoteGitRunner` 把每一次远端调用按种类计数到
+ * `globalThis.__tcE2ERemoteGitOps`，用例经 `evaluateInMain` 读回来断言「往返次数与
+ * 条目数解耦」（`specs/defects/remote-change-list-n-plus-one-round-trips.md` 的 e2e 落点）。
+ *
+ * 这是**纯测试钩子**：不设该变量时只多一次 env 读取（闭包创建时一次），不改任何产品
+ * 行为、不引入落盘字段或 IPC 通道；计数只落在主进程内存里，产品代码不读它。用不可观测
+ * 的「耗时」当判据不可靠（远端负载与首轮冷启动都会飘），而往返次数正是缺陷的定义。
+ */
+const E2E_REMOTE_GIT_OPS_ENV = `${ENV_PREFIX}_E2E_REMOTE_GIT_OPS`;
+
+/** 远端取数计数的落点（只在 `E2E_REMOTE_GIT_OPS_ENV` 打开时存在） */
+interface RemoteGitOpCounts {
+  run: number;
+  runBatch: number;
+  lineCounts: number;
+  readFile: number;
+  exists: number;
+}
+
+/**
+ * e2e 计数落点；开关未打开时是 null（产品路径上只有一个 null 判断）。
+ *
+ * 计数在**模块加载期**就建好（不是等第一次取数时才建）：用例要在触发取数之前读基线，
+ * 懒创建会让基线读到 `null`。开关未打开时 `globalThis` 上什么也不挂。
+ */
+const e2eRemoteGitOps: RemoteGitOpCounts | null = (() => {
+  if (!process.env[E2E_REMOTE_GIT_OPS_ENV]) return null;
+  const store = globalThis as unknown as { __tcE2ERemoteGitOps?: RemoteGitOpCounts };
+  store.__tcE2ERemoteGitOps ??= { run: 0, runBatch: 0, lineCounts: 0, readFile: 0, exists: 0 };
+  return store.__tcE2ERemoteGitOps;
+})();
 
 /**
  * 加载自绘标题栏页面。
@@ -5388,23 +5427,59 @@ function setupIpc(): void {
     }
   });
   const remoteGitRunner = (client: SshClient, root: string): GitCommandRunner => {
-    const shQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
     const posixJoin = (a: string, b: string): string => `${a.replace(/\/+$/, '')}/${b}`;
+    // e2e 计数钩子（`E2E_REMOTE_GIT_OPS_ENV` 未设置时是 null，产品路径上只多一次判断）
+    const counts = e2eRemoteGitOps;
     return {
       run: async (args) => {
-        // 参数逐个单引号转义：不经 shell 展开（*.md pathspec 必须原样到达 git）
-        const out = await client.exec(`git -C ${shQuote(root)} ${args.map(shQuote).join(' ')}`);
+        if (counts) counts.run += 1;
+        const out = await client.exec(buildRemoteGitCommand(root, args));
         if (out.code === null) throw new Error('远端 git 命令超时或未给出退出码');
         return { code: out.code, stdout: out.stdout, stderr: out.stderr };
       },
+      // 多条命令一次 exec：每条之间往返一次就是几百毫秒固定开销，而变更清单一次就要
+      // 三条事实（specs/defects/remote-change-list-n-plus-one-round-trips.md）。
+      // 脚本由纯函数生成（`buildRemoteGitBatchScript`），输出按标记还原，单条命令非零
+      // 退出不影响其它段；每条命令都带 `-C <root>`（与逐条 `run` 同一份拼接，
+      // specs/defects/remote-git-batch-drops-worktree-cwd.md）。
+      runBatch: async (commands) => {
+        if (commands.length === 0) return [];
+        if (counts) counts.runBatch += 1;
+        const out = await client.exec(buildRemoteGitBatchScript(root, commands));
+        if (out.code === null) throw new Error('远端 git 批处理超时或未给出退出码');
+        return parseGitBatchOutput(out.stdout, commands.length);
+      },
       readFile: async (rel) => {
+        if (counts) counts.readFile += 1;
         try {
           return (await client.readFileBuffer(posixJoin(root, rel))).toString('utf8');
         } catch {
           return null;
         }
       },
+      // 行数留在远端数：逐文件 readFile 会把整份文件经 SFTP 拉回宿主只为数行数。
+      // 脚本与 `sh -c` 的 `$0` 占位由 `buildRemoteLineCountsCommand` 唯一一份给出
+      //（`specs/defects/remote-line-counts-shifts-cwd-into-first-path.md`）。
+      lineCounts: async (rels) => {
+        const lineCounts = new Map<string, number>();
+        if (rels.length === 0) return lineCounts;
+        if (counts) counts.lineCounts += 1;
+        const out = await client.exec(buildRemoteLineCountsCommand(root, rels));
+        if (out.code !== 0) {
+          throw new Error(`远端计行失败: ${out.stderr.trim() || `退出码 ${out.code}`}`);
+        }
+        for (const line of out.stdout.split('\n')) {
+          if (line.length === 0) continue;
+          const tab = line.indexOf('\t');
+          if (tab <= 0) continue;
+          const value = Number.parseInt(line.slice(0, tab), 10);
+          if (!Number.isFinite(value)) continue;
+          lineCounts.set(line.slice(tab + 1), value);
+        }
+        return lineCounts;
+      },
       exists: async (rel) => {
+        if (counts) counts.exists += 1;
         try {
           return (await client.stat(posixJoin(root, rel))).exists;
         } catch {

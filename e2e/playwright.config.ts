@@ -21,6 +21,15 @@ import { assertEnvironmentFileIfPresent } from './helpers/testEnvironment';
  */
 const repoRoot = path.resolve(__dirname, '..');
 
+/**
+ * 需要真实 SSH 远端的用例文件（`electron-ssh` 车道）。
+ *
+ * `electron-app` 用同一条正则做 `testIgnore`、`electron-ssh` 用做 `testMatch`：两份名单
+ * 若各写一遍，新增一条真实 SSH 用例时必然只改一处——漏了 `testIgnore` 这条车道会在
+ * 没有远端机器的开发机与 CI 上收集它的用例，漏了 `testMatch` 则是新用例永远不跑。
+ */
+const REMOTE_SSH_SPECS = /electron[\\/](remoteSshExecution|remoteTaskSurvival|remoteChangeList)\.spec\.ts/;
+
 function assertArtifact(rel: string): void {
   const p = path.join(repoRoot, rel);
   if (!fs.existsSync(p)) {
@@ -78,11 +87,11 @@ export default defineConfig({
     {
       name: 'electron-app',
       testMatch: /electron[\\/].+\.spec\.ts/,
-      testIgnore: /remoteSshExecution\.spec\.ts|remoteTaskSurvival\.spec\.ts/,
+      testIgnore: REMOTE_SSH_SPECS,
     },
     // 真实 SSH 远端（本地车道：要 e2e/environments.json，不进 CI——runner 内临时起的
     // sshd 替代不了真实远端，见 e2e/README.md 的 CI 车道表）
-    { name: 'electron-ssh', testMatch: /electron[\\/](remoteSshExecution|remoteTaskSurvival)\.spec\.ts/ },
+    { name: 'electron-ssh', testMatch: REMOTE_SSH_SPECS },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道
     { name: 'terminal-ui', testMatch: /terminal[\\/].+\.spec\.ts/ },

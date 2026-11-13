@@ -124,6 +124,31 @@ runTests('sidebarDocViewGit', async () => {
       fs.rmSync(unborn, { recursive: true, force: true });
     }
 
+    // —— 仓三：工作区是仓库子目录（改动行必须是工作区相对路径）——
+    // 缺陷 `specs/defects/remote-change-list-n-plus-one-round-trips.md`：git 默认输出
+    // 仓库根相对路径，而存在性过滤按工作区根解析——`sub/x.md` 被当成不存在整条丢掉，
+    // 用户只看到未跟踪文件。修复后 diff 带 `--relative`，两条口径都输出工作区相对。
+    const subRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-docview-sub-'));
+    try {
+      await git(subRoot, 'init', '-q');
+      await git(subRoot, 'config', 'user.email', 't@t');
+      await git(subRoot, 'config', 'user.name', 't');
+      writeLines(path.join(subRoot, 'sub/x.md'), ['a1']);
+      await git(subRoot, 'add', '-A');
+      await git(subRoot, 'commit', '-q', '-m', 'base');
+      writeLines(path.join(subRoot, 'sub/x.md'), ['a1', 'a2', 'a3']);
+      writeLines(path.join(subRoot, 'sub/new.md'), ['n1']);
+
+      const subResult = await collectGitEntries(localGitRunner(path.join(subRoot, 'sub')), 'all');
+      const subListed = subResult.ok
+        ? subResult.entries.map((e) => `${e.path} +${e.plus}/-${e.minus}`)
+        : [];
+      check('子目录工作区：改动行的路径是工作区相对',
+        subResult.ok === true && subListed.join('|') === 'new.md +1/-0|x.md +2/-0');
+    } finally {
+      fs.rmSync(subRoot, { recursive: true, force: true });
+    }
+
     // —— 非 git 目录：探测分流到记录口径 ——
     const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-docview-plain-'));
     try {

@@ -53,6 +53,7 @@ last_reviewed: 2026-11-10
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
 | `e2e/electron/remoteSshExecution.spec.ts` | US-37、US-42（远端文件浏览：树读取 / 刷新 / 永久删除）、US-54（打开终端 / 标题含工作区路径 / shell 退出关窗）、US-62（远端条目修改时间）、US-63（远端文档视图：git 口径 / 行数 / 远端哨兵自动刷新） | Electron 整应用 |
+| `e2e/electron/remoteChangeList.spec.ts` | US-63（远端变更清单的取数形态：条目数与往返次数解耦 / 已删除剔除 / 未跟踪行数 / 子目录工作区相对路径 / 取数不触发哨兵 / 非 git 失败语义） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 | `e2e/remoteWorkspace/picker.spec.ts` | US-36（远端目录选择器：路径框编辑 / 选中项 / Tab 补全 / 焦点常驻） | 远端目录选择器页面 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44、US-61、US-62、US-63 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39、US-53（录制改键与菜单展示） | Electron 整应用 |

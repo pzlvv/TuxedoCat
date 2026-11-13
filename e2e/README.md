@@ -34,6 +34,10 @@ npm run test:e2e:pycharm    # 仅 PyCharm 插件车道（本地车道：需要 e
 npm run test:e2e:remoteWorkspace   # 仅远端目录选择器页面
 npm run test:e2e:terminal   # 仅远程终端页面
 npm run test:e2e:tui        # 仅 TUI 安装程序
+
+# 真实 SSH 车道的单文件跑法（远端是 Linux 时本机必须携带对应 Core 产物）
+npm run build:core:linux-x64
+npx playwright test -c e2e/playwright.config.ts --project=electron-ssh remoteChangeList
 ```
 
 Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modules/electron`。
@@ -75,10 +79,16 @@ JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / loc
 
 ## 测试环境配置（environments.json）
 
-依赖真实外部环境（当前：真实 SSH 远端，`e2e/electron/remoteSshExecution.spec.ts`）的用例
-从 `e2e/environments.json` 读取环境信息；该文件**不入库**（gitignore，内容含 SSH 凭证）。
+依赖真实外部环境（当前：真实 SSH 远端，`e2e/electron/remoteSshExecution.spec.ts` /
+`remoteTaskSurvival.spec.ts` / `remoteChangeList.spec.ts`）的用例从 `e2e/environments.json`
+读取环境信息；该文件**不入库**（gitignore，内容含 SSH 凭证）。
 首次使用：复制 `e2e/environments.example.json` 为同目录的 `e2e/environments.json` 并填入
 本机可用的环境。各段字段与含义以 `e2e/helpers/testEnvironment.ts` 的类型与校验为准。
+
+`electron-ssh` 车道的用例文件名单只有一份（`e2e/playwright.config.ts` 的
+`REMOTE_SSH_SPECS`）：`electron-app` 用它做 `testIgnore`、`electron-ssh` 用做
+`testMatch`。新增一条真实 SSH 用例时改这一处即可——只改其中一侧的后果是「新用例在
+没有远端机器的机器上被收集」或「新用例永远不跑」。
 
 有效性判断分三层，**无效直接报错，不做任何修复**（不补默认值、不从 example 兜底、
 不换凭证重试、不清远端状态）——与产品代码同一原则
@@ -108,7 +118,8 @@ e2e/
 │   │                           #   其余 → 文本终轮
 │   └── electronApp.ts          # Electron 启动器：沙箱隔离 + CDP 直连 + 活动视图解析
 ├── webview/                    # webview UI 级场景用例（覆盖的 US 见 user-stories 附录）
-├── electron/                   # Electron 整应用场景用例（同上）
+├── electron/                   # Electron 整应用场景用例（同上）；remoteSshExecution /
+│                               #   remoteTaskSurvival / remoteChangeList 三条跑真实 SSH 远端
 ├── remoteWorkspace/            # 远端目录选择器页面（路径框编辑 / 选中项 / Tab 补全 / 焦点常驻）
 ├── terminal/                   # 远程终端页面（标签 / 断开态与重连 / 主题跟随 / 复制粘贴）
 └── tui/                        # TUI 安装程序 e2e（构建 / 自解压 / 载荷可执行 / 启动守卫，docs/features/tui-installer.md）
@@ -165,3 +176,42 @@ e2e/
 8. **裸 Xvfb 没有窗口管理器**：`win.maximize()` / `isMaximized()` 这类窗口管理语义在
    只有显示没有 WM 的 X 里不成立（`_NET_WM_STATE` 无人响应）。electron 车道在
    `xvfb-run` 里先拉起 openbox 再跑用例。
+9. **侧栏文件分区的标题是折叠开关，不是「打开分区」**：`#filesHeader` 点一次展开、再点
+   一次收起；收起后分段 switch（`#filesModeSwitch`）整体隐藏，等它可见会一直等不到。
+   助手要按 `#filesSection` 的 `expanded` class 判断当前状态再决定点不点
+   （`e2e/electron/fileExplorer.spec.ts` / `remoteChangeList.spec.ts` 的展开助手）。
+10. **真实 SSH 远端的建链有瞬时失败**：实测一台 Ubuntu 24.04 上的 OpenSSH 在 30 次
+    连续建链里约 1 次直接断开（ssh2 报 `read ECONNRESET` 或 `Timed out while waiting
+    for handshake`，同机 `ssh` 命令行也复现），失败也可能落在 `ready` 之后、exec 通道
+    打开之前。用例脚手架（`remoteChangeList.spec.ts` 的 `sshExec`）只在远端**还没受理**
+    这条命令时重试（通道都没建起来），已开始执行的命令不会跑两遍；被测链路本身不重试
+    ——那是产品行为，重试会掩盖 `specs/defects/` 里那一类缺陷。
+11. **远端残留的 daemon 会拖住下一轮**：上一轮用例被杀时远端 Core 进程可能还在空闲
+    退出倒计时里，`~/.<configDir>/run/core-daemon-<fingerprint>.json` 也还在。
+    连真实远端的用例开头与收尾都要清场（`pkill -f '<core 名>'` + 删状态文件），
+    标识符从 `src/config/project.ts` 取、不写字面量（`remoteSshExecution.spec.ts` 的
+    `CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`，`remoteChangeList.spec.ts` 的
+    `afterAll` 同一套）。
+12. **链路抖动会以「产品错误态」的形式出现在界面里**：已知坑 10 那 3% 的瞬时失败若落在
+    **被测代码**发起的那次 exec 上（不是用例脚手架），侧栏会进入既定的错误态「读取失败，
+    点击重试」——这是产品应有的行为（不静默空列表，见
+    [「全部变更」视图规格](../docs/archive/specs/041-sidebar-all-changes-view/spec.md) 的 FR-003），
+    不是回归。用例
+    只等目标行出现就会把抖动判成缺陷（`remoteChangeList.spec.ts` 首轮全量跑即如此：RT-2
+    红在 `keep.md` 不出现，单跑与复跑都绿）。等待助手因此替用户点掉 `[data-retry-doc]`
+    的重试，并在判定「取数不得报错」时按日志把传输层失败与非传输层失败分开计数：只有后者
+    算红。判据不因此放宽——持续报错的真失败仍然红。
+13. **点「重试」会真的重发一次远端取数，必须限次退避**：错误态的重试不是幂等的空操作，
+    它重跑整条取数链路。按固定间隔轮询点击会自己造一场往返风暴——`remoteChangeList.spec.ts`
+    的等待助手上一版每 250ms 点一次，链路持续抖动时 120 秒里点了 324 次（诊断日志
+    `runBatch: 324`），既拖长用例又把后续用例的取数计数基线搅乱。现在最多重试 3 次、
+    间隔 1s / 2s / 4s 指数退避，且只在错误态出现时点（加载中点没用，还会作废在途回包）。
+14. **启动阶段失败必须自己收尸，否则会自我放大**：`launchApp` 的 CDP 握手（3 次 × 60s）
+    全超时时，`AppHandle` 还没返回、`close` 也不存在——早前没有任何人负责杀进程与清沙箱，
+    实测留下过完整的 Electron 进程树（主进程 + GPU + 网络 + 两个渲染进程）与
+    `tuxedo-e2e-home-*`。而垂死的 Electron 进程与下一个实例争 CPU 正是「时序敏感断言偶发
+    超时」的成因（见 `close` 的原注释），于是泄漏会让后续用例继续握手超时。现在启动失败走
+    与 `close` 同一个 `killSpawnedApp`（taskkill `/T /F` + 轮询等进程树真正退出 + 删沙箱）。
+    排查残留：`Get-CimInstance Win32_Process -Filter "Name='electron.exe'"` 看
+    `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的应用进程：沙箱实例的可执行
+    文件在仓库的 node_modules 下，真实安装的在用户目录的 Programs 下）。

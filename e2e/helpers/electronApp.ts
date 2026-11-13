@@ -125,6 +125,46 @@ interface SpawnedApp {
   ownsHomeDir: boolean;
 }
 
+/**
+ * 杀掉 spawn 出来的应用进程树并清理沙箱 home。
+ *
+ * 两处共用：正常收尾（`close`）与**启动失败**（CDP 握手三次都超时）。后者此前没人收尸，
+ * 实测会留下完整的 Electron 进程树 + 沙箱 home；而垂死的 Electron 进程与下一个实例争
+ * CPU 正是「时序敏感断言偶发超时」的已知成因（见 `close` 的原注释），于是泄漏会自我放大。
+ *
+ * 必须等进程树真正退出再返回：串行用例下，下一个实例若与垂死的 Electron / core 进程
+ * 争 CPU，时序敏感的断言会偶发超时（实测回归）。
+ */
+async function killSpawnedApp(spawned: SpawnedApp): Promise<void> {
+  try {
+    const pid = spawned.child.pid;
+    if (pid) {
+      // Windows 下杀进程树（GPU/渲染器随父进程退出不可靠时兜底）
+      if (process.platform === 'win32') {
+        await new Promise<void>((resolve) => {
+          execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => resolve());
+        });
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const alive = await new Promise<boolean>((resolve) => {
+            execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
+              resolve(!err && new RegExp(`^"[^"]*","${pid}"`).test(String(stdout)));
+            });
+          });
+          if (!alive) break;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      } else {
+        spawned.child.kill('SIGKILL');
+      }
+    }
+  } finally {
+    if (spawned.ownsHomeDir) {
+      await fs.promises.rm(spawned.homeDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+}
+
 /** 等待子进程输出里出现某行（stderr + stdout 合并监听） */
 function waitForOutput(
   child: { stderr: NodeJS.ReadableStream | null; stdout: NodeJS.ReadableStream | null },
@@ -315,16 +355,27 @@ export async function launchApp(options: {
 
   // CDP 握手在负载下可能远超 30s（ws 已连上但 DevTools 协议层响应慢，实测超时）：
   // 连接建立是纯环境环节，超时后重连重试（3 次 × 60s）不掩盖任何产品缺陷，
-  // 只把「慢」与「挂死」区分开
+  // 只把「慢」与「挂死」区分开。
+  //
+  // **失败必须杀掉子进程树并清沙箱**：`close` 只在拿到 AppHandle 之后才存在，握手
+  // 阶段抛出时没有任何人负责收尸——实测留下过完整的 Electron 进程树（主进程 + GPU +
+  // 网络 + 两个渲染进程）与沙箱 home，而 `close` 的注释本身就记着「垂死的 Electron
+  // 进程与下一个实例争 CPU 会让时序敏感的断言偶发超时」：泄漏会自我放大，后续用例
+  // 的 CDP 握手继续超时。这里用与 `close` 同一套 taskkill / 轮询等待。
   let browser: import('playwright').Browser | undefined;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      browser = await chromium.connectOverCDP(spawned.devtoolsWs, { timeout: 60_000 });
-      break;
-    } catch (error) {
-      if (attempt >= 3) throw error;
-      await new Promise((r) => setTimeout(r, 5_000));
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        browser = await chromium.connectOverCDP(spawned.devtoolsWs, { timeout: 60_000 });
+        break;
+      } catch (error) {
+        if (attempt >= 3) throw error;
+        await new Promise((r) => setTimeout(r, 5_000));
+      }
     }
+  } catch (error) {
+    await killSpawnedApp(spawned);
+    throw error;
   }
   const context = browser!.contexts()[0];
 
@@ -474,32 +525,7 @@ export async function launchApp(options: {
     try {
       await browser.close().catch(() => undefined);
     } finally {
-      const pid = spawned.child.pid;
-      if (pid) {
-        // Windows 下杀进程树（GPU/渲染器随父进程退出不可靠时兜底）。
-        // 必须等进程树真正退出再返回：串行用例下，下一个实例若与垂死的
-        // Electron / core 进程争 CPU，时序敏感的断言会偶发超时（实测回归）
-        if (process.platform === 'win32') {
-          await new Promise<void>((resolve) => {
-            execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => resolve());
-          });
-          const deadline = Date.now() + 10_000;
-          while (Date.now() < deadline) {
-            const alive = await new Promise<boolean>((resolve) => {
-              execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
-                resolve(!err && new RegExp(`^"[^"]*","${pid}"`).test(String(stdout)));
-              });
-            });
-            if (!alive) break;
-            await new Promise((r) => setTimeout(r, 200));
-          }
-        } else {
-          spawned.child.kill('SIGKILL');
-        }
-      }
-      if (spawned.ownsHomeDir) {
-        await fs.promises.rm(spawned.homeDir, { recursive: true, force: true }).catch(() => undefined);
-      }
+      await killSpawnedApp(spawned);
     }
   };
 

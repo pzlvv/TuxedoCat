@@ -26,9 +26,29 @@ export type DocListResult =
 /** git 子命令执行器（args 不含 `git` 与 `-C root`，由实现补齐）。spawn 失败 / 超时抛错 */
 export interface GitCommandRunner {
   run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }>;
-  /** 读工作区内相对路径的文本内容（未跟踪文件计行用）；读不到返回 null */
+  /**
+   * 多条 git 命令**一次往返**执行，结果按入参顺序返回。
+   *
+   * 远程（SSH）工作区上每 `run` 一次就是一次网络往返：变更清单的三条事实
+   * （HEAD / diff / 未跟踪）各自往返一次，条目一多这段固定开销就压在用户眼前
+   * （`specs/defects/remote-change-list-n-plus-one-round-trips.md`）。本地实现逐条
+   * spawn（本地无往返成本，且不经 shell）。
+   *
+   * 单条命令失败（非零退出 / 超时）**不**让整批抛错：退出码与 stderr 原样回给调用方，
+   * 由它按既有判别值分流（例如无 HEAD 的仓 `rev-parse HEAD` 必然非零）。
+   */
+  runBatch(commands: string[][]): Promise<Array<{ code: number; stdout: string; stderr: string }>>;
+  /** 读工作区内相对路径的文本内容；读不到返回 null */
   readFile(rel: string): Promise<string | null>;
-  /** 存在性检查（已删除文件剔除用） */
+  /**
+   * 多条相对路径的行数，**一次往返**取回（未跟踪文件按全文计新增用）。
+   *
+   * 远程实现让内容留在远端机器上数行数，只回传"路径 → 行数"；逐文件 `readFile`
+   * 会把整份文件内容经 SFTP 拉回宿主只为数行数。读不到的路径不进结果，
+   * 调用方按 0 行处理（与 `readFile` 返回 null 同口径）。
+   */
+  lineCounts(rels: readonly string[]): Promise<Map<string, number>>;
+  /** 存在性检查（记录口径过滤已删除用） */
   exists(rel: string): Promise<boolean>;
 }
 
@@ -52,12 +72,29 @@ export function localGitRunner(root: string): GitCommandRunner {
     });
   return {
     run,
+    // 本地没有往返成本：逐条跑比拼一段 shell 更简单，也避免把参数交给 shell 解析。
+    runBatch: async (commands) => {
+      const results: Array<{ code: number; stdout: string; stderr: string }> = [];
+      for (const args of commands) results.push(await run(args));
+      return results;
+    },
     readFile: async (rel) => {
       try {
         return await fsp.readFile(path.join(root, rel), 'utf8');
       } catch {
         return null;
       }
+    },
+    lineCounts: async (rels) => {
+      const counts = new Map<string, number>();
+      for (const rel of rels) {
+        try {
+          counts.set(rel, countLines(await fsp.readFile(path.join(root, rel), 'utf8')));
+        } catch {
+          // 读不到＝不计数：调用方按 0 行处理（与 readFile 返回 null 同口径）
+        }
+      }
+      return counts;
     },
     exists: async (rel) => {
       try {
@@ -210,7 +247,227 @@ export function countLines(text: string): number {
   return text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
 }
 
-const GIT_COMMON_ARGS = ['-c', 'core.quotepath=false'];
+/**
+ * 所有只读取数共用的 git 前缀参数（本地 / 远程同一份）。
+ *
+ * - `--no-optional-locks` 与 `core.untrackedCache=false` / `core.fsmonitor=false`：
+ *   取数时 git 在 stat 信息陈旧的情况下会重写 `.git/index`，而变更视图自己正挂着
+ *   `.git` 哨兵（`electron/sidebarDocWatch.ts`），写一次就触发一轮全量重扫。这三个开关
+ *   关掉 git 的自动索引维护。
+ * - `core.quotepath=false`：非 ASCII 路径不解成八进制转义（含引号的路径仍走 C 风格
+ *   引号，由 `unquoteGitPath` 还原）。
+ */
+export const GIT_COMMON_ARGS: readonly string[] = [
+  '--no-optional-locks',
+  '-c', 'core.quotepath=false',
+  '-c', 'core.untrackedCache=false',
+  '-c', 'core.fsmonitor=false',
+];
+
+/** 剥掉 `GIT_COMMON_ARGS` 前缀后的其余参数（子命令 + 它自己的参数） */
+export function gitTail(args: readonly string[]): string[] {
+  const matches = GIT_COMMON_ARGS.every((token, index) => args[index] === token);
+  return matches ? args.slice(GIT_COMMON_ARGS.length) : [...args];
+}
+
+/**
+ * 变更清单取数的四条 git 事实，按**固定顺序**拼进一次性批处理。
+ *
+ * 顺序即契约：`collectGitEntries` 按序号取值。集中在这里而不是散在调用点，是因为
+ * 「一次往返」的收益全靠这三条同批发出，任何一条单独 `run` 就退回旧形态
+ * （`specs/defects/remote-change-list-n-plus-one-round-trips.md`）。
+ */
+export function buildChangeCommands(scope: ChangeScope): string[][] {
+  const pathspec = pathspecFor(scope);
+  return [
+    // 0：有没有 HEAD（无 HEAD 的新仓走索引全文计新增）
+    [...GIT_COMMON_ARGS, 'rev-parse', '--verify', '-q', 'HEAD'],
+    // 1：与 HEAD 的差异。`--diff-filter=d` 让 git 自己剔掉删除（此前是取数后逐条 stat），
+    //    `--relative` 保证工作区是仓库子目录时输出的仍是工作区相对路径——否则这些路径
+    //    回查不到、整条消失（`specs/defects/remote-change-list-n-plus-one-round-trips.md`）。
+    [
+      ...GIT_COMMON_ARGS,
+      'diff', '--numstat', '-M', '--relative', '--diff-filter=d', 'HEAD', '--', ...pathspec,
+    ],
+    // 2：索引内容（只有无 HEAD 的新仓用得上，按全文计新增）
+    [...GIT_COMMON_ARGS, 'ls-files', '--', ...pathspec],
+    // 3：未跟踪文件（遵循 .gitignore）；行数由 `lineCounts` 另一次批量取回
+    [...GIT_COMMON_ARGS, 'ls-files', '--others', '--exclude-standard', '--', ...pathspec],
+  ];
+}
+
+/** 批处理输出里每条命令的段标记（`parseGitBatchOutput` 与脚本共用的唯一定义处） */
+const BATCH_MARK = '__GIT_BATCH_';
+
+/** 单引号转义：`'` → `'\''`（参数原样到达 git，不被 shell 展开或拆开） */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 给一条 git 子命令补上工作目录：`-C <root>`。
+ *
+ * 逐条 `run` 与批量 `runBatch` 的**唯一**工作目录来源。两份各自拼接时漏掉一处就会
+ * 在远端登录目录跑 git（`fatal: not a git repository`），而本地实现因为 spawn 带
+ * `-C` 不会暴露——缺陷只在远程可见
+ * （`specs/defects/remote-git-batch-drops-worktree-cwd.md`）。
+ */
+function withWorktreeCwd(root: string, args: readonly string[]): string[] {
+  return ['-C', root, ...args];
+}
+
+/** 远端单条 git 命令的 shell 片段（`git -C <root> <args…>`，参数逐个单引号转义） */
+export function buildRemoteGitCommand(root: string, args: readonly string[]): string {
+  return `git ${withWorktreeCwd(root, args).map(shQuote).join(' ')}`;
+}
+
+/**
+ * 远端批量 git 命令的批处理脚本：每条命令都经 `withWorktreeCwd` 补 `-C <root>`。
+ *
+ * 与 `buildRemoteGitCommand` 同一份工作目录拼接——批处理少一次 `-C` 就是「远程变更
+ * 清单整条失败」这个级别的事故（见 `withWorktreeCwd` 注释）。
+ */
+export function buildRemoteGitBatchScript(root: string, commands: readonly string[][]): string {
+  return buildGitBatchScript(commands.map((args) => withWorktreeCwd(root, args)));
+}
+
+/**
+ * 远端批量计行的脚本正文（`lineCounts` 的远端实现用）。
+ *
+ * `grep -a -c ''` 与宿主 `countLines` 同口径：末行无换行不另计、空文件 0 行、CRLF 按行。
+ * 读不到的路径按 0 行（与 `readFile` 返回 null 同口径）。
+ */
+const LINE_COUNT_SCRIPT = [
+  'cd "$1" || exit 1',
+  'shift',
+  'for rel in "$@"; do',
+  '  if [ -f "$rel" ]; then',
+  '    n=$(grep -a -c \'\' -- "$rel" 2>/dev/null); [ -z "$n" ] && n=0',
+  '  else',
+  '    n=0',
+  '  fi',
+  '  printf \'%s\\t%s\\n\' "$n" "$rel"',
+  'done',
+].join('\n');
+
+/**
+ * 远端批量计行的完整 shell 命令：`sh -c <脚本> sh <root> <rels…>`。
+ *
+ * `sh -c` 之后的**第一个**参数是脚本的 `$0`，必须显式占位（这里给 `sh`）：少了它，
+ * 工作区根会被吃成 `$0`，脚本里 `cd "$1"` 就跳到第一个相对路径上——任何带未跟踪文件
+ * 的远程取数都以「远端计行失败」告终
+ * （`specs/defects/remote-line-counts-shifts-cwd-into-first-path.md`）。
+ * 相对路径逐个单引号转义后位置传参（不经 shell 展开）。
+ */
+export function buildRemoteLineCountsCommand(root: string, rels: readonly string[]): string {
+  return `sh -c ${shQuote(LINE_COUNT_SCRIPT)} ${shQuote('sh')} ${shQuote(root)}`
+    + (rels.length > 0 ? ` ${rels.map(shQuote).join(' ')}` : '');
+}
+
+/**
+ * 把 N 条 git 命令拼成一段 POSIX sh 脚本，供远程一次 exec 执行。
+ *
+ * 每条命令的输出按标记分段：`BEGIN_i` → stdout → `CODE_i<退出码>` → `ERR_i` → stderr
+ * → `ERREND_i`。分开标 stdout / stderr 的边界，是因为命令可能只写其中一个（无 HEAD 的
+ * `rev-parse` 只有退出码、没有 stderr），靠"行数"推断边界必然错位。
+ *
+ * 参数逐个单引号转义（`'` → `'\''`）：pathspec 里的 `*.md` 必须原样到达 git，不能被
+ * shell 展开。单条命令的退出码用 `$?` 单独记录——`set -e` 会让首个非零退出直接中断，
+ * 那正是「无 HEAD 的新仓」这条正常路径。
+ *
+ * 脚本整体退出码恒为 0：判定交给每条命令自己的 `CODE_i` 段，与逐条 `run` 的语义一致。
+ */
+export function buildGitBatchScript(commands: readonly string[][]): string {
+  const lines: string[] = [];
+  commands.forEach((args, index) => {
+    lines.push(`printf '%s\\n' "${BATCH_MARK}BEGIN_${index}__"`);
+    lines.push(`git ${args.map(shQuote).join(' ')} 2>"$tmpdir/err${index}"`);
+    lines.push(`printf '%s%s\\n' "${BATCH_MARK}CODE_${index}__" "$?"`);
+    lines.push(`printf '%s\\n' "${BATCH_MARK}ERR_${index}__"`);
+    lines.push(`cat "$tmpdir/err${index}"`);
+    // 不额外补前导换行：stderr 自带尾换行时边界就落在 ERREND 之前，空 stderr 时
+    // ERREND 紧接 ERR 标志行——两种情况都不产生伪造的空行。
+    lines.push(`printf '%s\\n' "${BATCH_MARK}ERREND_${index}__"`);
+  });
+  // 临时目录只用来暂存各条命令的 stderr：stdout 必须直接进管道，否则大输出会被
+  // 「先攒全量再打印」拖成内存与延迟双高。
+  return [
+    'tmpdir=$(mktemp -d) || exit 1',
+    'trap \'rm -rf "$tmpdir"\' EXIT',
+    ...lines,
+  ].join('\n');
+}
+
+/** 一条批处理命令的结果（与逐条 `run` 的回包同形） */
+export interface GitBatchReply {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * 还原 `buildGitBatchScript` 的输出：按标记切出每条命令的 `code` / `stdout` / `stderr`。
+ *
+ * 每个段在输出里的形态固定为（`printf '%s\n'` 只补一个换行）：
+ *
+ * ```
+ * __GIT_BATCH_BEGIN_i__
+ * <stdout 原文>
+ * __GIT_BATCH_CODE_i__<退出码>
+ * __GIT_BATCH_ERR_i__
+ * <stderr 原文>
+ * __GIT_BATCH_ERREND_i__
+ * ```
+ *
+ * 段数对不上就抛错——错位还原会把 A 命令的输出当成 B 命令的，界面表现为「变更清单
+ * 莫名空/莫名多」，比直接报错难查得多。
+ */
+export function parseGitBatchOutput(stdout: string, commandCount: number): GitBatchReply[] {
+  const markerOf = (kind: string, index: number): string => `${BATCH_MARK}${kind}_${index}__`;
+  /**
+   * 标志行**之后**的位置（跳过标志自身与它的尾换行）。
+   *
+   * 不把前导 `\n` 写进标记里找：每个标志行都由 `printf '%s\n'` 单独打印，末尾必然
+   * 跟着一个换行；用「裸标记 + 消费尾换行」一套规则，第一段（输出开头、无前导换行）
+   * 与后续段（前面是上一段的尾换行）才一致。
+   */
+  const afterMarker = (kind: string, index: number): number => {
+    const at = stdout.indexOf(markerOf(kind, index));
+    if (at < 0) return -1;
+    const end = at + markerOf(kind, index).length;
+    return stdout[end] === '\n' ? end + 1 : end;
+  };
+  const replies: GitBatchReply[] = [];
+  for (let index = 0; index < commandCount; index += 1) {
+    const bodyStart = afterMarker('BEGIN', index);
+    const codeAt = stdout.indexOf(markerOf('CODE', index));
+    const errMarkerAt = stdout.indexOf(markerOf('ERR', index));
+    const errBodyStart = afterMarker('ERR', index);
+    const errEndAt = stdout.indexOf(markerOf('ERREND', index));
+    if (bodyStart < 0 || codeAt < 0 || errMarkerAt < 0 || errBodyStart < 0 || errEndAt < 0
+      || !(bodyStart <= codeAt && codeAt < errMarkerAt && errBodyStart <= errEndAt)) {
+      throw new Error(`git 批处理输出缺第 ${index} 段（期望 ${commandCount} 段）`);
+    }
+    // stdout 正文：BEGIN 标志行之后到 CODE 标志行之前。CODE 标志行由一个 `\n` 起头，
+    // 它属于**分隔**而不是 git 的输出（git 自己的尾换行已经在内容里），因此只剥这一个。
+    const bodyEnd = codeAt > 0 && stdout[codeAt - 1] === '\n' ? codeAt - 1 : codeAt;
+    const body = bodyEnd > bodyStart ? `${stdout.slice(bodyStart, bodyEnd)}\n` : '';
+    const exitEnd = (() => {
+      const lineEnd = stdout.indexOf('\n', codeAt);
+      return lineEnd < 0 ? stdout.length : lineEnd;
+    })();
+    const exitText = stdout.slice(codeAt + markerOf('CODE', index).length, exitEnd);
+    // stderr 正文：ERR 标志行之后到 ERREND 标志行之前（同样只剥分隔用的那一个换行）
+    const errEnd = errEndAt > 0 && stdout[errEndAt - 1] === '\n' ? errEndAt - 1 : errEndAt;
+    const stderr = errEnd > errBodyStart ? `${stdout.slice(errBodyStart, errEnd)}\n` : '';
+    replies.push({
+      code: Number.parseInt(exitText.trim(), 10),
+      stdout: body,
+      stderr,
+    });
+  }
+  return replies;
+}
 
 /**
  * 变更清单的取数范围（specs/041 FR-002）：`doc` 只看 Markdown（文档视图的既有口径），
@@ -228,59 +485,76 @@ export function pathspecFor(scope: ChangeScope): string[] {
   return scope === 'doc' ? ['*.md', '*.markdown'] : [];
 }
 
-/** git 口径取数：与 HEAD 比较（含已暂存与未暂存）+ 未跟踪全文计行，过滤已删除文件 */
+/**
+ * git 口径取数：与 HEAD 比较（含已暂存与未暂存）+ 未跟踪全文计行。
+ *
+ * 只读与往返：四条 git 事实（HEAD / diff / 索引 / 未跟踪）合成**一次** `runBatch`，未跟踪文件
+ * 的行数由**一次** `lineCounts` 取回，已删除由 git 的 `--diff-filter=d` 自己剔掉——
+ * 于是远程工作区上这次取数的网络往返与条目数无关（此前是每个条目一次 SFTP）。
+ * 见 `specs/defects/remote-change-list-n-plus-one-round-trips.md`。
+ */
 export async function collectGitEntries(
   runner: GitCommandRunner,
   scope: ChangeScope = 'doc',
 ): Promise<DocListResult> {
   const pathspec = pathspecFor(scope);
-  // 无 HEAD 的新仓：索引里的全部按新增计全文行数（相对空树）
-  let hasHead: boolean;
+  const commands = buildChangeCommands(scope);
+  let replies: Array<{ code: number; stdout: string; stderr: string }>;
   try {
-    const head = await runner.run([...GIT_COMMON_ARGS, 'rev-parse', '--verify', '-q', 'HEAD']);
-    hasHead = head.code === 0;
+    replies = await runner.runBatch(commands);
   } catch (err) {
     return { ok: false, error: `git 执行失败: ${err instanceof Error ? err.message : String(err)}` };
   }
+  if (replies.length !== commands.length) {
+    return { ok: false, error: `git 批处理回包缺段（期望 ${commands.length} 段，收到 ${replies.length} 段）` };
+  }
+  const [head, numstat, indexed, untracked] = replies as [
+    { code: number; stdout: string; stderr: string },
+    { code: number; stdout: string; stderr: string },
+    { code: number; stdout: string; stderr: string },
+    { code: number; stdout: string; stderr: string },
+  ];
+  // 无 HEAD 的新仓：索引里的全部按新增计全文行数（相对空树）
+  const hasHead = head.code === 0;
 
   const map = new Map<string, DocEntry>();
+  /** 需要靠批量计行补行数的路径（未跟踪 + 无 HEAD 时的已暂存） */
+  const pendingLineCounts: string[] = [];
   if (hasHead) {
-    const numstat = await runner.run([
-      ...GIT_COMMON_ARGS, 'diff', '--numstat', '-M', 'HEAD', '--', ...pathspec,
-    ]);
     if (numstat.code !== 0) {
       return { ok: false, error: `git diff 失败: ${numstat.stderr.trim()}` };
     }
     for (const entry of parseNumstat(numstat.stdout)) map.set(entry.path, entry);
   } else {
-    const staged = await runner.run([...GIT_COMMON_ARGS, 'ls-files', '--', ...pathspec]);
-    if (staged.code !== 0) {
-      return { ok: false, error: `git ls-files 失败: ${staged.stderr.trim()}` };
+    if (indexed.code !== 0) {
+      return { ok: false, error: `git ls-files 失败: ${indexed.stderr.trim()}` };
     }
-    for (const rel of parseLsFiles(staged.stdout)) {
-      const content = await runner.readFile(rel);
-      const lines = content === null ? 0 : countLines(content);
-      map.set(rel, { path: rel, plus: lines, minus: 0 });
+    for (const rel of parseLsFiles(indexed.stdout)) {
+      map.set(rel, { path: rel, plus: 0, minus: 0 });
+      pendingLineCounts.push(rel);
     }
   }
 
-  const untracked = await runner.run([
-    ...GIT_COMMON_ARGS, 'ls-files', '--others', '--exclude-standard', '--', ...pathspec,
-  ]);
   if (untracked.code !== 0) {
     return { ok: false, error: `git ls-files --others 失败: ${untracked.stderr.trim()}` };
   }
   for (const rel of parseLsFiles(untracked.stdout)) {
     if (map.has(rel)) continue;
-    const content = await runner.readFile(rel);
-    const lines = content === null ? 0 : countLines(content);
-    map.set(rel, { path: rel, plus: lines, minus: 0 });
+    map.set(rel, { path: rel, plus: 0, minus: 0 });
+    pendingLineCounts.push(rel);
   }
 
-  const entries: DocEntry[] = [];
-  for (const entry of map.values()) {
-    if (await runner.exists(entry.path)) entries.push(entry);
+  // 未跟踪 / 无 HEAD 的条目按**全文行数**计新增：内容留在目标机器上数，一次取回全部行数。
+  if (pendingLineCounts.length > 0) {
+    const counts = await runner.lineCounts(pendingLineCounts);
+    for (const rel of pendingLineCounts) {
+      const entry = map.get(rel);
+      if (!entry) continue;
+      map.set(rel, { ...entry, plus: counts.get(rel) ?? 0 });
+    }
   }
+
+  const entries = [...map.values()];
   entries.sort((a, b) => a.path.localeCompare(b.path));
   return { ok: true, mode: 'git', entries };
 }
