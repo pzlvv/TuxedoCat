@@ -39,7 +39,7 @@
       "properties": {
         "file_path": {
           "type": "string",
-          "description": "The absolute path to the file to read"
+          "description": "The path to the file to read; relative paths resolve against the working directory"
         },
         "offset": {
           "type": "number",

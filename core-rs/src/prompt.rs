@@ -76,7 +76,7 @@ Commands will be executed in the current working directory unless you specify a 
 Reads the contents of a file from the local filesystem.
 
 **Parameters:**
-- `file_path` (string, required): The absolute path to the file to read
+- `file_path` (string, required): The path to the file to read; relative paths resolve against the working directory and `~` / `~/...` expand to the home directory
 - `offset` (number, optional): The 1-based line number to start reading from (default: 1; 0 is treated as 1)
 - `limit` (number, optional): The number of lines to read
 - `sheet` (string, optional): For xlsx/xlsm files, specify the sheet name to read. Defaults to the first sheet if not specified.
@@ -91,7 +91,6 @@ Reads the contents of a file from the local filesystem.
 - Maximum file size for whole-file reads: 256.0 KB (text files only; xlsx/image files are exempt). Files larger than this require `offset` and `limit`
 - Maximum lines per read: 2000
 - Maximum characters per line: 2000 (longer lines are truncated)
-- Maximum output bytes per read: 50.0 KB (output is capped; use `offset` to continue)
 - These limits apply even when `offset` and `limit` are provided
 
 **xlsx/xlsm (Excel) Support:**
@@ -99,7 +98,8 @@ Reads the contents of a file from the local filesystem.
 - Reads the specified sheet (or first sheet by default) into a text table
 - Parses cells into a text table with aligned columns
 - Supports `offset`, `limit`, and `sheet` parameters (max 50 rows per read)
-- If there are multiple sheets, all sheet names are listed so you can read other sheets
+- Row numbers count non-empty rows only: empty rows are dropped before numbering
+- The available sheet names are reported only when the requested sheet does not exist (`Sheet "<name>" not found. Available sheets: <names>`); a successful read returns just the requested sheet's table
 
 **Image Files (.png / .jpg / .jpeg / .gif / .webp / .bmp) Support:**
 - Reads the image and returns it as an image content block, so the model can see the actual image directly.
@@ -108,7 +108,7 @@ Reads the contents of a file from the local filesystem.
 **Important:**
 - Always read a file before attempting to edit it
 - Use offset/limit for large files; the same output caps still apply
-- The file path must be absolute, not relative
+- The file path may be relative (resolved against the working directory) or absolute
 
 ### Write
 ## Write Tool

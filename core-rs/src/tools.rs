@@ -542,7 +542,7 @@ pub fn definitions() -> Vec<Value> {
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "file_path": { "type": "string", "description": "The absolute path to the file to read" },
+                    "file_path": { "type": "string", "description": "The path to the file to read; relative paths resolve against the working directory" },
                     "offset": { "type": "number", "description": "The 1-based line number to start reading from (default: 1). 0 is accepted and treated as 1" },
                     "limit": { "type": "number", "description": "The number of lines to read" },
                     "sheet": { "type": "string", "description": "Sheet name to read from Excel file. Defaults to the first sheet if not specified." }
