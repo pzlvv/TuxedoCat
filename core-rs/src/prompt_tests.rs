@@ -69,7 +69,7 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
     // 逐字抽查带特殊字符（反引号 / 引号 / 井号 / 管道）的行，确认没有被转义或改写
     assert!(prompt.contains("**IMPORTANT**: Always use bash/POSIX syntax for commands"));
     assert!(prompt.contains("- Maximum file size for whole-file reads: 256.0 KB"));
-    assert!(prompt.contains("- Maximum output bytes per read: 50.0 KB"));
+    assert!(prompt.contains("- These limits apply even when `offset` and `limit` are provided"));
     assert!(prompt.contains("- `replace_all` (boolean, optional): Replace all occurrences"));
     assert!(prompt.contains(
         "- output_mode (optional): \"files_with_matches\" (default), \"content\", or \"count\""
