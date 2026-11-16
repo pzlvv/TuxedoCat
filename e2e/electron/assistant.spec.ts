@@ -192,7 +192,7 @@ test('US-2 两阶段中止：前台结束后按钮转黄，再次点击才停后
       return {
         kind: 'tool',
         name: 'Bash',
-        args: { command: 'sleep 30', run_in_background: true, description: 'Sleep' },
+        args: { command: 'sleep 30', run_in_background: true, description: 'Sleep', restricted: false },
       };
     }
     return { kind: 'text', text: '好的，等待后台任务完成。' };

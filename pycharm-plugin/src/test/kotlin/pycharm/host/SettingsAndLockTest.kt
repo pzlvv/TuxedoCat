@@ -97,7 +97,6 @@ class SettingsAndLockTest {
         assertEquals(true, llm["webSearch"]!!.jsonPrimitiveContent().toBoolean())
         assertEquals("high", llm["thinkingEffort"]!!.jsonPrimitiveContent())
         assertEquals("risk", snapshot["defaultAgentMode"]!!.jsonPrimitiveContent())
-        assertEquals("normal", snapshot["defaultPromptMode"]!!.jsonPrimitiveContent())
         assertEquals(131072L, llm["maxTokens"]!!.jsonPrimitiveContent().toLong())
         val fallback = llm["modelLimitsFallback"]!!.jsonObject
         assertEquals(1048576L, fallback["context"]!!.jsonPrimitiveContent().toLong())
@@ -111,18 +110,17 @@ class SettingsAndLockTest {
             setOf("activeProvider", "webSearch", "thinkingEffort", "model", "maxTokens", "enableUsageStats", "providers", "modelLimitsFallback"),
             llm.keys,
         )
-        assertEquals(setOf("llm", "mcp", "defaultAgentMode", "defaultPromptMode"), snapshot.keys)
+        assertEquals(setOf("llm", "mcp", "defaultAgentMode"), snapshot.keys)
     }
 
     @Test
     fun whitelistOutsideValuesFallBack() {
         val raw = Json.parseToJsonElement("""{
-            "defaultAgentMode": "bogus", "defaultPromptMode": "bogus",
+            "defaultAgentMode": "bogus",
             "llm": {"thinking_effort": "bogus", "webSearch": false}
         }""") as JsonObject
         val snapshot = SettingsSnapshot.resolve(raw)
         assertEquals("risk", snapshot["defaultAgentMode"]!!.jsonPrimitiveContent())
-        assertEquals("normal", snapshot["defaultPromptMode"]!!.jsonPrimitiveContent())
         assertEquals("high", snapshot["llm"]!!.jsonObject["thinkingEffort"]!!.jsonPrimitiveContent())
         assertEquals(false, snapshot["llm"]!!.jsonObject["webSearch"]!!.jsonPrimitiveContent().toBoolean())
     }

@@ -26,9 +26,26 @@ export interface WebviewHandle {
   close(): Promise<void>;
 }
 
-/** 起一个只伺服 dist/webview 的静态服务器（监听回环随机端口） */
+/**
+ * Chromium 的 unsafe port 集合（`net::ERR_UNSAFE_PORT`）：命中即拒绝连接，连回环地址
+ * 也不例外。`listen(0)` 的随机端口有一定概率落进这份表（实测 6697 = IRC over TLS
+ * 命中过），表现为 `page.goto: net::ERR_UNSAFE_PORT`，用例整条红且与被测行为无关。
+ *
+ * 取值来自 Chromium 的 `kRestrictedPorts`（`net/base/port_util.cc`），这里只列会被
+ * 随机端口命中的区间——低段 1–1023 与 listen(0) 的临时端口段（49152–65535）不重叠，
+ * 但仍照抄整表，避免将来改成指定端口时又踩同一个坑。
+ */
+const RESTRICTED_PORTS = new Set<number>([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87,
+  95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139,
+  143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548,
+  554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659,
+  4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
+
+/** 起一个只伺服 dist/webview 的静态服务器（监听回环随机端口，避开 Chromium unsafe port） */
 function startStaticServer(root: string): Promise<{ url: string; close: () => void }> {
-  const server = http.createServer((req, res) => {
+  const handleRequest: http.RequestListener = (req, res) => {
     const urlPath = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
     const rel = urlPath === '/' || urlPath.endsWith('/') ? path.join(urlPath, 'index.html') : urlPath;
     const file = path.normalize(path.join(root, rel));
@@ -47,16 +64,38 @@ function startStaticServer(root: string): Promise<{ url: string; close: () => vo
       });
       res.end(data);
     });
-  });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address() as { port: number };
-      resolve({
-        url: `http://127.0.0.1:${addr.port}`,
-        close: () => server.close(),
+  };
+
+  /**
+   * 尝试 bind 一个随机端口；命中 Chromium unsafe port 就关掉重来。
+   *
+   * 每次尝试新建 server：`close()` 后的 server 重新 `listen` 在部分 Node 版本上
+   * 行为不一致，且 error 监听会在 close 路径上残留成未捕获异常。
+   */
+  const attempt = (remaining: number): Promise<{ url: string; close: () => void }> =>
+    new Promise((resolve, reject) => {
+      if (remaining <= 0) {
+        reject(new Error('静态服务器连续 20 次拿不到可访问端口（Chromium unsafe port）'));
+        return;
+      }
+      const server = http.createServer(handleRequest);
+      server.once('error', (error) => {
+        server.close(() => reject(error));
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address() as { port: number };
+        if (RESTRICTED_PORTS.has(addr.port)) {
+          server.close(() => resolve(attempt(remaining - 1)));
+          return;
+        }
+        resolve({
+          url: `http://127.0.0.1:${addr.port}`,
+          close: () => server.close(),
+        });
       });
     });
-  });
+
+  return attempt(20);
 }
 
 let cachedServer: { url: string; close: () => void; refcount: number } | null = null;

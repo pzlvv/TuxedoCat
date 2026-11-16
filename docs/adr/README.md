@@ -22,6 +22,7 @@
 | [0013](0013-session-advisory-file-lock.md) | 会话独占锁用 OS 建议性文件锁 | 已采纳 |
 | [0014](0014-bash-detach-escape-hatch.md) | Bash 的 detach 定位为管辖豁免开关而非执行模式 | 已采纳 |
 | [0015](0015-pycharm-plugin-host.md) | 第四宿主以 PyCharm 插件直连帧通道并复用 webview 渲染 | 已采纳 |
+| [0016](0016-bash-restricted-gate.md) | Bash 的 restricted 定为模型面收紧开关（缺省为真），取代无条件 sleep 闸门 | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

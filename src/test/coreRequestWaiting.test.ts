@@ -423,7 +423,7 @@ const WAITING_REGISTRY: Record<string, { waiting: boolean; run: () => Promise<Ro
   // 发后不等（specs/defects/orphan-stalls-on-permission-roundtrip）：上架卡片，全程不算等用户
   toolPermissionRequested: {
     waiting: false,
-    run: () => runRoundtrip({ mode: 'risk', command: 'sleep 1', permHoldMs: 400, choiceHoldMs: 0 }),
+    run: () => runRoundtrip({ mode: 'risk', command: 'npm test', permHoldMs: 400, choiceHoldMs: 0 }),
   },
   // 渲染往返（`plain_request`）：跨工作区派发在途期间不算等用户（specs/023）
   crossWorkspaceAgentRequested: {

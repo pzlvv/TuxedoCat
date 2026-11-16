@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-16
 ---
 
 # 规格：跨工作区多 Agent 通信
@@ -97,10 +97,6 @@ TUI 不提供本能力。
   裁剪**（角色仅决定工具白名单）；继承值创建时一次确定并落进 meta 的 context（重启
   重开 UI 仍显示）。MCP 按**名单**继承：名单里的 server 在目标 Core 的定义集合中
   没有同名项时不建立连接（MCP 定义是机器本地资源，不跨机器拷贝）。
-- 例外：**提示词模式不继承、恒 normal**（specs/025 FR-005）——minimal / mixed 的
-  首轮按 minimal 预设把工具清单裁成 Bash / Edit，`Reply` 是子代理生命周期设施，
-  被裁掉后子代理无法主动回传；目标侧选项菜单的提示词模式不提供切换入口，联网 /
-  MCP 不受影响。
 - SystemPrompt 由目标 Core 按固定模板组装（specs/025 FR-006）：内容包含创建方工作区
   身份与会话 id、以及「结束前须调用 `Reply` 回传结果」的说明；身份取派发载荷的
   `origin` 字段，不经模型工具入参。
@@ -183,12 +179,11 @@ TUI 不提供本能力。
 
 ### 3.2 契约成员
 
-- `CoreRequest.crossWorkspaceAgentRequested`（含发起方会话生效设置六字段，specs/024 FR-004；
-  提示词模式不携带，specs/025 FR-005）
+- `CoreRequest.crossWorkspaceAgentRequested`（含发起方会话生效设置六字段，specs/024 FR-004）
   → `{ sessionId } / { local: true } / { error }`；
 - `CoreEvent.crossWorkspaceAgentReplyRequested` / `crossWorkspaceAgentAbortRequested` /
   `crossWorkspaceAgentEnded`；
-- `UiEvent.remoteSubAgentStarted`（含同六字段，目标 Core 全量应用、提示词模式恒 normal，
+- `UiEvent.remoteSubAgentStarted`（含同六字段，目标 Core 全量应用，
   specs/025 FR-005）/
   `agentReplyReceived` / `crossWorkspaceAgentCompleted`；
 - `UiEvent.hostEnvironmentProvided.crossWorkspaceAgent`；

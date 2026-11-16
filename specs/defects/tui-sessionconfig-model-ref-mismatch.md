@@ -14,8 +14,8 @@ model 为空串、provider 为 `None`，store 里 `session.model` 被写成 `Som
 后果：TUI 菜单里切换模型后，状态栏的模型名（`app.rs` 取 `session.model`，空串被
 过滤后回落 `…`）不显示新模型，直到切换会话重新加载；`submit_message` 的会话覆盖
 过滤空串后 model 变 `None`（功能上由 core 的会话状态兜住，LLM 仍用新模型，但
-「已到达的事实随消息携带」断了）。thinkingEffort / promptMode / agentMode /
-webSearch 四个键 core 发的就是 `value`，不受影响——错位只在 model 一个键。
+「已到达的事实随消息携带」断了）。thinkingEffort / agentMode / webSearch 三个键 core
+发的就是 `value`，不受影响——错位只在 model 一个键。
 
 ## 现状
 
@@ -32,8 +32,8 @@ webSearch 四个键 core 发的就是 `value`，不受影响——错位只在 m
 
 ## 不变量
 
-- `sessionConfigChanged` 其余键（thinkingEffort / promptMode / agentMode / webSearch /
-  mcpEnabled）的 TUI 解析不变。
+- `sessionConfigChanged` 其余键（thinkingEffort / agentMode / webSearch / mcpEnabled）
+  的 TUI 解析不变。
 - `Action::SetModel` 的 reducer 语义不变（provider 缺省不覆盖旧值）。
 
 ## 回归测试

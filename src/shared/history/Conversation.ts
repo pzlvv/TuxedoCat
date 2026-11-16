@@ -16,7 +16,6 @@
  */
 
 import type { AgentMode } from '../types.js';
-import type { PromptPresetId } from '../settingsSnapshot.js';
 import type { ModelRef } from '../llm/modelRef.js';
 import { modelRefOf } from '../llm/modelRef.js';
 import type { SessionCreator } from '../sessionCreator.js';
@@ -33,8 +32,6 @@ export interface ConversationContext {
   selectedLines?: { start: number; end: number };
   agentMode?: AgentMode;
   thinkingMode?: 'off' | 'low' | 'high' | 'max';
-  /** 会话关联的提示词模式（普通 / 极简 / 混合） */
-  promptMode?: PromptPresetId;
   /** 会话关联的 Web Search 开关（覆盖 settings.json 默认值） */
   webSearch?: boolean;
   /**

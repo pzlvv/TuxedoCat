@@ -656,7 +656,6 @@ fn touch_metadata_refreshes_timestamp_and_count() {
         "s1",
         PROJECT,
         true,
-        None,
         &SessionCreator::User,
         WorkViewStorage::Workspace,
     )
@@ -664,8 +663,6 @@ fn touch_metadata_refreshes_timestamp_and_count() {
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 2);
     assert!(metadata["updatedAt"].as_u64().unwrap() > 1_600_000_000_000);
-    // 缺省 promptMode 补写 normal（对齐 `updateMetadataForNewMessage` 的补写分支）
-    assert_eq!(metadata["context"]["promptMode"], "normal");
 }
 
 #[test]
@@ -685,7 +682,6 @@ fn touch_metadata_keeps_updated_at_for_background_messages() {
         "s1",
         PROJECT,
         false,
-        Some("minimal"),
         &SessionCreator::User,
         WorkViewStorage::Workspace,
     )
@@ -693,7 +689,6 @@ fn touch_metadata_keeps_updated_at_for_background_messages() {
     let metadata = load_metadata("s1", PROJECT).unwrap();
     assert_eq!(metadata["messageCount"], 1);
     assert_eq!(metadata["updatedAt"], 111);
-    assert_eq!(metadata["context"]["promptMode"], "minimal");
 }
 
 #[test]
@@ -729,7 +724,6 @@ fn save_once_message_keeps_a_single_slot_and_new_message_clears_it() {
         "s1",
         PROJECT,
         true,
-        None,
         &SessionCreator::User,
         WorkViewStorage::Workspace,
     )
@@ -1172,7 +1166,6 @@ fn conversation_list_excludes_workspace_manifest() {
         "s1",
         PROJECT,
         true,
-        None,
         &SessionCreator::User,
         WorkViewStorage::Workspace,
     )
@@ -1266,7 +1259,6 @@ fn metadata_writes_land_both_timestamps() {
         "s2",
         PROJECT,
         false,
-        None,
         &SessionCreator::User,
         WorkViewStorage::Workspace,
     )
@@ -1311,7 +1303,6 @@ fn touch_metadata_persists_isolated_storage() {
         "s1",
         PROJECT,
         true,
-        None,
         &SessionCreator::User,
         WorkViewStorage::Isolated,
     )
@@ -1341,7 +1332,6 @@ fn touch_metadata_keeps_existing_storage() {
         "s1",
         PROJECT,
         true,
-        None,
         &SessionCreator::User,
         WorkViewStorage::Workspace,
     )

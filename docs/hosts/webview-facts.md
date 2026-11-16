@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-16
 ---
 
 # 规格：webview 的事实与等待态
@@ -56,7 +56,7 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 | 宿主能力 `HostInfo` | 同步注入 `window.__hostInfo` | 抛错（接线错误） | `src/webview/webviewEnv.ts` |
 | 界面语言 | 同步注入 `window.__uiLocale` | 抛错（接线错误） | `src/webview/i18n/index.ts` |
 | 首帧主题 | 同步注入 `window.__initialTheme` | 抛错（接线错误） | `src/webview/webviewEnv.ts` |
-| 会话配置（模型 / 思考强度 / 询问模式 / 提示词模式 / 联网搜索） | `conversationLoaded`、`setNewConversationDefaults`、`settingsDefaults` | 输入框禁用 + 转圈 | `src/webview/App.tsx`、`src/webview/InputArea.tsx` |
+| 会话配置（模型 / 思考强度 / 询问模式 / 联网搜索） | `conversationLoaded`、`setNewConversationDefaults`、`settingsDefaults` | 输入框禁用 + 转圈 | `src/webview/App.tsx`、`src/webview/InputArea.tsx` |
 | 新对话默认值 | `settingsDefaults` | 输入区菜单显示等待项 | `src/webview/InputArea.tsx` |
 | 服务商配置是否完成 | `settingsDefaults.providerConfigured` | 未知：不显示「请配置服务商」 | `src/webview/App.tsx` |
 | 模型列表 | `setModels` | 模型菜单显示等待项 | `src/webview/InputArea.tsx` |
@@ -87,15 +87,14 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 
 ## 5. 会话配置的下发时机
 
-会话配置（模型身份、思考强度、询问模式、提示词模式、联网搜索）随用户消息下发
+会话配置（模型身份、思考强度、询问模式、联网搜索）随用户消息下发
 （`sendMessage`）时，webview 只在**已收到宿主事实**的前提下带上这些字段：
 
 - 已收到：按收到的值下发。
 - 未收到：输入区处于等待态，用户无法发送，因此不存在「未收到却下发」的路径。
 
-询问模式、提示词模式、模型身份、联网搜索的变化通知（`setAgentMode` / `setPromptMode` /
-`setModel` / `setWebSearch`
-等会话级消息）遵循同一规则：事实未到达时不发送，避免把 webview 侧的猜测写进会话的
+询问模式、模型身份、联网搜索的变化通知（`setAgentMode` / `setModel` /
+`setWebSearch` 等会话级消息）遵循同一规则：事实未到达时不发送，避免把 webview 侧的猜测写进会话的
 `meta.json`。联网搜索的变化通知是会话中途切换的唯一持续写入口；随消息携带的
 `webSearch` 只承担新会话种子职责，不覆盖已确立的会话状态
 （[web-search.md FR-004](../features/web-search.md#fr-004开关语义)）。
@@ -146,7 +145,7 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 ## 7. 不允许的做法
 
 1. 在 webview 里写死配置字段的取值（`webSearch` / `thinkingEffort` / `agentMode` /
-   `promptMode` / `enableUsageStats` / `uiLanguage` / `uiFontSize`）。
+   `enableUsageStats` / `uiLanguage` / `uiFontSize`）。
 2. 把「尚未收到」当成某个取值下发（会话配置随消息下发、挂载时的自动回传）。
 3. 用「读取失败」冒充「未配置」：失败不引导用户重配。
 4. 在 webview 里做模型名 / 服务商名匹配、模型限值推导、默认模型选择、模型协议推断——

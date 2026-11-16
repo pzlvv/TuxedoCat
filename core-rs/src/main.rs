@@ -1124,12 +1124,6 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 &json!({ "key": "thinkingEffort", "value": event.get("mode").cloned().unwrap_or(Value::Null) }),
             );
         }
-        "promptModeChanged" => {
-            core.on_session_config_changed(
-                &session_id,
-                &json!({ "key": "promptMode", "value": event.get("mode").cloned().unwrap_or(Value::Null) }),
-            );
-        }
         "webSearchChanged" => {
             core.on_session_config_changed(
                 &session_id,

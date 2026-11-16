@@ -89,7 +89,6 @@ fn minimal_snapshot() -> Value {
         },
         "mcp": { "enabled": [] },
         "defaultAgentMode": "auto",
-        "defaultPromptMode": "mixed",
     })
 }
 
@@ -155,10 +154,9 @@ fn mcp_defaults_change_resyncs_registered_sessions() {
     let unchanged = settings::apply_from_host_environment(&minimal_host_environment(
         &sandbox.config_dir_name,
         json!({
-            "llm": minimal_snapshot()["llm"].clone(),
-            "mcp": { "enabled": ["a"] },
-            "defaultAgentMode": "auto",
-            "defaultPromptMode": "mixed",
+        "llm": minimal_snapshot()["llm"].clone(),
+        "mcp": { "enabled": ["a"] },
+        "defaultAgentMode": "auto",
         }),
     ))
     .expect("apply");
@@ -168,10 +166,9 @@ fn mcp_defaults_change_resyncs_registered_sessions() {
     let changed = settings::apply_from_host_environment(&minimal_host_environment(
         &sandbox.config_dir_name,
         json!({
-            "llm": minimal_snapshot()["llm"].clone(),
-            "mcp": { "enabled": ["a", "b"] },
-            "defaultAgentMode": "auto",
-            "defaultPromptMode": "mixed",
+        "llm": minimal_snapshot()["llm"].clone(),
+        "mcp": { "enabled": ["a", "b"] },
+        "defaultAgentMode": "auto",
         }),
     ))
     .expect("apply");
@@ -532,16 +529,11 @@ fn session_config_events_are_dispatched() {
     );
     dispatch(
         &harness,
-        json!({ "type": "promptModeChanged", "sessionId": "s1", "mode": "minimal" }),
-    );
-    dispatch(
-        &harness,
         json!({ "type": "webSearchChanged", "sessionId": "s1", "enabled": false }),
     );
     {
         let state = state.lock().unwrap();
         assert_eq!(state.thinking_effort.as_deref(), Some("low"));
-        assert_eq!(state.prompt_mode.as_deref(), Some("minimal"));
         assert_eq!(state.web_search, Some(false));
     }
     let keys: Vec<String> = harness
@@ -550,7 +542,7 @@ fn session_config_events_are_dispatched() {
         .iter()
         .filter_map(|event| event["change"]["key"].as_str().map(|key| key.to_string()))
         .collect();
-    for key in ["thinkingEffort", "promptMode", "webSearch"] {
+    for key in ["thinkingEffort", "webSearch"] {
         assert!(keys.contains(&key.to_string()), "missing {key} in {keys:?}");
     }
 

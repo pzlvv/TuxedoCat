@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-16
 ---
 
 # 规格：架构类图
@@ -39,7 +39,7 @@ classDiagram
     conversationStarted / Opened / Closed
     conversationRenamed / Deleted
     conversationContextUpdated / conversationSpaceCleared
-    modelChanged / thinkingEffortChanged / promptModeChanged
+    modelChanged / thinkingEffortChanged
     agentModeChanged / webSearchChanged / mcpEnabledChanged
     mcpEnabledListChanged
     editRolledBack

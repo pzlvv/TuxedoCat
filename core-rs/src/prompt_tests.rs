@@ -14,7 +14,8 @@ fn sandbox(name: &str) -> Sandbox {
 fn system_prompt_has_principles_tools_and_environment() {
     let sandbox = sandbox("prompt-structure");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "risk", &json!({})).expect("PATH 已由 Sandbox 钉死");
+    let prompt =
+        build_system_prompt(&cwd, &tools::definitions(), None).expect("PATH 已由 Sandbox 钉死");
 
     assert!(prompt.contains("## Core Principles"));
     assert!(prompt.contains("## Tool Usage"));
@@ -42,7 +43,8 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
     // `## Tool Details`，并按 `getAllTools()` 的顺序逐工具渲染 `### <name>` + 详细用法。
     let sandbox = sandbox("prompt-tool-details");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "risk", &json!({})).expect("PATH 已由 Sandbox 钉死");
+    let prompt =
+        build_system_prompt(&cwd, &tools::definitions(), None).expect("PATH 已由 Sandbox 钉死");
 
     assert!(
         prompt.contains("\n\n## Tool Details\n### Bash\n"),
@@ -84,7 +86,8 @@ fn system_prompt_carries_tool_details_for_every_builtin_tool() {
 fn system_prompt_skips_optional_sections_when_absent() {
     let sandbox = sandbox("prompt-optional");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "auto", &Value::Null).expect("PATH 已由 Sandbox 钉死");
+    let prompt =
+        build_system_prompt(&cwd, &tools::definitions(), None).expect("PATH 已由 Sandbox 钉死");
     assert!(!prompt.contains("AGENTS.md"));
     assert!(!prompt.contains("## Current File"));
     assert!(!prompt.contains("## Current Selection"));
@@ -95,7 +98,8 @@ fn agents_md_is_inlined_into_the_system_prompt() {
     let sandbox = sandbox("prompt-agents-md");
     sandbox.write_file("AGENTS.md", "  项目约定：只用单引号  \n");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(&cwd, "manual", &json!({})).expect("PATH 已由 Sandbox 钉死");
+    let prompt =
+        build_system_prompt(&cwd, &tools::definitions(), None).expect("PATH 已由 Sandbox 钉死");
     // 原样追加，不加标题
     assert!(prompt.contains("项目约定：只用单引号"));
     assert!(!prompt.contains("## Project Instructions"));
@@ -133,61 +137,26 @@ fn system_prompt_never_renders_file_context_sections() {
     // 因此 meta.json 里带 currentFile / selectedLines 时也不应多出系统提示段。
     let sandbox = sandbox("prompt-file-context");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
-    let prompt = build_system_prompt(
-        &cwd,
-        "risk",
-        &json!({ "context": {
-            "currentFile": "src/a.ts",
-            "selectedLines": { "start": 3, "end": 9 },
-            "agentMode": "auto"
-        } }),
-    )
-    .expect("PATH 已由 Sandbox 钉死");
+    let prompt =
+        build_system_prompt(&cwd, &tools::definitions(), None).expect("PATH 已由 Sandbox 钉死");
     assert!(!prompt.contains("## Current File"), "got {prompt}");
     assert!(!prompt.contains("## Current Selection"), "got {prompt}");
     assert!(!prompt.contains("src/a.ts"), "got {prompt}");
 }
 
 #[test]
-fn active_preset_matches_spec_transitions() {
-    // 非 mixed 直接返回用户选择；非法 / 缺省回退 normal
-    assert_eq!(active_preset(None, false), "normal");
-    assert_eq!(active_preset(Some("normal"), true), "normal");
-    assert_eq!(active_preset(Some("minimal"), true), "minimal");
-    assert_eq!(active_preset(Some("bogus"), false), "normal");
-    // mixed：首次 assistant 回复前 minimal，之后 normal（与 QueryEngine 一致）
-    assert_eq!(active_preset(Some("mixed"), false), "minimal");
-    assert_eq!(active_preset(Some("mixed"), true), "normal");
-}
-
-#[test]
-fn preset_tool_whitelist_and_minimal_prompt() {
-    let sandbox = sandbox("prompt-preset");
+fn system_prompt_always_contains_the_full_sections() {
+    let sandbox = sandbox("prompt-full-sections");
     let cwd = sandbox.workspace.to_string_lossy().to_string();
     let all = tools::definitions();
 
-    // normal 暴露全部工具，system prompt 含核心原则 + 工具说明 + 环境
-    let normal_tools = filter_tools_by_preset(all.clone(), "normal");
-    assert_eq!(normal_tools.len(), all.len());
-    let normal = build_system_prompt_with_preset("normal", &cwd, &normal_tools, None)
-        .expect("PATH 已由 Sandbox 钉死");
-    assert!(normal.starts_with("You are a helpful software engineer assistant."));
-    assert!(normal.contains("## Core Principles"));
-    assert!(normal.contains("## Tool Usage"));
-    assert!(normal.contains("## Environment"));
-
-    // minimal / mixed 只暴露 Bash / Edit，system prompt 只有一行核心身份
-    for preset in ["minimal", "mixed"] {
-        let tools = filter_tools_by_preset(all.clone(), preset);
-        let names: Vec<&str> = tools
-            .iter()
-            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
-            .collect();
-        assert_eq!(names, vec!["Bash", "Edit"], "preset={preset}");
-        let prompt = build_system_prompt_with_preset(preset, &cwd, &tools, None)
-            .expect("PATH 已由 Sandbox 钉死");
-        assert_eq!(prompt, "You are a helpful software engineer assistant.");
-    }
+    // 提示词组装只剩一种形态：核心原则 + 工具说明 + 环境（+ AGENTS.md），
+    // 工具清单不按任何开关裁剪。
+    let prompt = build_system_prompt(&cwd, &all, None).expect("PATH 已由 Sandbox 钉死");
+    assert!(prompt.starts_with("You are a helpful software engineer assistant."));
+    assert!(prompt.contains("## Core Principles"));
+    assert!(prompt.contains("## Tool Usage"));
+    assert!(prompt.contains("## Environment"));
 }
 
 #[test]
@@ -288,7 +257,7 @@ mod system_prompt_parity_tests {
 
     /// 行为对照表（数据见 core-rs/fixtures/）。
     ///
-    /// 断言「Rust `core_prompt` / `tool_usage_section` / `preset_core_prompt` == 本表」。
+    /// 断言「Rust `core_prompt` / `tool_usage_section` == 本表」。
     const FIXTURE: &str = include_str!("../fixtures/systemPrompt.json");
 
     /// 找首个不同的 UTF-16 code unit，返回带上下文的可读信息（整段提示词太长，不能直接打印）。
@@ -335,16 +304,6 @@ mod system_prompt_parity_tests {
             expected_tool_usage,
             "工具说明与对照表不一致：\n{}",
             describe_difference(expected_tool_usage, &actual_tool_usage)
-        );
-
-        let expected_minimal = fixture
-            .get("minimalPrompt")
-            .and_then(Value::as_str)
-            .expect("对照表缺少 minimalPrompt");
-        assert_eq!(
-            preset_core_prompt("minimal"),
-            expected_minimal,
-            "极简预设核心身份与对照表不一致"
         );
 
         // Master 子代理的 `## Communication` 前缀段

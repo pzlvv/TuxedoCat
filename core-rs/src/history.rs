@@ -1299,19 +1299,16 @@ pub fn ensure_tool_results(messages: &mut Vec<Value>) {
 /// `updatedAt` **只**由用户主动发送的消息
 /// 刷新（`_userInitiated`），后台自动消息（reminder / 子代理回复等）不把旧会话顶到列表最前。
 ///
-/// 同时按 `updateMetadataForNewMessage` 的 `if (!metadata.context?.promptMode)` 分支
-/// 补写会话级提示词预设（`prompt_mode` 缺省时用 `normal`），使「首条消息前已切换预设」
-/// 的会话在落盘时保留该选择。
+/// 旧会话 meta.json 里残留的 `context.promptMode` 等历史键原样保留：本函数读-改-写整份
+/// 元数据，不认识的键不会被动到。
 pub fn touch_metadata(
     session_id: &str,
     project: &str,
     user_initiated: bool,
-    prompt_mode: Option<&str>,
     creator: &crate::engine::SessionCreator,
     storage: crate::engine::WorkViewStorage,
 ) -> Result<(), String> {
     let count = count_messages(&load_messages(session_id, project));
-    let prompt_mode = prompt_mode.unwrap_or("normal").to_string();
     // 文件存储归属（specs/045 FR-001）随首条消息建档一次写定。
     //
     // 必须在建档时就写：`conversationStarted` 只登记内存态，而 meta.json 由首条消息
@@ -1345,23 +1342,6 @@ pub fn touch_metadata(
                 metadata["updatedAt"] = json!(crate::util::now_millis());
             }
             metadata["messageCount"] = json!(count);
-            // 只在缺失 / 非法时补写：保留 meta.json 里已有的显式选择
-            // （对齐 `if (!metadata.context?.promptMode)` 的 JS 真值判定）
-            let existing_valid = metadata
-                .get("context")
-                .and_then(|context| context.get("promptMode"))
-                .and_then(Value::as_str)
-                .map(|value| !value.is_empty())
-                .unwrap_or(false);
-            if !existing_valid {
-                if matches!(metadata.get("context"), Some(Value::Object(_))) {
-                    if let Some(Value::Object(map)) = metadata.get_mut("context") {
-                        map.insert("promptMode".to_string(), json!(prompt_mode));
-                    }
-                } else if let Some(object) = metadata.as_object_mut() {
-                    object.insert("context".to_string(), json!({ "promptMode": prompt_mode }));
-                }
-            }
         },
     )?;
     Ok(())
@@ -1577,7 +1557,7 @@ pub fn model_ref_of_session(session_id: &str, project: &str) -> (Option<String>,
 /// meta.json 缺失时兜底建档（specs/defects/session-config-lost-before-first-message）：
 /// meta.json 按设计由首条消息建档（`touch_metadata` / `update_title_if_needed`），
 /// 但「新建对话 → 首条消息」窗口内的会话级配置（agentMode / thinkingMode /
-/// promptMode / webSearch / mcpEnabled / 模型身份）同样要能从对话恢复——档案缺
+/// webSearch / mcpEnabled / 模型身份）同样要能从对话恢复——档案缺
 /// `title` / `messageCount` / `updatedAt`（由首条消息建档时补齐），
 /// 零消息条目被 `load_conversation_list` 的空对话过滤天然排除。
 pub fn update_context(session_id: &str, project: &str, changes: &[Value]) -> Result<(), String> {

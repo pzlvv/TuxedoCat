@@ -5,7 +5,7 @@ import { providerKeyFromBaseURL } from '../shared/utils/providerKey.js';
 // 唯一自持的取值是「新增服务商」的预置地址，它是跨层共享的服务地址常量。
 import { DEEPSEEK_BASE_URL as DEFAULT_BASE_URL } from '../shared/endpoints.js';
 import { DEFAULT_API_TYPE as DEFAULT_MODEL_API_TYPE } from '../shared/utils/modelConfig.js';
-import type { Colors, ThinkingMode, AgentMode, PromptMode } from './types';
+import type { Colors, ThinkingMode, AgentMode } from './types';
 import type { McpServerInfo } from '../shared/webviewTypes';
 import { t } from './i18n';
 import { uiFontSizePx, type UiFontSize } from './fontSize';
@@ -62,7 +62,6 @@ interface LLMConfigPanelProps {
   initialWebSearch: boolean;
   initialThinkingEffort: ThinkingMode;
   initialDefaultAgentMode: AgentMode;
-  initialDefaultPromptMode: PromptMode;
   /** 已保存的 API Key（从设置中预填，避免每次打开都重新输入） */
   initialApiKey: string;
   /** 已保存的界面语言（auto | zh | en） */
@@ -382,7 +381,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   initialWebSearch,
   initialThinkingEffort,
   initialDefaultAgentMode,
-  initialDefaultPromptMode,
   initialApiKey,
   initialLanguage,
   initialFontSize,
@@ -433,7 +431,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [webSearch, setWebSearch] = useState<boolean>(initialWebSearch);
   const [thinkingEffort, setThinkingEffort] = useState<ThinkingMode>(initialThinkingEffort);
   const [defaultAgentMode, setDefaultAgentMode] = useState<AgentMode>(initialDefaultAgentMode);
-  const [defaultPromptMode, setDefaultPromptMode] = useState<PromptMode>(initialDefaultPromptMode);
   const [language, setLanguage] = useState<'auto' | 'zh' | 'en'>(initialLanguage);
   /** 界面字号档位（保存时写回全局 settings.json 的 uiFontSize） */
   const [fontSize, setFontSize] = useState<UiFontSize>(initialFontSize);
@@ -548,7 +545,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     webSearch !== initialWebSearch ||
     thinkingEffort !== initialThinkingEffort ||
     defaultAgentMode !== initialDefaultAgentMode ||
-    defaultPromptMode !== initialDefaultPromptMode ||
     language !== initialLanguage ||
     fontSize !== initialFontSize;
 
@@ -833,9 +829,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     }
     if (defaultAgentMode !== initialDefaultAgentMode) {
       presetPayload.defaultAgentMode = defaultAgentMode;
-    }
-    if (defaultPromptMode !== initialDefaultPromptMode) {
-      presetPayload.defaultPromptMode = defaultPromptMode;
     }
     if (language !== initialLanguage) {
       presetPayload.language = language;
@@ -1741,29 +1734,6 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             </div>
             <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
               {t('llmConfig.defaultAskModeHint')}
-            </div>
-          </div>
-
-          {/* 默认提示词模式 */}
-          <div className="mb-4">
-            <label
-              className="block ui-fs-12 font-medium mb-1.5"
-              style={{ color: colors.textSystem }}
-            >
-              {t('llmConfig.defaultPromptModeLabel')}
-            </label>
-            <SegmentControl
-              segments={[
-                { key: 'normal' as const, label: t('inputArea.promptModeNormal') },
-                { key: 'minimal' as const, label: t('inputArea.promptModeMinimal') },
-                { key: 'mixed' as const, label: t('inputArea.promptModeMixed') },
-              ]}
-              value={defaultPromptMode}
-              onChange={setDefaultPromptMode}
-              colors={colors}
-            />
-            <div className="ui-fs-11 mt-1" style={{ color: colors.textSystem }}>
-              {t('llmConfig.defaultPromptModeHint')}
             </div>
           </div>
 

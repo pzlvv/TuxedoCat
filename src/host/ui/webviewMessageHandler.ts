@@ -56,7 +56,6 @@ import { hostname as osHostname } from 'os';
 import {
   readActiveModelRef,
   readDefaultAgentMode,
-  readDefaultPromptMode,
   readDefaultThinkingEffort,
   readDefaultWebSearch,
   readLlmConfigPanelPayload,
@@ -356,7 +355,6 @@ export class WebviewMessageHandler {
       // ===== 会话配置（UiEvent 翻译：core 处理并广播 sessionConfigChanged）=====
       entry('setModel', (msg) => this.handleSetModel(msg)),
       entry('setThinkingMode', (msg) => this.emitUiEvent({ type: 'thinkingEffortChanged', sessionId: msg.sessionId, mode: msg.mode })),
-      entry('setPromptMode', (msg) => this.emitUiEvent({ type: 'promptModeChanged', sessionId: msg.sessionId, mode: msg.mode })),
       entry('setAgentMode', (msg) => this.emitUiEvent({ type: 'agentModeChanged', sessionId: msg.sessionId, mode: msg.mode })),
       entry('setWebSearch', (msg) => this.emitUiEvent({ type: 'webSearchChanged', sessionId: msg.sessionId, enabled: !!msg.webSearch })),
       entry('setMcpEnabled', (msg) => this.handleSetMcpEnabled(msg)),
@@ -863,12 +861,12 @@ export class WebviewMessageHandler {
     const savedContext = conversation.metadata?.context;
     this.log(`[WebviewMessageHandler] Conversation context: ${JSON.stringify(savedContext)}`);
 
-    // 如果没有 per-session 的 thinkingMode/webSearch/promptMode，从 settings.json 读取默认值
+    // 如果没有 per-session 的 thinkingMode/webSearch，从 settings.json 读取默认值
     let effectiveSavedContext = savedContext;
     // meta.json 保持扁平字段：这里组装成模型身份（provider 缺失 → undefined）
     let modelRef = getConversationModelRef(conversation.metadata);
     try {
-      if (!savedContext?.thinkingMode || typeof savedContext?.webSearch !== 'boolean' || !savedContext?.promptMode) {
+      if (!savedContext?.thinkingMode || typeof savedContext?.webSearch !== 'boolean') {
         const snapshot = getSettingsStore().getSnapshot();
         const defaultThinkingEffort = readDefaultThinkingEffort(snapshot);
         const defaultWebSearch = readDefaultWebSearch(snapshot);
@@ -878,11 +876,6 @@ export class WebviewMessageHandler {
         }
         if (typeof nextCtx?.webSearch !== 'boolean') {
           nextCtx = { ...(nextCtx || {}), webSearch: defaultWebSearch };
-        }
-        // 加载已有对话时，meta.json 中未保存 promptMode 则用配置快照的默认值
-        // （默认值只有一处来源，见 `docs/hosts/webview-facts.md` 第 2 节）
-        if (!nextCtx?.promptMode) {
-          nextCtx = { ...(nextCtx || {}), promptMode: readDefaultPromptMode(snapshot) };
         }
         effectiveSavedContext = nextCtx;
       }
@@ -1021,13 +1014,12 @@ export class WebviewMessageHandler {
 
     // 从 settings.json 读取新对话的默认 model、thinking_effort、agentMode 和 webSearch 并发送给 webview 立即应用。
     // 注意：不再写入 meta.json（meta.json 只在发第一条消息时由 appendMessage 创建），
-    // 默认值在发送第一条消息后仍可通过 handleSetModel/handleSetThinkingMode/handleSetPromptMode 持久化。
+    // 默认值在发送第一条消息后仍可通过 handleSetModel/handleSetThinkingMode/handleSetWebSearch 持久化。
     try {
       const snapshot = getSettingsStore().getSnapshot();
       const defaultModelRef = readActiveModelRef(snapshot);
       const defaultThinkingEffort = readDefaultThinkingEffort(snapshot);
       const defaultAgentMode = readDefaultAgentMode(snapshot);
-      const defaultPromptMode = readDefaultPromptMode(snapshot);
       const defaultWebSearch = readDefaultWebSearch(snapshot);
       this.postToWebview(newSessionId, {
         type: 'setNewConversationDefaults',
@@ -1036,7 +1028,6 @@ export class WebviewMessageHandler {
         provider: defaultModelRef?.provider,
         thinkingMode: defaultThinkingEffort,
         agentMode: defaultAgentMode,
-        promptMode: defaultPromptMode,
         webSearch: defaultWebSearch,
       });
     } catch (err: any) {
@@ -1680,19 +1671,19 @@ export class WebviewMessageHandler {
    * 处理来自 webview 的 LLM 配置保存请求
    * 保存 baseURL、apiKey、apiType、models、defaultModel、webSearch 到 ~/<CONFIG_DIR_NAME>/settings.json 的 llm.*；
    * 默认 thinking_effort 保存到 llm.thinking_effort；
-   * 默认工作模式和默认提示词模式保存到顶层（defaultAgentMode / defaultPromptMode，与 llm 平级）
+   * 默认工作模式保存到顶层（defaultAgentMode，与 llm 平级）
    */
   private async handleSaveLLMConfig(message: Extract<WebviewToHostMessage, { type: 'saveLLMConfig' }>): Promise<void> {
     const {
       webSearch, thinkingEffort,
-      defaultAgentMode, defaultPromptMode, language, fontSize,
+      defaultAgentMode, language, fontSize,
       providers, activeProvider: requestedActiveProvider, closeAfterSave,
       saveProviders,
       sessionId: requestedSessionId, currentModel: requestedCurrentModel,
       currentProvider: requestedCurrentProvider,
     } = message;
 
-    this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, defaultPromptMode=${defaultPromptMode}, language=${language}, fontSize=${fontSize}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
+    this.log(`[WebviewMessageHandler] saveLLMConfig: webSearch=${!!webSearch}, thinkingEffort=${thinkingEffort}, defaultAgentMode=${defaultAgentMode}, language=${language}, fontSize=${fontSize}, saveProviders=${!!saveProviders}, providers=${Array.isArray(providers) ? providers.length : 0}, activeProvider=${requestedActiveProvider || ''}, closeAfterSave=${!!closeAfterSave}, sessionId=${requestedSessionId || ''}, currentModel=${requestedCurrentModel || ''}`);
 
     try {
       // 保存前快照：保存后回传 llmConfigSaved 时，webview 要判断「哪些默认值发生了变化」
@@ -1780,7 +1771,6 @@ export class WebviewMessageHandler {
       const savedActiveProvider = payload.activeProvider;
       const savedThinkingEffort = payload.thinkingEffort;
       const savedAgentMode = payload.defaultAgentMode;
-      const savedPromptMode = payload.defaultPromptMode;
       const savedWebSearch = payload.webSearch;
       const savedProviderGroups: Array<{ key: string; models: string[] }> =
         payload.providers.map((p: { key: string; models: string[] }) => ({ key: p.key, models: [...p.models] }));
@@ -1798,7 +1788,6 @@ export class WebviewMessageHandler {
       const defaultsChanged = {
         activeProvider: beforeSnapshot.llm.activeProvider !== snapshot.llm.activeProvider,
         thinkingEffort: beforeSnapshot.llm.thinkingEffort !== snapshot.llm.thinkingEffort,
-        promptMode: beforeSnapshot.defaultPromptMode !== snapshot.defaultPromptMode,
         agentMode: beforeSnapshot.defaultAgentMode !== snapshot.defaultAgentMode,
         webSearch: beforeSnapshot.llm.webSearch !== snapshot.llm.webSearch,
       };
@@ -1873,7 +1862,6 @@ export class WebviewMessageHandler {
         activeModelProvider,
         thinkingEffort: savedThinkingEffort,
         defaultAgentMode: savedAgentMode,
-        defaultPromptMode: savedPromptMode,
         webSearch: savedWebSearch,
         defaultsChanged,
         currentProviderDefaultModel,
@@ -1915,7 +1903,6 @@ export class WebviewMessageHandler {
       const defaultModelRef = readActiveModelRef(snapshot);
       const thinkingMode = readDefaultThinkingEffort(snapshot);
       const agentMode = readDefaultAgentMode(snapshot);
-      const promptMode = readDefaultPromptMode(snapshot);
       const webSearch = readDefaultWebSearch(snapshot);
       const payload = readLlmConfigPanelPayload(snapshot);
       const providerConfigured = !!payload.activeProvider && !!payload.apiKey;
@@ -1926,13 +1913,12 @@ export class WebviewMessageHandler {
         provider: defaultModelRef?.provider,
         thinkingMode,
         agentMode,
-        promptMode,
         webSearch,
         language: this.getUiLanguageFromSettings(),
         fontSize: this.getUiFontSizeFromSettings(),
         providerConfigured,
       });
-      this.log(`[WebviewMessageHandler] Sent settings defaults: model=${defaultModelRef?.model ?? ''}, provider=${defaultModelRef?.provider ?? ''}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, promptMode=${promptMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
+      this.log(`[WebviewMessageHandler] Sent settings defaults: model=${defaultModelRef?.model ?? ''}, provider=${defaultModelRef?.provider ?? ''}, thinkingMode=${thinkingMode}, agentMode=${agentMode}, webSearch=${webSearch}, providerConfigured=${providerConfigured}`);
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to send settings defaults: ${err.message}`);
       // 读取失败也要回一条：否则 webview 的 configReady 永远为 false，发送按钮会一直禁用。
@@ -1942,7 +1928,6 @@ export class WebviewMessageHandler {
         model: '',
         thinkingMode: undefined,
         agentMode: undefined,
-        promptMode: undefined,
         webSearch: false,
         language: this.getUiLanguageFromSettings(),
         fontSize: this.getUiFontSizeFromSettings(),

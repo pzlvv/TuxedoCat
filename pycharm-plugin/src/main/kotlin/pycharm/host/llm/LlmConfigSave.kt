@@ -59,7 +59,7 @@ object LlmConfigSave {
                     val llm = (changed["llm"] as? JsonObject) ?: JsonObject(emptyMap())
                     changed = JsonObject(changed + ("llm" to JsonObject(llm + llmMutations)))
                 }
-                listOf("defaultAgentMode", "defaultPromptMode").forEach { field ->
+                listOf("defaultAgentMode").forEach { field ->
                     (message[field] as? JsonPrimitive)?.takeIf { it.isString }?.let { value ->
                         changed = JsonObject(changed + (field to value))
                     }
@@ -75,7 +75,6 @@ object LlmConfigSave {
                 put("defaultsChanged", buildJsonObject {
                     put("activeProvider", activeKeyOf(snapshotBefore) != activeKeyOf(snapshotAfter))
                     put("thinkingEffort", strOf(snapshotBefore, "thinkingEffort") != strOf(snapshotAfter, "thinkingEffort"))
-                    put("promptMode", strOf(snapshotBefore, "defaultPromptMode") != strOf(snapshotAfter, "defaultPromptMode"))
                     put("agentMode", strOf(snapshotBefore, "defaultAgentMode") != strOf(snapshotAfter, "defaultAgentMode"))
                     put("webSearch", boolOf(snapshotBefore) != boolOf(snapshotAfter))
                 })

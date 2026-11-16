@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
 import type { SessionCreator } from '../../shared/sessionCreator';
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
@@ -30,8 +30,6 @@ export interface UseAppHandlersProps {
   /** 会话询问模式；undefined = 尚未从宿主获取到（不代宿主决定） */
   agentMode: AgentMode | undefined;
   thinkingMode: ThinkingMode | undefined;
-  /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json） */
-  promptMode: PromptMode | undefined;
   /** 当前选择的模型身份（provider + model）；undefined = 尚未选择 / 未配置 */
   modelRef: ModelRef | undefined;
   /** 会话关联的 Web Search 开关；undefined = 尚未从宿主获取到 */
@@ -65,7 +63,6 @@ export interface UseAppHandlersProps {
   /** undefined = 尚未从宿主获取到（保持等待态，不写猜测值） */
   setAgentMode: (v: AgentMode | undefined) => void;
   setThinkingMode: (v: ThinkingMode | undefined) => void;
-  setPromptMode: (v: PromptMode | undefined) => void;
   setWebSearch: (v: boolean | undefined) => void;
   setModelRef: (v: ModelRef | undefined) => void;
   setHasCompactArchive: (v: boolean) => void;
@@ -205,16 +202,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     const nextWebSearch = sd.webSearch ?? props.webSearch;
     // 模型身份整体跟随默认值：settingsDefaults 未就绪时保留当前选择
     const nextModelRef = sd.modelRef ?? props.modelRef;
-    const nextPromptMode = sd.promptMode ?? props.promptMode;
     props.setAgentMode(nextAgentMode);
     props.setThinkingMode(nextThinkingMode);
     props.setWebSearch(nextWebSearch);
     props.setModelRef(nextModelRef);
-    props.setPromptMode(nextPromptMode);
     // 为新对话创建默认 state
     props.sessionStates.set(newSessionId, createSessionState({
       agentMode: nextAgentMode,
-      promptMode: nextPromptMode,
       thinkingMode: nextThinkingMode,
       webSearch: nextWebSearch,
       modelRef: nextModelRef,
@@ -331,16 +325,13 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       const nextWebSearch = sd.webSearch ?? props.webSearch;
       // 模型身份整体跟随默认值：settingsDefaults 未就绪时保留当前选择
       const nextModelRef = sd.modelRef ?? props.modelRef;
-      const nextPromptMode = sd.promptMode ?? props.promptMode;
       props.setAgentMode(nextAgentMode);
       props.setThinkingMode(nextThinkingMode);
       props.setWebSearch(nextWebSearch);
       props.setModelRef(nextModelRef);
-      props.setPromptMode(nextPromptMode);
       // 为新对话创建默认 state
       props.sessionStates.set(sessionId, createSessionState({
         agentMode: nextAgentMode,
-        promptMode: nextPromptMode,
         thinkingMode: nextThinkingMode,
         webSearch: nextWebSearch,
         modelRef: nextModelRef,
@@ -366,7 +357,6 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       agentMode: props.agentMode,
       thinkingMode: props.thinkingMode,
       webSearch: props.webSearch,
-      // promptMode 不随消息下发：由独立的 setPromptMode 消息承载（会话级持久化）
       // 模型身份随消息一起下发：避免 setModel 消息尚未处理时用错 provider。
       // wire 协议保持扁平：拆成 model / provider 两个字段。
       model: props.modelRef?.model,

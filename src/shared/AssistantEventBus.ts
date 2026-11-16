@@ -212,7 +212,6 @@ export type CoreEvent =
       change:
         | { key: 'model'; ref: ModelRef }
         | { key: 'thinkingEffort'; value: 'off' | 'low' | 'high' | 'max' }
-        | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
         | { key: 'agentMode'; value: AgentMode }
         | { key: 'webSearch'; value: boolean }
         | { key: 'mcpEnabled'; value: string[] };
@@ -298,7 +297,7 @@ export type CoreRequest =
    * 发起方 Core 在 `Agent` 带 `target` 时发出并阻塞等待；宿主按身份找到目标工作区
    * Connection、在目标 Core 建子代理会话后返回新会话 id。`sessionId` 是发起方会话。
    * `agentMode` 起各项是发起方会话**当前的生效值**（发起方 Core 解析，目标侧不再回落
-   * 默认值）；提示词模式不随派发携带——跨工作区会话恒 normal（specs/025 FR-005）。
+   * 默认值），目标侧全量应用、不按角色裁剪（specs/025 FR-005）。
    */
   | {
       type: 'crossWorkspaceAgentRequested';
@@ -586,7 +585,6 @@ export type UiEvent =
   // ===== 会话配置 =====
   | { type: 'modelChanged'; sessionId: string; ref: ModelRef }
   | { type: 'thinkingEffortChanged'; sessionId: string; mode: 'off' | 'low' | 'high' | 'max' }
-  | { type: 'promptModeChanged'; sessionId: string; mode: 'normal' | 'minimal' | 'mixed' }
   | { type: 'agentModeChanged'; sessionId: string; mode: AgentMode }
   | { type: 'webSearchChanged'; sessionId: string; enabled: boolean }
   | { type: 'mcpEnabledChanged'; sessionId: string; name: string; enabled: boolean }
@@ -691,7 +689,7 @@ export type UiEvent =
    * Connection（不按 sessionId 路由——该会话在目标 Core 里尚不存在）。`origin*`
    * 记录发起方工作区身份与会话，目标 Core 据此写 `creator`（specs/025 FR-002）并
    * 组装 SystemPrompt（specs/025 FR-006）。`agentMode` 起各项是发起方会话的生效设置，
-   * 目标 Core 全量应用（specs/025 FR-005）；提示词模式不携带——目标会话恒 normal。
+   * 目标 Core 全量应用（specs/025 FR-005）。
    */
   | {
       type: 'remoteSubAgentStarted';

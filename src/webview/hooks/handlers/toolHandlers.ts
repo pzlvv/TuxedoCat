@@ -144,8 +144,7 @@ export function handleToolAddMessage(
                     cacheReadTokens,
                     cacheCreationTokens,
                     {
-                      promptMode: propsRef.current.settingsDefaults.promptMode,
-                      modelRef: propsRef.current.modelRef,
+                            modelRef: propsRef.current.modelRef,
                     },
                   );
                 }

@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry } from './types';
 import type { HostToWebviewWire } from '../host/webviewMessages';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
@@ -124,7 +124,7 @@ const App = () => {
   /** 会话创建者（specs/025 FR-002）：返回按钮按它跳发起方（跨工作区）或父会话（本地） */
   const [creator, setCreator] = useState<SessionCreator | null>(null);
   // 当前会话的子代理角色（conversationLoaded.metadata.role，specs/020 FR-005）：
-  // 非 Master 子代理会话锁定选项菜单的提示词模式 / 联网搜索 / MCP 三项
+  // 非 Master 子代理会话锁定选项菜单的联网搜索 / MCP 两项
   const [subAgentRole, setSubAgentRole] = useState<string | null>(null);
   const [hasActiveQuery, setHasActiveQuery] = useState(false);
   const [contextLength, setContextLength] = useState<number>(0);
@@ -138,10 +138,9 @@ const App = () => {
    */
   const [agentMode, setAgentMode] = useState<AgentMode | undefined>(undefined);
   /**
-   * 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json。
+   * 会话关联的思考强度，持久化到 meta.json。
    * 未从宿主获取到之前保持 undefined，发送按钮保持禁用（见 configReady）。
    */
-  const [promptMode, setPromptMode] = useState<PromptMode | undefined>(undefined);
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode | undefined>(undefined);
   const [webSearch, setWebSearch] = useState<boolean | undefined>(undefined);
   /**
@@ -160,7 +159,7 @@ const App = () => {
   // 不内置任何兜底值：未收到宿主回传前字段为 undefined。
   const [settingsDefaults, setSettingsDefaults] = useState<SettingsDefaults>({});
   /**
-   * 会话配置（模型 / 思考强度 / 提示词模式等）是否已从宿主获取到。
+   * 会话配置（模型 / 思考强度等）是否已从宿主获取到。
    * 未就绪时禁用发送按钮（复用 MCP 连接中的效果），避免用空/兜底配置发起请求。
    */
   const [configReady, setConfigReady] = useState(false);
@@ -286,14 +285,6 @@ const App = () => {
     if (!currentSessionId || !agentMode) return;
     postMessage({ type: 'setAgentMode', mode: agentMode, sessionId: currentSessionId });
   }, [agentMode, currentSessionId]);
-
-  // 当 promptMode 变化时通知 extension（会话级，持久化到 meta.json）。
-  // 未获取到配置前 promptMode 为 undefined：此时不下发，避免把 undefined 写进 meta.json。
-  useEffect(() => {
-    if (currentSessionId && promptMode) {
-      postMessage({ type: 'setPromptMode', mode: promptMode, sessionId: currentSessionId });
-    }
-  }, [promptMode, currentSessionId]);
 
   // 当 thinkingMode 变化时通知 extension（使其在对话中动态生效）。
   // 未获取到配置前 thinkingMode 为 undefined：此时不下发。
@@ -632,19 +623,18 @@ const App = () => {
     inputAreaRef,
     // 当前会话实时状态（切换会话保存快照时使用）
     userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode,
-    promptMode, setPromptMode, webSearch,
+    webSearch,
     setSubAgentRole,
     currentFile, selectedLines,
     setRewindDialogOpen: (open: boolean) => { if (!open) setRewindTargetUuid(null); },
     onRewindFailed: (message: string) => { setRewindTargetUuid(null); pushNotice('rewind.failed', { message }, 'error'); },
-  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, promptMode, webSearch, currentFile, selectedLines, messages, pushNotice]);
+  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, currentFile, selectedLines, messages, pushNotice]);
   useMessageHandler(handlerProps);
 
     const appHandlerProps = useMemo(() => ({
     currentFile, selectedLines, fileHidden, conversations, conversationsLoading,
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
-    promptMode, setPromptMode,
     modelRef, webSearch, settingsDefaults,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
@@ -667,7 +657,6 @@ const App = () => {
     currentFile, selectedLines, fileHidden, conversations, conversationsLoading,
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
     hasActiveQuery, contextLength, maxContextTokens, agentMode, thinkingMode,
-    promptMode,
     modelRef, webSearch, settingsDefaults,
     queuedMessage, deleteConfirm, userChoiceRequest,
     showThinkingAnimation, animationMode, messages,
@@ -706,7 +695,6 @@ const App = () => {
       hasActiveQuery,
       preCompressHasActiveQuery: existing?.preCompressHasActiveQuery,
       agentMode,
-      promptMode,
       thinkingMode,
       // webSearch 也在会话快照里：菜单开关的值经保存边界持久化，
       // 否则切走再切回会丢（恢复链读 savedState.webSearch）
@@ -722,7 +710,7 @@ const App = () => {
       selectedLines: selectedLines ?? undefined,
       totalContextTokens: contextLength,
     });
-  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, promptMode, thinkingMode, webSearch, contextLength, modelRef, currentFile, selectedLines]);
+  }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, contextLength, modelRef, currentFile, selectedLines]);
 
   /**
    * **会话跳转的唯一 UI 入口**（对话列表 / 对话树 / 子代理 From 链接 / 返回父会话按钮
@@ -816,12 +804,10 @@ const App = () => {
     const nextWebSearch = settingsDefaults.webSearch ?? webSearch;
     // 模型身份整体跟随默认值：settingsDefaults 未就绪时保留当前选择。
     const nextModelRef = settingsDefaults.modelRef ?? modelRef;
-    const nextPromptMode = settingsDefaults.promptMode ?? promptMode;
     setAgentMode(nextAgentMode);
     setThinkingMode(nextThinkingMode);
     setWebSearch(nextWebSearch);
     setModelRef(nextModelRef);
-    setPromptMode(nextPromptMode);
     setCurrentSessionId(newSessionId);
     setCurrentSessionIdRef(newSessionId);
     // 为新对话创建默认 state
@@ -831,7 +817,6 @@ const App = () => {
       inputCursorPosition: draftCursor,
       choiceCursorPosition: 0,
       agentMode: nextAgentMode,
-      promptMode: nextPromptMode,
       thinkingMode: nextThinkingMode,
       webSearch: nextWebSearch,
       modelRef: nextModelRef,
@@ -851,7 +836,7 @@ const App = () => {
       mainInputRef.current?.setSelectionRange(draftCursor, draftCursor);
     }, 0);
     // 依赖与 saveCurrentSessionSnapshot 相同（值类型快照来源）；ref 不进依赖数组
-  }, [hostInfo, saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, modelRef, promptMode]);
+  }, [hostInfo, saveCurrentSessionSnapshot, stashNewChatDraft, resetConversationLoad, settingsDefaults, agentMode, thinkingMode, webSearch, modelRef]);
 
   const handleOpenSettings = useCallback(() => {
     postMessage({ type: 'requestLLMConfig' });
@@ -860,9 +845,9 @@ const App = () => {
   /**
    * 确认把新默认配置应用到当前对话。
    *
-   * 只写 pending 里确实需要变的字段（模型身份 / 提示词模式 / thinking effort /
-   * 询问模式 / 联网搜索 / MCP 启用列表），并同步当前会话的内存状态；下发到宿主由
-   * 各字段自己的 effect 完成（见 setModelRef / setPromptMode / ... 的 useEffect），
+   * 只写 pending 里确实需要变的字段（模型身份 / thinking effort / 询问模式 /
+   * 联网搜索 / MCP 启用列表），并同步当前会话的内存状态；下发到宿主由
+   * 各字段自己的 effect 完成（见 setModelRef / setThinkingMode / ... 的 useEffect），
    * MCP 列表没有对应的会话字段，直接发 `setMcpEnabledList`。
    */
   const handleApplyDefaults = useCallback(() => {
@@ -874,10 +859,6 @@ const App = () => {
     if (pending.modelRef) {
       setModelRef(pending.modelRef);
       if (state) state.modelRef = pending.modelRef;
-    }
-    if (pending.promptMode) {
-      setPromptMode(pending.promptMode);
-      if (state) state.promptMode = pending.promptMode;
     }
     if (pending.thinkingMode) {
       setThinkingMode(pending.thinkingMode);
@@ -1180,7 +1161,6 @@ const App = () => {
       initialWebSearch={llmConfigPayload.webSearch}
       initialThinkingEffort={llmConfigPayload.thinkingEffort}
       initialDefaultAgentMode={llmConfigPayload.defaultAgentMode}
-      initialDefaultPromptMode={llmConfigPayload.defaultPromptMode}
       initialApiKey={llmConfigPayload.apiKey}
       initialLanguage={llmConfigPayload.language}
       initialFontSize={llmConfigPayload.fontSize}
@@ -1577,8 +1557,6 @@ onClick={handleNewConversation}
               abortHoverDetail={abortHoverDetail}
               agentMode={agentMode}
               setAgentMode={setAgentMode}
-              promptMode={promptMode}
-              setPromptMode={setPromptMode}
               thinkingMode={thinkingMode}
               setThinkingMode={setThinkingMode}
               webSearch={webSearch}

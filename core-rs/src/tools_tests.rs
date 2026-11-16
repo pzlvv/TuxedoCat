@@ -698,11 +698,11 @@ fn contains_sleep_command_splits_on_separators() {
     assert!(!contains_sleep_command("echo done"));
 }
 
-/// sleep 等待闸门的判定（`docs/features/background-bash.md` 第 2 节 FR-005）：
-/// 首段 `sleep` + 后续命令命中；换行是分隔（换行不是逃逸口）；`&` 接后续命令不算
-/// 「先等再干」；纯注释段与引号内的 sleep 字样都不构成命中。
+/// `restricted` 闸门的 sleep 判据（`docs/features/background-bash.md` 第 2 节 FR-002）：
+/// 任一段命令名是 `sleep` 即命中，不再区分首段 / 后续段；换行与 `;` / `&&` / `||` / `|`
+/// 一样是分隔；纯注释段、引号内的字样与 heredoc 正文都不构成命中。
 #[test]
-fn sleep_wait_gate_detects_leading_sleep_with_trailing_commands() {
+fn restricted_gate_rejects_sleep_anywhere() {
     for command in [
         "sleep 30 && cat a.txt",
         "sleep 10; cat a.txt",
@@ -711,31 +711,70 @@ fn sleep_wait_gate_detects_leading_sleep_with_trailing_commands() {
         "sleep 10\ncat a.txt",
         "FOO=1 sleep 5 && x",
         "sleep 30  # wait\ncat a.txt",
-    ] {
-        assert!(is_sleep_wait_command(command), "{command}");
-    }
-    for command in [
-        // 首段不是 sleep：这正是文案给出的逃逸写法
+        // 首段不是 sleep、只有单条 sleep 也命中（FR-002 收紧后的口径）
         "cat a.txt; sleep 30",
         "echo anything; sleep 10",
         "npm run build && sleep 5",
-        // 只有一条 sleep，没有后续命令
         "sleep 30",
         "sleep 5 > out",
-        // `&` 接后续命令：shell 立刻执行，不是先等再干
         "sleep 10 & cat a.txt",
-        // 引号内 / 注释里的 sleep 字样不是子命令
-        "echo 'sleep 10 && cat a.txt'",
+        // 尾随注释不影响「这一条就是 sleep」
         "sleep 10 # wait",
-        // 首词不是 sleep（与 contains_sleep_command 的首词口径一致）
+        // heredoc 正文被屏蔽，但命令行本身仍是 sleep
+        "sleep 5 <<EOF\ncat\nEOF",
+    ] {
+        assert!(has_sleep_command(command), "{command}");
+    }
+    for command in [
+        // 引号内的 sleep 字样不是子命令
+        "echo 'sleep 10 && cat a.txt'",
+        // 首词不是 sleep（与 contains_sleep_command 的首词口径一致：已知边界）
         "/usr/bin/sleep 10 && x",
         "timeout 30 sleep 5 && x",
         "nosleep 5 && x",
         // heredoc 正文是字面文本，不是命令
-        "sleep 5 <<EOF\ncat\nEOF",
+        "cat > a.sh <<'EOF'\nsleep 5\nEOF",
         "echo done",
     ] {
-        assert!(!is_sleep_wait_command(command), "{command}");
+        assert!(!has_sleep_command(command), "{command}");
+    }
+}
+
+/// `restricted` 闸门的 sed 判据（`docs/features/background-bash.md` 第 2 节 FR-003）：
+/// 去掉所有 `cd` 段后只剩 `sed` 才算命中；有别的段就不是「拿 sed 替代读文件」。
+#[test]
+fn restricted_gate_rejects_cd_and_sed_only() {
+    for command in [
+        "sed -n '1,40p' f.txt",
+        "sed -i 's/a/b/' f.txt",
+        "cd src && sed -n 1p a.ts",
+        "cd a; sed -n 1p f",
+        "cd a && cd b && sed -n 1p f",
+        "cd src\nsed -n 1p a.ts",
+        "FOO=1 sed -n 1p f",
+        "cd src; sed -n 1p a; sed -i 's/x/y/' b",
+    ] {
+        assert!(is_cd_sed_only_command(command), "{command}");
+    }
+    for command in [
+        // 有别的段：有上下游的文本加工，不是「拿 sed 读文件」
+        "sed -n 1p f | head",
+        "rg x src | sed 's/a/b/'",
+        "git diff | sed -n '1,20p'",
+        "sed -n 1p f; echo done",
+        "cd src; ls",
+        // 只有 cd，没有 sed：剩余段为空
+        "cd src",
+        "cd src && cd lib",
+        // 引号内 / 注释里的 sed 字样不是子命令
+        "echo 'sed -n 1p f'",
+        "cat f # sed -n 1p",
+        // 首词不是 cd / sed（与 sleep 判据同一口径）
+        "/usr/bin/sed -n 1p f",
+        "cat f | /usr/bin/sed -n 1p",
+        "echo done",
+    ] {
+        assert!(!is_cd_sed_only_command(command), "{command}");
     }
 }
 
@@ -3159,6 +3198,15 @@ mod schema_parity_tests {
                                 failures.push(format!("{name}.{key}: enum 不一致"));
                             }
                         }
+                        // 缺省值也是模型可见契约的一部分：`default` 声明与运行期读取口径漂移时，
+                        // 模型看到的默认行为会和实际拦截行为对不上。
+                        if actual.get("default") != expected.get("default") {
+                            failures.push(format!(
+                                "{name}.{key}: default 不一致 expected={} actual={}",
+                                expected.get("default").unwrap_or(&Value::Null),
+                                actual.get("default").unwrap_or(&Value::Null)
+                            ));
+                        }
                     }
                 }
             }
@@ -5000,6 +5048,30 @@ fn bash_schema_exposes_detach_with_minimal_description() {
         !description.contains("nohup") && !description.contains('&'),
         "案例不得写进 schema: {description}"
     );
+}
+
+/// Bash schema 暴露 `restricted`，说明保持防护性最小披露（specs/049 FR-006 / AC-12）：
+/// 只声明默认值与常规取值，判据细节与逃生口只在闸门失败文案里给，`default: true`
+/// 与运行期读取口径（`bash_restricted` 缺省 true）同值。
+#[test]
+fn bash_schema_exposes_restricted_with_minimal_description() {
+    let definition = definitions()
+        .into_iter()
+        .find(|item| item["name"] == "Bash")
+        .expect("Bash 定义必须存在");
+    let restricted = &definition["input_schema"]["properties"]["restricted"];
+    assert_eq!(restricted["type"], "boolean");
+    assert_eq!(restricted["default"], true);
+    let description = restricted["description"].as_str().expect("description");
+    assert!(description.contains("默认 true"), "got {description}");
+    assert!(description.contains("通常传 true"), "got {description}");
+    // 最小披露：判据细节（具体命令形态）与逃生口措辞不写进 schema
+    for leaked in ["sleep", "sed", "restricted: false", "cd"] {
+        assert!(
+            !description.contains(leaked),
+            "schema 不得复述判据细节（命中 {leaked}）: {description}"
+        );
+    }
 }
 
 /// 闸门（FR-001 / AC-1 ～ AC-3 / AC-5）：缺省 `detach` 时命中构造直接失败，文案

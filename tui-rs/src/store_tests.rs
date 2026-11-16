@@ -310,7 +310,6 @@ fn conversation_loaded_projects_history() {
             provider: Some("p2".into()),
             agent_mode: Some("risk".into()),
             thinking_mode: Some("low".into()),
-            prompt_mode: Some("normal".into()),
             web_search: Some(false),
             context_tokens: 15.0,
             has_active_query: false,

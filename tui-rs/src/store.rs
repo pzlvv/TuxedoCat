@@ -106,7 +106,6 @@ pub struct SessionState {
     pub provider: Option<String>,
     pub agent_mode: Option<String>,
     pub thinking_mode: Option<String>,
-    pub prompt_mode: Option<String>,
     pub web_search: Option<bool>,
 }
 
@@ -275,7 +274,6 @@ pub struct SettingsDefaults {
     pub provider: Option<String>,
     pub thinking_mode: Option<String>,
     pub agent_mode: Option<String>,
-    pub prompt_mode: Option<String>,
     pub web_search: Option<bool>,
 }
 
@@ -418,10 +416,6 @@ pub enum Action {
         session_id: String,
         mode: String,
     },
-    SetPromptMode {
-        session_id: String,
-        mode: String,
-    },
     SetWebSearch {
         session_id: String,
         enabled: bool,
@@ -460,7 +454,6 @@ pub struct ConversationLoadedData {
     pub provider: Option<String>,
     pub agent_mode: Option<String>,
     pub thinking_mode: Option<String>,
-    pub prompt_mode: Option<String>,
     pub web_search: Option<bool>,
     pub context_tokens: f64,
     pub has_active_query: bool,
@@ -510,7 +503,6 @@ fn empty_session(session_id: &str) -> SessionState {
         provider: None,
         agent_mode: None,
         thinking_mode: None,
-        prompt_mode: None,
         web_search: None,
     }
 }
@@ -747,7 +739,6 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
             session.provider = data.provider.clone().or_else(|| session.provider.clone());
             session.agent_mode = data.agent_mode.clone().or(session.agent_mode.clone());
             session.thinking_mode = data.thinking_mode.clone();
-            session.prompt_mode = data.prompt_mode.clone();
             session.web_search = data.web_search;
             session.context_tokens = data.context_tokens;
         }),
@@ -831,9 +822,6 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
                 session.thinking_mode = Some(mode.clone());
             })
         }
-        Action::SetPromptMode { session_id, mode } => with_session(state, session_id, |session| {
-            session.prompt_mode = Some(mode.clone());
-        }),
         Action::SetWebSearch {
             session_id,
             enabled,

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-16
 ---
 
 # 用户故事分册：工具与技能
@@ -84,11 +84,13 @@ last_reviewed: 2026-11-10
 
 验收标准：
 
-1. 命令按 `;` / `&&` / `||` / `|` / 换行切分后首段是 `sleep`、后面还有真实命令时，Bash
-   调用直接失败、不执行；失败文案说明完成会通知并接续，并给出「确实要延时就往 sleep 前
-   加任意命令」的写法。前台 / `run_in_background` / `detach` 三种形态一致，且不弹权限确认框。
-2. 放行写法照常执行：`echo anything; sleep 10`、`npm run build && sleep 5`、单条
-   `sleep 5`、以及引号里的 sleep 字样。
+1. `restricted` 缺省为真时，命令按 `;` / `&&` / `||` / `|` / 换行切分后任一段是 `sleep`
+   （含单条 `sleep 5`）就使 Bash 调用直接失败、不执行；失败文案说明不要用 sleep poll，
+   应改条件 poll 或结束本轮等完成通知。前台 / `run_in_background` / `detach` 三种形态
+   一致，且不弹权限确认框。
+2. 引号内的 sleep 字样、`#` 注释段、heredoc 正文都不算命令，照常执行；显式
+   `restricted: false` 时 `sleep` 回到既有权限路径。
+
 ### US-77 工具 shell 自带 rg / fd 并优先使用
 
 作为用户，我希望助手在工具 shell 里直接用随产品分发的 `rg` / `fd`，并按规则优先用它们
@@ -103,6 +105,20 @@ last_reviewed: 2026-11-10
 3. 系统提示词写明优先 `rg` 代替 `grep`、`fd` 代替 `find`；单个搜索优先用 `Grep` / `Glob`
    工具，需要与其它命令组合时用 Bash 的 `rg` / `fd`。
 4. 内置工具缺失时命令由 shell 自身报 `command not found`，普通命令照常执行。
+
+### US-78 sed 读文件改用 Read 工具
+
+作为用户，我希望模型不要用 `cd` + `sed` 当文件读取器，而是用 `Read` 工具读文件，
+这样读到的内容是结构化结果（行号、范围、xlsx / 图片分支），不是靠 `sed` 猜参数
+（`docs/features/background-bash.md`）。
+
+验收标准：
+
+1. `restricted` 缺省为真时，去掉所有 `cd` 段后只剩 `sed`（读形态 `-n` 与写形态 `-i`
+   一视同仁）就使 Bash 调用直接失败，文案引导改用 `Read` 工具；三档工作模式一致。
+2. 有上下游的文本加工照常执行：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
+   `git diff | sed -n '1,20p'`；`restricted: false` 时回到既有权限路径（`sed` 不在只读
+   白名单，`manual` 询问、`risk` / `auto` 放行）。
 
 ## 联网搜索（客户端工具）
 

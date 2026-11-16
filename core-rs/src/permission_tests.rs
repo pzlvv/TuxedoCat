@@ -56,9 +56,10 @@ fn destructive_detection() {
 
 #[test]
 fn risk_mode_allows_safe_commands() {
-    // 关键回归：sleep 这类普通命令在 risk 模式下不应弹确认框
+    // 关键回归：普通命令在 risk 模式下不应弹确认框（`sleep` 已被 restricted 闸门拦下，
+    // 见 `restricted_sleep_gate_denies_in_every_agent_mode`，这里用等价的普通命令）
     assert_eq!(
-        decide("Bash", &bash("sleep 1"), "risk", CWD),
+        decide("Bash", &bash("npm test"), "risk", CWD),
         Decision::Allow
     );
     assert_eq!(
@@ -71,37 +72,62 @@ fn risk_mode_allows_safe_commands() {
     );
 }
 
-/// sleep 等待闸门（`docs/features/background-bash.md` 第 2 节 FR-005）：
-/// 三档工作模式给同一个 deny 与同一段文案——闸门不是权限分级，不能因为 auto / risk
-/// 把 ask 放行就漏过去（spec AC-12）。
+/// `restricted` 闸门的 sleep 分支（`docs/features/background-bash.md` 第 2 节 FR-002 /
+/// FR-005）：三档工作模式给同一个 deny 与同一段文案——闸门不是权限分级，不能因为
+/// auto / risk 把 ask 放行就漏过去。
 #[test]
-fn sleep_wait_gate_denies_in_every_agent_mode() {
-    let command = bash("sleep 30 && cat a.txt");
-    for mode in ["manual", "risk", "auto"] {
-        assert_eq!(
-            decide("Bash", &command, mode, CWD),
-            Decision::Deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string()),
-            "mode={mode}"
-        );
-    }
-    // 闸门不是 ask：ask 会在 auto 模式被放行，也不会给用户弹框
-    assert!(!matches!(
-        decide("Bash", &command, "manual", CWD),
-        Decision::Ask
-    ));
-}
-
-/// 放行范围（spec FR-003）：首段不是 sleep、只有单条 sleep、引号内的 sleep 字样、
-/// `&` 接后续命令（shell 立刻执行，不是先等再干）都不受闸门影响。
-#[test]
-fn sleep_wait_gate_leaves_allowed_forms_untouched() {
+fn restricted_sleep_gate_denies_in_every_agent_mode() {
     for command in [
-        "cat a.txt; sleep 30",
+        "sleep 30 && cat a.txt",
+        // 单条 sleep 同样命中（FR-002 收紧后的口径）
         "sleep 30",
         "echo anything; sleep 10",
+    ] {
+        let args = bash(command);
+        for mode in ["manual", "risk", "auto"] {
+            assert_eq!(
+                decide("Bash", &args, mode, CWD),
+                Decision::Deny(crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE.to_string()),
+                "command={command} mode={mode}"
+            );
+        }
+        // 闸门不是 ask：ask 会在 auto 模式被放行，也不会给用户弹框
+        assert!(
+            !matches!(decide("Bash", &args, "manual", CWD), Decision::Ask),
+            "{command}"
+        );
+    }
+}
+
+/// 两条失败文案都以「误拦截逃生口」收尾（FR-007）：模型能照着把同一个命令带
+/// `restricted: false` 重跑，而不需要去猜这一句的措辞。
+#[test]
+fn restricted_messages_name_the_escape_hatch() {
+    for message in [
+        crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE,
+        crate::tools::BASH_RESTRICTED_SED_MESSAGE,
+    ] {
+        assert!(
+            message.ends_with(
+                "- If you are certain this is a false positive, re-run the same command with restricted: false."
+            ),
+            "got {message}"
+        );
+        assert!(
+            message.contains("restricted: false"),
+            "逃生口必须点名参数：{message}"
+        );
+    }
+}
+
+/// sleep 判据不误伤「不是命令」的 sleep 字样（FR-002 边界）：引号内、heredoc 正文、
+/// 绝对路径与包裹写法（已知边界）都不命中闸门。
+#[test]
+fn restricted_gate_ignores_quoted_comment_and_heredoc_sleep() {
+    for command in [
         "echo 'sleep 10 && cat a.txt'",
-        "sleep 10 & cat a.txt",
-        "sleep 10 # wait",
+        "cat > a.sh <<'EOF'\nsleep 5\nEOF",
+        "echo done",
         "/usr/bin/sleep 10 && x",
         "timeout 30 sleep 5 && x",
     ] {
@@ -115,25 +141,132 @@ fn sleep_wait_gate_leaves_allowed_forms_untouched() {
     }
 }
 
-/// detach 不解除本闸门（spec FR-004）：`detach: true` 的豁免只覆盖后台化构造，
+/// `restricted` 闸门的 sed 分支（FR-003 / FR-005）：三档同一个 deny 文案；`sed` 不在只读
+/// 白名单，判据点必须在只读判定之前——否则 manual 会先弹一次确认框再由闸门拒绝。
+#[test]
+fn restricted_sed_gate_denies_in_every_agent_mode() {
+    for command in [
+        "sed -n '1,40p' f.txt",
+        "cd src && sed -n 1p a.ts",
+        "cd a; sed -n 1p f; cd b; sed -i 's/x/y/' f",
+    ] {
+        let args = bash(command);
+        for mode in ["manual", "risk", "auto"] {
+            assert_eq!(
+                decide("Bash", &args, mode, CWD),
+                Decision::Deny(crate::tools::BASH_RESTRICTED_SED_MESSAGE.to_string()),
+                "command={command} mode={mode}"
+            );
+        }
+    }
+}
+
+/// `restricted: false` 关闭两条限制（FR-004）：sleep 与 cd+sed 都回到既有权限路径
+/// （sleep 不是只读 → manual 询问；sed 同样不是只读 → manual 询问）。
+#[test]
+fn restricted_false_lifts_both_gates() {
+    for command in [
+        "sleep 30",
+        "sleep 30 && cat a.txt",
+        "cd src && sed -n 1p a.ts",
+    ] {
+        let args = json!({ "command": command, "restricted": false });
+        assert_eq!(
+            decide("Bash", &args, "manual", CWD),
+            Decision::Ask,
+            "{command}"
+        );
+        assert_eq!(
+            decide("Bash", &args, "risk", CWD),
+            Decision::Allow,
+            "{command}"
+        );
+    }
+}
+
+/// `restricted` 两条判据都用 deny、不是 ask（FR-005 / AC-5）：ask 在 auto 模式会被
+/// 放行、在 manual 下会先弹一次确认框，三档一致性就没了；`sed` 也不在只读白名单，
+/// 落在只读判定之后还会多弹一次确认框。
+#[test]
+fn restricted_gates_do_not_use_ask() {
+    for command in ["sleep 30 && cat a.txt", "cd src && sed -n 1p a.ts"] {
+        for mode in ["manual", "risk", "auto"] {
+            let decision = decide("Bash", &bash(command), mode, CWD);
+            assert!(
+                matches!(decision, Decision::Deny(_)),
+                "command={command} mode={mode} 得到 {decision:?}，必须是 deny"
+            );
+        }
+    }
+}
+
+/// `restricted: false` 不豁免 detach 闸门（FR-004）：两个字段互不豁免，后台化构造仍由
+/// `run_bash` 的 detach 闸门拦下，权限层这里只看 `is_detach_escape` 的危险分级照旧。
+#[test]
+fn restricted_false_keeps_detach_gate() {
+    let args = json!({ "command": "nohup server", "restricted": false, "detach": true });
+    assert!(is_operation_risky("Bash", &args));
+    assert_eq!(decide("Bash", &args, "risk", CWD), Decision::Ask);
+}
+
+/// detach 不解除本闸门（FR-004）：`detach: true` 的豁免只覆盖后台化构造，
 /// 用 sleep 等结果的命令仍是失败。
 #[test]
-fn sleep_wait_gate_is_not_lifted_by_detach() {
+fn restricted_gate_is_not_lifted_by_detach() {
     let args = json!({ "command": "sleep 10 && nohup x &", "detach": true });
     assert_eq!(
         decide("Bash", &args, "auto", CWD),
-        Decision::Deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string())
+        Decision::Deny(crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE.to_string())
     );
 }
 
-/// 双闸门命中顺序（spec AC-10）：两条都命中时报 sleep 等待闸门的文案——该命令的主因
+/// 两条判据同时命中时的优先顺序（FR-005）：sleep 分支先判，报 sleep 文案——
+/// 命令的主因是拿 `sleep` 等结果，`sed` 只是附带的替读写法。
+#[test]
+fn restricted_sleep_branch_wins_over_sed_branch() {
+    assert_eq!(
+        decide(
+            "Bash",
+            &bash("sleep 10; cd src && sed -n 1p a.ts"),
+            "manual",
+            CWD
+        ),
+        Decision::Deny(crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE.to_string())
+    );
+}
+
+/// 双闸门命中顺序（FR-005）：两条都命中时报 `restricted` 闸门的文案——该命令的主因
 /// 是用 sleep 等结果，后台化构造只是附带写法。
 #[test]
-fn sleep_wait_gate_wins_over_detach_gate() {
+fn restricted_gate_wins_over_detach_gate() {
     assert_eq!(
         decide("Bash", &bash("sleep 10 && nohup x &"), "manual", CWD),
-        Decision::Deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string())
+        Decision::Deny(crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE.to_string())
     );
+}
+
+/// `restricted` 是可选工具入参、缺省 `true`（FR-001）：不传等于收紧，显式 `false` 才放过。
+#[test]
+fn restricted_defaults_to_true() {
+    assert!(crate::tools::bash_restricted(
+        &json!({ "command": "sleep 5" })
+    ));
+    assert!(crate::tools::bash_restricted(
+        &json!({ "command": "sleep 5", "restricted": true })
+    ));
+    // 给定值走 JS 真值语义（与 detach / run_in_background 同一套）
+    assert!(crate::tools::bash_restricted(
+        &json!({ "command": "sleep 5", "restricted": "false" })
+    ));
+    assert!(!crate::tools::bash_restricted(
+        &json!({ "command": "sleep 5", "restricted": false })
+    ));
+    assert!(!crate::tools::bash_restricted(
+        &json!({ "command": "sleep 5", "restricted": 0 })
+    ));
+    assert!(!crate::tools::bash_restricted(
+        &json!({ "command": "sleep 5", "restricted": null })
+    ));
 }
 
 #[test]
@@ -236,7 +369,7 @@ fn ask_user_question_denied_in_auto_mode() {
 #[test]
 fn manual_mode_asks_for_writes() {
     assert_eq!(
-        decide("Bash", &bash("sleep 1"), "manual", CWD),
+        decide("Bash", &bash("npm test"), "manual", CWD),
         Decision::Ask
     );
     assert_eq!(

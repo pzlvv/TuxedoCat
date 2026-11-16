@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-16
 ---
 
 # 规格：Standalone Core（Rust）
@@ -117,7 +117,7 @@ Core 进程承载的 core 侧业务：
   `origin='bash'` 的完成通知作为 user 消息注入该会话并唤醒消费循环，
   会话关闭 / 中止时终止该会话的全部后台任务。
 - 前台 Bash 与后台任务的结束判据同一口径：**shell 退出即收尾**（`bash_task::watch` 的 `try_wait` 口径），不等管道 EOF；孙进程继承管道写端（`start` 拉起的 detached daemon 等）使 EOF 不会到来时，退出后给读线程一段排水宽限（`PIPE_DRAIN_GRACE_MS`）收割已缓冲的输出，宽限内未结束就停掉读线程、用已累积快照收尾，此后 abort 与前台超时不再生效（命令已完成）。
-- 前台超时默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）；命令含 `sleep` 子命令时死线后移到 `max(默认超时, sleep 时长总和)`（GNU `NUMBER[s|m|h|d]` 口径，`sleep infinity` 饱和为无超时，解析不出时长（变量、算术、非法参数）回退默认超时——sleep 只把死线后移，不注销死线；工具输入显式给 `timeout`（内部覆盖，schema 之外）时优先）。
+- 前台超时默认 60s（`DEFAULT_BASH_TIMEOUT_MS`）；命令含 `sleep` 子命令时死线后移到 `max(默认超时, sleep 时长总和)`（GNU `NUMBER[s|m|h|d]` 口径，`sleep infinity` 饱和为无超时，解析不出时长（变量、算术、非法参数）回退默认超时——sleep 只把死线后移，不注销死线；工具输入显式给 `timeout`（内部覆盖，schema 之外）时优先。该路径只在 `restricted: false` 时可观察到——`restricted` 缺省为真时含 `sleep` 的命令由闸门直接拒绝，见 [bash 后台任务 FR-005](../features/background-bash.md#fr-005restricted-闸门sleep-与-sed)）。
 - 对话隔离工作视图：改动只落对话私有上层目录，磁盘是唯一基线事实；能力判据、overlay 结构、
   命名空间与生命周期见 [docs/core/conversation-work-view.md](conversation-work-view.md)。
 

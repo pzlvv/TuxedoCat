@@ -24,7 +24,6 @@ import { getModelConfig } from '../shared/utils/modelConfig';
 import {
   readActiveModelRef,
   readDefaultAgentMode,
-  readDefaultPromptMode,
   readDefaultThinkingEffort,
   readDefaultWebSearch,
   readHasActiveProviderSetting,
@@ -54,7 +53,6 @@ function rawSettings(): Record<string, unknown> {
       },
     },
     defaultAgentMode: 'risk',
-    defaultPromptMode: 'normal',
     mcp: { enabled: [] },
   };
 }
@@ -67,7 +65,6 @@ runTests('hostSettings', async () => {
   const snapshot = resolveSettingsSnapshot(rawSettings());
   check('默认思考强度来自快照', readDefaultThinkingEffort(snapshot) === 'high');
   check('默认工作模式来自快照', readDefaultAgentMode(snapshot) === 'risk');
-  check('默认提示词模式来自快照', readDefaultPromptMode(snapshot) === 'normal');
   check('默认联网搜索来自快照', readDefaultWebSearch(snapshot) === true);
   check('已配置 activeProvider', readHasActiveProviderSetting(snapshot));
 
@@ -171,12 +168,10 @@ runTests('hostSettings', async () => {
       webSearch: false,
       thinkingEffort: 'low',
       defaultAgentMode: 'auto',
-      defaultPromptMode: 'mixed',
     });
     check('普通保存写入 webSearch', cfg.llm.webSearch === false);
     check('普通保存写入 thinking_effort', cfg.llm.thinking_effort === 'low');
     check('普通保存写入 defaultAgentMode', cfg.defaultAgentMode === 'auto');
-    check('普通保存写入 defaultPromptMode', cfg.defaultPromptMode === 'mixed');
     check('普通保存不动 provider 表', Object.keys(cfg.llm.providers).length === 2);
     check('普通保存不动 activeProvider', cfg.llm.activeProvider === 'api.deepseek.com');
   }

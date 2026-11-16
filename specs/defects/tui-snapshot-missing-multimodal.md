@@ -41,8 +41,8 @@ PyCharm 走 `pycharm-plugin` 的 `SettingsSnapshot.kt`，两者都带该字段�
 
 - Core 侧契约不变（`core-rs/src/settings.rs` 的 `ModelLimits` 零改动）。
 - 其余快照字段（`activeProvider` / `webSearch` / `thinkingEffort` / `model` /
-  `maxTokens` / `enableUsageStats` / `providers` / `mcp.enabled` /
-  `defaultAgentMode` / `defaultPromptMode`）的取值与形状不变。
+  `maxTokens` / `enableUsageStats` / `providers` / `mcp.enabled` / `defaultAgentMode`）
+  的取值与形状不变。
 - 令牌数仍以整数出线（`token_count`）；既有模型注册表匹配、用户 context/output
   覆盖优先级、`resolve_model_ref` 语义不变。
 - TS / Kotlin 两侧实现不变。

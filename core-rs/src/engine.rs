@@ -347,8 +347,6 @@ pub struct SessionState {
     pub thinking_effort: Option<String>,
     /// 会话级 Web Search 覆盖（`webSearchChanged` / 消息随带）
     pub web_search: Option<bool>,
-    /// 会话级提示词预设（`promptModeChanged`；提示词本身尚未按预设切换）
-    pub prompt_mode: Option<String>,
     /// 待注入的 Reminder（`QueryEngine.pendingReminder`）：上一轮 LLM 回复「像话没说完」
     /// 时（stop_reason 非 end_turn，或正文以冒号结尾）自动补一条 silent 用户消息再跑一轮。
     pub pending_reminder: Option<String>,
@@ -377,7 +375,7 @@ pub struct SessionState {
     /// 子代理会话的创建者（`AgentTool` 写入；普通会话为 None）。
     pub parent_session_id: Option<String>,
     /// 子代理会话的静态系统提示词（`AgentTool` 的 `staticSystemPrompt`）。
-    /// 非空时**整体替换**按预设组装的提示词。
+    /// 非空时**整体替换**组装出的系统提示词。
     pub static_system_prompt: Option<String>,
     /// system prompt 前缀（`QueryEngine.systemPromptPrefix`）：非空时拼在组装结果开头
     /// （Master 子代理 = 主对话同款提示词 + 开头 `## Communication` 段）。
@@ -504,7 +502,6 @@ impl SessionState {
             provider: None,
             thinking_effort: None,
             web_search: None,
-            prompt_mode: None,
             pending_reminder: None,
             agent_messages: Vec::new(),
             background: false,
@@ -1755,8 +1752,7 @@ impl Core {
         // 发起方，不再取目标工作区默认值。生效值与查询路径同一口径：model / provider 经
         // `config::resolve_provider` 解析为具体值，thinking / webSearch 取会话级
         // 覆盖、缺省回落全局默认，MCP 启用名单取 `read_enabled_mcps` 的会话生效名单
-        // （契约成员必选，目标侧不再回落默认值）。提示词模式**不随派发携带**（specs/025
-        // FR-005：跨工作区会话恒 normal）。
+        // （契约成员必选，目标侧不再回落默认值，specs/025 FR-005）。
         let origin_session = self.session(&request.creator_session_id);
         let (agent_mode, model, provider, thinking_effort, web_search, mcp_servers) = {
             let state = origin_session.lock().unwrap();
@@ -1836,9 +1832,8 @@ impl Core {
         // manual / risk / auto，子代理只是主对话的执行延伸，权限策略必须与主对话一致，
         // 否则会出现「主对话 manual 逐条确认、子代理却自动放行非危险操作」这类越权行为；
         // 父会话未记录时 `session()` 已按 settings 的 `defaultAgentMode` 兜底）、
-        // model / provider、thinking effort、提示词预设（`promptMode`；缺省即 normal，
-        // 子代理 system prompt 因此与主对话同款）。
-        let (agent_mode, model, provider, thinking_effort, prompt_mode, web_search) = {
+        // model / provider、thinking effort、联网搜索。
+        let (agent_mode, model, provider, thinking_effort, web_search) = {
             let state = self.session(&creator);
             let state = state.lock().unwrap();
             (
@@ -1846,24 +1841,22 @@ impl Core {
                 state.model.clone(),
                 state.provider.clone(),
                 state.thinking_effort.clone(),
-                state.prompt_mode.clone(),
                 state.web_search.clone(),
             )
         };
         // specs/020 FR-003：会话级配置的继承按角色区分——Master 维持继承创建者；
-        // 非 Master 角色（见 `tools::sub_agent_role_tools`）一律固定：提示词预设恒
-        // normal、联网搜索恒关、MCP 恒空（工具清单在 `run_query_loop` 按白名单过滤）。
-        // 固定值在创建时一次确定，生命周期内不受迟到的会话级覆盖事件影响。
+        // 非 Master 角色（见 `tools::sub_agent_role_tools`）一律固定：联网搜索恒关、
+        // MCP 恒空（工具清单在 `run_query_loop` 按白名单过滤）。固定值在创建时一次确定，
+        // 生命周期内不受迟到的会话级覆盖事件影响。
         let role_tools = crate::tools::sub_agent_role_tools(&request.role);
-        let (prompt_mode, web_search) = if role_tools.is_some() {
-            (None, Some(false))
+        let web_search = if role_tools.is_some() {
+            Some(false)
         } else {
-            (prompt_mode, web_search)
+            web_search
         };
         // 落盘值取「会话生效值」：内存里的 `None`（创建者未显式设置）在查询路径上按配置
         // 默认值生效（`run_turn` 的会话级覆盖只在有值时才盖掉 provider 配置），落盘的
         // `context.*` 因此也写那份默认值——否则重开子会话时按默认值补齐会得到另一个数。
-        let persisted_prompt_mode = prompt::normalize_prompt_mode(prompt_mode.as_deref());
         let persisted_web_search = web_search.unwrap_or_else(config::default_web_search);
         let persisted_thinking_effort = thinking_effort
             .clone()
@@ -1877,7 +1870,6 @@ impl Core {
             state.model = model.clone();
             state.provider = provider.clone();
             state.thinking_effort = thinking_effort;
-            state.prompt_mode = prompt_mode;
             state.web_search = web_search;
             state.parent_session_id = Some(creator.clone());
             // 归属根事实与树事实同时写定（specs/025 FR-002）：默认 `creator` 是 user，
@@ -1891,7 +1883,7 @@ impl Core {
             };
             state.sub_agent_role = Some(request.role.clone());
             state.sub_agent_description = Some(request.description.clone());
-            // 子代理 system prompt = 主对话同款提示词（按生效预设组装；非 Master 角色
+            // 子代理 system prompt = 主对话同款提示词（同一处组装；非 Master 角色
             // 固定 normal）+ 开头 `## Communication` 段。
             state.system_prompt_prefix = Some(prompt::sub_agent_communication_section(&creator));
             // 子代理创建即进入 running：登记后立刻由 `run_sub_agent` 消费，没有 idle 阶段。
@@ -1917,11 +1909,11 @@ impl Core {
         .map_err(|error| format!("create sub agent metadata: {error}"))?;
         // 同步把继承来的会话级设置落进子会话 meta.json 的 context：
         // 重启后重新打开子会话，UI 仍显示继承自主对话的配置，而不是按配置默认值补齐
-        // （specs/defects/subagent-thinking-effort-not-inherited）。四个键的取值就是上面
-        // 写进 `SessionState` 的那份（同一处来源）：非 Master 角色的 promptMode / webSearch
-        // 是固定值（提示词预设恒 normal、联网恒关，specs/020 FR-003），落盘照写固定值，
-        // 与内存一致。写入失败按创建失败上报（铁律 1，不静默降级）——否则子会话会带着
-        // 一套与主对话不一致的配置存活，且没有任何错误可查。
+        // （specs/defects/subagent-thinking-effort-not-inherited）。各键的取值就是上面
+        // 写进 `SessionState` 的那份（同一处来源）：非 Master 角色的 webSearch 是固定值
+        // （联网恒关，specs/020 FR-003），落盘照写固定值，与内存一致。写入失败按创建
+        // 失败上报（铁律 1，不静默降级）——否则子会话会带着一套与主对话不一致的配置
+        // 存活，且没有任何错误可查。
         history::update_context(
             &sub_session_id,
             &project,
@@ -1930,10 +1922,6 @@ impl Core {
                 json!({
                     "key": "thinkingMode",
                     "value": persisted_thinking_effort,
-                }),
-                json!({
-                    "key": "promptMode",
-                    "value": persisted_prompt_mode,
                 }),
                 json!({ "key": "webSearch", "value": persisted_web_search }),
             ],
@@ -1960,8 +1948,7 @@ impl Core {
     ///
     /// 由宿主经 `UiEvent.remoteSubAgentStarted` 下发到目标工作区 Core。会话级配置
     /// 全量继承发起方（specs/025 FR-005：agentMode / thinking / 模型 provider 成对 /
-    /// 联网 / MCP 名单），例外是提示词模式恒 normal（不继承，理由见赋值处注释）；
-    /// 角色仅决定工具白名单（`run_query_loop` 过滤）。
+    /// 联网 / MCP 名单，无例外项）；角色仅决定工具白名单（`run_query_loop` 过滤）。
     pub fn start_remote_sub_agent(self: &Arc<Self>, event: &Value) -> Result<(), String> {
         let field = |key: &str| -> String {
             event
@@ -2023,11 +2010,6 @@ impl Core {
             state.model = Some(model.clone());
             state.provider = Some(provider.clone());
             state.thinking_effort = Some(thinking_effort.clone());
-            // 提示词模式恒 normal、不继承发起方（specs/025 FR-005）：minimal / mixed 的
-            // 首轮按 minimal 预设把工具清单裁成 Bash / Edit，`Reply` 是子代理生命周期
-            // 设施（`sub_agent_has_reply` / Reminder 以它为基准），被裁掉后子代理无法
-            // 主动回传，只能靠 Reminder 兜底（minimal 更是全程无 Reply）。
-            state.prompt_mode = Some("normal".to_string());
             state.web_search = Some(web_search);
             // 跨工作区对话是顶层普通会话：不写 parent_session_id（specs/025 FR-001），
             // 归属由 creator 承载（specs/025 FR-002）
@@ -2069,11 +2051,6 @@ impl Core {
         self.persist_context(
             &session_id,
             json!({ "key": "thinkingMode", "value": thinking_effort }),
-        );
-        // 提示词模式恒 normal（specs/025 FR-005，不随派发继承）——落盘让重启重开仍显示
-        self.persist_context(
-            &session_id,
-            json!({ "key": "promptMode", "value": "normal" }),
         );
         self.persist_context(
             &session_id,
@@ -2636,12 +2613,6 @@ impl Core {
                 self.persist_context(session_id, json!({ "key": "thinkingMode", "value": mode }));
                 json!({ "key": "thinkingEffort", "value": mode })
             }
-            "promptMode" => {
-                let mode = value.as_str().unwrap_or("normal").to_string();
-                state.lock().unwrap().prompt_mode = Some(mode.clone());
-                self.persist_context(session_id, json!({ "key": "promptMode", "value": mode }));
-                json!({ "key": "promptMode", "value": mode })
-            }
             "webSearch" => {
                 let enabled = value.as_bool().unwrap_or(false);
                 state.lock().unwrap().web_search = Some(enabled);
@@ -3077,19 +3048,8 @@ impl Core {
                 .and_then(|value| value.get("webSearch"))
                 .and_then(Value::as_bool)
                 .or_else(|| Some(config::default_web_search()));
-            // 会话级提示词预设：meta.json 的 context.promptMode 优先，非法 / 缺省回退 normal。
-            // 只在本会话尚未有预设时写入，避免覆盖用户在首条消息前刚做的选择
-            // （对齐 `restoreConversationEngine` 先读 meta、`applyPendingPromptMode` 再覆盖）。
-            if state.prompt_mode.is_none() {
-                state.prompt_mode = Some(
-                    prompt::normalize_prompt_mode(
-                        context
-                            .and_then(|value| value.get("promptMode"))
-                            .and_then(Value::as_str),
-                    )
-                    .to_string(),
-                );
-            }
+            // 旧会话 meta.json 里残留的 `context.promptMode` 是不读不删的历史键：
+            // 读-改-写整份保留即可，这里不做迁移也不参与任何判定。
             // 恢复工作模式（specs/016 FR-005）：应用中断在 spin 执行中时 meta 停在
             // spin，重启加载后保持 spin 态（UI 禁用输入）。spin 单向，恢复出的会话
             // 同样不退出（abort 也不恢复 Normal）。
@@ -4675,29 +4635,20 @@ fn announce_message_appended(
     project: &str,
     user_initiated: bool,
 ) {
-    let (prompt_mode, creator, storage) = {
+    let (creator, storage) = {
         match core.session_if_exists(session_id) {
             Some(state) => {
                 let state = state.lock().unwrap();
-                (
-                    state.prompt_mode.clone(),
-                    state.creator.clone(),
-                    state.storage,
-                )
+                (state.creator.clone(), state.storage)
             }
             // 会话状态不存在（尚无引擎）按用户会话兜底：touch 兜底建档只可能命中
             // 用户路径（子代理 meta 由创建方预建，不会走到 ENOENT）
-            None => (None, SessionCreator::User, WorkViewStorage::Workspace),
+            None => (SessionCreator::User, WorkViewStorage::Workspace),
         }
     };
-    if let Err(error) = history::touch_metadata(
-        session_id,
-        project,
-        user_initiated,
-        prompt_mode.as_deref(),
-        &creator,
-        storage,
-    ) {
+    if let Err(error) =
+        history::touch_metadata(session_id, project, user_initiated, &creator, storage)
+    {
         eprintln!("[core] touch metadata failed: {error}");
     }
     core.emit(json!({ "type": "conversationListChanged" }));
@@ -5056,7 +5007,7 @@ fn run_query_loop(
     // 联网搜索生效值（会话覆盖 → settings 默认，已并入 `provider.web_search`）
     // 决定 WebSearch / WebFetch 是否注入；MCP 工具不受影响。
     // specs/020 FR-002：非 Master 角色的会话在此之上按角色白名单过滤——
-    // 一处过滤同时落实「无 `mcp__*`、不联网、预设不叠加」（白名单不在 minimal 的
+    // 一处过滤同时落实「无 `mcp__*`、不联网」（白名单外的工具一律不注入，
     // Bash / Edit 里）；Master 与普通会话白名单为 None，清单不变。
     let role_tools = state
         .lock()
@@ -5106,25 +5057,8 @@ fn run_query_loop(
         // 会在生成下一个 tool_use 之前插入上下文，而不是等整轮结束再单独起一轮。
         flush_queued_messages(core, session_id, project, state)?;
         // 每轮 LLM 往返各发一次 aiBegin / aiEnd
-        // 提示词预设按轮计算：`mixed` 在首次 assistant 回复前用 minimal，之后切 normal
-        // （对齐 `QueryEngine.getActivePromptPresetId`——它在 query 循环每轮重新取状态）。
-        let (prompt_mode, has_assistant_reply) = {
-            let state = state.lock().unwrap();
-            (
-                state.prompt_mode.clone(),
-                state.messages.iter().any(|message| {
-                    message.get("type").and_then(Value::as_str) == Some("assistant")
-                }),
-            )
-        };
-        // specs/020 FR-003：非 Master 角色固定 normal 预设（不随 mixed→minimal 切换，
-        // 也不受迟到的会话级覆盖影响）；工具清单已按角色白名单过滤，预设白名单不叠加。
-        let preset = match role_tools {
-            Some(_) => "normal",
-            None => prompt::active_preset(prompt_mode.as_deref(), has_assistant_reply),
-        };
-        // minimal / mixed 只把 Bash / Edit 暴露给 LLM（`PromptPreset.toolNames`）
-        let tools = prompt::filter_tools_by_preset(all_tools.clone(), preset);
+        // 工具清单只受会话级联网搜索 / MCP 名单与角色白名单（Explorer）三条既有链路过滤。
+        let tools = all_tools.clone();
         // `static_system_prompt` 整体替换组装结果；`system_prompt_prefix` 只在组装结果前
         // 加一段：Master 子代理 = 主对话同款提示词 +
         // 开头 `## Communication` 段。
@@ -5139,12 +5073,7 @@ fn run_query_loop(
         let base_prompt = match static_prompt {
             Some(prompt) => prompt,
             // PATH 解析失败会在这里成为整轮查询的错误（`docs/core/standalone-core.md` 第 3.2 节）
-            None => prompt::build_system_prompt_with_preset(
-                preset,
-                project,
-                &tools,
-                transfer_counterpart.as_deref(),
-            )?,
+            None => prompt::build_system_prompt(project, &tools, transfer_counterpart.as_deref())?,
         };
         let system_prompt = match prompt_prefix {
             Some(prefix) => format!("{prefix}\n\n{base_prompt}"),
@@ -5251,10 +5180,6 @@ fn run_query_loop(
         );
         let mut turn_provider = provider.clone();
         turn_provider.max_tokens = turn_provider.max_tokens.min(available_output);
-        // 极简 / 混合（极简阶段）不使用联网搜索（对齐 `getEffectiveModelConfig`）
-        if preset == "minimal" {
-            turn_provider.web_search = false;
-        }
 
         {
             let request = LlmRequest {

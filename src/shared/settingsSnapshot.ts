@@ -15,19 +15,6 @@
 
 import type { AgentMode } from './types.js';
 
-/**
- * 提示词预设 ID（settings 的提示词模式与会话 meta.json `context.promptPreset` 的取值域）。
- * 预设本体（核心提示词、区块、工具白名单）由 Core（core-rs）持有，TS 侧只认 ID。
- */
-export type PromptPresetId = 'normal' | 'minimal' | 'mixed';
-
-/** 默认预设：meta.json 未保存时回退到普通模式 */
-export const DEFAULT_PROMPT_PRESET: PromptPresetId = 'normal';
-
-/** 判断字符串是否为合法预设 ID */
-export function isPromptPresetId(value: string | undefined): value is PromptPresetId {
-  return value === 'normal' || value === 'minimal' || value === 'mixed';
-}
 import {
   DEFAULT_API_TYPE,
   DEFAULT_MODEL_MULTIMODAL,
@@ -116,8 +103,6 @@ export interface SettingsSnapshot {
   };
   /** 新会话默认询问模式 */
   defaultAgentMode: AgentMode;
-  /** 新会话默认提示词模式 */
-  defaultPromptMode: PromptPresetId;
 }
 
 /**
@@ -130,7 +115,6 @@ export interface SettingsSnapshot {
 const DEFAULT_WEB_SEARCH = true;
 const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'high';
 const DEFAULT_AGENT_MODE: AgentMode = 'risk';
-const DEFAULT_PROMPT_MODE: PromptPresetId = 'normal';
 const DEFAULT_ENABLE_USAGE_STATS = true;
 
 /**
@@ -279,11 +263,6 @@ function resolveAgentMode(raw: unknown): AgentMode {
   return raw === 'manual' || raw === 'auto' ? raw : DEFAULT_AGENT_MODE;
 }
 
-/** 规范化提示词模式：白名单外的取值回落到默认值 */
-function resolvePromptMode(raw: unknown): PromptPresetId {
-  return raw === 'minimal' || raw === 'mixed' ? raw : DEFAULT_PROMPT_MODE;
-}
-
 /** 规范化思考强度：白名单外的取值回落到 `high` */
 function resolveThinkingEffort(raw: unknown): ThinkingEffort {
   return raw === 'off' || raw === 'low' || raw === 'high' || raw === 'max' ? raw : DEFAULT_THINKING_EFFORT;
@@ -327,7 +306,6 @@ export function resolveSettingsSnapshot(rawSettings: unknown): SettingsSnapshot 
       enabled: resolveMcpEnabled(root.mcp),
     },
     defaultAgentMode: resolveAgentMode(root.defaultAgentMode),
-    defaultPromptMode: resolvePromptMode(root.defaultPromptMode),
   };
 }
 

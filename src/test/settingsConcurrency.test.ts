@@ -71,7 +71,6 @@ function seededSettings(): Record<string, unknown> {
     },
     uiLanguage: 'zh',
     defaultAgentMode: 'risk',
-    defaultPromptMode: 'mixed',
   };
 }
 
@@ -118,7 +117,6 @@ runTests('settingsConcurrency', async () => {
     );
     check('uiLanguage 保留', parsed.uiLanguage === 'zh');
     check('defaultAgentMode 保留', parsed.defaultAgentMode === 'risk');
-    check('defaultPromptMode 保留', parsed.defaultPromptMode === 'mixed');
 
     // 每个进程的改动都必须留下：跨进程互斥生效，没有丢失更新
     const languages: string[] = Array.isArray(parsed.highlightLanguages) ? parsed.highlightLanguages : [];

@@ -109,7 +109,6 @@ function writeSettings(homeDir: string, mockLlm: MockLlm, agentMode: 'manual' | 
     // manual：Write/Edit/Bash 全部弹权限确认，覆盖 US-18 场景；
     // 子代理并发用例（specs/005）传 auto 让 Agent 调用免确认自动执行
     defaultAgentMode: agentMode,
-    defaultPromptMode: 'normal',
     uiLanguage: 'zh',
   }, null, 2));
 }

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-16
 ---
 
 # 规格：用户消息管线
@@ -74,7 +74,7 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 | 消息身份 | 生成 `uuid` 并回带进 `UiEvent`；core 落盘沿用同一个 uuid，UI 按它配对排队项与用户气泡 |
 | 排队判定 | 读 core 的会话运行时快照：该会话 `idle === false` 时登记排队项并置 `deferEcho`；命令消息（`/` 开头）即使空闲也置 `deferEcho`、不做乐观回显（内置命令就地执行、不落盘，立刻画气泡会留下刷新后消失的「幽灵」消息）；其余空闲消息乐观回显（FR-003） |
 | 字段翻译 | wire 的 `selectedLines` 翻译成 `UiEvent` 的 `fileSelectedLines`（[events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)） |
-| 会话覆盖 | `agentMode` / `thinkingMode` / `webSearch` / 模型身份（provider + model）随 `UiEvent` 下发；`promptMode` 由独立的 `setPromptMode` 消息承载 |
+| 会话覆盖 | `agentMode` / `thinkingMode` / `webSearch` / 模型身份（provider + model）随 `UiEvent` 下发 |
 | 入队 | 发 `UiEvent.userMessageSubmitted`：取 / 建引擎、应用会话覆盖、入队、命令解析都在 core 侧 |
 
 - 引擎创建不预置用户消息：`initialMessages` 为空，首条消息与后续消息同路径。

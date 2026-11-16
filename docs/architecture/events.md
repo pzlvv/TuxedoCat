@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-16
 ---
 
 # 规格：AssistantEventBus 与事件词汇表
@@ -88,13 +88,13 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 84 个事件：
+四组词汇表，共 83 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 33 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
-| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 29 | Core 进程的 `dispatch_ui_event` 分派 |
+| `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 28 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 18 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
@@ -153,7 +153,7 @@ export type CoreRequestHandlers = {
 | 19 | `compactBegin` | `sessionId` | `compact.rs`（压缩流程见 [docs/features/compaction.md](../features/compaction.md)） | `onCompactBegin` | `compressProgress`（`status: 'start'`） |
 | 20 | `compactEnd` | `sessionId`, `result`（`complete` 带压缩后上下文占用的重算值 `postCompactTokenCount`——压缩清空了保留区 usage，core 按压缩产物用运行时同款口径重算；同一值写回 `meta.json` 的 `context.totalContextTokens` / `error` 带原因） | `compact.rs`（`complete` 与 `error`） | `onCompactEnd` | `compressProgress`（`status: 'complete'` / `'error'`） |
 | 21 | `commandDispatched` | `sessionId`, `commandName`, `args` | `commands.rs`（命令在引擎消费循环的轮次边界解析时就地执行） | `onCommandSend` | `/spin`：打开设计器；同时清除该会话的排队项（内置命令不进入上下文、不补发用户气泡） |
-| 22 | `sessionConfigChanged` | `sessionId`, `change` | `engine.rs`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`main.rs`（MCP 差量同步完成的 sink 回调，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setPromptMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
+| 22 | `sessionConfigChanged` | `sessionId`, `change` | `engine.rs`（前五个配置 UiEvent 写完 meta.json 后广播；`change.key` 用 `thinkingEffort`，落盘字段仍是 `thinkingMode`）；`main.rs`（MCP 差量同步完成的 sink 回调，让 UI 拿到最终运行时状态） | `onSessionConfigChanged` | `setModel` / `setThinkingMode` / `setAgentMode` / `setWebSearch` / `setMcpServers` |
 | 23 | `highlightLanguagesUsed` | `languages: readonly string[]` | `engine.rs`（消息落盘时扫描**本条消息**用到的围栏代码块语言；core 不去重，同一种语言会重复上报，去重与上限由宿主承担） | `onHighlightLanguagesUsed` | 写 settings.json 的 `highlightLanguages` 字段（经 `UIHost.updateSettingsJson`，见[contracts.md 第 1 节](contracts.md#1-uihost对话-webview-的宿主能力)） |
 | 24 | `log` | `message`（已格式化的整行） | `bus.rs`（每写一行日志）、`main.rs`（就绪前 UiEvent 与快照应用失败的诊断行） | `log` | 写 UI 自己的日志出口（VS Code 是 OutputChannel，Electron 是 console） |
 | 25 | `notice` | `sessionId`, `key`, `params`, `level` | `commands.rs`、`spin.rs`、`spin_host.rs`、`engine.rs`（瞬时状态提示：键 + 参数；`engine.rs` 是会话被其他实例占用的占用提示，specs/032） | `onNotice` | `notice`（webview 用翻译表渲染成瞬时提示，不进消息流） |
@@ -178,7 +178,7 @@ export type CoreRequestHandlers = {
 | --- | --- | --- | --- | --- | --- |
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完；工具不存在与**授权前被中断**两条失败路径同样发一次，`permResult` 恒 `allow`，只为让 UI 上架卡片） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
 | 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `questions`） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
-| 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链；提示词模式不携带——跨工作区会话恒 normal，specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
+| 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链 / specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
 | 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → 本地 fs / 传输专用 SshClient 执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId, paths }` / `{ error }`（`paths` = 已搬运文件相对被传输子树根的路径，工具卡片展示清单用） |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。
@@ -212,24 +212,23 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 9 | `conversationSpaceCleared` | `dirName`（**对话空间目录名**，不是会话 id）, `mode`（`clear` 清内容保留空间目录 / `remove` 整目录删除——workspace 已不存在时用） | `clearConversationSpace`（单行「清除历史」= clear；「移除」与无效目录批量清理 = remove） | `main.rs` 的空间清空执行（按 `mode` 两种深度）→ `conversationSpaceCleared`（回执，判别联合：`complete` / `error`）+ `conversationListChanged`；多连接宿主按**当前活动连接**路由（与空间统计同源），不走会话路由 |
 | 10 | `modelChanged` | `sessionId`, `ref`（`ModelRef` = provider + model） | `setModel`（wire 是扁平的 `model` / `provider`，handler 入口组装成 `ModelRef`；provider 为空即非法，记录日志并忽略） | `Core::on_session_config_changed`（key=`model`）+ 写 meta.json（**保持扁平字段** `model` / `provider`）→ `sessionConfigChanged` |
 | 11 | `thinkingEffortChanged` | `sessionId`, `mode` | `setThinkingMode` | `Core::on_session_config_changed`（key=`thinkingEffort`）+ 写 meta.json（字段名仍是 `thinkingMode`）→ `sessionConfigChanged` |
-| 12 | `promptModeChanged` | `sessionId`, `mode` | `setPromptMode` | `Core::on_session_config_changed`（key=`promptMode`）+ 写 meta.json → `sessionConfigChanged` |
-| 13 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `Core::on_session_config_changed`（key=`agentMode`）+ 写 meta.json → `sessionConfigChanged` |
-| 14 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `Core::on_session_config_changed`（key=`webSearch`）+ 写 meta.json → `sessionConfigChanged` |
-| 15 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp_config::set_session_mcp_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后） |
-| 16 | `mcpEnabledListChanged` | `sessionId`, `names`（**完整启用列表**，去重、保留顺序） | `setMcpEnabledList`（设置面板「应用到当前对话」）；宿主保存默认配置时直接发（写盘前先把当前对话钉在它当前的列表上） | `mcp_config::write_session_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后）；与 `mcpEnabledChanged` 是同一条事实的两个粒度 |
-| 17 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `rollback.rs` 的 `rollback_edit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
-| 18 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers`, `crossWorkspaceAgent`（宿主是否支持跨工作区代理）, `crossWorkspaceTransfer`（宿主是否支持跨工作区文件传输；只作用于 `Transfer` 执行，工具定义与提示词恒定注入，specs/028 FR-005） | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `main.rs` 的 `on_host_environment` → `settings.rs` 的 `apply_from_host_environment` → `CoreEvent.coreReady` |
-| 19 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带；`workspacePath` 兜底 Core 重启恢复，完整链路见 [docs/features/user-message-pipeline.md](../features/user-message-pipeline.md)） | `Core::on_user_message` → 入队 / 落盘 / 命令解析 / 轮次消费 |
-| 20 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `Core::on_user_choice_pending` → 会话运行时状态的 `waiting` 来源（[docs/core/session-runtime.md](../core/session-runtime.md)） |
-| 21 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `config.rs` 的 `set_session_workspace`（`null` / 空串清除登记） |
-| 22 | `queuedMessageDiscarded` | `sessionId`, `uuid` | `discardQueuedMessage`（webview 排队项的「编辑 / 删除」，[docs/features/user-message-pipeline.md FR-003](../features/user-message-pipeline.md#fr-003排队状态与消息归属一致)） | `Core::on_queued_message_discarded`——按 `uuid` 丢弃引擎里尚未消费的同一消息，不置 abort 标记（不打断正在运行的查询） |
-| 23 | `conversationRewound` | `sessionId`, `targetUuid` | `rewindConversation`（时间线节点右键「从这里继续」，specs/039；webview 只在 `idle` 时放行） | `main.rs` 的 `handle_conversation_rewind`（先按 `Core::is_session_idle` 判忙、再调 `rewind.rs` 的 `rewind` 截断 + 文件回滚） |
-| 23 | `bashBackgroundRequested` | `sessionId`, `toolUseId` | `backgroundBashTool`（Bash 卡片「转后台」按钮，[docs/features/background-bash.md](../features/background-bash.md)） | `Core::on_bash_background_requested`——按 `toolUseId` 触发该次前台执行转入后台，结果照常进上下文但暂停下一轮 LLM 请求；没有匹配的前台执行时幂等忽略 |
-| 24 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `originWorkspaceId`, `originSessionId`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，目标 Core 全量应用不按角色裁剪，specs/024 FR-004 / specs/025 FR-005；提示词模式不携带——目标会话恒 normal，specs/025 FR-005） | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建顶层普通会话 + 写 `creator` meta + 组装 SystemPrompt + 起后台消费循环，specs/025 FR-001/FR-002/FR-006） |
-| 25 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径；目标会话已中止时只落上下文与消息流，不拉起新一轮） |
-| 26 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
-| 27 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
-| 28 | `storageChanged` | `sessionId`, `storage` | `setConversationStorage`（新建对话空状态的勾选框） | Core 的 `Core::set_session_storage`（改内存态归属；`meta.json` 已存在即忽略——归属仍是一次写定，[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)） |
+| 12 | `agentModeChanged` | `sessionId`, `mode` | `setAgentMode` | `Core::on_session_config_changed`（key=`agentMode`）+ 写 meta.json → `sessionConfigChanged` |
+| 13 | `webSearchChanged` | `sessionId`, `enabled` | `setWebSearch` | `Core::on_session_config_changed`（key=`webSearch`）+ 写 meta.json → `sessionConfigChanged` |
+| 14 | `mcpEnabledChanged` | `sessionId`, `name`, `enabled` | `setMcpEnabled` | `mcp_config::set_session_mcp_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后） |
+| 15 | `mcpEnabledListChanged` | `sessionId`, `names`（**完整启用列表**，去重、保留顺序） | `setMcpEnabledList`（设置面板「应用到当前对话」）；宿主保存默认配置时直接发（写盘前先把当前对话钉在它当前的列表上） | `mcp_config::write_session_enabled` + `mcp::on_session_enabled_changed` → `sessionConfigChanged`（差量同步完成后）；与 `mcpEnabledChanged` 是同一条事实的两个粒度 |
+| 16 | `editRolledBack` | `sessionId`, `toolUseId`, `direction`, `filePath?` | `rollbackEdit` | `rollback.rs` 的 `rollback_edit`（`filePath` 作为 `input.file_path` 缺失时的兜底路径） |
+| 17 | `hostEnvironmentProvided` | `extensionPath`, `logToConsole`, `configDirName`, `settings`, `mcpServers`, `crossWorkspaceAgent`（宿主是否支持跨工作区代理）, `crossWorkspaceTransfer`（宿主是否支持跨工作区文件传输；只作用于 `Transfer` 执行，工具定义与提示词恒定注入，specs/028 FR-005） | `bootstrapCore`（每个 Connection 建立时推送一次；此后每次配置写盘由 `SettingsStore` 订阅重推整份快照给所有 Connection） | `main.rs` 的 `on_host_environment` → `settings.rs` 的 `apply_from_host_environment` → `CoreEvent.coreReady` |
+| 18 | `userMessageSubmitted` | `sessionId`, `content`, `uuid`, `images?`, `filePath?`, `fileSelectedLines?`, `fileHidden?`, `agentMode?`, `thinkingMode?`, `model?`, `webSearch?`, `workspacePath?`, `deferEcho?` | `sendMessage`（handler 组装载荷：wire 的 `selectedLines` 翻译成 `fileSelectedLines`；`uuid` 由宿主生成并回带；`workspacePath` 兜底 Core 重启恢复，完整链路见 [docs/features/user-message-pipeline.md](../features/user-message-pipeline.md)） | `Core::on_user_message` → 入队 / 落盘 / 命令解析 / 轮次消费 |
+| 19 | `userChoicePendingChanged` | `sessionId`, `pending: boolean` | `UserChoiceManager`（webview 弹出选择、用户应答、`dropSession` 释放视图时） | `Core::on_user_choice_pending` → 会话运行时状态的 `waiting` 来源（[docs/core/session-runtime.md](../core/session-runtime.md)） |
+| 20 | `sessionWorkspaceAssigned` | `sessionId`, `workspacePath: string \| null` | `WebviewMessageHandler.ensureSessionWorkspace`（会话首次被 core 解析目录之前）、`electron/main.ts` 的 `registerCoreSessionWorkspace`（多工作目录宿主按来源视图登记） | `config.rs` 的 `set_session_workspace`（`null` / 空串清除登记） |
+| 21 | `queuedMessageDiscarded` | `sessionId`, `uuid` | `discardQueuedMessage`（webview 排队项的「编辑 / 删除」，[docs/features/user-message-pipeline.md FR-003](../features/user-message-pipeline.md#fr-003排队状态与消息归属一致)） | `Core::on_queued_message_discarded`——按 `uuid` 丢弃引擎里尚未消费的同一消息，不置 abort 标记（不打断正在运行的查询） |
+| 22 | `conversationRewound` | `sessionId`, `targetUuid` | `rewindConversation`（时间线节点右键「从这里继续」，specs/039；webview 只在 `idle` 时放行） | `main.rs` 的 `handle_conversation_rewind`（先按 `Core::is_session_idle` 判忙、再调 `rewind.rs` 的 `rewind` 截断 + 文件回滚） |
+| 22 | `bashBackgroundRequested` | `sessionId`, `toolUseId` | `backgroundBashTool`（Bash 卡片「转后台」按钮，[docs/features/background-bash.md](../features/background-bash.md)） | `Core::on_bash_background_requested`——按 `toolUseId` 触发该次前台执行转入后台，结果照常进上下文但暂停下一轮 LLM 请求；没有匹配的前台执行时幂等忽略 |
+| 23 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `originWorkspaceId`, `originSessionId`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，目标 Core 全量应用不按角色裁剪，specs/024 FR-004 / specs/025 FR-005） | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建顶层普通会话 + 写 `creator` meta + 组装 SystemPrompt + 起后台消费循环，specs/025 FR-001/FR-002/FR-006） |
+| 24 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径；目标会话已中止时只落上下文与消息流，不拉起新一轮） |
+| 25 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
+| 26 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
+| 27 | `storageChanged` | `sessionId`, `storage` | `setConversationStorage`（新建对话空状态的勾选框） | Core 的 `Core::set_session_storage`（改内存态归属；`meta.json` 已存在即忽略——归属仍是一次写定，[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)） |
 
 **`changes` 数组而不是可选字段**：Core 的 `history.update_context` 是**部分合并**语义（未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」（如 `currentFile` + `selectedLines`）和「不用 `?`」。
 

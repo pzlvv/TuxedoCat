@@ -509,14 +509,28 @@ const BASH_DETACH_GATE_MESSAGE: &str = "Bash: command uses `{}`.\n\
 - Need the result in this session: run in the foreground, or use run_in_background: true (notifies on completion).\n\
 - Need it to keep running after this session ends — e.g. installing/starting a system-level service or daemon: re-run the same command with detach: true.";
 
-/// sleep 等待闸门的 LLM 面失败文案（`docs/features/background-bash.md` 第 2 节 FR-005，
-/// 逐字锁定、不插值）。
+/// Bash 工具 `restricted` 参数的说明文本。防护性最小口径：只声明默认值与常规取值——
+/// 详细判据只在闸门失败文案里给（`docs/features/background-bash.md` 第 2 节 FR-006
+/// 的最小披露要求）。
+const BASH_RESTRICTED_FIELD: &str = "默认 true。通常传 true：restricted 会拒绝等待类与替读类的命令写法，失败文案会说明出路；只有确实需要这类写法时才显式传 false。";
+
+/// `restricted` 闸门的 sleep 分支失败文案
+/// （`docs/features/background-bash.md` 第 2 节 FR-002，逐字锁定、不插值）。
 ///
-/// 只写模型可感知的两条路由判据：不要用 sleep 等结果（完成会通知并接续），确实要延时
-/// 就把任意命令放在 sleep 之前——后者正是闸门的放行形态（首段不是 `sleep`）。
-pub(crate) const BASH_SLEEP_GATE_MESSAGE: &str = "Bash: do not sleep to wait for results — \
-you will be notified when the background task completes and the turn continues.\n\
-If you really need a sleep for another reason, put any command before it, e.g. `echo anything; sleep 10`.";
+/// 只写模型可感知的两条出路：条件 poll，或者干脆结束本轮等完成通知；末尾一句给误拦截
+/// 的逃生口（`restricted: false` 重跑，`docs/features/background-bash.md` 第 2 节 FR-007）。
+pub(crate) const BASH_RESTRICTED_SLEEP_MESSAGE: &str = "Bash: do not use `sleep` to poll for results — \
+poll on a condition (e.g. until the output exists) or simply stop and wait: you are notified when the background task completes and the turn continues.\n\
+- If you are certain this is a false positive, re-run the same command with restricted: false.";
+
+/// `restricted` 闸门的 sed 分支失败文案
+/// （`docs/features/background-bash.md` 第 2 节 FR-003，逐字锁定、不插值）。
+///
+/// `cd` + `sed` 组合是把 `sed` 当文件读取器用，读文件的入口是 `Read` 工具；末尾一句给
+/// 误拦截的逃生口（`restricted: false` 重跑，`docs/features/background-bash.md` 第 2 节 FR-007）。
+pub(crate) const BASH_RESTRICTED_SED_MESSAGE: &str = "Bash: `sed` is being used to read a file — \
+use the `Read` tool to read the file instead.\n\
+- If you are certain this is a false positive, re-run the same command with restricted: false.";
 
 /// 工具定义（Anthropic 风格：`name` / `description` / `input_schema`）
 pub fn definitions() -> Vec<Value> {
@@ -531,7 +545,10 @@ pub fn definitions() -> Vec<Value> {
                     "description": { "type": "string", "description": BASH_DESCRIPTION_FIELD },
                     "cwd": { "type": "string", "description": "工作目录，默认为当前目录" },
                     "run_in_background": { "type": "boolean", "description": BASH_RUN_IN_BACKGROUND_FIELD },
-                    "detach": { "type": "boolean", "description": BASH_DETACH_FIELD }
+                    "detach": { "type": "boolean", "description": BASH_DETACH_FIELD },
+                    // `default` 与运行期读取口径（`bash_restricted` 缺省 true）同值：给模型一个
+                    // 明确的缺省声明，不靠 description 里的自然语言推断。
+                    "restricted": { "type": "boolean", "description": BASH_RESTRICTED_FIELD, "default": true }
                 },
                 "required": ["command"]
             }
@@ -1244,33 +1261,52 @@ pub(crate) fn contains_sleep_command(command: &str) -> bool {
         .any(|segment| extract_command_name(segment) == "sleep")
 }
 
-/// 命令是否为「用前导 sleep 等结果」的写法：切开后首段命令名是 `sleep`、后面还有
-/// 非空且非纯注释的命令段。
+/// `restricted` 闸门的共用切段：闸门判据只看「真正的命令」。
 ///
-/// 闸门判据（`docs/features/background-bash.md` 第 2 节 FR-005）：后台任务完成时 core
-/// 会通知并接续，模型不需要自己 sleep 轮询。换行同样是命令分隔（换行不是逃逸口），
-/// 但只在闸门内部按行切开——`permission::split_by_separators` 是只读 / 破坏性 / detach
-/// 共用的口径，改它会连带改变那些判定。控制操作符 `&` 不算「先等再干」，不在此判定
-/// （`sleep 10 & cat a.txt` 会立刻执行 cat）。
+/// 口径（`docs/features/background-bash.md` 第 2 节 FR-002）：heredoc 正文先在屏蔽副本上
+/// 去掉（正文对 shell 是字面文本），换行与 `;` / `&&` / `||` / `|` 一样是命令分隔，纯注释
+/// 段不构成命令。换行只在这里切开——`permission::split_by_separators` 是只读 / 破坏性 /
+/// detach 共用的口径，不为闸门改它。
 ///
-/// 首段命令名与 `contains_sleep_command` / `sleep_duration_ms` 共用
-/// `extract_command_name`（环境变量前缀、首尾引号口径一致）。
-pub(crate) fn is_sleep_wait_command(command: &str) -> bool {
-    // heredoc 正文先在屏蔽副本上去掉（对 shell 是字面文本，不是命令）：否则
-    // `sleep 5 <<EOF` 的正文行会被当成「后续命令」误拦。
+/// 首词判定复用 `extract_command_name`（剥环境变量前缀、首尾各至多去一个引号），与
+/// `contains_sleep_command` / `sleep_duration_ms` 同一口径。
+pub(crate) fn gate_segments(command: &str) -> Vec<String> {
     let masked = mask_heredoc_bodies(command);
-    let segments: Vec<String> = masked
+    masked
         .split('\n')
         .flat_map(crate::permission::split_by_separators)
         .filter(|segment| !is_comment_segment(segment))
-        .collect();
-    if segments.len() < 2 {
-        return false;
-    }
-    extract_command_name(&segments[0]) == "sleep"
+        .collect()
 }
 
-/// 段是否只以注释开头（`# ...`）：注释不是命令，不构成「sleep 之后的后续命令」。
+/// 命令里是否含 `sleep` 命令（`restricted` 闸门，FR-002）：任一段命令名是 `sleep` 即命中，
+/// 不再区分它在首段还是后续段、后面有没有别的命令。
+///
+/// 与 `contains_sleep_command` 的差别是口径：后者服务前台超时死线后移与兜底提醒，不认换行、
+/// 不屏蔽 heredoc 正文；本判据是闸门，必须只认真正的命令。
+pub(crate) fn has_sleep_command(command: &str) -> bool {
+    gate_segments(command)
+        .iter()
+        .any(|segment| extract_command_name(segment) == "sleep")
+}
+
+/// 命令是否是「去掉所有 `cd` 段后只剩 `sed`」（`restricted` 闸门，FR-003）。
+///
+/// 这类写法把 `sed` 当文件读取器用，读文件的入口是 `Read` 工具。读形态（`-n`）与写形态
+/// （`-i`）一视同仁；只要还有别的段（管道上下游、其它命令）就不算「只剩 sed」。
+pub(crate) fn is_cd_sed_only_command(command: &str) -> bool {
+    let mut saw_sed = false;
+    for segment in gate_segments(command) {
+        match extract_command_name(&segment).as_str() {
+            "cd" => {}
+            "sed" => saw_sed = true,
+            _ => return false,
+        }
+    }
+    saw_sed
+}
+
+/// 段是否只以注释开头（`# ...`）：注释不是命令，不参与闸门判据。
 fn is_comment_segment(segment: &str) -> bool {
     segment
         .trim_start_matches(crate::util::is_js_whitespace)
@@ -2163,6 +2199,19 @@ pub(crate) fn js_coerce_bool(value: Option<&Value>) -> bool {
     }
 }
 
+/// Bash 的 `restricted` 参数（缺省 `true`）。
+///
+/// 与 `detach` / `run_in_background`（缺省 `false`）方向相反：**没传就是收紧**，只有显式给出
+/// 假值才关闭两条限制。给定值一律走 `js_coerce_bool`（与既有布尔字段同一套 JS 真值语义，
+/// 即字符串 `"false"` 视为真）。默认值只在这一处定义
+/// （`docs/architecture/principles.md` 第 9 节）。
+pub(crate) fn bash_restricted(input: &Value) -> bool {
+    match input.get("restricted") {
+        None => true,
+        Some(value) => js_coerce_bool(Some(value)),
+    }
+}
+
 /// 后台命令的 tool_result 文案（对齐 `tools/bash/Result.ts` 的 `backgroundTaskId` 分支）。
 ///
 /// - `stdout` 是「转入后台前已累积的输出」：必须拼在提示**之前**，否则 Bash 卡片会从
@@ -2318,8 +2367,8 @@ pub const SUB_AGENT_ROLES: &[&str] = &["Master", "Explorer"];
 ///
 /// 白名单含 `Reply`：子代理完成判定与 Reminder 都以「调用过 Reply」为基准
 /// （`engine.rs` 的 `sub_agent_has_reply`），Reply 是生命周期设施，不是工作工具。
-/// 非 Master 角色由引擎按白名单过滤工具清单（FR-002），并固定 normal 预设 /
-/// 不联网 / 无 MCP（FR-003）——工具集在会话创建时由角色一次确定，生命周期不变。
+/// 非 Master 角色由引擎按白名单过滤工具清单（FR-002），并固定不联网 / 无 MCP
+/// （FR-003）——工具集在会话创建时由角色一次确定，生命周期不变。
 pub fn sub_agent_role_tools(role: &str) -> Option<&'static [&'static str]> {
     match role {
         // TodoWrite 也放行：Explorer 的找文件 / 读代码链路长，清单让它能自报进度

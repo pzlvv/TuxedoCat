@@ -430,11 +430,6 @@ fn build_test_snapshot(raw: &Value) -> SettingsSnapshot {
             Some("auto") => "auto",
             _ => "risk",
         },
-        "defaultPromptMode": match raw.get("defaultPromptMode").and_then(Value::as_str) {
-            Some("minimal") => "minimal",
-            Some("mixed") => "mixed",
-            _ => "normal",
-        },
     });
 
     serde_json::from_value(snapshot).expect("test settings snapshot")

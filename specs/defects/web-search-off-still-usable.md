@@ -37,9 +37,8 @@ status: 已修
 
 ## 不变量
 
-- 注入过滤语义不变：生效值为 false 时剔除两工具，MCP 工具不受影响；minimal 预设
-  仍只暴露 Bash / Edit（`docs/features/web-search.md` FR-004「仍受提示词模式白名单
-  约束」）。
+- 注入过滤语义不变：生效值为 false 时剔除两工具，MCP 工具不受影响
+  （`docs/features/web-search.md` FR-004）。
 - 会话覆盖优先级不变：meta.json `context.webSearch` / 消息随带 / 配置事件 优先，
   缺省回 `settings.json` 的 `llm.webSearch`（FR-004）。
 - 提示词分段顺序不变：AskUserQuestion 之后依次 WebSearch、WebFetch，Skill 段保持

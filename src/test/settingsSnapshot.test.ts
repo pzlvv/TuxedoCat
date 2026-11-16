@@ -33,7 +33,6 @@ runTests('settingsSnapshot', async () => {
   check('空配置：providers 为空表', Object.keys(empty.llm.providers).length === 0);
   check('空配置：mcp.enabled 为空数组', empty.mcp.enabled.length === 0);
   check('空配置：defaultAgentMode 回落 risk', empty.defaultAgentMode === 'risk');
-  check('空配置：defaultPromptMode 回落 normal', empty.defaultPromptMode === 'normal');
 
   const badRoot = resolveSettingsSnapshot('not an object');
   check('根不是对象：等价空配置', badRoot.llm.activeProvider === '' && badRoot.mcp.enabled.length === 0);
@@ -43,24 +42,20 @@ runTests('settingsSnapshot', async () => {
   const invalid = resolveSettingsSnapshot({
     llm: { webSearch: 'yes', thinking_effort: 'bogus' },
     defaultAgentMode: 'yolo',
-    defaultPromptMode: 'verbose',
     mcp: { enabled: 'a,b' },
   });
   check('webSearch 非布尔：回落默认开', invalid.llm.webSearch === true);
   check('thinking_effort 非法：回落 high', invalid.llm.thinkingEffort === 'high');
   check('defaultAgentMode 非法：回落 risk', invalid.defaultAgentMode === 'risk');
-  check('defaultPromptMode 非法：回落 normal', invalid.defaultPromptMode === 'normal');
   check('mcp.enabled 非数组：回落空数组', invalid.mcp.enabled.length === 0);
 
   const whitelist = resolveSettingsSnapshot({
     llm: { thinking_effort: 'off' },
     defaultAgentMode: 'auto',
-    defaultPromptMode: 'mixed',
     mcp: { enabled: ['a', 42, 'b', null] },
   });
   check('thinking_effort 合法值保留', whitelist.llm.thinkingEffort === 'off');
   check('defaultAgentMode 合法值保留', whitelist.defaultAgentMode === 'auto');
-  check('defaultPromptMode 合法值保留', whitelist.defaultPromptMode === 'mixed');
   check('mcp.enabled 只留字符串项', whitelist.mcp.enabled.join(',') === 'a,b');
 
   // ==================== provider 规范化 ====================
@@ -277,6 +272,33 @@ runTests('settingsSnapshot', async () => {
   const written = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
   check('未知字段在写盘后保留', written.unknownTop?.keep === true);
   check('原有 provider 保留', written.llm.providers.p.baseURL === 'https://p');
+
+  // specs/049 FR-010 / AC-21：`defaultPromptMode` 是历史遗留字段——保留在文件里、
+  // 不进快照、不报 unknown（与 theme / shortcut 同口径）
+  {
+    const legacyDir = makeTempDir('settings-legacy-prompt-mode');
+    const legacyLogs: string[] = [];
+    fs.writeFileSync(
+      path.join(legacyDir, 'settings.json'),
+      JSON.stringify({ llm: { activeProvider: 'p' }, defaultPromptMode: 'minimal' }),
+      'utf8',
+    );
+    const legacyStore = new SettingsStore({ configDir: legacyDir, log: (m) => legacyLogs.push(m) });
+    const legacySnapshot = legacyStore.loadSync();
+    check(
+      '遗留 defaultPromptMode 不进快照',
+      !Object.prototype.hasOwnProperty.call(legacySnapshot, 'defaultPromptMode'),
+    );
+    check(
+      '遗留 defaultPromptMode 不报 unknown',
+      !legacyLogs.some((line) => line.includes('defaultPromptMode')),
+    );
+    await legacyStore.updateSettings((cfg) => {
+      cfg.defaultAgentMode = 'auto';
+    });
+    const legacyWritten = JSON.parse(fs.readFileSync(path.join(legacyDir, 'settings.json'), 'utf8'));
+    check('遗留 defaultPromptMode 写盘后原样保留', legacyWritten.defaultPromptMode === 'minimal');
+  }
 
   // mcp.json 中途修改不进快照（只在 load 时读一次）
   fs.writeFileSync(path.join(dir, 'mcp.json'), JSON.stringify({ mcp: { s1: {}, s2: {} } }), 'utf8');

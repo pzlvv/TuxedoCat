@@ -4,7 +4,7 @@ import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { UiLanguage, setUiLanguage, t } from '../../i18n';
 import { setUiFontSize, type UiFontSize } from '../../fontSize';
-import { AgentMode, ApplyDefaultsPrompt, LlmConfigPanelPayload, PromptMode, ThinkingMode } from '../../types';
+import { AgentMode, ApplyDefaultsPrompt, LlmConfigPanelPayload, ThinkingMode } from '../../types';
 import type { SessionState } from '../../types';
 import { postMessage } from '../../webviewEnv';
 import { sameMcpEnabledList } from '../../../shared/utils/mcpList';
@@ -17,7 +17,7 @@ import { missingPanelFields } from './shared';
  */
 function patchCurrentSessionState(
   props: HandlerContext['props'],
-  patch: Partial<Pick<SessionState, 'modelRef' | 'agentMode' | 'promptMode' | 'thinkingMode' | 'webSearch'>>,
+  patch: Partial<Pick<SessionState, 'modelRef' | 'agentMode' | 'thinkingMode' | 'webSearch'>>,
 ): void {
   const sid = props.currentSessionIdRef.current;
   if (!sid) return;
@@ -73,19 +73,6 @@ export function handleConfigSetAgentMode(
           if (fromCurrentSession && wire.mode) {
             props.setAgentMode(wire.mode);
             patchCurrentSessionState(props, { agentMode: wire.mode });
-          }
-          return;
-}
-
-export function handleConfigSetPromptMode(
-  msg: Extract<HostToWebviewWire, { type: 'setPromptMode' }>,
-  ctx: HandlerContext,
-): void {
-  const { props, fromCurrentSession } = ctx;
-          const wire = msg;
-          if (fromCurrentSession && wire.mode) {
-            props.setPromptMode(wire.mode);
-            patchCurrentSessionState(props, { promptMode: wire.mode });
           }
           return;
 }
@@ -187,19 +174,17 @@ export function handleConfigSettingsDefaults(
   ctx: HandlerContext,
 ): void {
   const { props, propsRef, messagesRef } = ctx;
-          // 从扩展端接收 settings.json 中的默认值（model / thinkingMode / agentMode / promptMode），
+          // 从扩展端接收 settings.json 中的默认值（model / thinkingMode / agentMode），
           // 供新对话创建时一次性使用，避免先显示 manual 再跳变
           {
-            const defaults = msg as { model?: string; provider?: string; thinkingMode?: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean; language?: UiLanguage; fontSize?: UiFontSize; providerConfigured?: boolean };
+            const defaults = msg as { model?: string; provider?: string; thinkingMode?: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; webSearch?: boolean; language?: UiLanguage; fontSize?: UiFontSize; providerConfigured?: boolean };
             // wire 消息是扁平的 model / provider，这里组装成模型身份（provider 为空 → undefined = 未配置）
             const defaultsModelRef = modelRefOf(defaults.provider, defaults.model);
-            profileLog(`[Webview] settingsDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, language=${defaults.language}, fontSize=${defaults.fontSize}, providerConfigured=${defaults.providerConfigured}`);
+            profileLog(`[Webview] settingsDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, webSearch=${defaults.webSearch}, language=${defaults.language}, fontSize=${defaults.fontSize}, providerConfigured=${defaults.providerConfigured}`);
             props.setSettingsDefaults({
               modelRef: defaultsModelRef,
               thinkingMode: defaults.thinkingMode,
               agentMode: defaults.agentMode,
-              // 不做 'normal' 兜底：未配置时保持 undefined，由调用方决定
-              promptMode: defaults.promptMode,
               webSearch: defaults.webSearch,
             });
             // 会话配置已从宿主获取到：解除发送按钮禁用（复用 MCP 连接中的效果）
@@ -208,7 +193,7 @@ export function handleConfigSettingsDefaults(
               props.setProviderConfigured(defaults.providerConfigured);
             }
             // onStartup（500ms 延迟）可能早于本消息执行，导致当前会话的
-            // model / thinkingMode / promptMode 仍为空。此时若当前会话是尚未发送
+            // model / thinkingMode 仍为空。此时若当前会话是尚未发送
             // 消息的新对话，则用 settings.json 默认值补齐，避免停留在空配置。
             if (messagesRef.current.length === 0) {
               const sid = props.currentSessionIdRef.current;
@@ -221,10 +206,6 @@ export function handleConfigSettingsDefaults(
               if (!propsRef.current.thinkingMode && defaults.thinkingMode) {
                 props.setThinkingMode(defaults.thinkingMode);
                 if (st) st.thinkingMode = defaults.thinkingMode;
-              }
-              if (!propsRef.current.promptMode && defaults.promptMode) {
-                props.setPromptMode(defaults.promptMode);
-                if (st) st.promptMode = defaults.promptMode;
               }
               if (typeof defaults.webSearch === 'boolean') {
                 props.setWebSearch(defaults.webSearch);
@@ -260,10 +241,10 @@ export function handleConfigSetNewConversationDefaults(
   ctx: HandlerContext,
 ): void {
   const { props, propsRef } = ctx;
-          // 从扩展端接收新对话的默认 model、thinkingMode、agentMode、promptMode 和 webSearch（来自 settings.json）
+          // 从扩展端接收新对话的默认 model、thinkingMode、agentMode 和 webSearch（来自 settings.json）
           {
-            const defaults = msg as { sessionId: string; model: string; provider?: string; thinkingMode: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; promptMode?: PromptMode; webSearch?: boolean };
-            profileLog(`[Webview] setNewConversationDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, promptMode=${defaults.promptMode}, webSearch=${defaults.webSearch}, currentSessionId=${props.currentSessionIdRef.current}`);
+            const defaults = msg as { sessionId: string; model: string; provider?: string; thinkingMode: 'off' | 'low' | 'high' | 'max'; agentMode?: 'manual' | 'risk' | 'auto'; webSearch?: boolean };
+            profileLog(`[Webview] setNewConversationDefaults received: model=${defaults.model}, provider=${defaults.provider}, thinkingMode=${defaults.thinkingMode}, agentMode=${defaults.agentMode}, webSearch=${defaults.webSearch}, currentSessionId=${props.currentSessionIdRef.current}`);
             // 会话级默认值已下发：解除发送按钮禁用
             props.setConfigReady(true);
             // 如果用户已经手动切换过模型，不要再用 settings.json 的默认模型覆盖用户选择。
@@ -278,9 +259,6 @@ export function handleConfigSetNewConversationDefaults(
             props.setThinkingMode(defaults.thinkingMode);
             if (defaults.agentMode) {
               props.setAgentMode(defaults.agentMode);
-            }
-            if (defaults.promptMode === 'normal' || defaults.promptMode === 'minimal' || defaults.promptMode === 'mixed') {
-              props.setPromptMode(defaults.promptMode);
             }
             if (typeof defaults.webSearch === 'boolean') {
               props.setWebSearch(defaults.webSearch);
@@ -297,9 +275,6 @@ export function handleConfigSetNewConversationDefaults(
                 if (defaults.agentMode) {
                   state.agentMode = defaults.agentMode;
                 }
-                if (defaults.promptMode === 'normal' || defaults.promptMode === 'minimal' || defaults.promptMode === 'mixed') {
-                  state.promptMode = defaults.promptMode;
-                }
                 if (typeof defaults.webSearch === 'boolean') {
                   state.webSearch = defaults.webSearch;
                 }
@@ -310,13 +285,6 @@ export function handleConfigSetNewConversationDefaults(
           }
 }
 
-/** 默认配置项在确认对话框里的本地化显示值（'—' = 未知 / 未到达） */
-function promptModeText(mode: PromptMode | undefined): string {
-  if (mode === 'normal') return t('inputArea.promptModeNormal');
-  if (mode === 'minimal') return t('inputArea.promptModeMinimal');
-  if (mode === 'mixed') return t('inputArea.promptModeMixed');
-  return '—';
-}
 
 function agentModeText(mode: AgentMode | undefined): string {
   if (mode === 'manual') return t('inputArea.askModeAlways');
@@ -416,14 +384,6 @@ export function handleConfigLlmConfigSaved(
 
   // 「当前对话的值」未到达（undefined = 等待态）的项不进确认框：undefined 不是值，
   // 拿它比较会把「还没收到」误判成「与默认值不同」（``docs/architecture/principles.md` 第 7 节：webview 不猜值）
-  if (msg.defaultsChanged.promptMode && msg.defaultPromptMode && prevProps.promptMode !== undefined && msg.defaultPromptMode !== prevProps.promptMode) {
-    pending.changes.push({
-      label: t('applyDefaults.changePromptMode'),
-      from: promptModeText(prevProps.promptMode),
-      to: promptModeText(msg.defaultPromptMode),
-    });
-    pending.promptMode = msg.defaultPromptMode;
-  }
   if (msg.defaultsChanged.thinkingEffort && msg.thinkingEffort && prevProps.thinkingMode !== undefined && msg.thinkingEffort !== prevProps.thinkingMode) {
     pending.changes.push({
       label: t('applyDefaults.changeThinkingEffort'),
@@ -472,14 +432,13 @@ export function handleConfigLlmConfigSaved(
   }
 
   // 更新本地默认值（新对话用），与「是否应用到当前对话」无关，始终生效。
-  if (msg.defaultModel || msg.thinkingEffort || msg.defaultAgentMode || msg.defaultPromptMode || typeof msg.webSearch === 'boolean') {
+  if (msg.defaultModel || msg.thinkingEffort || msg.defaultAgentMode || typeof msg.webSearch === 'boolean') {
     // wire 消息是扁平的 defaultModel / defaultModelProvider，组装成模型身份整体更新
     const nextDefaultModelRef = modelRefOf(msg.defaultModelProvider, msg.defaultModel) ?? prevDefaults.modelRef;
     props.setSettingsDefaults(prev => ({
       modelRef: nextDefaultModelRef,
       thinkingMode: msg.thinkingEffort || prev.thinkingMode,
       agentMode: msg.defaultAgentMode || prev.agentMode,
-      promptMode: msg.defaultPromptMode || prev.promptMode,
       webSearch: typeof msg.webSearch === 'boolean' ? msg.webSearch : prev.webSearch,
     }));
   }
@@ -518,7 +477,6 @@ export function handleConfigShowLLMConfig(
             webSearch: !!raw.webSearch,
             thinkingEffort: raw.thinkingEffort,
             defaultAgentMode: raw.defaultAgentMode,
-            defaultPromptMode: raw.defaultPromptMode,
             apiKey: String(raw.apiKey ?? ''),
             language: raw.language,
             fontSize: raw.fontSize,

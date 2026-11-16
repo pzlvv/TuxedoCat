@@ -422,6 +422,14 @@ async function run(): Promise<void> {
       'Bash schema 暴露 run_in_background',
       !!bashTool?.function?.parameters?.properties?.run_in_background,
     );
+    // `restricted` 缺省为真：模型可见定义要显式带 `default: true`，与运行期读取口径同值
+    const restrictedProp = bashTool?.function?.parameters?.properties?.restricted as
+      | { type?: string; default?: unknown }
+      | undefined;
+    check(
+      'Bash schema 暴露 restricted 且缺省为 true',
+      restrictedProp?.type === 'boolean' && restrictedProp?.default === true,
+    );
     // 子代理工具（Agent / Reply）也已随内置工具下发
     const toolNames = (
       (llm.bodies()[0] as { tools?: Array<{ function?: { name?: string } }> }).tools ?? []

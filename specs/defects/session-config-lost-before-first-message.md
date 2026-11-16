@@ -4,8 +4,8 @@ status: 已修
 
 # 缺陷：首条消息前设置的会话级配置不落盘，重启后恢复不了
 
-新建对话后（尚未发第一条消息）用户切换询问模式 / 思考强度 / 提示词模式 / 联网搜索
-/ MCP 启用名单，配置只写进 Core 进程内的会话状态（`SessionState`），随后用户改发消息
+新建对话后（尚未发第一条消息）用户切换询问模式 / 思考强度 / 联网搜索 / MCP
+启用名单，配置只写进 Core 进程内的会话状态（`SessionState`），随后用户改发消息
 或 Core 重启，全部回到默认值——用户对「新对话先调好配置再开问」的直觉不成立。
 
 ## 现状
@@ -19,9 +19,8 @@ status: 已修
   （`update_title_if_needed` / `touch_metadata` 兜底建档，
   [docs/architecture/events.md 第 2.3 节](../../docs/architecture/events.md#23-uieventui--core单向)）。
 - 时序缺口：`conversationStarted`（新建对话）只建内存引擎，磁盘无 meta.json；此窗口内
-  `setAgentMode` / `setThinkingMode` / `setPromptMode` / `setWebSearch` /
-  `setMcpEnabledList` 五个配置动作全部丢失。首条消息建档时
-  （`touch_metadata`）只补 `context.promptMode` 一个字段的缺省值，其余配置无从恢复。
+  `setAgentMode` / `setThinkingMode` / `setWebSearch` / `setMcpEnabledList` 四个配置
+  动作全部丢失。首条消息建档时（`touch_metadata`）不补任何会话级配置，配置无从恢复。
 - 复现（Electron）：新建对话 → 输入区菜单把询问模式切到「自动」→ 发送消息 → 重启应用
   （或 Core 崩溃重启后重开该对话）→ 询问模式回到「手动」。
 
@@ -33,9 +32,9 @@ status: 已修
 - 建档不出现在对话列表里：兜底建档的 `messageCount` 为 0 且无 `clearedAt`，
   `load_conversation_list` 的既有空对话过滤天然把它排除；首条消息建档时
   `touch_metadata` 读到既有 meta 继续合并（标题、`updatedAt`、计数照常）。
-- 五个配置 key（`agentMode` / `thinkingMode`（落盘名）/ `promptMode` / `webSearch` /
-  `mcpEnabled`）与模型身份（`model` / `provider`，已在 `update_context` 里扁平双写）
-  行为一致；模型身份的现有路径不变。
+- 四个配置 key（`agentMode` / `thinkingMode`（落盘名）/ `webSearch` / `mcpEnabled`）
+  与模型身份（`model` / `provider`，已在 `update_context` 里扁平双写）行为一致；模型
+  身份的现有路径不变。
 
 ## 不变量
 
@@ -54,7 +53,7 @@ status: 已修
   `context.webSearch === false`；随后 `ensure_loaded`（模拟重启后重开）恢复出
   `state.web_search === Some(false)`（落点：`core-rs/src/engine_tests.rs`
   `session_config_persists_before_first_message_and_restores`）。
-- **RT-2**：同场景切 `agentMode` / `thinkingMode` / `promptMode`，三字段各自落盘并可恢复；
+- **RT-2**：同场景切 `agentMode` / `thinkingMode`，两字段各自落盘并可恢复；
   且兜底建档的会话不出现在 `load_conversation_list` 里（messageCount 0 被过滤）
   （落点：同上用例）。
 

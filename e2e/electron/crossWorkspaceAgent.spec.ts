@@ -278,7 +278,6 @@ test('US-56 会话设置全量继承与 creator 落盘（specs/025 FR-002 / FR-0
   // model mock-model / provider mock / 无 mcp.json）→ 继承值全部可预期
   expect(meta.context.agentMode).toBe('auto');
   expect(meta.context.thinkingMode).toBe('off');
-  expect(meta.context.promptMode).toBe('normal');
   expect(meta.context.webSearch).toBe(false);
   expect(meta.context.mcpEnabled).toEqual([]);
   expect(meta.model).toBe('mock-model');
