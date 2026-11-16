@@ -13,7 +13,7 @@ import { DiffHunk } from '../../../shared/utils/editDiff';
 import { getMessageOrigin } from '../../../shared/utils/messageOrigin';
 import { normalizeToolInput } from '../../../shared/utils/toolInput';
 import { HostToWebviewMessage } from '../../../host/webviewMessages';
-import { AgentMode, LlmConfigPanelPayload, Message, PromptMode, SessionState, ThinkingMode } from '../../types';
+import { AgentMode, LlmConfigPanelPayload, Message, SessionState, ThinkingMode } from '../../types';
 import { UseMessageHandlerProps } from '../useMessageHandler';
 
 /**
@@ -372,7 +372,6 @@ export function replayBufferedToolStatusIntoMessages(
 }
 
 export interface LoadedConversationCommonContext {
-  savedCtxPromptMode: PromptMode | undefined;
   savedCtxThinkingMode: ThinkingMode | undefined;
   savedCtxWebSearch: boolean | undefined;
   savedCtxToken: number | undefined;
@@ -380,7 +379,7 @@ export interface LoadedConversationCommonContext {
 
 /**
  * conversationLoaded 恢复时两个分支（有/无 savedState）完全相同的 setter 序列：
- * agentMode、promptMode、thinkingMode（savedState 分支多一层回退，见调用点）、
+ * agentMode、thinkingMode（savedState 分支多一层回退，见调用点）、
  * webSearch、model（同上）。
  * thinkingMode / model / webSearch 的回退链在两分支间差一层 savedState，
  * 由调用点传入分支语义：无 savedState 分支传回退基线值（与原实现一致）。
@@ -395,7 +394,6 @@ export function applyLoadedConversationState(
   currentProps: UseMessageHandlerProps,
   savedState: SessionState | undefined,
 ): LoadedConversationCommonContext {
-  const savedCtxPromptMode = (msg as any).savedContext?.promptMode as PromptMode | undefined;
   const savedCtxThinkingMode = (msg as any).savedContext?.thinkingMode as ThinkingMode | undefined;
   const savedCtxWebSearch = (msg as any).savedContext?.webSearch as boolean | undefined;
   const savedCtxToken = (msg as any).savedContext?.totalContextTokens as number | undefined;
@@ -407,10 +405,8 @@ export function applyLoadedConversationState(
   // 询问模式：宿主已解析（会话记录 → settings.json 默认值）；消息未带时保持未到达
   const msgAgentMode = (msg as any).agentMode as AgentMode | undefined;
   if (msgAgentMode) props.setAgentMode(msgAgentMode);
-  // 会话级配置（model / thinking / prompt）已随对话加载下发：解除发送按钮禁用
+  // 会话级配置（model / thinking）已随对话加载下发：解除发送按钮禁用
   props.setConfigReady(true);
-  // 提示词模式：优先使用 meta.json 中保存的 savedContext.promptMode；未保存时保持未到达
-  if (savedCtxPromptMode) props.setPromptMode(savedCtxPromptMode);
   if (savedState) {
     // savedState 分支：thinkingMode 优先 savedContext，回退 savedState，再回退当前对话 effort
     props.setThinkingMode(savedCtxThinkingMode || savedState.thinkingMode || currentProps.thinkingMode);
@@ -434,7 +430,7 @@ export function applyLoadedConversationState(
     // 模型身份整体恢复：消息顶层 → settings.json 默认值
     props.setModelRef(msgModelRef ?? currentProps.settingsDefaults.modelRef);
   }
-  return { savedCtxPromptMode, savedCtxThinkingMode, savedCtxWebSearch, savedCtxToken };
+  return { savedCtxThinkingMode, savedCtxWebSearch, savedCtxToken };
 }
 
 /**
@@ -452,10 +448,6 @@ export function missingPanelFields(payload: LlmConfigPanelPayload): string[] {
   if (payload.defaultAgentMode !== 'manual' && payload.defaultAgentMode !== 'risk'
     && payload.defaultAgentMode !== 'auto') {
     problems.push('defaultAgentMode');
-  }
-  if (payload.defaultPromptMode !== 'normal' && payload.defaultPromptMode !== 'minimal'
-    && payload.defaultPromptMode !== 'mixed') {
-    problems.push('defaultPromptMode');
   }
   if (payload.language !== 'auto' && payload.language !== 'zh' && payload.language !== 'en') {
     problems.push('language');

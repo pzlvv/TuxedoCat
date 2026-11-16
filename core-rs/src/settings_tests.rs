@@ -40,7 +40,6 @@ fn sample_snapshot() -> Value {
         },
         "mcp": { "enabled": ["s1"] },
         "defaultAgentMode": "auto",
-        "defaultPromptMode": "mixed",
     })
 }
 
@@ -85,7 +84,6 @@ fn applies_snapshot_and_serves_lookups() {
     assert_eq!(snapshot.llm.max_tokens, 2048);
     assert_eq!(snapshot.mcp.enabled, vec!["s1".to_string()]);
     assert_eq!(snapshot.default_agent_mode, "auto");
-    assert_eq!(snapshot.default_prompt_mode, "mixed");
 
     let servers = mcp_server_definitions().expect("servers");
     assert_eq!(servers.len(), 1);

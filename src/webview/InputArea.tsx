@@ -2,14 +2,14 @@ import React, { useState, useCallback, memo, forwardRef, useImperativeHandle, us
 import { Icon } from './Icon';
 import TextareaAutosize from 'react-textarea-autosize';
 import { ConfigProvider, Dropdown } from 'antd';
-import type { Colors, QueuedMessagePayload, ThinkingMode, PromptMode, AgentMode, IdleSuspendedMessage } from './types';
+import type { Colors, QueuedMessagePayload, ThinkingMode, AgentMode, IdleSuspendedMessage } from './types';
 import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
 import type { AbortButtonState } from '../host/abortButtonState';
 import type { TodoProgress } from '../host/todoProgress';
 import { TODO_STATUS_COLOR } from './tools/TodoWrite';
-import { resolveInputDisabledReason, resolveInputPlaceholderText, resolvePromptModeLocked, resolveSessionOptionsLocked } from './inputAreaState';
+import { resolveInputDisabledReason, resolveInputPlaceholderText, resolveSessionOptionsLocked } from './inputAreaState';
 import { isAgentCreator, type SessionCreator } from '../shared/sessionCreator';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
@@ -111,9 +111,6 @@ interface InputAreaProps {
    */
   agentMode?: AgentMode;
   setAgentMode: (mode: AgentMode) => void;
-  /** 会话关联的提示词模式（普通/极简/混合，持久化到 meta.json）；未获取到前为 undefined */
-  promptMode?: PromptMode;
-  setPromptMode: (mode: PromptMode | undefined) => void;
   /** 会话关联的思考强度；未获取到前为 undefined */
   thinkingMode?: ThinkingMode;
   setThinkingMode: (mode: ThinkingMode | undefined) => void;
@@ -181,8 +178,8 @@ interface InputAreaProps {
   sessionEnded?: boolean;
   /**
    * 当前会话的子代理角色（`conversationLoaded.metadata.role`，specs/020 FR-005）；
-   * 普通会话 / 旧数据为 null。非 Master 子代理会话锁定选项菜单的提示词模式 /
-   * 联网搜索 / MCP 三项（判定走 `resolveSessionOptionsLocked`）。
+   * 普通会话 / 旧数据为 null。非 Master 子代理会话锁定选项菜单的联网搜索 / MCP
+   * 两项（判定走 `resolveSessionOptionsLocked`）。
    */
   subAgentRole?: string | null;
   /**
@@ -198,7 +195,7 @@ interface InputAreaProps {
   /** 当前会话是否有 MCP 正在连接中；为 true 时禁用发送按钮 */
   mcpConnecting?: boolean;
   /**
-   * 会话配置（模型 / 思考强度 / 提示词模式等）是否仍在加载中。
+   * 会话配置（模型 / 思考强度等）是否仍在加载中。
    * 为 true 时禁用发送按钮并显示转圈（复用 MCP 连接中的效果），
    * 避免在尚未获取到真实配置时用空/兜底值发起请求。
    */
@@ -344,26 +341,6 @@ const ThinkingSegmentControl = ({
   />
 );
 
-const PromptModeSegmentControl = ({
-  value,
-  onChange,
-  colors,
-}: {
-  value: PromptMode | undefined;
-  onChange: (mode: PromptMode) => void;
-  colors: Colors;
-}) => (
-  <SegmentControl
-    value={value}
-    onChange={onChange}
-    colors={colors}
-    segments={[
-      { key: 'normal', label: t('inputArea.promptModeNormal'), title: t('inputArea.promptModeNormalTitle') },
-      { key: 'minimal', label: t('inputArea.promptModeMinimal'), title: t('inputArea.promptModeMinimalTitle') },
-      { key: 'mixed', label: t('inputArea.promptModeMixed'), title: t('inputArea.promptModeMixedTitle') },
-    ]}
-  />
-);
 
 /**
  * 隐藏测量层的样式：移出视口 + visibility:hidden，既不可见也不参与布局，
@@ -560,8 +537,6 @@ const ToggleMenu = memo(({
   modelRef,
   onModelChange,
   providerModels,
-  promptMode,
-  onPromptModeChange,
   thinkingMode,
   onThinkingModeChange,
   webSearch,
@@ -583,8 +558,6 @@ const ToggleMenu = memo(({
   onModelChange: (ref: ModelRef) => void;
   /** undefined = 尚未收到宿主应答；空数组 = 宿主答了「没有配置模型」 */
   providerModels?: ProviderModels[];
-  promptMode?: PromptMode;
-  onPromptModeChange: (mode: PromptMode) => void;
   thinkingMode?: ThinkingMode;
   onThinkingModeChange: (mode: ThinkingMode) => void;
   /** undefined = 尚未从宿主获取到 */
@@ -609,13 +582,10 @@ const ToggleMenu = memo(({
   /** 在该时间戳之前到达的「收起/关闭」请求会被忽略，用于让勾选 MCP 后菜单保持展开 */
   const suppressCloseUntilRef = useRef(0);
 
-  // specs/020 FR-005（specs/025 FR-005 收窄）：非 Master 的本地子代理会话锁定三项
-  // 选项——core 侧已固定 normal 预设 / 不联网 / 无 MCP，UI 不提供入口；跨工作区派发
-  // 的对话继承创建者配置、不按角色固定，三项锁定不适用。判定在 inputAreaState 纯函数里。
+  // specs/020 FR-005（specs/025 FR-005 收窄）：非 Master 的本地子代理会话锁定两项
+  // 选项——core 侧已固定不联网 / 无 MCP，UI 不提供入口；跨工作区派发的对话继承创建者
+  // 配置、不按角色固定，两项锁定不适用。判定在 inputAreaState 纯函数里。
   const sessionOptionsLocked = resolveSessionOptionsLocked({ subAgentRole, creator });
-  // 提示词模式的锁定口径更宽（specs/025 FR-005）：跨工作区派发的对话恒 normal
-  // （minimal / mixed 的首轮工具白名单会剥夺 Reply），不提供切换入口。
-  const promptModeLocked = resolvePromptModeLocked({ subAgentRole, creator });
 
   /**
    * webview 过窄时（不足以并排放下二级 + 三级弹出菜单）改用「内联展开」：
@@ -959,9 +929,8 @@ const ToggleMenu = memo(({
   };
 
   // 联网搜索开关（会话关联，位于 Spin 设计之后、模型上方；settings.json 中的 llm.webSearch 只是新对话默认值）
-  // 极简模式不使用联网搜索：无论会话/设置中的开关如何，菜单项都置灰禁用。
-  // 非 Master 子代理会话同样置灰（specs/020 FR-005：core 固定不联网，UI 不提供入口）。
-  const webSearchDisabled = promptMode === 'minimal' || sessionOptionsLocked;
+  // 非 Master 的本地子代理会话置灰（specs/020 FR-005：core 固定不联网，UI 不提供入口）。
+  const webSearchDisabled = sessionOptionsLocked;
   // webSearch 未到达时为 undefined：checkbox 按未勾选渲染，且菜单整体处于等待态
   // （agentMode 未到达时只显示等待项，见 menuItems）。
   const webSearchChecked = !!webSearch && !webSearchDisabled;
@@ -983,9 +952,7 @@ const ToggleMenu = memo(({
           padding: '5px 12px',
         }}
         title={webSearchDisabled
-          ? (sessionOptionsLocked
-            ? t('inputArea.subagentOptionsLockedHint')
-            : t('inputArea.webSearchMinimalHint'))
+          ? t('inputArea.subagentOptionsLockedHint')
           : t('inputArea.webSearchHint')}
       >
         <span style={{ width: '14px', flexShrink: 0, textAlign: 'center' }}>
@@ -1391,45 +1358,6 @@ const ToggleMenu = memo(({
     makeDivider('divider-3b'),
     modelGroupItem,
     makeDivider('divider-4'),
-    {
-      key: 'promptMode',
-      label: (
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '6px',
-            padding: '5px 12px',
-            // 非 Master 本地子代理置灰（specs/020 FR-005：core 固定 normal 预设）；
-            // 跨工作区派发的对话恒 normal（specs/025 FR-005），同样置灰
-            opacity: promptModeLocked ? 0.45 : 1,
-          }}
-          title={promptModeLocked
-            ? (sessionOptionsLocked
-              ? t('inputArea.subagentOptionsLockedHint')
-              : t('inputArea.remotePromptModeLockedHint'))
-            : undefined}
-        >
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            {/* checkbox 占位符，保持文字对齐 */}
-            <span style={{ width: '14px', flexShrink: 0 }} />
-            <span style={{ fontSize: uiFontSizePx(12), color: colors.textPrimary, userSelect: 'none', fontWeight: 500, marginLeft: '12px' }}>
-              {t('inputArea.promptMode')}
-            </span>
-          </div>
-          <PromptModeSegmentControl
-            value={promptMode}
-            onChange={(mode) => {
-              // 锁定时点击不产生任何状态变更、不上报（specs/020 FR-005 / specs/025 FR-005）
-              if (promptModeLocked) return;
-              onPromptModeChange(mode);
-            }}
-            colors={colors}
-          />
-        </div>
-      ),
-      disabled: true,
-    },
     makeDivider('divider-5'),
     // 询问模式：位于 Thinking Effort 上方
     {
@@ -1729,8 +1657,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   abortHoverDetail,
   agentMode,
   setAgentMode,
-  promptMode,
-  setPromptMode,
   thinkingMode,
   setThinkingMode,
   webSearch,
@@ -2205,24 +2131,18 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     setAgentMode(mode);
   }, [setAgentMode]);
 
-  const handlePromptModeChange = useCallback((mode: PromptMode) => {
-    setPromptMode(mode);
-  }, [setPromptMode]);
-
   const handleThinkingModeChange = useCallback((mode: ThinkingMode) => {
     setThinkingMode(mode);
   }, [setThinkingMode]);
 
   const handleWebSearchChange = useCallback((value: boolean) => {
-    // 极简模式不使用联网搜索，菜单已置灰；此处兜底拦截，避免任何路径误触发。
-    if (promptMode === 'minimal') return;
     setWebSearch(value);
     // 通知 extension：更新引擎 modelConfig.webSearch 并持久化到会话 meta.json。
     // 会话尚未建立时没有落点：不下发（该值仍会随第一条消息的 webSearch 字段一起生效）。
     const sessionId = getWindowSessionId();
     if (!sessionId) return;
     postMessage({ type: 'setWebSearch', webSearch: value, sessionId });
-  }, [setWebSearch, promptMode]);
+  }, [setWebSearch]);
 
   // 选择模型：整体更新模型身份（provider + model；同名模型可能属于不同 provider）
   const handleModelChange = useCallback((ref: ModelRef) => {
@@ -2230,7 +2150,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   }, [setModelRef]);
 
   const hasContent = input.trim().length > 0 || pastedImages.length > 0;
-  // MCP 连接中 / 会话配置（模型、思考强度、提示词模式等）尚未获取到：禁止发送，
+  // MCP 连接中 / 会话配置（模型、思考强度等）尚未获取到：禁止发送，
   // 但用旋转动画代替纯置灰，提示「正在连接 / 加载配置」。
   const mcpBusy = !!mcpConnecting;
   const configBusy = !!configLoading;
@@ -2517,8 +2437,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             modelRef={modelRef}
             onModelChange={handleModelChange}
             providerModels={providerModels}
-            promptMode={promptMode}
-            onPromptModeChange={handlePromptModeChange}
             thinkingMode={thinkingMode}
             onThinkingModeChange={handleThinkingModeChange}
             webSearch={webSearch}

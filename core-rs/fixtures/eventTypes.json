@@ -61,7 +61,6 @@
     "conversationSpaceCleared",
     "modelChanged",
     "thinkingEffortChanged",
-    "promptModeChanged",
     "agentModeChanged",
     "webSearchChanged",
     "mcpEnabledChanged",

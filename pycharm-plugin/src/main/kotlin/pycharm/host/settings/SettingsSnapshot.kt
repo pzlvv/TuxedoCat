@@ -19,7 +19,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * wire 形状（camelCase，core-rs serde 同构）：
  * `llm{activeProvider, webSearch, thinkingEffort, model, maxTokens, enableUsageStats,
  * providers{baseURL, apiKey, models, defaultModel, modelLimits}, modelLimitsFallback},
- * mcp{enabled}, defaultAgentMode, defaultPromptMode`；
+ * mcp{enabled}, defaultAgentMode`；
  * `ModelLimits = {context, output, apiType, thinkingTokenBudget, multimodal}`。
  */
 object SettingsSnapshot {
@@ -27,7 +27,6 @@ object SettingsSnapshot {
     private const val DEFAULT_WEB_SEARCH = true
     private const val DEFAULT_THINKING_EFFORT = "high"
     private const val DEFAULT_AGENT_MODE = "risk"
-    private const val DEFAULT_PROMPT_MODE = "normal"
     private const val DEFAULT_ENABLE_USAGE_STATS = true
     private const val DEFAULT_API_TYPE = "OpenAI"
     private const val DEFAULT_MODEL_MULTIMODAL = true
@@ -175,7 +174,6 @@ object SettingsSnapshot {
                 ),
                 "mcp" to JsonObject(linkedMapOf("enabled" to resolveMcpEnabled(root.get("mcp")))),
                 "defaultAgentMode" to JsonPrimitive(resolveAgentMode(root.get("defaultAgentMode").strOrNull())),
-                "defaultPromptMode" to JsonPrimitive(resolvePromptMode(root.get("defaultPromptMode").strOrNull())),
             ),
         )
     }
@@ -185,7 +183,4 @@ object SettingsSnapshot {
 
     private fun resolveAgentMode(raw: String?): String =
         if (raw == "manual" || raw == "auto") raw else DEFAULT_AGENT_MODE
-
-    private fun resolvePromptMode(raw: String?): String =
-        if (raw == "minimal" || raw == "mixed") raw else DEFAULT_PROMPT_MODE
 }

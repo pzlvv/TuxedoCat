@@ -1,6 +1,6 @@
 ---
 owner: pzlvz
-last_reviewed: 2026-11-06
+last_reviewed: 2026-11-16
 ---
 
 # 规格：跨工作区文件传输（`Transfer` 工具）
@@ -69,8 +69,7 @@ SSH 接入（SFTP 同源的凭证与链路）见
 ### FR-004：权限与角色绑定
 
 - 确认框展示源 → 目标路径；`Transfer` 与 `Agent` 工具绑定——角色白名单不含
-  `Agent` 的角色同样不含 `Transfer`（Explorer 两者皆无；minimal / mixed 预设自然
-  不含）。
+  `Agent` 的角色同样不含 `Transfer`（Explorer 两者皆无）。
 
 ### FR-005：宿主能力位与恒定清单
 

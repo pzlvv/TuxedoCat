@@ -271,7 +271,6 @@ fn spin_ready_bootstraps_list_timestamps() {
         "s1",
         &project,
         false,
-        None,
         &crate::engine::SessionCreator::User,
         crate::engine::WorkViewStorage::Workspace,
     )

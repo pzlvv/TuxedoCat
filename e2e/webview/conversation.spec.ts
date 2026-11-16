@@ -438,8 +438,14 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
   const abortButton = page.locator('button[data-abort-state]');
   const abortTip = page.locator('[data-abort-tip]');
 
-  // 等轮次彻底结束（按钮回灰）：假宿主在轮末推 idle 快照，会覆盖此前注入的
-  // 任意中间态——必须在其后注入黄色态，否则悬停守卫看到的是灰色
+  // 等轮次彻底结束：假宿主在轮末推 idle 快照，会覆盖此前注入的任意中间态——必须在其后
+  // 注入黄色态，否则悬停守卫看到的是灰色。
+  //
+  // 这里不能用「按钮回灰」当判据：按钮一开始就是灰的（快照未到达时同样是 none），
+  // 断言会立即通过、随后被轮末 idle 快照把注入的黄色态冲掉——全量车道负载下轮次收尾
+  // 更晚，窗口更容易踩中（US-52 曾因此偶发红）。用假宿主的 `turnsDone` 计数做确定性
+  // 轮次边界等待（`e2e/webview/sendModes.spec.ts` 同口径）。
+  await page.waitForFunction(() => (window as any).__fakeHost.turnsDone >= 1, undefined, { timeout: 30_000 });
   await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
 
   // 黄色态 + 明细：2 个后台任务（其一 command == description）+ 一对子代理（一跑一完）

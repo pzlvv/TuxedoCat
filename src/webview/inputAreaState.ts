@@ -71,10 +71,9 @@ export interface SessionOptionsLockFacts {
 
 /**
  * 选项菜单是否锁定（specs/020 FR-005；specs/025 FR-005 收窄）：非 Master 角色的
- * **本地**子代理锁定提示词模式 / 联网搜索 / MCP 三项——core 侧对本地非 Master 角色
- * 固定 normal 预设 / 不联网 / 无 MCP，UI 不提供入口。跨工作区派发的对话继承创建者
- * 配置、不按角色固定（specs/025 FR-005），本三项锁定不适用（提示词模式见
- * `resolvePromptModeLocked` 的独立锁定）。creator 尚未到达时按本地口径处理
+ * **本地**子代理锁定联网搜索 / MCP 两项——core 侧对本地非 Master 角色固定不联网 /
+ * 无 MCP，UI 不提供入口。跨工作区派发的对话继承创建者配置、不按角色固定
+ * （specs/025 FR-005），本两项锁定不适用。creator 尚未到达时按本地口径处理
  * （保守：锁定）。
  */
 export function resolveSessionOptionsLocked(facts: SessionOptionsLockFacts): boolean {
@@ -84,12 +83,3 @@ export function resolveSessionOptionsLocked(facts: SessionOptionsLockFacts): boo
   return !remoteDispatched;
 }
 
-/**
- * 提示词模式选项是否锁定：本地非 Master 角色随三项锁定（specs/020 FR-005）；跨工作区
- * 派发的对话恒 normal（specs/025 FR-005——minimal / mixed 的首轮工具白名单会剥夺
- * `Reply` 生命周期设施），同样不提供切换入口。联网搜索 / MCP 不受此锁定影响。
- */
-export function resolvePromptModeLocked(facts: SessionOptionsLockFacts): boolean {
-  if (resolveSessionOptionsLocked(facts)) return true;
-  return facts.creator?.kind === 'agent' && facts.creator.workspaceId !== null;
-}

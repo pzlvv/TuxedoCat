@@ -27,6 +27,11 @@
         "detach": {
           "type": "boolean",
           "description": "仅当命令的进程必须脱离工具管理、在本会话结束后继续运行（如系统级服务）时才设为 true；其余场景不要设置，后台运行请用 run_in_background。"
+        },
+        "restricted": {
+          "type": "boolean",
+          "description": "默认 true。通常传 true：restricted 会拒绝等待类与替读类的命令写法，失败文案会说明出路；只有确实需要这类写法时才显式传 false。",
+          "default": true
         }
       }
     },

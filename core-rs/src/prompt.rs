@@ -70,6 +70,9 @@ Commands will be executed in the current working directory unless you specify a 
 - You will be notified when the background command completes — no need to poll or check manually.
 - Do not use shell backgrounding operators like `&` or `nohup` — use the `run_in_background` parameter instead.
 
+**Restricted mode**:
+- The `restricted` parameter is normally `true`.
+
 ### Read
 ## Read Tool
 
@@ -455,69 +458,7 @@ When users reference a "slash command" or "/<something>" (e.g., "/commit", "/rev
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running"#;
 
-/// 提示词预设 ID（对齐 `PromptPreset.ts` 的 `PromptPresetId`）。
-///
-/// 非法 / 缺省一律回退 `normal`（对齐 `getPromptPreset` / `isPromptPresetId`）。
-pub fn normalize_prompt_mode(value: Option<&str>) -> &'static str {
-    match value {
-        Some("minimal") => "minimal",
-        Some("mixed") => "mixed",
-        _ => "normal",
-    }
-}
-
-/// 当前实际生效的预设（对齐 `QueryEngine.getActivePromptPresetId`）。
-///
-/// `mixed` 在首次 assistant 回复前用 `minimal`，之后切到 `normal`。
-pub fn active_preset(prompt_mode: Option<&str>, has_assistant_reply: bool) -> &'static str {
-    match normalize_prompt_mode(prompt_mode) {
-        "minimal" => "minimal",
-        "mixed" => {
-            if has_assistant_reply {
-                "normal"
-            } else {
-                "minimal"
-            }
-        }
-        _ => "normal",
-    }
-}
-
-/// 预设的工具白名单（`None` = 全部工具，对齐 `PromptPreset.toolNames`）。
-///
-/// `minimal` / `mixed` 只暴露 `Bash` 与 `Edit`（与 `PROMPT_PRESETS` 一致）。
-pub fn preset_tool_names(preset: &str) -> Option<[&'static str; 2]> {
-    match preset {
-        "minimal" | "mixed" => Some(["Bash", "Edit"]),
-        _ => None,
-    }
-}
-
-/// 按预设过滤工具定义（保持 `definitions()` 的原始顺序）。
-pub fn filter_tools_by_preset(tools: Vec<Value>, preset: &str) -> Vec<Value> {
-    let Some(names) = preset_tool_names(preset) else {
-        return tools;
-    };
-    tools
-        .into_iter()
-        .filter(|tool| {
-            tool.get("name")
-                .and_then(Value::as_str)
-                .map(|name| names.contains(&name))
-                .unwrap_or(false)
-        })
-        .collect()
-}
-
-/// 预设的核心身份提示词（对齐 `PROMPT_PRESETS[*].corePrompt`）。
-fn preset_core_prompt(preset: &str) -> &'static str {
-    match preset {
-        "minimal" | "mixed" => "You are a helpful software engineer assistant.",
-        _ => CORE_PRINCIPLES,
-    }
-}
-
-/// `normal` 预设的核心身份提示词（对齐 `generateCoreSystemPrompt()`）。
+/// 核心身份提示词。
 ///
 /// 供对等测试直接取用，避免测试复制字符串。
 #[cfg_attr(not(test), allow(dead_code))]
@@ -527,8 +468,8 @@ pub fn core_prompt() -> &'static str {
 
 /// Master 子代理的 `## Communication` 段（对齐 `AgentTool` 的 `systemPromptPrefix`）。
 ///
-/// 子代理的 system prompt = 主对话同款提示词（按继承的预设组装）+ 本段前缀，
-/// 因此这里**不含**核心身份 / 工具说明 / 环境段——那些由预设组装产出。
+/// 子代理的 system prompt = 主对话同款提示词 + 本段前缀，因此这里**不含**核心身份 /
+/// 工具说明 / 环境段——那些由组装函数产出。
 pub fn sub_agent_communication_section(creator_session_id: &str) -> String {
     format!(
         "## Communication\n\
@@ -607,49 +548,30 @@ pub fn tool_usage_section(tools: &[Value], transfer_counterpart: Option<&str>) -
     format!("## Tool Usage\n{tool_list}\n\n## Tool Details\n{details}")
 }
 
-/// 按预设组装 system prompt（对齐 `assembleSystemPrompt`）。
+/// 组装 system prompt：核心身份 → 工具说明 → 环境 → AGENTS.md。
 ///
-/// `minimal` / `mixed` 的 sections 为空数组：只有核心身份提示词，不含工具说明 /
-/// 环境 / AGENTS.md。`normal` 依次渲染三个区块。
-pub fn build_system_prompt_with_preset(
-    preset: &str,
+/// 注意：只声明三个区块（工具说明 / 环境 / AGENTS.md），**没有**「当前文件 / 选中行」
+/// 区块——文件上下文由 `build_raw_api_messages` 以 `[Current File: ...]` 前缀注入用户
+/// 消息（见 `Query.ts:152-172`）。因此这里不再追加 `## Current File` /
+/// `## Current Selection`，否则同一份文件上下文会被投递两次，且 system prompt 随用户
+/// 切换文件而变（提示词缓存前缀失效）。
+pub fn build_system_prompt(
     cwd: &str,
     tools: &[Value],
     transfer_counterpart: Option<&str>,
 ) -> Result<String, String> {
-    let mut parts: Vec<String> = vec![preset_core_prompt(preset).to_string()];
+    let mut parts: Vec<String> = vec![CORE_PRINCIPLES.to_string()];
 
-    if preset == "normal" {
-        parts.push(tool_usage_section(tools, transfer_counterpart));
+    parts.push(tool_usage_section(tools, transfer_counterpart));
 
-        parts.push(environment_section(cwd)?);
+    parts.push(environment_section(cwd)?);
 
-        if let Some(agents_md) = read_agents_md(cwd) {
-            // 原样追加，不加标题、不截断
-            parts.push(agents_md);
-        }
+    if let Some(agents_md) = read_agents_md(cwd) {
+        // 原样追加，不加标题、不截断
+        parts.push(agents_md);
     }
 
-    // 注意：preset 只声明三个区块（工具说明 / 环境 / AGENTS.md），
-    // **没有**「当前文件 / 选中行」区块——文件上下文由 `build_raw_api_messages`
-    // 以 `[Current File: ...]` 前缀注入用户消息（见 `Query.ts:152-172`）。
-    // 因此这里不再追加 `## Current File` / `## Current Selection`，
-    // 否则同一份文件上下文会被投递两次，且 system prompt 随用户切换文件而变
-    // （提示词缓存前缀失效）。
     Ok(parts.join("\n\n"))
-}
-
-/// 组装完整 system prompt（`normal` 预设的便捷入口）。
-///
-/// `agent_mode` 保留在签名里（调用方按会话解析），但**不进**系统提示：
-/// 环境段没有这一行（权限模式由 UI 展示）。
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn build_system_prompt(
-    cwd: &str,
-    _agent_mode: &str,
-    _metadata: &Value,
-) -> Result<String, String> {
-    build_system_prompt_with_preset("normal", cwd, &tools::definitions(), None)
 }
 
 /// 环境段（对齐 `generateSystemDynamicPrompt` 的文本与字段）

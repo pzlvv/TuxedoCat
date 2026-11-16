@@ -83,3 +83,27 @@
   循环用例放宽等待上限（如按轮数放大 `wait_for` 时限），或把 Bash spawn 开销从
   断言路径剥离（FakeLlm 直接给 46 轮，不经真实 spawn）。验收判据：本机连续 5 次
   `cargo test tool_loop_has_no_default_turn_limit` 全绿，CI 同口径。
+
+- **`tui-rs` 的 `cargo test` 在干净工作区编译不过**（specs/049 收敛时发现，与 specs/049 无关）：
+  `tui-rs/src/core_root_tests.rs` 的 `shared_fd_lives_beside_slots` 拿
+  `Option<&Path>` 与 `Option<Option<&Path>>` 比对（`fd.parent().map(|p| p.parent())`
+  vs `shared_ripgrep_in(prefix).parent().and_then(|p| p.parent())`），提交 `326d061`
+  引入。方向：走 `/fix`——两侧口径统一（要么都 `.map` 要么都 `.and_then`），
+  验收判据：`cargo test --manifest-path tui-rs/Cargo.toml` 无编译错误，且该用例
+  断言语义仍是「fd 与 rg 同级」。连带：specs/049 的两个 TUI 用例（
+  `session_config_drops_removed_prompt_mode_key` / `snapshot_payload_round_shape` 的键集断言）
+  当时用临时补丁验证过，修好后应自然进 CI 覆盖。
+
+- **e2e 全量车道的负载敏感用例**（specs/049 收敛时跑 `npm run test:e2e:local` 发现）：
+  同一批用例单独跑绿、全量串行跑红，已就地修三处并复跑验证——
+  （1）`e2e/helpers/webviewHarness.ts` 的静态服务器用 `listen(0)` 随机端口，可能落进
+  Chromium 的 unsafe port 表（实测 6697），表现为 `net::ERR_UNSAFE_PORT` 整条红；
+  已改为拿到 unsafe port 就换一个重试。
+  （2）`e2e/webview/messagePresentation.spec.ts` 的两条 US-16 用例发完消息只等用户气泡
+  可见就做布局测量，而助手回复还在流式增长（吸附测量读最终高度）；
+  已改为用假宿主 `turnsDone` 计数等轮次结束。
+  （3）`e2e/webview/conversation.spec.ts` 的 US-52 用「abort 按钮回灰」等轮次结束，
+  但按钮一开始就是灰的，断言立即通过、随后被轮末 idle 快照冲掉注入的黄色态；
+  同样改为 `turnsDone` 计数。
+  验收判据：`npm run test:e2e:local` 连续两次全绿（当前已跑通一轮）；新增用例若依赖
+  布局测量，一律用 `turnsDone` 做轮次边界，不用按钮/快照投影做判据。

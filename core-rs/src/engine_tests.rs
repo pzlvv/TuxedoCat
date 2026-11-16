@@ -2226,8 +2226,6 @@ fn first_user_message_creates_the_conversation_files() {
     assert_eq!(metadata["project"], workspace);
     // 用户 prompt 发起的会话建档即写 creator=user（specs/025 FR-002）
     assert_eq!(metadata["creator"], json!({ "kind": "user" }));
-    // 对齐 `updateMetadataForNewMessage`：新 meta.json 的 context.promptMode 缺省补 normal
-    assert_eq!(metadata["context"]["promptMode"], "normal");
     assert!(history::messages_path("s1", &workspace).unwrap().is_file());
     // 用户消息 + assistant 回复
     assert_eq!(history::load_messages("s1", &workspace).len(), 2);
@@ -2558,7 +2556,7 @@ fn manual_background_pauses_the_loop_until_a_queued_message_arrives() {
             openai_tool_sse(
                 "call_1",
                 "Bash",
-                r#"{"command":"sleep 30","description":"Long sleep"}"#,
+                r#"{"command":"sleep 30","description":"Long sleep","restricted":false}"#,
             )
         } else {
             openai_text_sse(&["继续"])
@@ -4344,7 +4342,7 @@ fn abort_during_tool_execution_reports_interruption() {
             openai_tool_sse(
                 "call_1",
                 "Bash",
-                r#"{"command":"touch started.marker && sleep 30"}"#,
+                r#"{"command":"touch started.marker && sleep 30","restricted":false}"#,
             )
         } else {
             openai_text_sse(&["不应到达第二轮"])
@@ -5928,7 +5926,7 @@ fn request_max_tokens_keeps_configured_value_within_the_window() {
     assert_eq!(body["max_tokens"], 4096);
 }
 
-// ==================== 提示词预设 ====================
+// ==================== 提示词组装（单一形态） ====================
 
 /// 启动假 LLM 并捕获每次请求体。
 fn capture_requests(sandbox: &Sandbox) -> (Arc<std::sync::Mutex<Vec<Value>>>, FakeLlm) {
@@ -5959,15 +5957,12 @@ fn tool_names(body: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 提示词组装只有一种形态：核心原则 + 工具说明 + 环境，工具清单不被裁剪。
 #[test]
-fn minimal_prompt_mode_exposes_only_bash_and_edit() {
-    let sandbox = Sandbox::new("engine-prompt-minimal");
+fn prompt_and_tool_list_are_never_trimmed_by_a_preset() {
+    let sandbox = Sandbox::new("engine-prompt-full");
     let (bodies, _llm) = capture_requests(&sandbox);
     let harness = EngineHarness::allow_all();
-    // 首条消息前切换预设：ensure_loaded 不得把它覆盖回 normal
-    harness
-        .core
-        .on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "minimal" }));
     submit(&harness, "s1", "你好", "u-1");
     assert!(
         harness.wait_query_end(),
@@ -5977,102 +5972,34 @@ fn minimal_prompt_mode_exposes_only_bash_and_edit() {
 
     let bodies = bodies.lock().unwrap();
     let body = bodies.first().expect("应当发出一次 LLM 请求");
-    assert_eq!(
-        body["messages"][0]["content"], "You are a helpful software engineer assistant.",
-        "minimal 只有单行核心身份提示"
-    );
-    assert_eq!(
-        tool_names(body),
-        vec!["Bash".to_string(), "Edit".to_string()]
-    );
-    // 落盘的 meta.json 记录会话级 promptMode（对齐 updateMetadataForNewMessage）
-    let workspace = sandbox.workspace.to_string_lossy().to_string();
-    assert_eq!(
-        history::load_metadata("s1", &workspace).unwrap()["context"]["promptMode"],
-        "minimal"
-    );
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("## Core Principles"), "got {system}");
+    assert!(system.contains("## Tool Usage"), "got {system}");
+    assert!(system.contains("## Environment"), "got {system}");
+    assert!(tool_names(body).len() > 2, "工具清单不应被裁剪");
 }
 
+/// 旧会话 meta.json 里残留的 `context.promptMode` 不参与任何判定：加载成功、字段原样
+/// 保留，提示词与工具清单仍是完整形态（FR-010 的旧数据落位）。
 #[test]
-fn mixed_prompt_mode_switches_to_normal_after_first_reply() {
-    let sandbox = Sandbox::new("engine-prompt-mixed");
-    let (bodies, _llm) = capture_requests(&sandbox);
-    let harness = EngineHarness::allow_all();
-    harness
-        .core
-        .on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "mixed" }));
-
-    submit(&harness, "s1", "你好", "u-1");
-    assert!(harness.wait_query_end());
-    submit(&harness, "s1", "继续", "u-2");
-    assert!(
-        harness.wait_for(
-            |sink| sink.events_of("queryEnd").len() >= 2,
-            std::time::Duration::from_secs(30)
-        ),
-        "第二轮未结束: {:?}",
-        harness.sink.event_types()
-    );
-
-    let bodies = bodies.lock().unwrap();
-    assert_eq!(bodies.len(), 2, "应当发出两次 LLM 请求");
-    // 第一轮：首次 assistant 回复前 → minimal
-    assert_eq!(
-        bodies[0]["messages"][0]["content"],
-        "You are a helpful software engineer assistant."
-    );
-    assert_eq!(
-        tool_names(&bodies[0]),
-        vec!["Bash".to_string(), "Edit".to_string()]
-    );
-    // 第二轮：已有 assistant 回复 → normal
-    let second = bodies[1]["messages"][0]["content"].as_str().unwrap();
-    assert!(second.contains("## Core Principles"), "got {second}");
-    assert!(second.contains("## Tool Usage"), "got {second}");
-    assert!(tool_names(&bodies[1]).len() > 2);
-}
-
-#[test]
-fn prompt_mode_is_restored_from_metadata() {
-    let sandbox = Sandbox::new("engine-prompt-restore");
+fn legacy_prompt_mode_in_metadata_is_inert() {
+    let sandbox = Sandbox::new("engine-prompt-legacy");
     let workspace = sandbox.workspace.to_string_lossy().to_string();
     config::set_active_workspace(Some(workspace.clone()));
     history::create_conversation(
         "s1",
         &workspace,
-        json!({ "sessionId": "s1", "creator": { "kind": "user" }, "context": { "promptMode": "minimal" } }),
-    )
-    .unwrap();
-    history::create_conversation(
-        "s2",
-        &workspace,
-        json!({ "sessionId": "s2", "creator": { "kind": "user" }, "context": { "promptMode": "bogus" } }),
+        json!({ "sessionId": "s1", "creator": { "kind": "user" },
+                "context": { "promptMode": "minimal" } }),
     )
     .unwrap();
 
     let harness = EngineHarness::allow_all();
     harness.core.ensure_loaded("s1").unwrap();
-    harness.core.ensure_loaded("s2").unwrap();
+    let metadata = history::load_metadata("s1", &workspace).unwrap();
     assert_eq!(
-        harness
-            .core
-            .session("s1")
-            .lock()
-            .unwrap()
-            .prompt_mode
-            .as_deref(),
-        Some("minimal")
-    );
-    // 非法值回退 normal（对齐 isPromptPresetId 白名单）
-    assert_eq!(
-        harness
-            .core
-            .session("s2")
-            .lock()
-            .unwrap()
-            .prompt_mode
-            .as_deref(),
-        Some("normal")
+        metadata["context"]["promptMode"], "minimal",
+        "旧字段原样保留"
     );
 }
 
@@ -6174,16 +6101,12 @@ fn session_config_persists_before_first_message_and_restores() {
     harness
         .core
         .on_session_config_changed("s1", &json!({ "key": "thinkingEffort", "value": "high" }));
-    harness
-        .core
-        .on_session_config_changed("s1", &json!({ "key": "promptMode", "value": "minimal" }));
 
-    // 配置变化即兜底建档：五字段全部落进 context
+    // 配置变化即兜底建档：各字段全部落进 context
     let metadata = history::load_metadata("s1", &workspace).expect("配置应建档 meta.json");
     assert_eq!(metadata["context"]["webSearch"], false);
     assert_eq!(metadata["context"]["agentMode"], "auto");
     assert_eq!(metadata["context"]["thinkingMode"], "high");
-    assert_eq!(metadata["context"]["promptMode"], "minimal");
 
     // 兜底建档不出现在对话列表：messageCount 0 且无 clearedAt 被过滤
     assert!(
@@ -6202,7 +6125,6 @@ fn session_config_persists_before_first_message_and_restores() {
     assert_eq!(state.web_search, Some(false));
     assert_eq!(state.agent_mode, "auto");
     assert_eq!(state.thinking_effort.as_deref(), Some("high"));
-    assert_eq!(state.prompt_mode.as_deref(), Some("minimal"));
 }
 
 // ==================== 事件粒度 ====================
@@ -7111,11 +7033,11 @@ fn sub_agent_inherits_and_persists_thinking_effort() {
     assert_eq!(state.web_search, Some(false));
 }
 
-/// 子代理继承主对话的提示词预设：system prompt = 主对话同款（按继承的预设组装）+
-/// 开头 `## Communication` 段；预设仍决定工具白名单（minimal 只有 Bash / Edit）。
+/// 子代理的 system prompt = 主对话同款（完整核心身份 + 工具说明 + 环境）+ 开头
+/// `## Communication` 段；工具清单只按角色白名单过滤。
 #[test]
-fn sub_agent_inherits_parent_prompt_mode() {
-    let sandbox = Sandbox::new("engine-sub-agent-inherit-prompt");
+fn sub_agent_system_prompt_matches_the_parent_assembly() {
+    let sandbox = Sandbox::new("engine-sub-agent-prompt");
     // 与 agent mode 用例同理：用独立 creator id，避免与并行的 Agent 用例互相清空注册表。
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = Arc::clone(&bodies);
@@ -7136,103 +7058,58 @@ fn sub_agent_inherits_parent_prompt_mode() {
     let creator = "s-inherit-prompt";
     history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
 
-    for mode in ["minimal", "normal"] {
-        harness.core.session(creator).lock().unwrap().prompt_mode = Some(mode.to_string());
-        acquire_slot_for_test(creator);
-        let sub_id = harness
-            .core
-            .create_sub_agent(tools::SubAgentRequest {
-                creator_session_id: creator.to_string(),
-                prompt: format!("任务 {mode}"),
-                description: format!("inherit prompt {mode}"),
-                role: "Master".to_string(),
-                target: None,
-            })
-            .expect("create sub agent");
-
-        assert_eq!(
-            harness
-                .core
-                .session(&sub_id)
-                .lock()
-                .unwrap()
-                .prompt_mode
-                .as_deref(),
-            Some(mode),
-            "子代理应当原样继承父会话的提示词预设"
-        );
-    }
+    acquire_slot_for_test(creator);
+    harness
+        .core
+        .create_sub_agent(tools::SubAgentRequest {
+            creator_session_id: creator.to_string(),
+            prompt: "任务".to_string(),
+            description: "inherit prompt".to_string(),
+            role: "Master".to_string(),
+            target: None,
+        })
+        .expect("create sub agent");
 
     assert!(
         harness.wait_for(
             |_| {
                 let bodies = bodies.lock().unwrap();
-                let has_normal = bodies.iter().any(|body| {
+                bodies.iter().any(|body| {
                     is_sub_agent_request(body)
                         && body["messages"][0]["content"]
                             .as_str()
-                            .map(|system| system.contains("## Core Principles"))
+                            .map(|system| system.starts_with("## Communication"))
                             .unwrap_or(false)
-                });
-                let has_minimal = bodies.iter().any(|body| {
-                    is_sub_agent_request(body)
-                        && body["messages"][0]["content"]
-                            .as_str()
-                            .map(|system| !system.contains("## Core Principles"))
-                            .unwrap_or(false)
-                });
-                has_normal && has_minimal
+                })
             },
             Duration::from_secs(30),
         ),
-        "两个子代理（minimal / normal）的 LLM 请求都应当到达"
+        "子代理的 LLM 请求应当到达"
     );
 
     let bodies = bodies.lock().unwrap();
-    let mut minimal_prompt: Option<String> = None;
-    let mut normal_prompt: Option<String> = None;
-    let mut minimal_tools: Vec<String> = Vec::new();
-    let mut normal_tools: Vec<String> = Vec::new();
-    for body in bodies.iter().filter(|body| is_sub_agent_request(body)) {
-        let system = body["messages"][0]["content"].as_str().unwrap_or("");
-        // 注意：normal 的核心身份也以 "You are a helpful software engineer assistant." 开头，
-        // 因此先用 `## Core Principles` 区分 normal，再落到 minimal。
-        if system.contains("## Core Principles") {
-            normal_prompt = Some(system.to_string());
-            normal_tools = tool_names(body);
-        } else if system.contains("You are a helpful software engineer assistant.") {
-            minimal_prompt = Some(system.to_string());
-            minimal_tools = tool_names(body);
-        }
-    }
-
-    // minimal：Communication 前缀 + 极简单行核心身份，无工具说明区块；工具仅 Bash / Edit
-    let minimal_prompt = minimal_prompt.expect("应当有 minimal 子代理请求");
+    let body = bodies
+        .iter()
+        .find(|body| is_sub_agent_request(body))
+        .expect("应当有子代理请求");
+    let system = body["messages"][0]["content"].as_str().unwrap_or("");
     assert!(
-        minimal_prompt.starts_with("## Communication"),
-        "minimal 子代理 prompt 应当以 Communication 开头: {minimal_prompt}"
+        system.starts_with("## Communication"),
+        "子代理 prompt 应当以 Communication 开头: {system}"
     );
     assert!(
-        !minimal_prompt.contains("## Tool Usage"),
-        "minimal 子代理 prompt 不应带工具说明: {minimal_prompt}"
-    );
-    assert_eq!(minimal_tools, vec!["Bash".to_string(), "Edit".to_string()]);
-
-    // normal：Communication 前缀 + 完整核心身份 + 工具说明 / 环境区块；工具全量
-    let normal_prompt = normal_prompt.expect("应当有 normal 子代理请求");
-    assert!(
-        normal_prompt.starts_with("## Communication"),
-        "normal 子代理 prompt 应当以 Communication 开头: {normal_prompt}"
+        system.contains("## Core Principles"),
+        "子代理 prompt 应当带完整核心身份: {system}"
     );
     assert!(
-        normal_prompt.contains("## Tool Usage"),
-        "normal 子代理 prompt 应当带工具说明: {normal_prompt}"
+        system.contains("## Tool Usage"),
+        "子代理 prompt 应当带工具说明: {system}"
     );
     assert!(
-        normal_prompt.contains("## Environment"),
-        "normal 子代理 prompt 应当带环境区块: {normal_prompt}"
+        system.contains("## Environment"),
+        "子代理 prompt 应当带环境区块: {system}"
     );
-    assert!(normal_tools.len() > 2, "normal 子代理应当拿到全量工具");
+    assert!(tool_names(body).len() > 2, "Master 子代理应当拿到全量工具");
 }
 
 /// 子代理没调用 `Reply` 时注入 Reminder（最多 3 次），措辞随重试次数递进。
@@ -8260,9 +8137,8 @@ fn explorer_sub_agent_gets_role_toolset_and_rejects_others() {
     crate::subagent::reset_for_test();
 }
 
-/// 会话级配置的继承按角色区分（specs/020 FR-003）：创建者 minimal 预设 + 联网开——
-/// Explorer 一律固定（prompt_mode=None、web_search=关、请求按 normal 口径组装且工具
-/// 恰为五件套）；Master 同场景维持继承（预设 minimal、联网开、工具只有 Bash / Edit）。
+/// 会话级配置的继承按角色区分（specs/020 FR-003）：创建者联网开——Explorer 一律固定
+/// （web_search=关、工具恰为五件套）；Master 同场景维持继承（联网开、工具全量）。
 #[test]
 fn explorer_fixes_session_config_while_master_inherits() {
     let sandbox = Sandbox::new("engine-explorer-fixed-config");
@@ -8285,7 +8161,6 @@ fn explorer_fixes_session_config_while_master_inherits() {
     let harness = EngineHarness::allow_all();
     let creator = "s-explorer-config";
     history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
-    harness.core.session(creator).lock().unwrap().prompt_mode = Some("minimal".to_string());
     harness.core.session(creator).lock().unwrap().web_search = Some(true);
 
     acquire_slot_for_test(creator);
@@ -8311,14 +8186,10 @@ fn explorer_fixes_session_config_while_master_inherits() {
         })
         .expect("create master");
 
-    // 会话状态：explorer 固定，Master 继承
+    // 会话状态：explorer 固定联网关，Master 继承
     {
         let state = harness.core.session(&explorer_id);
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.prompt_mode, None,
-            "Explorer 固定 normal（不继承 minimal）"
-        );
         assert_eq!(
             state.web_search,
             Some(false),
@@ -8328,11 +8199,6 @@ fn explorer_fixes_session_config_while_master_inherits() {
     {
         let state = harness.core.session(&master_id);
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.prompt_mode.as_deref(),
-            Some("minimal"),
-            "Master 维持继承父会话预设"
-        );
         assert_eq!(
             state.web_search,
             Some(true),
@@ -8345,25 +8211,17 @@ fn explorer_fixes_session_config_while_master_inherits() {
     let explorer_meta =
         history::load_metadata(&explorer_id, &project).expect("Explorer 子会话 meta.json");
     assert_eq!(
-        explorer_meta["context"]["promptMode"], "normal",
-        "Explorer 固定的提示词模式应当落盘"
-    );
-    assert_eq!(
         explorer_meta["context"]["webSearch"], false,
         "Explorer 固定的联网搜索开关应当落盘"
     );
     let master_meta =
         history::load_metadata(&master_id, &project).expect("Master 子会话 meta.json");
     assert_eq!(
-        master_meta["context"]["promptMode"], "minimal",
-        "Master 继承的提示词模式应当落盘"
-    );
-    assert_eq!(
         master_meta["context"]["webSearch"], true,
         "Master 继承的联网搜索开关应当落盘"
     );
 
-    // LLM 请求侧：explorer = normal 口径（含核心身份段）+ 五件套；Master = minimal 口径 + Bash / Edit
+    // LLM 请求侧：explorer = 五件套；Master = 全量工具（两者的提示词都是完整形态）
     assert!(
         harness.wait_for(
             |_| {
@@ -8380,15 +8238,15 @@ fn explorer_fixes_session_config_while_master_inherits() {
                     is_sub_agent_request(body)
                         && body["messages"][0]["content"]
                             .as_str()
-                            .map(|system| !system.contains("## Core Principles"))
+                            .map(|system| system.contains("## Core Principles"))
                             .unwrap_or(false)
-                        && tool_names(body) == vec!["Bash", "Edit"]
+                        && tool_names(body).len() > 2
                 });
                 explorer_ok && master_ok
             },
             Duration::from_secs(30),
         ),
-        "应当观察到 Explorer（normal + 五件套）与 Master（minimal + Bash/Edit）两份请求: {:?}",
+        "应当观察到 Explorer（五件套）与 Master（全量工具）两份请求: {:?}",
         {
             let bodies = bodies.lock().unwrap();
             bodies
@@ -8847,7 +8705,6 @@ fn cross_workspace_spawn_payload_carries_origin_settings() {
         state.model = Some("m-override".to_string());
         state.provider = Some("fake".to_string());
         state.thinking_effort = Some("low".to_string());
-        state.prompt_mode = Some("mixed".to_string());
         state.web_search = Some(false);
     }
     // 会话级 MCP 覆盖：名单随载荷携带（specs/024 FR-004）
@@ -8871,14 +8728,12 @@ fn cross_workspace_spawn_payload_carries_origin_settings() {
     assert_eq!(request["model"], json!("m-override"));
     assert_eq!(request["provider"], json!("fake"));
     assert_eq!(request["thinkingEffort"], json!("low"));
-    // 提示词模式不随派发携带（specs/025 FR-005：目标会话恒 normal），即使会话级是 mixed
-    assert_eq!(request.get("promptMode"), None);
     assert_eq!(request["webSearch"], json!(false));
     assert_eq!(request["mcpServers"], json!(["srv-x"]));
     crate::subagent::reset_for_test();
 }
 
-/// specs/024 FR-004：会话无覆盖时载荷回落全局默认（defaultModel / thinking / normal 预设）。
+/// specs/024 FR-004：会话无覆盖时载荷回落全局默认（defaultModel / thinking / agentMode）。
 #[test]
 fn cross_workspace_spawn_payload_falls_back_to_global_defaults() {
     let sandbox = Sandbox::new("engine-cross-workspace-defaults");
@@ -9228,13 +9083,11 @@ fn start_remote_sub_agent_records_creator() {
             session_id: "origin-1".to_string(),
         }
     );
-    // specs/024 FR-004：Master 全量继承发起方的生效设置；提示词模式例外——恒 normal
-    // 不继承（specs/025 FR-005）
+    // specs/024 FR-004：Master 全量继承发起方的生效设置（没有第二类例外）
     assert_eq!(state.agent_mode, "auto");
     assert_eq!(state.model.as_deref(), Some("m-origin"));
     assert_eq!(state.provider.as_deref(), Some("prov-origin"));
     assert_eq!(state.thinking_effort.as_deref(), Some("max"));
-    assert_eq!(state.prompt_mode.as_deref(), Some("normal"));
     assert_eq!(state.web_search, Some(true));
     drop(state);
 
@@ -9248,7 +9101,6 @@ fn start_remote_sub_agent_records_creator() {
     // 继承设置落进 context：重启后重新打开子会话 UI 仍显示继承值
     assert_eq!(metadata["context"]["agentMode"], "auto");
     assert_eq!(metadata["context"]["thinkingMode"], "max");
-    assert_eq!(metadata["context"]["promptMode"], "normal");
     assert_eq!(metadata["context"]["webSearch"], true);
     assert_eq!(metadata["context"]["mcpEnabled"], json!(["srv-a", "srv-b"]));
     assert_eq!(metadata["model"], "m-origin");
@@ -9315,10 +9167,7 @@ fn start_remote_sub_agent_full_inheritance_and_system_prompt() {
     assert_eq!(state.model.as_deref(), Some("m-origin"));
     assert_eq!(state.provider.as_deref(), Some("prov-origin"));
     assert_eq!(state.thinking_effort.as_deref(), Some("low"));
-    // specs/025 FR-005：Explorer 不再被角色固定——联网搜索照常继承；提示词模式是
-    // 唯一例外——跨工作区会话恒 normal（minimal / mixed 的首轮工具白名单会剥夺
-    // `Reply`，子代理无法主动回传），不随派发继承
-    assert_eq!(state.prompt_mode.as_deref(), Some("normal"));
+    // specs/025 FR-005：Explorer 不再被角色固定——会话级配置全量继承（没有例外项）
     assert_eq!(state.web_search, Some(true));
     // specs/025 FR-006：SystemPrompt 含创建方工作区身份、会话 id 与 Reply 要求
     // （targetSessionId 指向创建方会话）
@@ -9343,8 +9192,6 @@ fn start_remote_sub_agent_full_inheritance_and_system_prompt() {
     // MCP 名单全量继承（不再恒空），落进 meta context
     let metadata = history::load_metadata("sub_remote_explorer", &project).expect("meta");
     assert_eq!(metadata["context"]["mcpEnabled"], json!(["srv-a"]));
-    // 恒 normal 同样落盘（重启重开仍显示标准模式）
-    assert_eq!(metadata["context"]["promptMode"], "normal");
 
     harness.core.drop_session("sub_remote_explorer");
     crate::subagent::reset_for_test();

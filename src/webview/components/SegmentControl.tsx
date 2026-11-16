@@ -3,7 +3,7 @@ import type { Colors } from '../types';
 import { uiFontSizePx } from '../fontSize';
 
 /**
- * 泛型分段选择控件：AskMode / Thinking / PromptMode 三个分段选择器的容器样式、
+ * 泛型分段选择控件：AskMode / Thinking 两个分段选择器的容器样式、
  * 渲染循环与按钮样式完全相同，统一收敛到这里。
  *
  * - segments：选项列表（key / label，可选 title）；

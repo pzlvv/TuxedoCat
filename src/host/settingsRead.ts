@@ -11,7 +11,6 @@
 
 import { logger } from '../shared/Logger.js';
 import type { AgentMode } from '../shared/types.js';
-import type { PromptPresetId } from '../shared/settingsSnapshot.js';
 import type { ModelRef } from '../shared/llm/modelRef.js';
 import { DEEPSEEK_BASE_URL } from '../shared/endpoints.js';
 import type { ApiType } from '../shared/utils/modelConfig.js';
@@ -45,7 +44,6 @@ export interface LLMConfigPanelPayload {
   thinkingEffort: ThinkingEffort;
   defaultModel: string;
   defaultAgentMode: AgentMode;
-  defaultPromptMode: PromptPresetId;
   apiKey: string;
   providers: LLMProviderInfo[];
   activeProvider: string;
@@ -74,11 +72,6 @@ export function readDefaultThinkingEffort(snapshot: SettingsSnapshot): ThinkingE
 /** 新对话的默认询问模式（manual=总是 | risk=关键 | auto=从不） */
 export function readDefaultAgentMode(snapshot: SettingsSnapshot): AgentMode {
   return snapshot.defaultAgentMode;
-}
-
-/** 新对话的默认提示词模式（normal | minimal | mixed） */
-export function readDefaultPromptMode(snapshot: SettingsSnapshot): PromptPresetId {
-  return snapshot.defaultPromptMode;
 }
 
 /** 新对话的默认 Web Search 开关 */
@@ -143,7 +136,6 @@ export function readLlmConfigPanelPayload(snapshot: SettingsSnapshot): LLMConfig
     thinkingEffort: llm.thinkingEffort,
     defaultModel: active?.defaultModel || '',
     defaultAgentMode: snapshot.defaultAgentMode,
-    defaultPromptMode: snapshot.defaultPromptMode,
     providers,
     activeProvider,
   };

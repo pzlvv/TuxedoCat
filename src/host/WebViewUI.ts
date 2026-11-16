@@ -527,8 +527,7 @@ export class WebViewUI implements WebViewUiPort {
       prompt: request.prompt,
       description: request.description,
       // 创建方身份（目标 Core 据此写 creator，specs/025 FR-002）：宿主只填这两个字段，
-      // 设置原样透传（specs/024 FR-004 / specs/025 FR-005）、提示词模式不携带（目标会话
-      // 恒 normal），宿主不是写入点
+      // 设置原样透传（specs/024 FR-004 / specs/025 FR-005），宿主不是写入点
       originWorkspaceId,
       originSessionId: request.sessionId,
       agentMode: request.agentMode,
@@ -949,7 +948,6 @@ export class WebViewUI implements WebViewUiPort {
     change:
       | { key: 'model'; ref: ModelRef }
       | { key: 'thinkingEffort'; value: 'off' | 'low' | 'high' | 'max' }
-      | { key: 'promptMode'; value: 'normal' | 'minimal' | 'mixed' }
       | { key: 'agentMode'; value: 'manual' | 'risk' | 'auto' }
       | { key: 'webSearch'; value: boolean }
       | { key: 'mcpEnabled'; value: string[] },
@@ -963,9 +961,6 @@ export class WebViewUI implements WebViewUiPort {
       case 'thinkingEffort':
         // 落盘字段仍是 thinkingMode（wire 协议命名不受事件约定约束，见 ``docs/architecture/events.md 第 2 节）
         this.postToWebview(sessionId, { type: 'setThinkingMode', mode: change.value });
-        break;
-      case 'promptMode':
-        this.postToWebview(sessionId, { type: 'setPromptMode', mode: change.value });
         break;
       case 'agentMode':
         this.postToWebview(sessionId, { type: 'setAgentMode', mode: change.value });

@@ -16,7 +16,7 @@ import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLl
  *    Read / Glob / Grep / Reply / TodoWrite（无 Bash / WebSearch，无 `mcp__*`）。
  * 2. 子代理首轮故意调用 Bash（白名单外）：tool_result 为错误文案（点名角色与
  *    可用工具），命令未执行，会话不中止、随后 Reply 正常收尾。
- * 3. 打开 explorer 子会话视图：选项菜单的提示词模式 / 联网搜索 / MCP 三项置灰，
+ * 3. 打开 explorer 子会话视图：选项菜单的联网搜索 / MCP 两项置灰，
  *    点击不产生任何变更。
  */
 
@@ -145,20 +145,9 @@ test('US-51 explorer：只读五件套、白名单外被拒、选项菜单置灰
   const menu = subPage.locator('ul.agent-mode-menu');
   await expect(menu).toBeVisible();
 
-  // 三项置灰（specs/020 FR-005）：标签行行内 opacity 0.45
+  // 两项置灰（specs/020 FR-005）：标签行行内 opacity 0.45
   expect(await rowOpacity(menu, '联网搜索')).toBe('0.45');
-  expect(await rowOpacity(menu, '提示词模式')).toBe('0.45');
   expect(await rowOpacity(menu, 'MCP')).toBe('0.45');
-
-  // 点击不产生任何变更：提示词模式点「极简」后「普通」仍高亮（onChange 被锁定早退）
-  const selected = (label: string) =>
-    menu.getByRole('button', { name: label, exact: true }).evaluate(
-      (el) => getComputedStyle(el).color === 'rgb(255, 255, 255)',
-    );
-  expect(await selected('普通')).toBe(true);
-  await menu.getByRole('button', { name: '极简', exact: true }).click({ force: true });
-  expect(await selected('普通')).toBe(true);
-  expect(await selected('极简')).toBe(false);
 
   // 联网搜索行同样锁定：点击后不上报任何变更——落盘侧 settings.json 原样
   // （webSearch 仍为 false；置灰行 onChange 早退，宿主收不到 setWebSearch）
@@ -200,13 +189,12 @@ test('US-51 Master 子代理与普通会话：选项菜单照常可操作（不�
     .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 90_000 })
     .toBe(2);
 
-  // 普通会话（父会话视图）：三项不置灰（行内 opacity 为 1）
+  // 普通会话（父会话视图）：两项不置灰（行内 opacity 为 1）
   const menuButton = chatPage.locator('button[title="功能开关"]');
   await menuButton.click();
   const menu = chatPage.locator('ul.agent-mode-menu');
   await expect(menu).toBeVisible();
   expect(await rowOpacity(menu, '联网搜索')).toBe('1');
-  expect(await rowOpacity(menu, '提示词模式')).toBe('1');
   expect(await rowOpacity(menu, 'MCP')).toBe('1');
   await chatPage.keyboard.press('Escape');
 
@@ -220,6 +208,5 @@ test('US-51 Master 子代理与普通会话：选项菜单照常可操作（不�
   const subMenu = subPage.locator('ul.agent-mode-menu');
   await expect(subMenu).toBeVisible();
   expect(await rowOpacity(subMenu, '联网搜索')).toBe('1');
-  expect(await rowOpacity(subMenu, '提示词模式')).toBe('1');
   expect(await rowOpacity(subMenu, 'MCP')).toBe('1');
 });

@@ -453,9 +453,9 @@ test('manual 权限模式：远程 Bash 弹确认、允许后在远端执行', a
       name: 'Bash',
       // sleep 不在只读白名单（core-rs/src/permission.rs 的 READONLY_COMMANDS）：
       // manual 模式必须弹确认；printf/uname/pwd 这类只读命令按设计自动放行，测不出 ask 路径。
-      // sleep 不能放在首段——那命中「sleep 等待闸门」（docs/features/background-bash.md FR-005）
-      // 直接 deny，永远等不到确认框。
-      args: { command: "printf 'manual-perm-ok\\n'; sleep 2; uname -s", description: 'manual perm probe' },
+      // 缺省为真的 restricted 闸门会直接拒绝含 sleep 的命令（docs/features/background-bash.md
+      // FR-005），永远等不到确认框；本条要的是确认框，所以显式关掉它。
+      args: { command: "printf 'manual-perm-ok\\n'; sleep 2; uname -s", description: 'manual perm probe', restricted: false },
     };
   });
   await chatPage.fill('textarea.input-textarea', '手动确认探针');
@@ -818,7 +818,7 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
     return {
       kind: 'tool',
       name: 'Bash',
-      args: { command: 'sleep 45', description: 'keep-round-busy' },
+      args: { command: 'sleep 45', description: 'keep-round-busy', restricted: false },
     };
   });
   await chatPage.fill('textarea.input-textarea', '长查询探针');

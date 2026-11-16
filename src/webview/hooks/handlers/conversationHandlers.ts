@@ -20,13 +20,12 @@ export function handleConversationInitSessionState(
   msg: Extract<HostToWebviewWire, { type: 'initSessionState' }>,
   ctx: HandlerContext,
 ): void {
-  const { props, propsRef } = ctx;
+  const { props } = ctx;
           const wire = msg;
           // 预初始化 session 状态（子代理创建时调用，使后续 thinking 动画能正确显示）
           if (msg.sessionId && !props.sessionStates.has(msg.sessionId)) {
             props.sessionStates.set(msg.sessionId, createSessionState({
               animationMode: 'thinking',
-              promptMode: propsRef.current.settingsDefaults.promptMode,
               // wire 消息是扁平的 model / provider，组装成模型身份
               modelRef: modelRefOf(wire.provider, wire.model),
             }));
@@ -224,7 +223,7 @@ export function handleConversationConversationLoaded(
             // 会话创建者（specs/025 FR-002）：返回按钮按它跳发起方（跨工作区）或父会话（本地）
             props.setCreator(wire.creator ?? null);
             // 记录子代理角色（specs/020 FR-005）：meta.json 的 role 事实，普通会话为 null；
-            // 选项菜单置灰判据（非 Master 子代理锁定提示词模式 / 联网搜索 / MCP）
+            // 选项菜单置灰判据（非 Master 子代理锁定联网搜索 / MCP）
             props.setSubAgentRole(msg.conversation.metadata.role ?? null);
             // 恢复会话工作模式（spin 会话加载后输入框保持禁用；specs/016 FR-005）
             props.setWorkMode(wire.workMode);
@@ -272,9 +271,8 @@ export function handleConversationConversationLoaded(
               props.setAnimationMode(isCompacting ? 'compacting' : 'thinking');
               // 同步到 session 状态，确保对话列表的流水灯与引擎实时状态一致
               savedState.hasActiveQuery = isCompacting || runtimeActive;
-              // 两分支相同的 setter 序列（agentMode、promptMode、thinkingMode、webSearch、model）收敛到辅助函数
+              // 两分支相同的 setter 序列（agentMode、thinkingMode、webSearch、model）收敛到辅助函数
               const common = applyLoadedConversationState(msg, props, propsRef.current, savedState);
-              if (common.savedCtxPromptMode) savedState.promptMode = common.savedCtxPromptMode;
               // 优先使用 savedContext.totalContextTokens（meta.json 中持久化的最新值），
               // 回退到 savedState.contextLength（内存中保存的快照值）。
               // 取两者的最大值以处理以下场景：
@@ -332,9 +330,8 @@ export function handleConversationConversationLoaded(
                     && activityPhase !== 'text',
                   animationMode: 'thinking',
                   hasActiveQuery: runtimeActive,
-                  // 询问模式 / 提示词模式：宿主未下发时保持未到达（不写猜测值）
+                  // 询问模式 / 思考强度：宿主未下发时保持未到达（不写猜测值）
                   agentMode: wire.agentMode as AgentMode | undefined,
-                  promptMode: common.savedCtxPromptMode,
                   thinkingMode: common.savedCtxThinkingMode || propsRef.current.thinkingMode,
                   webSearch: typeof common.savedCtxWebSearch === 'boolean' ? common.savedCtxWebSearch : propsRef.current.settingsDefaults.webSearch,
                   contextLength: restoredVal,

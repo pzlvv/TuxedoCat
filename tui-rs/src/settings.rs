@@ -178,7 +178,6 @@ pub struct SettingsSnapshot {
     pub model_limits_fallback: ModelLimits,
     pub mcp_enabled: Vec<String>,
     pub default_agent_mode: String,
-    pub default_prompt_mode: String,
 }
 
 impl SettingsSnapshot {
@@ -195,7 +194,6 @@ impl SettingsSnapshot {
 const DEFAULT_WEB_SEARCH: bool = true;
 const DEFAULT_THINKING_EFFORT: &str = "high";
 const DEFAULT_AGENT_MODE: &str = "risk";
-const DEFAULT_PROMPT_MODE: &str = "normal";
 const DEFAULT_ENABLE_USAGE_STATS: bool = true;
 
 fn fallback_limits() -> ModelLimits {
@@ -406,12 +404,6 @@ pub fn resolve_settings_snapshot(raw: &Value) -> SettingsSnapshot {
         .filter(|mode| *mode == "manual" || *mode == "auto")
         .unwrap_or(DEFAULT_AGENT_MODE);
 
-    let default_prompt_mode = root
-        .and_then(|root| root.get("defaultPromptMode"))
-        .and_then(Value::as_str)
-        .filter(|mode| *mode == "minimal" || *mode == "mixed")
-        .unwrap_or(DEFAULT_PROMPT_MODE);
-
     SettingsSnapshot {
         active_provider,
         web_search,
@@ -423,7 +415,6 @@ pub fn resolve_settings_snapshot(raw: &Value) -> SettingsSnapshot {
         model_limits_fallback: fallback_limits(),
         mcp_enabled,
         default_agent_mode: default_agent_mode.to_string(),
-        default_prompt_mode: default_prompt_mode.to_string(),
     }
 }
 
@@ -483,7 +474,6 @@ pub fn snapshot_to_payload(snapshot: &SettingsSnapshot) -> Value {
         },
         "mcp": { "enabled": snapshot.mcp_enabled },
         "defaultAgentMode": snapshot.default_agent_mode,
-        "defaultPromptMode": snapshot.default_prompt_mode,
     })
 }
 

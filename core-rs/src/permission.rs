@@ -506,12 +506,22 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                     )
                 }
             };
-            // sleep 等待闸门（`docs/features/background-bash.md` 第 2 节 FR-005）：
-            // 「首段 sleep + 后续命令」是用计时器等结果，而完成时 core 会通知并接续。
+            // `restricted` 闸门（`docs/features/background-bash.md` 第 2 节 FR-002 /
+            // FR-003）：缺省为真时拒绝「用 sleep poll」与「把 sed 当文件读取器」两类写法。
             // 必须在 `is_read_only_command` 之前、且用 deny 而不是 ask——ask 在 auto 模式
-            // 会被放行，三档模式的一致性就没了（FR-002）。
-            if crate::tools::is_sleep_wait_command(&command) {
-                return CheckResult::deny(crate::tools::BASH_SLEEP_GATE_MESSAGE.to_string());
+            // 会被放行，三档模式的一致性就没了（FR-005）；`sed` 也不在只读白名单，
+            // 放在只读判定之后就变成一次多余的确认框。
+            if crate::tools::bash_restricted(args) {
+                if crate::tools::has_sleep_command(&command) {
+                    return CheckResult::deny(
+                        crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE.to_string(),
+                    );
+                }
+                if crate::tools::is_cd_sed_only_command(&command) {
+                    return CheckResult::deny(
+                        crate::tools::BASH_RESTRICTED_SED_MESSAGE.to_string(),
+                    );
+                }
             }
             if is_read_only_command(&command) {
                 return CheckResult::allow_with_input(args);

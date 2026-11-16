@@ -562,6 +562,45 @@
       "parsed": null
     },
     {
+      "name": "Bash-111",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "restricted": false
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "restricted": false
+      }
+    },
+    {
+      "name": "Bash-112",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "restricted": "false"
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "restricted": true
+      }
+    },
+    {
+      "name": "Bash-113",
+      "tool": "Bash",
+      "input": {
+        "command": "ls",
+        "restricted": null
+      },
+      "error": null,
+      "parsed": {
+        "command": "ls",
+        "restricted": false
+      }
+    },
+    {
       "name": "Glob-48",
       "tool": "Glob",
       "input": {

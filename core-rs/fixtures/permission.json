@@ -1,9 +1,9 @@
 {
   "note": "Embedded（src/core/tools/PermissionPolicy.ts）与 Standalone（core-rs/src/permission.rs）的权限决策对照表。两侧测试读同一份文件，任一侧偏离都会失败。expect: allow | ask | deny。",
   "cases": [
-    { "tool": "Bash", "mode": "risk", "args": { "command": "sleep 1" }, "expect": "allow", "why": "普通命令，risk 模式自动放行" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 1" }, "expect": "ask", "why": "manual 模式一律询问" },
-    { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 1" }, "expect": "allow", "why": "auto 模式不弹框" },
+    { "tool": "Bash", "mode": "risk", "args": { "command": "npm test" }, "expect": "allow", "why": "普通命令，risk 模式自动放行" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "npm test" }, "expect": "ask", "why": "manual 模式一律询问" },
+    { "tool": "Bash", "mode": "auto", "args": { "command": "npm test" }, "expect": "allow", "why": "auto 模式不弹框" },
     { "tool": "Bash", "mode": "risk", "args": { "command": "npm install" }, "expect": "allow", "why": "非只读但非危险，risk 放行" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "ls -la" }, "expect": "allow", "why": "只读命令" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "git status --short" }, "expect": "allow", "why": "只读多词命令" },
@@ -61,12 +61,17 @@
     { "tool": "AskUserQuestion", "mode": "manual", "args": { "question": "hi" }, "expect": "allow", "why": "checkPermissions 直接放行：提问在 call() 里弹框，不再双重确认" },
     { "tool": "AskUserQuestion", "mode": "risk", "args": { "question": "hi", "choices": [{ "label": "A" }, { "label": "B" }] }, "expect": "allow", "why": "risk 模式同样直接放行（非 Bash 不参与风险拦截）" },
     { "tool": "AskUserQuestion", "mode": "auto", "args": { "question": "hi" }, "expect": "deny", "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，不弹提问框" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "sleep 等待闸门：前导 sleep 接后续命令直接失败" },
-    { "tool": "Bash", "mode": "risk", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "sleep 等待闸门不是权限分级：risk 同样失败，不会被自动放行" },
-    { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "sleep 等待闸门用 deny 而非 ask：auto 模式不放行" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 10\ncat a.txt" }, "expect": "deny", "why": "换行是命令分隔：换行不是逃逸口" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 10 & cat a.txt" }, "expect": "ask", "why": "& 接后续命令不是「先等再干」：不命中闸门，按普通命令询问" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30" }, "expect": "ask", "why": "单条 sleep 没有后续命令：不命中闸门" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "echo anything; sleep 10" }, "expect": "ask", "why": "放行写法：首段不是 sleep（文案给出的逃逸形态）" }
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "restricted 闸门（缺省 true）：含 sleep 命令直接失败" },
+    { "tool": "Bash", "mode": "risk", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "restricted 闸门不是权限分级：risk 同样失败，不会被自动放行" },
+    { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "restricted 闸门用 deny 而非 ask：auto 模式不放行" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30" }, "expect": "deny", "why": "单条 sleep 同样命中：restricted 下 sleep 一律拒绝" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "echo anything; sleep 10" }, "expect": "deny", "why": "sleep 在后续段同样命中：不再有「首段不是 sleep」的逃逸写法" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "cd src && sed -n 1p a.ts" }, "expect": "deny", "why": "restricted 闸门：去掉 cd 后只剩 sed，引导改用 Read 工具" },
+    { "tool": "Bash", "mode": "auto", "args": { "command": "sed -n 1p a.ts" }, "expect": "deny", "why": "restricted 闸门的 sed 分支同样用 deny：auto 模式不放行" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sed -n 1p f | head" }, "expect": "ask", "why": "有上下游的文本加工不是「拿 sed 读文件」：不命中闸门，按普通命令询问" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "echo 'sleep 10 && cat a.txt'" }, "expect": "allow", "why": "引号内的 sleep 字样不是命令：不命中闸门，只读命令直接放行" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30", "restricted": false }, "expect": "ask", "why": "restricted=false 关闭限制：回到既有权限路径（sleep 不是只读 → 询问）" },
+    { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 30", "restricted": false }, "expect": "allow", "why": "restricted=false 且 auto：回到既有放行语义" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "cd src && sed -n 1p a.ts", "restricted": false }, "expect": "ask", "why": "restricted=false 时 sed 同样回到既有权限路径（不在只读白名单 → 询问）" }
   ]
 }

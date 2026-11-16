@@ -13,7 +13,7 @@ import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLl
  *
  * 整应用链路：父会话把思考强度切到「低」，同轮 `Agent` 派一个 Master 子代理，
  * 随后打开子会话视图检查三件事：
- * 1. 子会话 meta.json 的 context 落齐继承值（thinkingMode / webSearch / promptMode /
+ * 1. 子会话 meta.json 的 context 落齐继承值（thinkingMode / webSearch /
  *    agentMode）——修复前只落了 agentMode，其余键缺失；
  * 2. 打开子会话视图后输入区菜单里的思考强度高亮仍是「低」，而不是 settings.json
  *    的默认值（openai 分支的 settings 默认 off）——修复前宿主读不到 context 的继承值，
@@ -111,7 +111,7 @@ test('子代理继承主对话的思考强度：落盘 / 重开显示 / 请求�
     .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 90_000 })
     .toBe(2);
 
-  // RT-1：子会话 meta.json 落齐继承值（修复前 thinkingMode / webSearch / promptMode 缺失）
+  // RT-1：子会话 meta.json 落齐继承值（修复前 thinkingMode / webSearch 缺失）
   const subSessionId = await sb.locator(SIDEBAR_ITEM).last().getAttribute('data-session-id');
   expect(subSessionId).toBeTruthy();
   const meta = JSON.parse(fs.readFileSync(metaPathOf(app.homeDir, subSessionId!), 'utf8'));
@@ -119,7 +119,6 @@ test('子代理继承主对话的思考强度：落盘 / 重开显示 / 请求�
   // settings 的默认 thinking_effort 是 off：继承失效时这里会是 off
   expect(meta.context.thinkingMode).not.toBe('off');
   expect(meta.context.agentMode).toBe('auto');
-  expect(meta.context.promptMode).toBe('normal');
   expect(meta.context.webSearch).toBe(false);
   expect(meta.parentSessionId).toBeTruthy();
 

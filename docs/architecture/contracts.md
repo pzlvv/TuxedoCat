@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-16
 ---
 
 # 规格：宿主契约
@@ -101,7 +101,7 @@ before/after 两个虚拟文档组成的 diff 标签，Electron 空实现（diff
 
 | 文件 | 内容 | 写入口 |
 | --- | --- | --- |
-| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / uiFontSize / highlightLanguages / defaultAgentMode / defaultPromptMode…） | `updateSettingsJson` |
+| `~/<CONFIG_DIR_NAME>/settings.json` | 全局配置（llm / mcp / uiLanguage / uiFontSize / highlightLanguages / defaultAgentMode…） | `updateSettingsJson` |
 
 项目对话目录清单 `<conversations>/<project>/workspace.meta.json` **不在这里**：它归 core，
 由 core 写——建目录时写 `workspacePath`，工具成功修改非 git 工作区内的 md 文档后把相对

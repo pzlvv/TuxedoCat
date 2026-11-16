@@ -16,7 +16,7 @@ test.afterEach(async () => {
   await handle.close();
 });
 
-test('US-8 功能菜单：切换询问模式 / 思考强度 / 提示词模式', async () => {
+test('US-8 功能菜单：切换询问模式 / 思考强度', async () => {
   const { page, host } = handle;
   await page.locator('button[title="功能开关"]').click();
   const menu = page.locator('ul.agent-mode-menu');
@@ -27,7 +27,6 @@ test('US-8 功能菜单：切换询问模式 / 思考强度 / 提示词模式', 
   await expect(menu.getByText('Spin 设计')).toBeVisible();
   await expect(menu.getByText('联网搜索')).toBeVisible();
   await expect(menu.getByText('模型', { exact: true })).toBeVisible();
-  await expect(menu.getByText('提示词模式')).toBeVisible();
   await expect(menu.getByText('询问模式')).toBeVisible();
   await expect(menu.getByText('思考强度')).toBeVisible();
 
@@ -40,11 +39,6 @@ test('US-8 功能菜单：切换询问模式 / 思考强度 / 提示词模式', 
   await menu.getByRole('button', { name: '最高', exact: true }).click({ force: true });
   const thinking = await host.waitForSentWhere('setThinkingMode', (m) => m.mode === 'max');
   expect(thinking.mode).toBe('max');
-
-  // 提示词模式：极简（minimal）
-  await menu.getByRole('button', { name: '极简', exact: true }).click({ force: true });
-  const promptMode = await host.waitForSentWhere('setPromptMode', (m) => m.mode === 'minimal');
-  expect(promptMode.mode).toBe('minimal');
 });
 
 test('US-8 模型三级子菜单切换模型（setModel 携带 provider + model）', async () => {

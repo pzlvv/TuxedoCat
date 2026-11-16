@@ -67,7 +67,7 @@ test('US-45 手工转后台：结果进上下文、本轮暂停等输入，新�
     if (hasBgToolResult) return { kind: 'text', text: '收到后台结果。' };
     const text = lastUserText(req.body.messages);
     if (text.includes('跑个长命令')) {
-      return { kind: 'tool', name: 'Bash', args: { command: 'sleep 60', description: 'Long sleep' } };
+      return { kind: 'tool', name: 'Bash', args: { command: 'sleep 60', description: 'Long sleep', restricted: false } };
     }
     return { kind: 'text', text: '好的。' };
   });
@@ -120,7 +120,7 @@ test('US-45 转后台前已排队的用户消息，在暂停点立刻接续循�
   mockLlm.setHandler((req) => {
     const text = lastUserText(req.body.messages);
     if (text.includes('跑个长命令')) {
-      return { kind: 'tool', name: 'Bash', args: { command: 'sleep 60', description: 'Long sleep' } };
+      return { kind: 'tool', name: 'Bash', args: { command: 'sleep 60', description: 'Long sleep', restricted: false } };
     }
     return { kind: 'text', text: '收到排队消息。' };
   });
@@ -160,7 +160,7 @@ test('US-45 手工转后台后，后台完成通知作为队列消息立刻续�
     if (last?.role === 'tool') return { kind: 'text', text: '收到后台结果。' };
     const text = lastUserText(req.body.messages);
     if (text.includes('跑个短后台')) {
-      return { kind: 'tool', name: 'Bash', args: { command: 'sleep 6', description: 'Short sleep' } };
+      return { kind: 'tool', name: 'Bash', args: { command: 'sleep 6', description: 'Short sleep', restricted: false } };
     }
     return { kind: 'text', text: '好的。' };
   });

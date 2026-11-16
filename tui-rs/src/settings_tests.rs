@@ -17,7 +17,6 @@ fn empty_settings_fall_back_to_defaults() {
     assert!(snapshot.web_search);
     assert_eq!(snapshot.thinking_effort, "high");
     assert_eq!(snapshot.default_agent_mode, "risk");
-    assert_eq!(snapshot.default_prompt_mode, "normal");
     assert_eq!(snapshot.max_tokens, FALLBACK_MAX_OUTPUT_TOKENS);
     assert_eq!(
         snapshot.model_limits_fallback.context,
@@ -71,11 +70,10 @@ fn active_provider_requires_base_url() {
 
 #[test]
 fn whitelist_values_fall_back_to_defaults() {
-    let raw = json!({ "llm": { "thinking_effort": "turbo" }, "defaultAgentMode": "yolo", "defaultPromptMode": "fancy" });
+    let raw = json!({ "llm": { "thinking_effort": "turbo" }, "defaultAgentMode": "yolo" });
     let snapshot = snapshot_of(raw);
     assert_eq!(snapshot.thinking_effort, "high");
     assert_eq!(snapshot.default_agent_mode, "risk");
-    assert_eq!(snapshot.default_prompt_mode, "normal");
 }
 
 #[test]
@@ -147,6 +145,17 @@ fn snapshot_payload_round_shape() {
         "OpenAI"
     );
     assert_eq!(payload["defaultAgentMode"], "risk");
+    // 顶层字段名单锁死（specs/049 FR-011 / AC-22）：`defaultPromptMode` 已随提示词模式删除，
+    // 快照载荷不得再出现——它必须与 Core 的 `SettingsSnapshot` 必选字段同集，
+    // 多一个少一个都会让某一侧反序列化失败。
+    let mut top_keys: Vec<&str> = payload
+        .as_object()
+        .expect("payload 是对象")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    top_keys.sort_unstable();
+    assert_eq!(top_keys, ["defaultAgentMode", "llm", "mcp"]);
     // 令牌数出线必须是整数（core 按 u64 收）：f64 直接序列化会写出 `131072.0`，
     // core 解析整个 settings 时拒收 → Core 永不 ready。as_u64 对浮点返回 None，据此锁死。
     assert_eq!(payload["llm"]["maxTokens"].as_u64(), Some(131072));

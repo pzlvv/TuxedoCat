@@ -1,8 +1,8 @@
 /**
  * Core 权限链路（引擎 → 权限判定 → 工具执行 → 卡片事件）：
  *
- * - `risk` 模式下普通命令（`sleep 1`）**不弹确认框**，直接执行
- *   —— 这是「sleep 1 被拒绝」那个 bug 的回归用例；
+ * - `risk` 模式下普通命令（`touch probe.txt`）**不弹确认框**，直接执行
+ *   —— 这是「普通命令被误拒绝」那个 bug 的回归用例；
  * - `manual` 模式下同一命令会走「上架卡片 → 弹确认框 → 用户选择」两步；
  * - 用户拒绝时工具以 error 结束，消息为「用户拒绝操作」；
  * - `auto` 模式下危险命令也不弹框。
@@ -290,11 +290,11 @@ async function run(): Promise<void> {
 
   // ---- risk 模式：普通命令直接执行，不弹确认框（回归用例）----
   {
-    const result = await runScenario({ mode: 'risk', command: 'sleep 1' });
+    const result = await runScenario({ mode: 'risk', command: 'touch probe.txt' });
     // 允许路径也会发一次 toolPermissionRequested（UI 上架卡片），
     // 但 permResult 是 allow，不会再有 userChoice 确认框。
     check(
-      'risk 模式：sleep 1 只上架卡片、不弹确认框',
+      'risk 模式：普通命令只上架卡片、不弹确认框',
       result.permissionRequests.length === 1 &&
         result.permissionRequests[0].request?.permResult?.behavior === 'allow',
     );
@@ -333,7 +333,7 @@ async function run(): Promise<void> {
 
   // ---- manual 模式：普通命令也要确认 ----
   {
-    const result = await runScenario({ mode: 'manual', command: 'sleep 1' });
+    const result = await runScenario({ mode: 'manual', command: 'touch probe.txt' });
     check('manual 模式：普通命令也弹确认框', result.userChoices.length === 1);
     check('manual 模式：允许后工具执行成功', result.toolResult?.status === 'success');
   }

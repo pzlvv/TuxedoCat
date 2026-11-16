@@ -81,12 +81,12 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'llm',
   'mcp',
   'defaultAgentMode',
-  'defaultPromptMode',
   // UI 专属字段（不进快照，但属于本文件）
   'uiLanguage',
   'uiFontSize',
   'highlightLanguages',
   // 历史遗留字段：保留在文件里，Core 与快照都不读
+  'defaultPromptMode',
   'theme',
   'shortcut',
   'defaultModel',

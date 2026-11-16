@@ -3,7 +3,7 @@
  *
  * 用静态扫描锁定三条不变量：
  * 1. webview 源码不出现配置字段的默认值字面量（webSearch / thinkingEffort / agentMode /
- *    promptMode / uiLanguage / enableUsageStats）——这些取值由宿主的快照解析决定；
+ *    uiLanguage / enableUsageStats）——这些取值由宿主的快照解析决定；
  * 2. webview 不 import 任何「配置默认值」模块（`settingsSnapshot` / `SettingsStore` /
  *    `llm/config`），只允许 import 跨层服务地址 `core/endpoints`；
  * 3. 会话配置的状态初值是 `undefined`（未到达），不是某个默认值。
@@ -55,7 +55,6 @@ runTests('webviewFacts', () => {
     { field: 'webSearch', fieldRe: /websearch/i, fallbackRe: /(?:\?\?|\|\|)\s*(?:true|false)\b/ },
     { field: 'thinkingEffort', fieldRe: /thinking/i, fallbackRe: /(?:\?\?|\|\|)\s*'(?:off|low|high|max)'/ },
     { field: 'agentMode', fieldRe: /agentmode/i, fallbackRe: /(?:\?\?|\|\|)\s*'(?:manual|risk|auto)'/ },
-    { field: 'promptMode', fieldRe: /promptmode/i, fallbackRe: /(?:\?\?|\|\|)\s*'(?:normal|minimal|mixed)'/ },
     { field: 'uiLanguage', fieldRe: /language/i, fallbackRe: /(?:\?\?|\|\|)\s*'(?:auto|zh|en)'/ },
   ];
   for (const { field, fieldRe, fallbackRe } of literalPatterns) {
@@ -95,7 +94,7 @@ runTests('webviewFacts', () => {
 
   // ── 3. 会话配置的状态初值是 undefined ──
   const appSource = stripComments(fs.readFileSync(path.join(WEBVIEW_DIR, 'App.tsx'), 'utf8'));
-  for (const state of ['agentMode', 'thinkingMode', 'promptMode', 'webSearch']) {
+  for (const state of ['agentMode', 'thinkingMode', 'webSearch']) {
     const re = new RegExp(`useState<[^>]*>\\(undefined\\)`);
     const declared = new RegExp(`const \\[${state}, set\\w+\\] = useState`);
     const line = appSource.split('\n').find((l) => declared.test(l)) ?? '';
@@ -104,7 +103,7 @@ runTests('webviewFacts', () => {
   const sessionStateSource = stripComments(
     fs.readFileSync(path.join(WEBVIEW_DIR, 'sessionState.ts'), 'utf8'),
   );
-  for (const field of ['agentMode', 'promptMode', 'thinkingMode', 'webSearch']) {
+  for (const field of ['agentMode', 'thinkingMode', 'webSearch']) {
     check(
       `createSessionState 的 ${field} 为 undefined`,
       new RegExp(`\\b${field}: undefined`).test(sessionStateSource),

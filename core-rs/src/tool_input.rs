@@ -183,6 +183,13 @@ fn bash_fields() -> Vec<Field<'static>> {
             required: false,
             kind: Kind::CoerceBool,
         },
+        // `restricted` 缺省为 true 的语义不在校验层表达（校验层不补默认值），
+        // 读取与默认值只在 `tools::bash_restricted` 一处。
+        Field {
+            name: "restricted",
+            required: false,
+            kind: Kind::CoerceBool,
+        },
     ]
 }
 

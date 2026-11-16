@@ -58,10 +58,6 @@ export type BidirectionalWebviewMessage = {
   sessionId: string;
   mode: 'off' | 'low' | 'high' | 'max';
 } | {
-  type: 'setPromptMode';
-  sessionId: string;
-  mode: 'normal' | 'minimal' | 'mixed';
-} | {
   type: 'setAgentMode';
   sessionId: string;
   mode: 'manual' | 'risk' | 'auto';
@@ -313,7 +309,7 @@ export type HostToWebviewMessage = {
     metadata?: {
       sessionId?: string;
       title?: string;
-      context?: { currentFile?: string; selectedLines?: WebviewSelectedLines; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; model?: string; provider?: string };
+      context?: { currentFile?: string; selectedLines?: WebviewSelectedLines; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; model?: string; provider?: string };
       parentSessionId?: string;
       model?: string;
       provider?: string;
@@ -331,7 +327,7 @@ export type HostToWebviewMessage = {
   };
   pendingToolUseIds?: string[];
   /** 从 meta.json 恢复的上下文，webview 加载后直接应用 */
-  savedContext?: { currentFile?: string; selectedLines?: WebviewSelectedLines; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; promptMode?: 'normal' | 'minimal' | 'mixed'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; provider?: string };
+  savedContext?: { currentFile?: string; selectedLines?: WebviewSelectedLines; agentMode?: 'manual' | 'risk' | 'auto'; thinkingMode?: 'off' | 'low' | 'high' | 'max'; webSearch?: boolean; totalContextTokens?: number; isCompacted?: boolean; isExpanded?: boolean; provider?: string };
   parentSessionId?: string;
   /** 会话创建者（specs/025 FR-002）：返回按钮按它跨工作区跳发起方或跳本地父会话 */
   creator?: { kind: 'user' } | { kind: 'agent'; workspaceId: string | null; sessionId: string };
@@ -373,7 +369,6 @@ export type HostToWebviewMessage = {
   provider?: string;
   thinkingMode: 'off' | 'low' | 'high' | 'max';
   agentMode?: 'manual' | 'risk' | 'auto';
-  promptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
 } | {
   type: 'settingsDefaults';
@@ -387,7 +382,6 @@ export type HostToWebviewMessage = {
    */
   thinkingMode?: 'off' | 'low' | 'high' | 'max';
   agentMode?: 'manual' | 'risk' | 'auto';
-  promptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch: boolean;
   language?: 'auto' | 'zh' | 'en';
   /** 界面字号档位（顶层 `uiFontSize`）；只有 UI 消费 */
@@ -525,7 +519,6 @@ export type HostToWebviewMessage = {
   activeModelProvider?: string;
   thinkingEffort?: 'off' | 'low' | 'high' | 'max';
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
-  defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   webSearch?: boolean;
   /**
    * 本次保存真正改动的默认项（宿主对比保存前后快照得出）。「是否询问应用到当前
@@ -537,7 +530,6 @@ export type HostToWebviewMessage = {
     /** 默认服务商（activeProvider）变化 */
     activeProvider: boolean;
     thinkingEffort: boolean;
-    promptMode: boolean;
     agentMode: boolean;
     webSearch: boolean;
   };
@@ -592,7 +584,6 @@ export type HostToWebviewMessage = {
   thinkingEffort?: string;
   defaultModel?: string;
   defaultAgentMode?: string;
-  defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   apiKey?: string;
   language?: 'auto' | 'zh' | 'en';
   /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
@@ -853,7 +844,6 @@ export type WebviewToHostMessage = {
   webSearch?: boolean;
   thinkingEffort?: 'off' | 'low' | 'high' | 'max';
   defaultAgentMode?: 'manual' | 'risk' | 'auto';
-  defaultPromptMode?: 'normal' | 'minimal' | 'mixed';
   language?: 'auto' | 'zh' | 'en';
   /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费 */
   fontSize?: 'medium' | 'large' | 'xlarge';

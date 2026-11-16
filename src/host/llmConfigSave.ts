@@ -24,8 +24,6 @@ export interface LlmConfigSavePayload {
   thinkingEffort?: unknown;
   /** 默认工作模式（顶层 `defaultAgentMode`，与 `llm` 平级） */
   defaultAgentMode?: unknown;
-  /** 默认提示词模式（顶层 `defaultPromptMode`） */
-  defaultPromptMode?: unknown;
   /** 界面语言（顶层 `uiLanguage`）；只有 UI 消费，不进配置快照 */
   language?: unknown;
   /** 界面字号（顶层 `uiFontSize`）；只有 UI 消费，不进配置快照 */
@@ -54,7 +52,6 @@ interface PanelProvider {
 }
 
 const API_TYPES = new Set(['Responses', 'OpenAI', 'Anthropic']);
-const PROMPT_MODES = new Set(['normal', 'minimal', 'mixed']);
 const UI_LANGUAGES = new Set(['auto', 'zh', 'en']);
 const UI_FONT_SIZES = new Set(['medium', 'large', 'xlarge']);
 
@@ -185,10 +182,6 @@ export function applyLlmConfigSave(cfg: Record<string, any>, payload: LlmConfigS
   if (typeof payload.defaultAgentMode === 'string' && payload.defaultAgentMode
     && cfg.defaultAgentMode !== payload.defaultAgentMode) {
     cfg.defaultAgentMode = payload.defaultAgentMode;
-  }
-  if (typeof payload.defaultPromptMode === 'string' && PROMPT_MODES.has(payload.defaultPromptMode)
-    && cfg.defaultPromptMode !== payload.defaultPromptMode) {
-    cfg.defaultPromptMode = payload.defaultPromptMode;
   }
   if (typeof payload.language === 'string' && UI_LANGUAGES.has(payload.language)
     && cfg.uiLanguage !== payload.language) {

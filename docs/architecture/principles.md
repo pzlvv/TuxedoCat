@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-16
 ---
 
 # 规格：架构原则
@@ -164,7 +164,7 @@ UI 就再也改不动自己的表现。所以 core 侧只发**事实事件**：
 悄悄分叉。
 
 - **配置字段默认值的唯一来源是宿主快照解析** `src/shared/settingsSnapshot.ts`
-  （webSearch / thinkingEffort / agentMode / promptMode / enableUsageStats）：
+  （webSearch / thinkingEffort / agentMode / enableUsageStats）：
   它是 `settings.json` 的规范化入口，缺字段 / 类型不对 / 取值非法都在这里落默认值。
 - **界面语言的默认值归宿主** `src/host/SettingsStore.ts`（`uiLanguage` 只有 UI 消费、
   不进快照，因此缺省取值由宿主决定）。
@@ -199,7 +199,7 @@ webview 渲染所需的每一项事实都由宿主决定。**webview 不持有�
   `undefined` 表示尚未到达，空集合 / `false` / `0` / `''` 都是**已到达的取值**。
   例：模型列表 `undefined` → 等待项；`[]` → 宿主答了「没有配置模型」。
 - **不代宿主决定**：事实未到达时 webview 不下发该字段（`sendMessage` 的会话配置、
-  挂载时的 `setAgentMode` / `setPromptMode` / `setModel` 自动回传都遵循此规则），
+  挂载时的 `setAgentMode` / `setThinkingMode` / `setModel` 自动回传都遵循此规则），
   否则会把 webview 的猜测写进会话的 `meta.json`。
 - **同步注入的事实缺失即接线错误**：`__hostInfo` / `__uiLocale` / `__uiFontSize` /
   `__initialTheme` 在页面首帧之前由宿主写入，没有等待窗口；缺失或取值非法直接抛错

@@ -64,7 +64,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     // settings.json 默认值（requestSettingsDefaults 应答 + saveLLMConfig 后更新）
     settingsDefaults: {
       model: 'mock-model', provider: 'mock-provider',
-      thinkingMode: 'high', agentMode: 'risk', promptMode: 'normal', webSearch: false,
+      thinkingMode: 'high', agentMode: 'risk', webSearch: false,
     },
     // MCP：mcp.json 里的服务器定义（名称列表）
     mcpServers: [],
@@ -249,7 +249,6 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         if (typeof msg.language === 'string') state.language = msg.language;
         if (typeof msg.thinkingEffort === 'string') state.settingsDefaults.thinkingMode = msg.thinkingEffort;
         if (typeof msg.defaultAgentMode === 'string') state.settingsDefaults.agentMode = msg.defaultAgentMode;
-        if (typeof msg.defaultPromptMode === 'string') state.settingsDefaults.promptMode = msg.defaultPromptMode;
         if (typeof msg.webSearch === 'boolean') state.settingsDefaults.webSearch = msg.webSearch;
         if (Array.isArray(msg.providers) && msg.providers.length > 0) {
           const activeKey = msg.activeProvider || before.provider;
@@ -280,7 +279,6 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         const defaultsChanged = {
           activeProvider: next.provider !== before.provider,
           thinkingEffort: next.thinkingMode !== before.thinkingMode,
-          promptMode: next.promptMode !== before.promptMode,
           agentMode: next.agentMode !== before.agentMode,
           webSearch: next.webSearch !== before.webSearch,
         };
@@ -292,7 +290,6 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
           activeModelProvider: next.provider,
           thinkingEffort: next.thinkingMode,
           defaultAgentMode: next.agentMode,
-          defaultPromptMode: next.promptMode,
           webSearch: next.webSearch,
           defaultsChanged,
           currentProviderDefaultModel: next.model,
@@ -334,7 +331,6 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
           activeProvider: 'alpha.local',
           thinkingEffort: 'high',
           defaultAgentMode: 'risk',
-          defaultPromptMode: 'normal',
           webSearch: false,
           language: 'zh',
           fontSize: 'medium',
@@ -347,7 +343,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         send({
           type: 'setNewConversationDefaults', sessionId: msg.sessionId,
           model: 'mock-model', provider: 'mock-provider',
-          thinkingMode: 'high', agentMode: 'risk', promptMode: 'normal', webSearch: false,
+          thinkingMode: 'high', agentMode: 'risk', webSearch: false,
         });
         break;
       case 'sendMessage':

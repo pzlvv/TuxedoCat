@@ -24,7 +24,7 @@ status: 已修
   `buildUserMessageFromInput`），宿主原样转发（`webviewMessageHandler.ts`
   `handleUserMessage`）。
 - webview 侧 `webSearch` 是唯一**没有**宿主同步 effect 的会话级配置：
-  `App.tsx` 里 agentMode / promptMode / thinkingMode / modelRef 各有一个
+  `App.tsx` 里 agentMode / thinkingMode / modelRef 各有一个
   `useEffect` 变更即 `postMessage` 下发（新建会话时日志可见四条 set 消息、
   独缺 setWebSearch），`handleApplyDefaults` 的注释声称「下发到宿主由各字段
   自己的 effect 完成」——对 webSearch 该 effect 不存在。本地状态一旦与 core

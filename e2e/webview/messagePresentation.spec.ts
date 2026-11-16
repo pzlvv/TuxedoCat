@@ -100,11 +100,21 @@ test('US-16 用户消息滚出视口顶部时吸附置顶，点击回到原位',
   await page.setViewportSize({ width: 1280, height: 480 });
   await host.setTurn({ text: `回答正文开头。\n\n${'这是较长的回答段落，用来把内容撑高。'.repeat(12)}\n\n`, chunkDelayMs: 5 });
 
-  // 三轮对话：中间的用户消息是置顶断言对象
-  for (const label of ['第一条用户消息', '第二条用户消息', '第三条用户消息']) {
+  // 三轮对话：中间的用户消息是置顶断言对象。
+  //
+  // 每轮必须等**轮次结束**（`turnsDone` 计数）再做下一轮 / 布局测量：下面的吸附测量读的是
+  // 消息的最终高度，而助手回复是流式增长的。只等用户气泡可见时，回复可能还在流中——
+  // 单独跑时流得快、赶得上；全量车道（`workers=1` 连跑数百条）负载下流式 rAF 被挤压，
+  // 测量就会落在「回复只渲染了一半」的中间态上，得到错的置顶候选（US-16 曾因此偶发红）。
+  for (const [index, label] of ['第一条用户消息', '第二条用户消息', '第三条用户消息'].entries()) {
     await page.fill('textarea.input-textarea', label);
     await page.press('textarea.input-textarea', 'Enter');
     await expect(page.getByText(`${label}`).first()).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      (expected: number) => (window as any).__fakeHost.turnsDone >= expected,
+      index + 1,
+      { timeout: 30_000 },
+    );
   }
 
   // 把「第二条用户消息」滚到容器顶部之上：该消息吸附为置顶条（data-pinned）
@@ -160,10 +170,16 @@ test('US-16 置顶条只铺内容区：不盖滚动条槽、无延伸层', async
   await page.setViewportSize({ width: 1280, height: 480 });
   await host.setTurn({ text: `回答正文开头。\n\n${'这是较长的回答段落，用来把内容撑高。'.repeat(12)}\n\n`, chunkDelayMs: 5 });
 
-  for (const label of ['第一条用户消息', '第二条用户消息', '第三条用户消息']) {
+  for (const [index, label] of ['第一条用户消息', '第二条用户消息', '第三条用户消息'].entries()) {
     await page.fill('textarea.input-textarea', label);
     await page.press('textarea.input-textarea', 'Enter');
     await expect(page.getByText(`${label}`).first()).toBeVisible({ timeout: 15_000 });
+    // 同上一用例：等轮次结束再继续，否则流式回复会让布局测量读到中间高度
+    await page.waitForFunction(
+      (expected: number) => (window as any).__fakeHost.turnsDone >= expected,
+      index + 1,
+      { timeout: 30_000 },
+    );
   }
 
   // 把「第二条用户消息」吸附到容器顶（静态位置略越过顶边即被 sticky 拦下）

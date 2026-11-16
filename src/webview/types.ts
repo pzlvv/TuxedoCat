@@ -19,7 +19,6 @@ export type { TodoEntry };
 
 export type Theme = 'dark' | 'light';
 export type AgentMode = 'manual' | 'risk' | 'auto';
-export type PromptMode = 'normal' | 'minimal' | 'mixed';
 export type ThinkingMode = 'off' | 'low' | 'high' | 'max';
 export type RankingPeriod = 'daily' | 'monthly' | 'total';
 
@@ -33,7 +32,6 @@ export interface SettingsDefaults {
   modelRef?: ModelRef;
   thinkingMode?: ThinkingMode;
   agentMode?: AgentMode;
-  promptMode?: PromptMode;
   webSearch?: boolean;
 }
 
@@ -44,7 +42,7 @@ export interface SettingsDefaults {
  * 对话框只负责渲染，不再判断字段语义。
  */
 export interface DefaultsChangeItem {
-  /** 变更项名称（默认服务商 / 默认模型 / 提示词模式 / ...） */
+  /** 变更项名称（默认服务商 / 默认模型 / 思考强度 / ...） */
   label: string;
   /** 变更前显示值（当前对话的值） */
   from: string;
@@ -63,7 +61,6 @@ export interface DefaultsChangeItem {
 export interface ApplyDefaultsPrompt {
   /** 需要切换到的模型身份（provider + model）；undefined = 模型无需切换 */
   modelRef?: ModelRef;
-  promptMode?: PromptMode;
   thinkingMode?: ThinkingMode;
   agentMode?: AgentMode;
   webSearch?: boolean;
@@ -97,7 +94,6 @@ export interface LlmConfigPanelPayload {
   webSearch: boolean;
   thinkingEffort: ThinkingMode;
   defaultAgentMode: AgentMode;
-  defaultPromptMode: PromptMode;
   /** 当前生效服务商的 API Key；未配置时为空串 */
   apiKey: string;
   language: UiLanguage;
@@ -266,8 +262,6 @@ export interface SessionState {
   preCompressHasActiveQuery?: boolean;
   /** 会话关联的询问模式（未从宿主获取到前为 undefined） */
   agentMode?: AgentMode;
-  /** 会话关联的提示词模式（普通/极简/混合），持久化到 meta.json */
-  promptMode?: PromptMode;
   /** 会话关联的思考强度（未从宿主获取到前为 undefined） */
   thinkingMode?: ThinkingMode;
   /** 会话关联的 Web Search 开关（未从宿主获取到前为 undefined） */

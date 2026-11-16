@@ -3,13 +3,13 @@ import type { McpServerInfo, ProviderModels } from '../../shared/webviewTypes';
 import type { SessionCreator } from '../../shared/sessionCreator';
 import type { ModelRef } from '../../shared/llm/modelRef';
 import type { HostToWebviewWire } from '../../host/webviewMessages';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, PromptMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt, TodoEntry } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, ThinkingMode, SettingsDefaults, Theme, LlmConfigPanelPayload, SessionRuntimeState, ApplyDefaultsPrompt, TodoEntry } from '../types';
 import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
 import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
 import { handleConversationRewoundDone, handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
-import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetPromptMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
+import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
 import type { CompactArchiveView } from '../compactExpand';
 import { restoreQueuedMessageToInput } from './restoreQueuedMessage';
@@ -82,7 +82,6 @@ export interface UseMessageHandlerProps {
   /** 会话工作模式（spin = 输入框禁用；加载载荷与运行期 setWorkMode 都走这里） */
   setWorkMode: (v: 'normal' | 'spin') => void;
   setAgentMode: (v: AgentMode) => void;
-  setPromptMode: (v: PromptMode | undefined) => void;
   setThinkingMode: (v: ThinkingMode | undefined) => void;
   /** undefined = 尚未从宿主获取到（保持等待态，不写猜测值） */
   setWebSearch: (v: boolean | undefined) => void;
@@ -114,13 +113,13 @@ export interface UseMessageHandlerProps {
   setLlmConfigPayload: (v: LlmConfigPanelPayload | null) => void;
   /** 服务商配置完成状态：未完成时输入框禁用并引导打开设置；null 表示尚未探测到配置 */
   setProviderConfigured: (v: boolean | null) => void;
-  /** 会话配置（模型 / 思考强度 / 提示词模式等）是否已从宿主获取到 */
+  /** 会话配置（模型 / 思考强度等）是否已从宿主获取到 */
   setConfigReady: (v: boolean) => void;
   /** 当前会话的消息列表（用于判断是否为未发送消息的新对话） */
   messages: Message[];
   /** 界面语言变化时递增，App 通过 key 重挂载内容区刷新所有文案 */
   setLocaleVersion: React.Dispatch<React.SetStateAction<number>>;
-  /** settings.json 默认值（model / thinkingMode / agentMode / promptMode） */
+  /** settings.json 默认值（model / thinkingMode / agentMode / webSearch） */
   setSettingsDefaults: React.Dispatch<React.SetStateAction<SettingsDefaults>>;
   /** settings.json 默认值（当前值，供新会话初始化使用） */
   settingsDefaults: SettingsDefaults;
@@ -136,7 +135,6 @@ export interface UseMessageHandlerProps {
   hasActiveQuery: boolean;
   /** 会话询问模式；undefined = 尚未从宿主获取到 */
   agentMode: AgentMode | undefined;
-  promptMode: PromptMode | undefined;
   thinkingMode: ThinkingMode | undefined;
   /** 会话联网搜索开关；undefined = 尚未从宿主获取到 */
   webSearch: boolean | undefined;
@@ -409,9 +407,6 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'setAgentMode':
           handleConfigSetAgentMode(msg, ctx);
-          break;
-        case 'setPromptMode':
-          handleConfigSetPromptMode(msg, ctx);
           break;
         case 'setThinkingMode':
           handleConfigSetThinkingMode(msg, ctx);

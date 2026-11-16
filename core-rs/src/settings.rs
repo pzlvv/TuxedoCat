@@ -101,14 +101,6 @@ pub struct SettingsSnapshot {
     pub mcp: McpSettings,
     #[serde(rename = "defaultAgentMode")]
     pub default_agent_mode: String,
-    /// 默认提示词模式。
-    ///
-    /// 会话级预设的落点在各自 `meta.json`（缺省回落 `normal`，与 TS 侧一致）；
-    /// 这个字段供宿主决定新对话的界面默认值，Core 侧暂时没有消费点——保留是为了让
-    /// 快照契约两侧字段一致（缺字段在反序列化时就暴露为协议错误）。
-    #[allow(dead_code)]
-    #[serde(rename = "defaultPromptMode")]
-    pub default_prompt_mode: String,
 }
 
 /// 一个 MCP 服务器定义（来自 `mcp.json`；不含启用状态与运行时字段）。

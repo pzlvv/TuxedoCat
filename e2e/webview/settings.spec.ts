@@ -313,7 +313,7 @@ test('US-24 界面字号档位随保存提交，宿主回传后即时生效', as
   await host.send({
     type: 'llmConfigSaved',
     fontSize: 'xlarge',
-    defaultsChanged: { activeProvider: false, thinkingEffort: false, promptMode: false, agentMode: false, webSearch: false },
+    defaultsChanged: { activeProvider: false, thinkingEffort: false, agentMode: false, webSearch: false },
   });
   await expect.poll(() => page.evaluate(
     () => document.documentElement.style.getPropertyValue('--ui-font-offset'),
@@ -352,7 +352,7 @@ test('US-7 未配置服务商时输入区禁用并引导打开设置', async () 
   await host.send({
     type: 'settingsDefaults',
     model: '', provider: '', webSearch: false,
-    thinkingMode: 'high', agentMode: 'risk', promptMode: 'normal',
+    thinkingMode: 'high', agentMode: 'risk',
     language: 'zh', providerConfigured: false,
   });
 

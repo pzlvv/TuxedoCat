@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-16
 ---
 
 # 规格：TUI（终端宿主）
@@ -187,7 +187,7 @@ tui-rs/
 | `sessionCreated` | 显式忽略（`initSessionState` 对 TUI 无语义） |
 | `conversationListChanged` | 重读列表（`conversationListRequested`） |
 | `sessionRuntimeChanged` | 全量运行态入缓存 + store（排队判定 / 状态栏流水灯 / abort 语义同源） |
-| `sessionConfigChanged` | 按 change.key 转成 setModel / setThinkingMode / setPromptMode / setAgentMode / setWebSearch；mcpEnabled 触发列表重拉 |
+| `sessionConfigChanged` | 按 change.key 转成 setModel / setThinkingMode / setAgentMode / setWebSearch；mcpEnabled 触发列表重拉 |
 | `commandDispatched` | 清除该会话排队项；`spin` 命令提示设计器不支持 |
 | `notice` | 键 + 参数翻译后进通知条（第 4 节 i18n 口径） |
 | `compactBegin` / `compactEnd` | 压缩进度提示（start / complete / error）；`complete` 同时把该会话状态栏的上下文 tokens 更新为 `postCompactTokenCount`（core 重算的压缩后占用） |
@@ -210,10 +210,10 @@ tui-rs/
 | Enter 发送 | `userMessageSubmitted`（uuid 形如 `user_<ts>_<rand>`；会话覆盖带已到达的事实；忙碌 / 命令消息置 `deferEcho`，忙碌时登记排队项） |
 | Esc（空编辑器） | `abortRequested` |
 | Ctrl+L / 菜单新建 | `sessionWorkspaceAssigned` + `conversationStarted` + `conversationOpened`（新 id 为 uuid v4） |
-| Ctrl+L 打开会话 | 旧会话 `flushSessionRequested`（切换前等落盘收尾）→ `conversationLoadRequested` → 完成后 `conversationOpened`；加载翻译含默认值补齐（thinkingMode / webSearch / promptMode）、模型身份校验（失效时 `modelChanged` 回写）、agentMode 三级回退（core 权威值 → meta.json → 配置默认） |
+| Ctrl+L 打开会话 | 旧会话 `flushSessionRequested`（切换前等落盘收尾）→ `conversationLoadRequested` → 完成后 `conversationOpened`；加载翻译含默认值补齐（thinkingMode / webSearch）、模型身份校验（失效时 `modelChanged` 回写）、agentMode 三级回退（core 权威值 → meta.json → 配置默认） |
 | 菜单删除 / 重命名 | `conversationDeleted` / `conversationRenamed` |
 | 智能命名 | `smartNamingRequested` → 回包设标题 + `conversationRenamed` 落盘 |
-| 模型 / 思考 / 提示词 / MCP 菜单 | `modelChanged` / `thinkingEffortChanged` / `promptModeChanged` / `mcpEnabledChanged` |
+| 模型 / 思考 / MCP 菜单 | `modelChanged` / `thinkingEffortChanged` / `mcpEnabledChanged` |
 | 压缩上下文 | `compactRequested` |
 | 选择覆盖层应答 | response 帧 `{ index, reply? }`（Esc 转自由输入提交 `{ index: -1, reply }`，与 webview 同语义）+ `userChoicePendingChanged(false)` |
 
@@ -221,7 +221,7 @@ tui-rs/
 
 | 事实 | 来源 |
 | --- | --- |
-| 会话默认值（settingsDefaults） | `settings.rs` 快照：`readActiveModelRef` + thinking / agentMode / promptMode / webSearch 默认值（重读磁盘，变化则替换现有快照并重推） |
+| 会话默认值（settingsDefaults） | `settings.rs` 快照：`readActiveModelRef` + thinking / agentMode / webSearch 默认值（重读磁盘，变化则替换现有快照并重推） |
 | 模型菜单（setModels） | 原始 settings.json 的 providers（baseURL 非空），默认模型补回列表头部 |
 | 上下文上限（contextLimitUpdated) | 快照里已解析的 modelLimits（未命中用兜底） |
 | 余额（balanceUpdate） | `balanceRequested` 让 Core 查（余额按 provider 的 apiKey，是 core 的事实）；失败清空显示 |
@@ -279,7 +279,7 @@ tui-rs/
 | `/`（空编辑器） | 斜杠命令菜单（skills 投影，选择后回填 `/name `；发送时按普通消息交给 core 分发） |
 | `Ctrl+L` | 会话切换器：列表（含运行态点）/ 新建 / 重命名 / smart naming / 删除（二次确认） |
 | `Ctrl+M` | 模型菜单：provider → model 两级（`setModels` 投影） |
-| `Ctrl+K` | 会话配置菜单：agentMode / thinking / promptMode / MCP 开关 / 压缩上下文 |
+| `Ctrl+K` | 会话配置菜单：agentMode / thinking / MCP 开关 / 压缩上下文 |
 | `Esc` | 有覆盖层时关覆盖层；编辑器有内容时清空；否则 abort 当前会话查询 |
 | `Ctrl+C` | 退出（退出路径发 `shutdown` 帧后收尸子进程） |
 

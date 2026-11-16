@@ -261,7 +261,6 @@ class HostUi(
                         })
                     }
                     "thinkingEffort" -> postToWebview(sid, buildJsonObject { put("type", "setThinkingMode"); put("mode", str(change, "value")) })
-                    "promptMode" -> postToWebview(sid, buildJsonObject { put("type", "setPromptMode"); put("mode", str(change, "value")) })
                     "agentMode" -> postToWebview(sid, buildJsonObject { put("type", "setAgentMode"); put("mode", str(change, "value")) })
                     "webSearch" -> postToWebview(sid, buildJsonObject { put("type", "setWebSearch"); put("webSearch", change["webSearch"] ?: change["value"] ?: JsonPrimitive(false)) })
                     "mcpEnabled" -> pushMcpServers(sid)
@@ -366,9 +365,6 @@ class HostUi(
                 })
                 "setThinkingMode" -> bus.emitToCore(buildJsonObject {
                     put("type", "thinkingEffortChanged"); put("sessionId", str(message, "sessionId")); put("mode", str(message, "mode"))
-                })
-                "setPromptMode" -> bus.emitToCore(buildJsonObject {
-                    put("type", "promptModeChanged"); put("sessionId", str(message, "sessionId")); put("mode", str(message, "mode"))
                 })
                 "setAgentMode" -> bus.emitToCore(buildJsonObject {
                     put("type", "agentModeChanged"); put("sessionId", str(message, "sessionId")); put("mode", str(message, "mode"))
@@ -566,7 +562,6 @@ class HostUi(
             if (activeKey.isNotEmpty()) put("provider", activeKey)
             put("thinkingMode", (llm["thinkingEffort"] as? JsonPrimitive)?.contentOrNull ?: "high")
             put("defaultAgentMode", (snapshot["defaultAgentMode"] as? JsonPrimitive)?.contentOrNull ?: "risk")
-            put("defaultPromptMode", (snapshot["defaultPromptMode"] as? JsonPrimitive)?.contentOrNull ?: "normal")
             put("webSearch", (llm["webSearch"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: true)
             put("language", settingsStore.readUiLanguage())
             put("fontSize", settingsStore.readUiFontSize())
@@ -588,7 +583,6 @@ class HostUi(
             put("thinkingEffort", (llm["thinkingEffort"] as? JsonPrimitive)?.contentOrNull ?: "high")
             put("defaultModel", provider?.get("defaultModel")?.jsonPrimitive?.contentOrNull ?: "")
             put("defaultAgentMode", (snapshot["defaultAgentMode"] as? JsonPrimitive)?.contentOrNull ?: "risk")
-            put("defaultPromptMode", (snapshot["defaultPromptMode"] as? JsonPrimitive)?.contentOrNull ?: "normal")
             put("providers", providersPayload())
             put("activeProvider", activeKey)
             put("language", settingsStore.readUiLanguage())
@@ -745,7 +739,6 @@ class HostUi(
                 if (activeKey.isNotEmpty()) put("provider", activeKey)
                 put("thinkingMode", (llm["thinkingEffort"] as? JsonPrimitive)?.contentOrNull ?: "high")
                 put("agentMode", (snapshot["defaultAgentMode"] as? JsonPrimitive)?.contentOrNull ?: "risk")
-                put("promptMode", (snapshot["defaultPromptMode"] as? JsonPrimitive)?.contentOrNull ?: "normal")
                 put("webSearch", (llm["webSearch"] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: true)
             })
         } catch (e: Exception) {

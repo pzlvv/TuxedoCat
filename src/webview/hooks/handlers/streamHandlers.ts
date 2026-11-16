@@ -72,7 +72,6 @@ export function handleStreamQueryBegin(
                 animationMode: 'thinking',
                 hasActiveQuery: true,
                 agentMode: propsRef.current.settingsDefaults.agentMode ?? propsRef.current.agentMode,
-                promptMode: propsRef.current.settingsDefaults.promptMode,
                 thinkingMode: propsRef.current.settingsDefaults.thinkingMode,
                 webSearch: propsRef.current.settingsDefaults.webSearch,
                 modelRef: propsRef.current.modelRef,
@@ -309,8 +308,7 @@ export function handleStreamStreamEnd(
                   cacheReadTokens,
                   cacheCreationTokens,
                   {
-                    promptMode: propsRef.current.settingsDefaults.promptMode,
-                    modelRef: propsRef.current.modelRef,
+                        modelRef: propsRef.current.modelRef,
                   },
                 );
                 profileLog('[TokenDebug] streamEnd(sessionMismatch): updated/created session state for', streamEndSessionId);
@@ -402,8 +400,7 @@ export function handleStreamStreamEnd(
                   cacheReadTokens,
                   cacheCreationTokens,
                   {
-                    promptMode: propsRef.current.settingsDefaults.promptMode,
-                    modelRef: propsRef.current.modelRef,
+                        modelRef: propsRef.current.modelRef,
                   },
                 );
                 profileLog('[TokenDebug] streamEnd: updated/created session state for', currentSid);

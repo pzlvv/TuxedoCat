@@ -708,14 +708,6 @@ impl Host {
                             .unwrap_or("")
                             .to_string(),
                     }],
-                    "promptMode" => vec![Action::SetPromptMode {
-                        session_id,
-                        mode: change
-                            .get("value")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                    }],
                     "agentMode" => vec![Action::SetAgentMode {
                         session_id,
                         mode: change
@@ -1151,7 +1143,6 @@ impl Host {
             provider,
             thinking_mode: Some(snapshot.thinking_effort.clone()),
             agent_mode: Some(snapshot.default_agent_mode.clone()),
-            prompt_mode: Some(snapshot.default_prompt_mode.clone()),
             web_search: Some(snapshot.web_search),
         })]
     }
@@ -1259,11 +1250,6 @@ impl Host {
             .get("webSearch")
             .and_then(Value::as_bool)
             .or(Some(snapshot.web_search));
-        let prompt_mode = context
-            .get("promptMode")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| Some(snapshot.default_prompt_mode.clone()));
 
         // 切换对话后校验模型身份：失效时解析出可用身份并写回 core（modelChanged）。
         // 只在 meta.json 确实记录过身份时才回写（与 TS 的 `stored && !same` 同口径）
@@ -1327,7 +1313,6 @@ impl Host {
             provider: resolved.as_ref().map(|(provider, _)| provider.clone()),
             agent_mode,
             thinking_mode,
-            prompt_mode,
             web_search,
             context_tokens,
             has_active_query,
@@ -1419,10 +1404,6 @@ impl Host {
         self.emit(
             json!({ "type": "thinkingEffortChanged", "sessionId": session_id, "mode": mode }),
         );
-    }
-
-    pub fn set_prompt_mode(&mut self, session_id: &str, mode: &str) {
-        self.emit(json!({ "type": "promptModeChanged", "sessionId": session_id, "mode": mode }));
     }
 
     pub fn set_agent_mode(&mut self, session_id: &str, mode: &str) {
@@ -1940,6 +1921,19 @@ mod tests {
             }
             other => panic!("expected SetModel, got {other:?}"),
         }
+    }
+
+    /// `sessionConfigChanged` 的 `promptMode` 键已随提示词模式删除（specs/049 FR-011）：
+    /// 旧版 Core 发来的该键落 `_ => Vec::new()`，不产生任何 Action、不报未知事件。
+    #[test]
+    fn session_config_drops_removed_prompt_mode_key() {
+        let mut host = test_host("prompt-mode-key");
+        let actions = host.handle_event(&json!({
+            "type": "sessionConfigChanged",
+            "sessionId": "s1",
+            "change": { "key": "promptMode", "value": "minimal" }
+        }));
+        assert!(actions.is_empty(), "got {actions:?}");
     }
 
     /// 压缩完成后状态栏 tokens 采用 core 重算的 postCompactTokenCount（通知保留）。

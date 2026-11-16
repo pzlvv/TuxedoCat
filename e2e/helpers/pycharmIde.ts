@@ -159,7 +159,6 @@ export async function launchPycharmIde(
       enableUsageStats: false,
     },
     defaultAgentMode: options.agentMode,
-    defaultPromptMode: 'normal',
     uiLanguage: 'zh',
   }, null, 2));
 

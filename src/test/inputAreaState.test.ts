@@ -7,10 +7,9 @@
  * 且已结束禁用 + 「对话已结束」提示；非用户创建的会话**运行中可输入**
  * （docs/features/user-message-pipeline.md 第 3.3 节），快照未到达按已结束处理
  * （宁禁勿放）；优先级 Spin > 对话已结束 > 未配置。
- * 非 Master 的**本地**子代理锁定提示词模式 / 联网搜索 / MCP；跨工作区派发的对话
- * （creator.workspaceId 非空）三项不锁定；Master 子代理（含 Spin 起）与普通会话不
- * 锁定。提示词模式的锁定口径更宽：跨工作区对话恒 normal（specs/025 FR-005），不提
- * 供切换入口。
+ * 非 Master 的**本地**子代理锁定联网搜索 / MCP；跨工作区派发的对话
+ * （creator.workspaceId 非空）两项不锁定；Master 子代理（含 Spin 起）与普通会话不
+ * 锁定。
  *
  * 运行方式：npm run test:all -- inputAreaState
  */
@@ -18,7 +17,6 @@
 import {
   resolveInputDisabledReason,
   resolveInputPlaceholderText,
-  resolvePromptModeLocked,
   resolveSessionOptionsLocked,
 } from '../webview/inputAreaState';
 import { createChecker, runTests } from './helpers/harness';
@@ -61,14 +59,6 @@ runTests('inputAreaState', () => {
   check('普通会话（无 role）不锁定', resolveSessionOptionsLocked({ subAgentRole: null }) === false);
   check('role 未到达（undefined）不锁定', resolveSessionOptionsLocked({}) === false);
   check('判据按「非 Master」而非逐角色列举（将来新角色无需改 UI）', resolveSessionOptionsLocked({ subAgentRole: 'future-role', creator: agentCreator }) === true);
-
-  // ── 提示词模式锁定（specs/025 FR-005：跨工作区对话恒 normal）──
-  check('explorer 本地子代理提示词模式随三项锁定', resolvePromptModeLocked({ subAgentRole: 'Explorer', creator: agentCreator }) === true);
-  check('explorer 跨工作区对话提示词模式锁定（恒 normal，specs/025 FR-005）', resolvePromptModeLocked({ subAgentRole: 'Explorer', creator: remoteCreator }) === true);
-  check('Master 跨工作区对话提示词模式锁定', resolvePromptModeLocked({ subAgentRole: 'Master', creator: remoteCreator }) === true);
-  check('Master 本地子代理提示词模式不锁定（specs/020 继承口径）', resolvePromptModeLocked({ subAgentRole: 'Master', creator: agentCreator }) === false);
-  check('普通会话提示词模式不锁定', resolvePromptModeLocked({ subAgentRole: null }) === false);
-  check('creator 未到达时按本地口径（Master 不锁定，事实到达后锁）', resolvePromptModeLocked({ subAgentRole: 'Master' }) === false);
 
   finish();
 });

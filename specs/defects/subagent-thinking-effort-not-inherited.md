@@ -15,14 +15,14 @@ status: 已修
 ## 现状
 
 - `Core::create_sub_agent`（`core-rs/src/engine.rs`）从创建者会话读出
-  `agent_mode` / `model` / `provider` / `thinking_effort` / `prompt_mode` / `web_search`
+  `agent_mode` / `model` / `provider` / `thinking_effort` / `web_search`
   写进子会话 `SessionState`（内存继承成立），随后只对 `agentMode` 调一次
   `persist_context`；`thinking_effort` / `web_search` 没有对应的落盘调用，
   `history::create_sub_agent_metadata`
   （`core-rs/src/history.rs`）也只写 `parentSessionId` / `role` / `creator` / `model` /
   `provider`，不写 `context`。
-- 对照：跨工作区路径的 `Core::start_remote_sub_agent` 在同一个坑位落齐了四个键
-  （`agentMode` / `thinkingMode` / `promptMode` / `webSearch`），本地路径漏了其中两个
+- 对照：跨工作区路径的 `Core::start_remote_sub_agent` 在同一个坑位落齐了继承键
+  （`agentMode` / `thinkingMode` / `webSearch`），本地路径漏了其中两个
   （`thinkingMode` / `webSearch`）。
 - 复现（Electron）：主对话把思考强度切到「低」→ 同轮 `Agent` 派一个 Master 子代理 →
   子代理跑完（或运行中）在侧栏点开该子代理会话。输入区思考强度显示的是
@@ -36,10 +36,10 @@ status: 已修
 ## 期望
 
 - 本地子代理的会话级配置与跨工作区子代理同口径：创建时一次确定的继承值全部落进子会话
-  `meta.json` 的 `context`——`agentMode` / `thinkingMode`（落盘字段名）/ `promptMode` /
-  `webSearch`。重启后重开子代理会话，思考强度 / 联网搜索 / 提示词模式仍显示继承值。
-- 落盘值按角色规则取，与内存赋值同一处来源：非 Master 角色的 `promptMode` / `webSearch`
-  是固定值（normal / 关，specs/020 FR-003），Master 取创建者值；落盘必须与内存一致。
+  `meta.json` 的 `context`——`agentMode` / `thinkingMode`（落盘字段名）/ `webSearch`。
+  重启后重开子代理会话，思考强度 / 联网搜索仍显示继承值。
+- 落盘值按角色规则取，与内存赋值同一处来源：非 Master 角色的 `webSearch` 是固定值
+  （关，specs/020 FR-003），Master 取创建者值；落盘必须与内存一致。
 - 子代理 LLM 请求的 `reasoning_effort` 由继承值决定（内存链路已成立，本次一并锁住）。
 
 ## 不变量
@@ -67,9 +67,9 @@ status: 已修
   （落点：同上）。
 - **RT-3**：丢弃引擎（模拟 Core 重启）后 `ensure_loaded(sub_id)`，子会话
   `thinking_effort === Some("low")`、`web_search === Some(false)`（落点：同上）。
-- **RT-4**：非 Master 角色的固定值同样落盘（`context.promptMode === "normal"`、
-  `context.webSearch === false`），与内存一致（落点：`core-rs/src/engine_tests.rs`
-  `explorer_fixes_session_config_while_master_inherits` 补落盘断言）。
+- **RT-4**：非 Master 角色的固定值同样落盘（`context.webSearch === false`），与内存
+  一致（落点：`core-rs/src/engine_tests.rs`
+  `explorer_fixes_session_config_while_master_inherits` 的落盘断言）。
 - **RT-5**：整应用链路（真实 Core + 假 LLM）：父会话把思考强度切到「低」→ 同轮 `Agent`
   派 Master 子代理 → 子会话 `meta.json` 的 `context.thinkingMode === "low"`；打开子会话
   视图后输入区菜单的思考强度高亮仍是「低」（settings 默认是 `off`，继承失效时会显示
@@ -81,8 +81,8 @@ status: 已修
 | 检查 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
 | RT-1 / RT-2 / RT-3（修复前） | `cd core-rs && cargo test --bin standalone-core sub_agent_inherits_and_persists_thinking_effort` | 红 | 失败于 `engine_tests.rs` 的「继承来的 thinking effort 应当落盘到子会话 meta.json」——`metadata["context"]["thinkingMode"]` 为 `Null`，期望 `"low"`；`reasoning_effort=low` 的请求侧断言已通过（内存继承成立，缺的是落盘） |
-| RT-4（修复前） | `cd core-rs && cargo test --bin standalone-core explorer_fixes_session_config_while_master_inherits` | 红 | 失败于「Explorer 固定的提示词模式应当落盘」——`metadata["context"]["promptMode"]` 为 `Null`，期望 `"normal"` |
-| RT-1 / RT-2 / RT-3（修复后） | `cd core-rs && cargo test --bin standalone-core sub_agent_inherits_and_persists_thinking_effort` | 绿 | 落盘走一次 `history::update_context` 批量写四个键（同一把锁内一次原子落盘），不经 `persist_context` 逐个调——写入点仍是 `history::update_context`，与「唯一写入点不变」不冲突 |
+| RT-4（修复前） | `cd core-rs && cargo test --bin standalone-core explorer_fixes_session_config_while_master_inherits` | 红 | 失败于「Explorer 固定的联网搜索开关应当落盘」——`metadata["context"]["webSearch"]` 为 `Null`，期望 `false` |
+| RT-1 / RT-2 / RT-3（修复后） | `cd core-rs && cargo test --bin standalone-core sub_agent_inherits_and_persists_thinking_effort` | 绿 | 落盘走一次 `history::update_context` 批量写继承键（同一把锁内一次原子落盘），不经 `persist_context` 逐个调——写入点仍是 `history::update_context`，与「唯一写入点不变」不冲突 |
 | RT-5（修复前） | `npx playwright test -c e2e/playwright.config.ts --project=electron-app -g subagentInheritance`（先 `git stash` 掉 `engine.rs` 的修复并重建 Core） | 红 | 失败于 `e2e/electron/subagentInheritance.spec.ts` 的 `expect(meta.context.thinkingMode).toBe('low')`——`Received: undefined`（未修复的 Core 只落 `agentMode`） |
 | RT-5（修复后） | 同上 | 绿 | 9.1s 通过：落盘 / 打开子会话后菜单仍高亮「低」（settings 默认 `off` 未被回落覆盖）/ 子代理请求体 `reasoning_effort: "low"` 三段断言全绿 |
 | 既有回归 | `cd core-rs && cargo test --bin standalone-core` | 绿 | 1165 passed / 0 failed（含 `sub_agent` 前缀的全部子代理用例与跨工作区继承用例） |

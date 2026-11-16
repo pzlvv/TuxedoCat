@@ -50,7 +50,6 @@ enum Menu {
     Config,
     AgentMode,
     ThinkingMode,
-    PromptMode,
     Mcp,
     Slash,
 }
@@ -400,7 +399,6 @@ impl App {
             Some(Menu::Models { .. })
             | Some(Menu::AgentMode)
             | Some(Menu::ThinkingMode)
-            | Some(Menu::PromptMode)
             | Some(Menu::Mcp) => self.open_menu(Menu::Config),
             _ => self.close_menu(),
         }
@@ -479,12 +477,11 @@ impl App {
                     }
                     self.close_menu();
                 }
-                // webSearch 只是状态展示项（TS 同口径），其余四项开二级菜单
-                "agentMode" | "thinkingMode" | "promptMode" | "mcp" => {
+                // webSearch 只是状态展示项（TS 同口径），其余三项开二级菜单
+                "agentMode" | "thinkingMode" | "mcp" => {
                     self.menu = Some(match item.key.as_str() {
                         "agentMode" => Menu::AgentMode,
                         "thinkingMode" => Menu::ThinkingMode,
-                        "promptMode" => Menu::PromptMode,
                         _ => Menu::Mcp,
                     });
                     self.menu_cursor = 0;
@@ -505,12 +502,6 @@ impl App {
             Menu::ThinkingMode => {
                 if let Some(session_id) = self.state.active_session_id.clone() {
                     self.host.set_thinking_mode(&session_id, &item.key);
-                }
-                self.close_menu();
-            }
-            Menu::PromptMode => {
-                if let Some(session_id) = self.state.active_session_id.clone() {
-                    self.host.set_prompt_mode(&session_id, &item.key);
                 }
                 self.close_menu();
             }
@@ -845,15 +836,6 @@ impl App {
                         hint: Some("off/low/high/max".into()),
                     },
                     MenuItem {
-                        key: "promptMode".into(),
-                        label: format!(
-                            "{}: {}",
-                            tt("提示词模式", "Prompt mode"),
-                            mode_value(session.and_then(|session| session.prompt_mode.as_ref()))
-                        ),
-                        hint: Some("normal/minimal/mixed".into()),
-                    },
-                    MenuItem {
                         key: "webSearch".into(),
                         label: format!(
                             "{}: {}",
@@ -890,14 +872,6 @@ impl App {
                 })
                 .collect(),
             Some(Menu::ThinkingMode) => ["off", "low", "high", "max"]
-                .iter()
-                .map(|mode| MenuItem {
-                    key: (*mode).into(),
-                    label: (*mode).into(),
-                    hint: None,
-                })
-                .collect(),
-            Some(Menu::PromptMode) => ["normal", "minimal", "mixed"]
                 .iter()
                 .map(|mode| MenuItem {
                     key: (*mode).into(),
@@ -1443,7 +1417,6 @@ impl App {
             Menu::Config => tt("会话配置", "Session config"),
             Menu::AgentMode => tt("代理模式", "Agent mode"),
             Menu::ThinkingMode => tt("思考强度", "Thinking effort"),
-            Menu::PromptMode => tt("提示词模式", "Prompt mode"),
             Menu::Mcp => tt("MCP 服务器", "MCP servers"),
             Menu::Slash => tt("斜杠命令 / 技能", "Slash commands / skills"),
         };

@@ -61,28 +61,13 @@ async function openMenu(): Promise<import('@playwright/test').Locator> {
   return menu;
 }
 
-test('US-51 explorer 视图：三项置灰且点击不上报', async () => {
+test('US-51 explorer 视图：两项置灰且点击不上报', async () => {
   const { host } = handle;
   await loadSession('Explorer');
 
   const menu = await openMenu();
   expect(await rowOpacity(menu, '联网搜索')).toBe('0.45');
-  expect(await rowOpacity(menu, '提示词模式')).toBe('0.45');
   expect(await rowOpacity(menu, 'MCP')).toBe('0.45');
-
-  // 点击不产生任何变更 / 上报：点「极简」后普通仍高亮，且没有新的 setPromptMode 上行
-  const selected = (label: string) =>
-    menu.getByRole('button', { name: label, exact: true }).evaluate(
-      (el) => getComputedStyle(el).color === 'rgb(255, 255, 255)',
-    );
-  expect(await selected('普通')).toBe(true);
-  const sentBefore = (await host.sentAll()).filter((m) => m.type === 'setPromptMode').length;
-  await menu.getByRole('button', { name: '极简', exact: true }).click({ force: true });
-  await handle.page.waitForTimeout(300);
-  expect(await selected('普通')).toBe(true);
-  expect(await selected('极简')).toBe(false);
-  const sentAfter = (await host.sentAll()).filter((m) => m.type === 'setPromptMode').length;
-  expect(sentAfter).toBe(sentBefore);
 
   // 联网搜索行同样不上报（置灰行点击早退）
   const webSearchBefore = (await host.sentAll()).filter((m) => m.type === 'setWebSearch').length;
@@ -96,7 +81,6 @@ test('US-51 Master 子代理与普通会话：不置灰', async () => {
   await loadSession('Master');
   let menu = await openMenu();
   expect(await rowOpacity(menu, '联网搜索')).toBe('1');
-  expect(await rowOpacity(menu, '提示词模式')).toBe('1');
   expect(await rowOpacity(menu, 'MCP')).toBe('1');
   await handle.page.keyboard.press('Escape');
 
@@ -104,6 +88,5 @@ test('US-51 Master 子代理与普通会话：不置灰', async () => {
   await loadSession(null);
   menu = await openMenu();
   expect(await rowOpacity(menu, '联网搜索')).toBe('1');
-  expect(await rowOpacity(menu, '提示词模式')).toBe('1');
   expect(await rowOpacity(menu, 'MCP')).toBe('1');
 });
