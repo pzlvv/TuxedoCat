@@ -37,7 +37,8 @@
     "crossWorkspaceAgentReplyRequested",
     "crossWorkspaceAgentAbortRequested",
     "crossWorkspaceAgentEnded",
-    "conversationRewoundDone"
+    "conversationRewoundDone",
+    "userChoiceCanceled"
   ],
   "coreRequests": [
     "toolPermissionRequested",

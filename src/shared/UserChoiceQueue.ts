@@ -43,6 +43,14 @@ export interface UserAnswer {
 /** 工具权限确认场景（`toolPermissionRequested` 之后弹的确认框）。 */
 export interface PermissionChoiceOptions {
   kind: 'permission';
+  /**
+   * Core 发起本次请求时生成的标识（specs/050 FR-001）。
+   *
+   * `CoreEvent.userChoiceCanceled` 用同一个值撤回这次请求；宿主队列按它精确拒答，
+   * 不用 `sessionId`（同会话可能已有新请求）。宿主生成的 `choiceId` 是投递时刻的展示
+   * 句柄，webview 重建会重新生成，不能承担跨重建的身份。
+   */
+  choiceRequestId: string;
   toolName: string;
   message: string;
   choices: Array<{ label: string; description?: string }>;
@@ -58,6 +66,15 @@ export interface PermissionChoiceOptions {
 /** AskUserQuestion 场景（逐题作答，答案按 id 回传）。 */
 export interface QuestionChoiceOptions {
   kind: 'question';
+  /** Core 发起本次请求时生成的标识（specs/050 FR-001），语义同 `PermissionChoiceOptions` */
+  choiceRequestId: string;
+  /**
+   * 发起这次提问的工具调用 id（specs/050 FR-003）。
+   *
+   * 上游 `AskUserQuestion` 执行时把 `ToolContext.tool_use_id` 注入这里；宿主把它透传到
+   * webview，工具结果到达时据此收框。
+   */
+  toolUseId: string | undefined;
   toolName: 'AskUserQuestion';
   questions: UserQuestion[];
 }
@@ -184,6 +201,29 @@ class UserChoiceQueueManager {
       this.pendingChoices.delete(sessionId);
       entry.reject(reason);
     }
+  }
+
+  /**
+   * 按 **Core 侧请求标识** 拒答一条 pending（specs/050 FR-002）。
+   *
+   * 匹配用 `options.choiceRequestId` 而不是 `sessionId`：作废宣告到达时，同一会话可能
+   * 已经发起了新请求，按会话清会把新请求一起误杀。
+   *
+   * @returns 命中并拒答返回 true；标识不存在（已应答 / 已作废 / 从未投递）返回 false，
+   *          调用方按幂等 no-op 处理。
+   */
+  cancel(choiceRequestId: string, reason: unknown): boolean {
+    for (const [sessionId, entry] of this.pendingChoices) {
+      if (entry.options.choiceRequestId !== choiceRequestId) continue;
+      this.pendingChoices.delete(sessionId);
+      logger.info(
+        'UserChoiceQueue',
+        `Choice canceled for session ${sessionId}, pending sessions: ${this.pendingChoices.size}`,
+      );
+      entry.reject(reason);
+      return true;
+    }
+    return false;
   }
 
   /**

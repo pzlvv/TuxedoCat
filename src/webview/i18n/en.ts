@@ -231,6 +231,7 @@ export const enDict: Record<string, string> = {
   'userChoice.prev': 'Previous',
   'userChoice.next': 'Next',
   'userChoice.submitAnswers': 'Submit',
+  'userChoice.cancel': 'Cancel',
   'userChoice.otherPlaceholder': 'Other, Enter for next, Shift+Enter for new line',
   'userChoice.otherPlaceholderLast': 'Other, Enter to submit, Shift+Enter for new line',
   'userChoice.questionPlaceholder': 'Type your reply, Enter for next, Shift+Enter for new line',

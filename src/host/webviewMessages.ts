@@ -186,6 +186,18 @@ export type HostToWebviewMessage = {
   type: 'requestUserChoice';
   sessionId: string;
   choiceId: string;
+  /**
+   * Core 侧请求标识（specs/050 FR-001）：`userChoiceCanceled` 按它精确撤回这次请求。
+   * 与 `choiceId` 的区别见 `src/shared/UserChoiceQueue.ts` 的 `choiceRequestId` 注释。
+   */
+  choiceRequestId: string;
+  /**
+   * 发起这次提问的工具调用 id（specs/050 FR-003）。
+   * 该工具产出结果（成功或失败）时 webview 据此收回选择框。
+   * 权限确认走 `toolPermissionRequested` 在先、`userChoice` 在后的时序，没有单一发起工具
+   * 时就为 `undefined`，此时只由 `userChoiceCanceled` 收回。
+   */
+  toolUseId: string | undefined;
   toolName: string;
   message: string;
   choices?: Array<{ label: string; description?: string }>;
@@ -200,6 +212,19 @@ export type HostToWebviewMessage = {
     options?: Array<{ label: string; description?: string }>;
     multi_select?: boolean;
   }>;
+} | {
+  /**
+   * 收回当前选择框（specs/050 FR-002）。
+   *
+   * Core 宣告这次 `userChoice` 已作废（回复超时 / 会话 abort）时下发：webview 按
+   * `choiceRequestId` 匹配在显示的选择框后收起。与「工具结果到达」走的 `updateToolStatus`
+   * 收框路径是同一个落点，只是触发源不同。
+   *
+   * 只带 `choiceRequestId`、不带 `sessionId`：webview 全局只有一个在显示的选择框，
+   * 按请求标识匹配已足够，多一个字段就多一处可能不一致。
+   */
+  type: 'userChoiceCanceled';
+  choiceRequestId: string;
 } | {
   type: 'updateToolStatus';
   sessionId: string;
@@ -858,6 +883,14 @@ export type WebviewToHostMessage = {
   type: 'respondUserChoice';
   choiceId: string;
   index: number;
+  /**
+   * 用户主动取消这次选择（specs/050 FR-004）。
+   *
+   * `true` 时 `index` / `reply` / `answers` 一律忽略：宿主以「请求得到否定答复」收敛，
+   * 权限确认视为拒绝、`AskUserQuestion` 视为工具失败且不产出部分答案。
+   * 与 `choiceId` 找不到对应 pending 时的处理一致（作废后取消是 no-op）。
+   */
+  canceled?: boolean;
   reply?: string;
   /**
    * AskUserQuestion 的逐题回复（specs/026）。权限确认场景仍用 index / reply。

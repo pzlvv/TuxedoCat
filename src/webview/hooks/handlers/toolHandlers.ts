@@ -2,7 +2,7 @@ import type { HandlerContext } from './handlerContext';
 import { HostToWebviewWire } from '../../../host/webviewMessages';
 import { profileLog } from '../../debug';
 import { accumulateUsageToState, ensureSessionStateWithUsage } from '../../sessionState';
-import { Message } from '../../types';
+import { Message, UserChoiceRequest } from '../../types';
 import { TOOL_STATUS_PRIORITY, stripOnce, toToolStatusEntry, toUiMessage } from './shared';
 
 /**
@@ -202,6 +202,12 @@ export function handleToolUpdateToolStatus(
   ctx: HandlerContext,
 ): void {
   const { props, lastActivityBySessionRef, scrollToBottomBeforeRender, sessionId } = ctx;
+          // 发起这次提问的工具已收尾：立刻收回它的选择框（specs/050 FR-003）。
+          // 放在会话过滤之前：该会话不在前台时选择框本就不在显示，dismiss 是 no-op，
+          // 但快照里的 stale 条目同样要清掉——否则切回该会话时它还会被读出来。
+          if (msg.status === 'success' || msg.status === 'fail') {
+            dismissUserChoiceForTool(props, msg.sessionId, msg.toolCallId);
+          }
           // 记录活动时间：工具完成后的下一个 thinking block 从这里算起
           if (msg.sessionId && (msg.status === 'success' || msg.status === 'fail')) {
             lastActivityBySessionRef.current.set(msg.sessionId, Date.now());
@@ -344,6 +350,54 @@ export function handleToolToolProgress(
           });
 }
 
+/**
+ * 收起选择框（specs/050 FR-002 / FR-003 的共同落点）。
+ *
+ * 两个触发源都走这里，界面行为因此只有一份实现：Core 的作废宣告、发起工具的结果到达。
+ * 只清界面状态与当前会话快照；主输入框的草稿恢复与焦点复位由 App 的
+ * `userChoiceRequest` 变化 effect 统一处理（那里已有「选择框关闭」分支）。
+ */
+function dismissUserChoice(
+  props: HandlerContext['props'],
+  sessionId: string | undefined,
+  choiceId: string,
+): void {
+  if (sessionId && props.sessionStates.has(sessionId)) {
+    const state = props.sessionStates.get(sessionId)!;
+    // 只清匹配的那一条：会话快照里可能已经换成了新请求
+    if (state.userChoiceRequest?.choiceId === choiceId) {
+      state.userChoiceRequest = null;
+    }
+  }
+  if (props.userChoiceRequestRef.current?.choiceId === choiceId) {
+    props.setUserChoiceRequest(null);
+  }
+}
+
+/**
+ * 工具收尾时收回由它发起的提问（specs/050 FR-003）。
+ *
+ * 匹配 `toolUseId`：同一会话可能先有一次提问被工具收尾、又有新的一次在等答，
+ * 按会话收会误杀新的那次。没有 `toolUseId` 的请求（权限确认）不在此路径上。
+ */
+function dismissUserChoiceForTool(
+  props: HandlerContext['props'],
+  sessionId: string,
+  toolUseId: string,
+): void {
+  const matches = (request: UserChoiceRequest | null | undefined): boolean =>
+    request !== null && request !== undefined && request.toolUseId === toolUseId;
+
+  const state = sessionId ? props.sessionStates.get(sessionId) : undefined;
+  if (state && matches(state.userChoiceRequest)) {
+    state.userChoiceRequest = null;
+  }
+  const current = props.userChoiceRequestRef.current;
+  if (matches(current)) {
+    props.setUserChoiceRequest(null);
+  }
+}
+
 export function handleToolRequestUserChoice(
   msg: Extract<HostToWebviewWire, { type: 'requestUserChoice' }>,
   ctx: HandlerContext,
@@ -354,6 +408,8 @@ export function handleToolRequestUserChoice(
             const state = props.sessionStates.get(msg.sessionId)!;
             state.userChoiceRequest = {
               choiceId: msg.choiceId,
+              choiceRequestId: msg.choiceRequestId,
+              toolUseId: msg.toolUseId,
               toolName: msg.toolName,
               message: msg.message,
               choices: msg.choices !== undefined && msg.choices.length > 0 ? msg.choices : undefined,
@@ -367,6 +423,8 @@ export function handleToolRequestUserChoice(
             // 同时更新全局状态以显示对话框
             props.setUserChoiceRequest({
               choiceId: msg.choiceId,
+              choiceRequestId: msg.choiceRequestId,
+              toolUseId: msg.toolUseId,
               toolName: msg.toolName,
               message: msg.message,
               choices: msg.choices !== undefined && msg.choices.length > 0 ? msg.choices : undefined,
@@ -374,6 +432,23 @@ export function handleToolRequestUserChoice(
             });
           }
 }
+
+/**
+ * Core 宣告这次提问已作废（specs/050 FR-002）：按 `choiceRequestId` 匹配当前的收框。
+ *
+ * 与 `updateToolStatus` 的工具收尾路径是同一件事，区别只在触发源。标识不匹配就 no-op
+ * （作废宣告重复到达 / 已应答 / 已换成新请求）。
+ */
+export function handleToolUserChoiceCanceled(
+  msg: Extract<HostToWebviewWire, { type: 'userChoiceCanceled' }>,
+  ctx: HandlerContext,
+): void {
+  const { props, sessionId } = ctx;
+  const current = props.userChoiceRequestRef.current;
+  if (!current || current.choiceRequestId !== msg.choiceRequestId) return;
+  dismissUserChoice(props, sessionId, current.choiceId);
+}
+
 
 export function handleToolToolMetaData(
   msg: Extract<HostToWebviewWire, { type: 'toolMetaData' }>,

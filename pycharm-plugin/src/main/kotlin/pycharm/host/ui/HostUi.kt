@@ -285,6 +285,13 @@ class HostUi(
                     sendToWebview(buildJsonObject { put("type", "conversationSpacesError"); put("error", str(result, "message")) })
                 }
             }
+            "userChoiceCanceled" -> {
+                // Core 宣告这次提问已作废（specs/050 FR-002）：按请求标识收框
+                userChoiceManager.cancelUserChoice(
+                    sessionId ?: return,
+                    str(event, "choiceRequestId"),
+                )
+            }
             // 跨工作区与远程监听能力 v1 声明不支持（能力位 false，core 不会派发）；日志留痕
             "workspaceFileChanged" -> log("[ui] workspaceFileChanged ignored (capability not supported)")
             "spinDesignDataChanged" -> log("[ui] spinDesignDataChanged ignored (no designer surface)")

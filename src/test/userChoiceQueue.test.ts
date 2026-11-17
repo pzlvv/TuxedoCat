@@ -13,6 +13,7 @@ import { createChecker, runTests } from './helpers/harness';
 
 const options: UserChoiceOptions = {
   kind: 'permission',
+  choiceRequestId: 'req-queue-1',
   toolName: 'Bash',
   message: '确认执行',
   choices: [{ label: '允许' }, { label: '拒绝' }],

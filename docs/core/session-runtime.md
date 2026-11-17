@@ -27,13 +27,16 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `pendingCompact` | 手动压缩已登记、等待当前轮次结束、队列排空时执行（排队不是正在执行的工作，不参与 `idle`） | `Core::request_compact` 的 `mark_pending_compact`；`run_consumer` 队列排空时消费、中止 / `Core::drop_session` 清理时 `unmark_pending_compact` |
 | `backgroundRunning` | 有运行中的后台 Bash 任务 | `bash_task.rs` 的任务注册 / 结束 / 中止（按剩余任务数同步） |
 | `subAgentRunning` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号；跨工作区子代理在 `crossWorkspaceAgentCompleted` 前恒算非 idle） | `subagent.rs` 的 `register` / `unregister` / `register_remote` / `unregister_remote` |
-| `waiting` | 正在等待用户操作 | `Core::on_user_choice_pending`（宿主上报）；`waiting_request` 入队时提前标记 |
+| `waiting` | 正在等待用户操作 | `Core::on_user_choice_pending`（宿主上报）；`waiting_request` 入队时提前标记，等待结束（应答 / 回复超时 / 会话中止）时归零 |
 
 会话关闭 / 删除时 `Core::drop_session` 清理该会话的状态、注销它作为子代理的注册表
 条目（只注销自身、不级联到存活的子孙），并清掉进程级待压缩注册表。
 
 `waiting` 只表示**真的在等用户**：`waiting_request`（`request_user_choice`）的入队与
-`userChoicePendingChanged`（webview 弹出 / 应答）。`CoreRequest.toolPermissionRequested`
+`userChoicePendingChanged`（webview 弹出 / 应答）。等待的上限是 `settings.json` 的
+`llm.userChoiceTimeoutSeconds`（specs/050 FR-006）；到期或被会话中止时 core 发
+`userChoiceCanceled` 宣告作废，并在同一处把该会话的 `waiting` 置回 false——宿主不补发
+`userChoicePendingChanged`，避免第二个写入点。`CoreRequest.toolPermissionRequested`
 （上架工具卡片、manual 模式下的宿主 diff）**不算**——它是展示同步，core 发后不等，
 执行 / 拒绝 / 弹框按本地 PermissionPolicy 的结果决定，宿主应答迟到 / 缺失都不影响
 （[specs/defects/orphan-stalls-on-permission-roundtrip](../../specs/defects/orphan-stalls-on-permission-roundtrip.md)；

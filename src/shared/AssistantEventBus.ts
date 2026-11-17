@@ -230,6 +230,26 @@ export type CoreEvent =
    * `sessionId` 是发起方会话 id，宿主按它路由到发起方 Connection，再以
    * `UiEvent.agentReplyReceived` 回投；`fromSessionId` 是子代理自己的会话 id。
    */
+  /**
+   * `CoreRequest.userChoice` 已被 Core 作废（specs/050 FR-001）。
+   *
+   * Core 在放弃一次等待时就地发出：等待用户回复超时（`settings.json` 的
+   * `llm.userChoiceTimeoutSeconds`）或该会话被 abort 中止。宣告是这次请求生命周期的
+   * 终点，Core 侧不再接受它的应答——迟到的应答由总线 pending 表丢弃。
+   *
+   * `choiceRequestId` 是 Core 发起请求时生成并随 `CoreRequest.userChoice` 下发的标识：
+   * 宿主据此精确拒答那一条 pending，而不是把该会话随后新发起的请求一并清掉。
+   * 宿主侧的 `choiceId` 是投递时刻的展示句柄（webview 重建会重新生成），不承担跨重建的
+   * 身份，因此不用于匹配。
+   *
+   * `reason` 只影响文案与工具结果，不改变宿主的收敛动作（都是拒答 + 收框 + waiting 归零）。
+   */
+  | {
+      type: 'userChoiceCanceled';
+      sessionId: string;
+      choiceRequestId: string;
+      reason: 'timedOut' | 'aborted';
+    }
   | {
       type: 'crossWorkspaceAgentReplyRequested';
       sessionId: string;
@@ -290,6 +310,13 @@ export type CoreRequest =
        */
       agentMode: AgentMode;
     }
+  /**
+   * 用户选择 / 权限确认请求（specs/026 的两种 `kind` 共用）。
+   *
+   * `options.choiceRequestId` 由 Core 在发起时生成并随请求下发：WebViewUI 的映射把它
+   * 透传到宿主队列，`CoreEvent.userChoiceCanceled` 用同一个值精确撤回这次请求
+   * （specs/050 FR-001）。宿主生成的 `choiceId` 是展示句柄，不承担这个身份。
+   */
   | { type: 'userChoice'; sessionId: string; options: UserChoiceOptions }
   /**
    * 跨工作区派发子代理（specs/023 FR-002；specs/025 FR-005）。

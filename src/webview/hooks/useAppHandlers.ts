@@ -127,6 +127,8 @@ export interface UseAppHandlersReturn {
   handleUserChoiceResponse: (index: number, reply?: string) => void;
   handleUserChoiceSubmit: (inputValue: string) => void;
   handleAnswersSubmit: (answers: UserChoiceAnswer[]) => void;
+  /** 用户主动放弃这次选择（specs/050 FR-004） */
+  handleUserChoiceCancel: () => void;
   handleChoiceResponse: (index: number) => void;
   handleToggleFileHidden: () => void;
   toggleSubSession: (sessionId: string) => void;
@@ -628,6 +630,37 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     handleUserChoiceResponse(index);
   }, [handleUserChoiceResponse]);
 
+  /**
+   * 用户主动放弃这次选择（specs/050 FR-004）。
+   *
+   * 与提交走同一条清理路径，区别是给宿主发 `canceled` 而不是答案：宿主以「请求得到
+   * 否定答复」收敛（权限确认按拒绝、AskUserQuestion 按工具失败，且不产出部分答案）。
+   */
+  const handleUserChoiceCancel = useCallback(() => {
+    const currentRequest = props.userChoiceRequestRef.current;
+    if (!hasHostMessageApi() || !currentRequest) return;
+
+    postMessage({
+      type: 'respondUserChoice',
+      choiceId: currentRequest.choiceId,
+      index: -1,
+      canceled: true,
+    });
+
+    props.userChoiceInputRef.current = '';
+    props.setUserChoiceRequest(null);
+    resumeFollowOnChoiceRespond();
+    if (props.currentSessionIdRef.current && props.sessionStates.has(props.currentSessionIdRef.current)) {
+      props.sessionStates.get(props.currentSessionIdRef.current)!.userChoiceRequest = null;
+    }
+    setTimeout(() => {
+      props.mainInputRef.current?.focus();
+      const currentInput = props.inputAreaRef.current?.getValue() ?? '';
+      const pos = Math.min(props.cursorPositionRef.current ?? currentInput.length, currentInput.length);
+      props.mainInputRef.current?.setSelectionRange(pos, pos);
+    }, 0);
+  }, []);
+
   const handleToggleFileHidden = useCallback(() => props.setFileHidden(prev => !prev), [props.setFileHidden]);
 
   const toggleSubSession = useCallback((sessionId: string) => {
@@ -653,6 +686,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     handleUserChoiceResponse,
     handleUserChoiceSubmit,
     handleAnswersSubmit,
+    handleUserChoiceCancel,
     handleChoiceResponse,
     handleToggleFileHidden,
     toggleSubSession,

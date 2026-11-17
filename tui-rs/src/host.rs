@@ -746,6 +746,29 @@ impl Host {
                 Vec::new()
             }
             "coreReady" => Vec::new(), // 重新推送快照后的回执；宿主侧只记录，不触发渲染
+            "userChoiceCanceled" => {
+                // Core 宣告这次提问已作废（specs/050 FR-002）：按请求标识收回覆盖层，
+                // 并对仍在等的那一帧回错误应答。
+                let session_id = event
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let choice_request_id = event
+                    .get("choiceRequestId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let frames = self.choices.cancel_by_request_id(choice_request_id);
+                for frame in frames {
+                    self.respond_error(frame, "User choice was canceled by core");
+                }
+                let mut actions = vec![Action::DismissChoice {
+                    session_id,
+                    choice_request_id: choice_request_id.to_string(),
+                }];
+                actions.extend(Vec::new());
+                actions
+            }
             other => {
                 self.log
                     .log(&format!("[host] dropped unknown CoreEvent type: {other}"));

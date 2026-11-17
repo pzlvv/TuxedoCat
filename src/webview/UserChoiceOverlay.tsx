@@ -9,6 +9,8 @@ interface UserChoiceOverlayProps {
   onChoiceResponse: (index: number) => void;
   onSubmit: (inputValue: string) => void;
   onAnswersSubmit: (answers: UserChoiceAnswer[]) => void;
+  /** 用户主动放弃这次请求（specs/050 FR-004） */
+  onCancel: () => void;
   inputFocused: boolean;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   inputSyncRef: React.MutableRefObject<string>;
@@ -21,6 +23,7 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
   onChoiceResponse,
   onSubmit,
   onAnswersSubmit,
+  onCancel,
   inputFocused,
   choiceInputRef,
   inputSyncRef,
@@ -74,6 +77,7 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
       <QuestionOverlay
         questions={userChoiceRequest.questions}
         onSubmit={onAnswersSubmit}
+        onCancel={onCancel}
         colors={colors}
       />
     );
@@ -168,6 +172,22 @@ const UserChoiceOverlay = memo(function UserChoiceOverlay({
             <line x1="22" y1="2" x2="11" y2="13" />
             <polygon points="22 2 15 22 11 13 2 9 22 2" />
           </svg>
+        </button>
+        {/* 显式取消（specs/050 FR-004）：请求仍在等待时用户主动放弃，
+            与「作废宣告」是两条方向相反的事件。 */}
+        <button
+          type="button"
+          onClick={onCancel}
+          onKeyDown={handleButtonKeyDown}
+          aria-label={t('userChoice.cancel')}
+          className="user-choice-cancel px-3 h-8 rounded-lg text-sm flex-shrink-0"
+          style={{
+            border: `1px solid ${colors.border}`,
+            color: colors.textPrimary,
+            backgroundColor: 'transparent',
+          }}
+        >
+          {t('userChoice.cancel')}
         </button>
       </div>
     </div>

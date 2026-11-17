@@ -320,7 +320,7 @@ test('滚离后提交 AskUserQuestion 答案恢复自动跟随', async () => {
 
   // AskUserQuestion 逐页选择框弹出（打开时已强制回底）
   await host.send({
-    type: 'requestUserChoice', sessionId, choiceId: 'choice-ask-1', toolName: 'AskUserQuestion',
+    type: 'requestUserChoice', sessionId, choiceId: 'choice-ask-1', choiceRequestId: 'req-ask-1', toolUseId: 'tool-ask-1', toolName: 'AskUserQuestion',
     message: '',
     questions: [{
       id: 'q1', question: '选一个方案',
@@ -370,7 +370,7 @@ test('滚离后点击权限确认选项恢复自动跟随', async () => {
   await expectAtBottom(page);
 
   await host.send({
-    type: 'requestUserChoice', sessionId, choiceId: 'choice-perm-1', toolName: 'Write',
+    type: 'requestUserChoice', sessionId, choiceId: 'choice-perm-1', choiceRequestId: 'req-perm-1', toolUseId: undefined, toolName: 'Write',
     message: 'Write 工具请求写入文件 notes.md，是否允许？',
     choices: [
       { label: '允许', description: '创建文件' },

@@ -7,7 +7,7 @@ import type { Message, QueuedMessagePayload, UserChoiceRequest, AgentMode, Think
 import type { SessionStatesStore } from '../sessionState';
 import { profileLog } from '../debug';
 import { handleStreamShowThinkingAnimation, handleStreamAiEnd, handleStreamQueryBegin, handleStreamQueryEnd, handleStreamStreamMessage, handleStreamStreamEnd, handleStreamCompressProgress } from './handlers/streamHandlers';
-import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolToolMetaData } from './handlers/toolHandlers';
+import { handleToolAddMessage, handleToolUpdateToolArgs, handleToolUpdateToolStatus, handleToolToolProgress, handleToolRequestUserChoice, handleToolUserChoiceCanceled, handleToolToolMetaData } from './handlers/toolHandlers';
 import { handleConversationRewoundDone, handleConversationInitSessionState, handleConversationSetConversationListOwner, handleConversationSetCurrentFile, handleConversationSetTitle, handleConversationSetWorkMode, handleConversationConversationsData, handleConversationSessionRuntimeStates, handleConversationSessionTodos, handleConversationSessionCompletionAttention, handleConversationConversationLoaded, handleConversationMessagesReplaced, handleConversationQueuedMessage, handleConversationClearQueuedMessage, handleConversationSmartNamingResult, handleConversationExpandCompactDone } from './handlers/conversationHandlers';
 import { handleConfigSetTheme, handleConfigSetModel, handleConfigSetAgentMode, handleConfigSetThinkingMode, handleConfigSetWebSearch, handleConfigSetMcpServers, handleConfigSetModels, handleConfigSetSkills, handleConfigSetWorkspaces, handleConfigContextLimitUpdated, handleConfigNotice, handleConfigSettingsDefaults, handleConfigProviderModelsResult, handleConfigSetNewConversationDefaults, handleConfigLlmConfigSaved, handleConfigShowLLMConfig, handleConfigBalanceUpdate, handleConfigFocusInput, handleConfigActivatePrewarmedView } from './handlers/configHandlers';
 import type { HandlerContext } from './handlers/handlerContext';
@@ -345,6 +345,11 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           break;
         case 'requestUserChoice':
           handleToolRequestUserChoice(msg, ctx);
+          break;
+        case 'userChoiceCanceled':
+          // Core 宣告这次提问已作废（回复超时 / 会话 abort）：按请求标识收框
+          // （specs/050 FR-002）。
+          handleToolUserChoiceCanceled(msg, ctx);
           break;
         case 'conversationRewoundDone':
           // 对话级回退完成（specs/039 FR-006）：消息序列已由 messagesReplaced 整批替换，

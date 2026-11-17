@@ -89,6 +89,13 @@ export interface SettingsSnapshot {
     maxTokens: number;
     /** 是否上报 usage 统计（`llm.enableUsageStats`，默认开） */
     enableUsageStats: boolean;
+    /**
+     * 用户回复选择框的超时秒数（`llm.userChoiceTimeoutSeconds`，specs/050 FR-006）。
+     *
+     * Core 侧 `waiting_request` 的等待上限；超时后该提问作废并推 `userChoiceCanceled`。
+     * 正整数才接受，非数值 / ≤ 0 / 缺省取默认值 1800。
+     */
+    userChoiceTimeoutSeconds: number;
     /** provider 表，键为 provider key */
     providers: Record<string, SettingsSnapshotProvider>;
     /**
@@ -116,6 +123,13 @@ const DEFAULT_WEB_SEARCH = true;
 const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'high';
 const DEFAULT_AGENT_MODE: AgentMode = 'risk';
 const DEFAULT_ENABLE_USAGE_STATS = true;
+/**
+ * 用户回复 AskUserQuestion / 权限确认的超时（秒，specs/050 FR-006）。
+ *
+ * Core 的 `waiting_request` 用它作等待上限，超时即作废该请求并推 `userChoiceCanceled`。
+ * 取值必须 > 0；非数值 / ≤ 0 / 缺省都落到这个默认值——默认值只有这一处（铁律 6）。
+ */
+const DEFAULT_USER_CHOICE_TIMEOUT_SECONDS = 1800;
 
 /**
  * 兜底模型限值：注册表未命中时使用（对齐 `FALLBACK_MODEL_PARAMS`）。
@@ -299,6 +313,12 @@ export function resolveSettingsSnapshot(rawSettings: unknown): SettingsSnapshot 
       enableUsageStats: typeof llm.enableUsageStats === 'boolean'
         ? llm.enableUsageStats
         : DEFAULT_ENABLE_USAGE_STATS,
+      // 与 `maxTokens` 同口径：Core 侧是 `u64`，非正数 / 小数 / 非数值一律回落默认值，
+      // 否则整份快照被 Core 拒收、Core 永远不就绪（specs/050 FR-006）。
+      userChoiceTimeoutSeconds:
+        isU64(llm.userChoiceTimeoutSeconds) && llm.userChoiceTimeoutSeconds > 0
+          ? llm.userChoiceTimeoutSeconds
+          : DEFAULT_USER_CHOICE_TIMEOUT_SECONDS,
       providers,
       modelLimitsFallback: FALLBACK_LIMITS,
     },

@@ -85,6 +85,13 @@ pub struct LlmSettings {
     /// 模型限值的全局兜底（未配置 provider、或模型未命中任何 `model_limits`）
     #[serde(rename = "modelLimitsFallback")]
     pub model_limits_fallback: ModelLimits,
+    /// 用户回复选择框的超时秒数（`llm.userChoiceTimeoutSeconds`，specs/050 FR-006）。
+    ///
+    /// 默认值由 UI 侧的 `src/shared/settingsSnapshot.ts` 规范化后下发，Core 不声明常量；
+    /// `Option` 只用于兼容缺该字段的旧快照，缺省同样走 `config::user_choice_timeout()`
+    /// 的同一处回落。
+    #[serde(rename = "userChoiceTimeoutSeconds", default)]
+    pub user_choice_timeout_seconds: Option<u64>,
 }
 
 /// `mcp` 段

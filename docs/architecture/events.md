@@ -88,11 +88,11 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 83 个事件：
+四组词汇表，共 84 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
-| `CoreEvent` | core → UI | 单向事实通知 | 33 | `WebViewUI`（`onCoreEvents` 映射表） |
+| `CoreEvent` | core → UI | 单向事实通知 | 34 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 28 | Core 进程的 `dispatch_ui_event` 分派 |
 | `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 18 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
@@ -164,6 +164,7 @@ export type CoreRequestHandlers = {
 | 30 | `crossWorkspaceAgentEnded` | `sessionId`（发起方会话）, `subSessionId` | `engine.rs`（`run_sub_agent` 收尾：跨工作区子代理结束 / 中止 / 失败） | `onCrossWorkspaceAgentEnded`（转成 `UiEvent.crossWorkspaceAgentCompleted`） | 无（跨 Core 转发） |
 | 31 | `todosChanged` | `sessionId`, `todos: readonly TodoEntry[]` | `engine.rs`（`emit_tool_outcome`：TodoWrite 成功后推送全量清单） | `onTodosChanged` | `sessionTodos`（空数组即该会话没有 Todo，按钮不渲染） |
 | 32 | `conversationRewoundDone` | `sessionId`, `targetUuid`, `removed`, `files`（`{path, ok, error}` 数组）, `skipped`, `hadBash`, `error` | `main.rs`（`conversationRewound` 的处理：截断后重发 `messagesReplaced`，再发本事件带结果摘要；`error` 非空 = 整次被拒） | `conversationRewoundDone`（处理器同名） | `conversationRewoundDone`（webview 收确认框并提示失败原因；成功态由回执 system 消息呈现） |
+| 33 | `userChoiceCanceled` | `sessionId`, `choiceRequestId`, `reason`（`'timedOut'` / `'aborted'`） | `engine.rs`（`waiting_request`：回复超时，上限取 `settings.json` 的 `llm.userChoiceTimeoutSeconds`；`abort_session_scope`：会话中止时先 drop 该请求的应答通道打断等待，再由 `waiting_request` 统一宣告。两条路径都汇到 `engine.rs` 的 `cancel_user_choice` 这一个出口） | `cancelUserChoice`（`UserChoiceManager`：按标识拒答队列 pending + 收框；`waiting` 由 core 自己置 false，宿主不补发 `userChoicePendingChanged`） | `userChoiceCanceled` |
 
 第 1–10 项是渲染类 handler，第 11–32 项是控制面与事实通知 handler（`WebViewUI` 内部的分区，不是事件类型的分组）。
 >
@@ -177,7 +178,7 @@ export type CoreRequestHandlers = {
 | # | `type` | 载荷 | core 侧触发点 | 处理方 | 结果类型 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完；工具不存在与**授权前被中断**两条失败路径同样发一次，`permResult` 恒 `allow`，只为让 UI 上架卡片） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
-| 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `questions`） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
+| 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（两种 `kind` 都带 `choiceRequestId`——core 发起时生成的请求标识，`userChoiceCanceled` 用同一个值精确撤回；`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `toolUseId` / `questions`，`toolUseId` 供 webview 在该工具收尾时收框） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
 | 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链 / specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
 | 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → 本地 fs / 传输专用 SshClient 执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId, paths }` / `{ error }`（`paths` = 已搬运文件相对被传输子树根的路径，工具卡片展示清单用） |
 
@@ -227,8 +228,8 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | 23 | `remoteSubAgentStarted` | `sessionId`, `workspacePath`, `role`, `prompt`, `description`, `originWorkspaceId`, `originSessionId`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，目标 Core 全量应用不按角色裁剪，specs/024 FR-004 / specs/025 FR-005） | `WebViewUI.requestCrossWorkspaceAgent`（宿主直接下发到目标 Connection，不按会话路由——该会话在目标 Core 里尚不存在） | `Core::start_remote_sub_agent`（建顶层普通会话 + 写 `creator` meta + 组装 SystemPrompt + 起后台消费循环，specs/025 FR-001/FR-002/FR-006） |
 | 24 | `agentReplyReceived` | `sessionId`（发起方会话）, `fromSessionId`, `content` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentReplyRequested` 翻译成本事件） | `Core::on_agent_reply_received` → 普通 agent 消息入队（与本地子代理 Reply 同口径；目标会话已中止时只落上下文与消息流，不拉起新一轮） |
 | 25 | `crossWorkspaceAgentCompleted` | `sessionId`（发起方会话）, `subSessionId` | `WebViewUI`（把目标 Core 的 `CoreEvent.crossWorkspaceAgentEnded` 翻译成本事件） | `Core::on_cross_workspace_agent_completed`（注销远程登记 + 释放并发槽位 + 刷新运行时快照） |
-| 26 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
-| 27 | `storageChanged` | `sessionId`, `storage` | `setConversationStorage`（新建对话空状态的勾选框） | Core 的 `Core::set_session_storage`（改内存态归属；`meta.json` 已存在即忽略——归属仍是一次写定，[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)） |
+| 27 | `queryRetryRequested` | `sessionId` | `retryQuery`（失败 once 通知上的「重试」按钮，specs/036；webview 点击时本地剥除该 once 节点） | `Core::on_query_retry_requested`（以既有上下文重跑一轮：登记 `pending_retry` 槽位拉起消费循环跑 `run_turn(None)`，不追加、不落盘任何输入消息；忙碌 / spin / 已收尾子代理幂等丢弃并记日志） |
+| 28 | `storageChanged` | `sessionId`, `storage` | `setConversationStorage`（新建对话空状态的勾选框） | Core 的 `Core::set_session_storage`（改内存态归属；`meta.json` 已存在即忽略——归属仍是一次写定，[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)） |
 
 **`changes` 数组而不是可选字段**：Core 的 `history.update_context` 是**部分合并**语义（未列出的字段保持原值），用数组而不是一组可选字段，是为了同时满足「一次可带多个字段」（如 `currentFile` + `selectedLines`）和「不用 `?`」。
 
@@ -401,8 +402,7 @@ core 侧没有对应的直接注入入口；宿主 locale 只在宿主进程内�
   展示同步（卡片上架、manual 宿主 diff；Edit / Write 的 diff `_meta` 由 Core 在权限判定后自己落盘），迟到 / 缺失不影响执行
   （[specs/defects/orphan-stalls-on-permission-roundtrip](../../specs/defects/orphan-stalls-on-permission-roundtrip.md)）；
   这是「后台运行」（[specs/031](../archive/specs/031-remote-detached-tasks/spec.md)）能持续推进的前提。
-- `userChoice`：core 阻塞等待应答，不额外加超时；靠 `UserChoiceQueue` 的 pending 补偿（webview 重建后重新弹出）；
-  会话关闭时拒绝该会话的 pending——Core 进程不持有宿主队列，由宿主 `UserChoiceManager.dropSession` 补这一刀。
+- `userChoice`：core 阻塞等待应答，上限取 `settings.json` 的 `llm.userChoiceTimeoutSeconds`（缺省 1800 秒，specs/050 FR-006）；到期或被会话 abort 时发 `userChoiceCanceled`（`reason` 区分）并置回 `waiting`，宿主据此拒答 pending 并收框。打断不靠轮询：abort 侧 drop 掉应答通道，等待中的 `recv_timeout` 立刻返回 `Disconnected`。webview 重建仍靠 `UserChoiceQueue` 的 pending 补偿；会话关闭时拒绝该会话的 pending（宿主 `UserChoiceManager.dropSession`）。
 
 ## 7. 新增事件时的检查清单
 

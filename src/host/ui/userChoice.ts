@@ -55,7 +55,13 @@ export class UserChoiceManager {
    */
   private diffSnapshotSessionId: string | undefined;
   /** 按 choiceId 存储的 pending 用户选择回调 */
-  public pendingUserChoices: Map<string, { sessionId: string; resolve: (value: UserChoiceResult) => void }> = new Map();
+  public pendingUserChoices: Map<string, {
+    sessionId: string;
+    /** Core 侧请求标识：作废宣告按它精确撤回（specs/050 FR-001） */
+    choiceRequestId: string;
+    resolve: (value: UserChoiceResult) => void;
+    reject: (reason: unknown) => void;
+  }> = new Map();
   /**
    * 用户选择框弹出后的可选回调（当前无人传入，保留给宿主做额外动作）。
    * waiting 状态已由 core 的 `sessionRuntime` → `CoreEvent.sessionRuntimeChanged`
@@ -219,8 +225,12 @@ export class UserChoiceManager {
       this.postToWebview(sessionID, {
         type: 'requestUserChoice',
         choiceId,
+        choiceRequestId: options.choiceRequestId,
         toolName: options.toolName,
         message: '',
+        // 提问由 AskUserQuestion 工具发起：把 toolUseId 交给 webview，工具收尾时收框
+        // （specs/050 FR-003）。
+        toolUseId: options.toolUseId,
         questions: options.questions.map((question) => ({
           id: question.id,
           question: question.question,
@@ -238,7 +248,11 @@ export class UserChoiceManager {
       this.postToWebview(sessionID, {
         type: 'requestUserChoice',
         choiceId,
+        choiceRequestId: options.choiceRequestId,
         toolName: options.toolName,
+        // 权限确认：确认框由 Core 在权限判定后单独发起，没有「发起它的工具调用」，
+        // 收起只由 userChoiceCanceled 负责（specs/050 FR-003）。
+        toolUseId: undefined,
         message: options.message,
         choices: options.choices,
       });
@@ -248,16 +262,56 @@ export class UserChoiceManager {
     emitUserChoicePending(sessionID, true);
     this.onChoiceShown?.(sessionID);
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.pendingUserChoices.set(choiceId, {
         sessionId: sessionID,
+        choiceRequestId: options.choiceRequestId,
         resolve: (value) => {
           this.closePreview();
           // 用户已响应：waiting 解除
           emitUserChoicePending(sessionID, false);
           resolve(value);
-        }
+        },
+        // 作废（超时 / abort / 用户取消）走 reject：等待方按失败收敛，
+        // 不能当成「用户答了」。waiting 的解除由 Core 的作废宣告负责，这里不重复发。
+        reject: (reason: unknown) => {
+          this.closePreview();
+          reject(reason);
+        },
       });
+    });
+  }
+
+  /**
+   * Core 宣告一次 userChoice 已作废（specs/050 FR-001 / FR-002）。
+   *
+   * 只做三件事，且只对**这一个**请求标识生效：
+   * 1. 队列里尚未投递 / 已投递的 pending 以「已作废」拒答（`onSessionLoaded` 之后不再投递）；
+   * 2. 已弹出条目的 Promise 同样 reject，等待方按失败收敛；
+   * 3. 投递收框消息，让 webview 立刻收起选择框。
+   *
+   * 不补发 `userChoicePendingChanged`：`waiting` 由 Core 在发出宣告后自行置 false 并
+   * `emit_runtime()`，宿主再发一次就是第二个写入点（铁律 4「一份事实一个写入点」）。
+   *
+   * 找不到匹配标识是合法 no-op（宣告重复到达 / 已应答 / 会话已关闭）。
+   */
+  cancelUserChoice(sessionID: string, choiceRequestId: string): void {
+    const reason = new Error('User choice was canceled by core');
+    this.log(
+      `[UserChoiceManager] Canceling user choice ${choiceRequestId} for session ${sessionID}`,
+    );
+
+    userChoiceQueue.cancel(choiceRequestId, reason);
+
+    for (const [choiceId, entry] of this.pendingUserChoices) {
+      if (entry.choiceRequestId !== choiceRequestId) continue;
+      this.pendingUserChoices.delete(choiceId);
+      entry.reject(reason);
+    }
+
+    this.postToWebview(sessionID, {
+      type: 'userChoiceCanceled',
+      choiceRequestId,
     });
   }
 

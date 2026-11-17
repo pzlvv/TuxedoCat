@@ -18,6 +18,7 @@ import { makeTestBus } from './helpers/fixtures';
 
 const options: UserChoiceOptions = {
   kind: 'permission',
+  choiceRequestId: 'req-delivery-1',
   toolName: 'AskUserQuestion',
   message: '选一个',
   choices: [{ label: 'A' }, { label: 'B' }],

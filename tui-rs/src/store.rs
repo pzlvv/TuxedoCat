@@ -146,6 +146,8 @@ impl NoticeLevel {
 pub struct PendingChoice {
     pub session_id: String,
     pub choice_id: String,
+    /// Core 侧请求标识（specs/050 FR-001）：作废宣告按它精确撤回
+    pub choice_request_id: String,
     pub tool_name: String,
     pub message: String,
     pub choices: Vec<ChoiceItem>,
@@ -390,6 +392,11 @@ pub enum Action {
 
     // ===== 用户选择 / 权限确认 =====
     RequestUserChoice(PendingChoice),
+    /// Core 宣告这次选择已作废（specs/050 FR-002）：覆盖层收起
+    DismissChoice {
+        session_id: String,
+        choice_request_id: String,
+    },
 
     // ===== 配置面 =====
     SettingsDefaults(SettingsDefaults),
@@ -770,6 +777,23 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
             pending_choice: Some(choice.clone()),
             ..state.clone()
         },
+        Action::DismissChoice {
+            session_id,
+            choice_request_id,
+        } => {
+            // 只收起匹配的那一条：期间可能已经换成了新请求
+            let matches = state.pending_choice.as_ref().is_some_and(|choice| {
+                choice.session_id == *session_id && choice.choice_request_id == *choice_request_id
+            });
+            if matches {
+                TuiState {
+                    pending_choice: None,
+                    ..state.clone()
+                }
+            } else {
+                state.clone()
+            }
+        }
 
         // ===== 配置面 =====
         Action::SettingsDefaults(defaults) => TuiState {

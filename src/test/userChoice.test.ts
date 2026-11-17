@@ -32,8 +32,8 @@ async function run(): Promise<void> {
   });
 
   // 两个会话各挂一个待答选择回调；s1 拥有 diff 快照
-  manager.pendingUserChoices.set('c1', { sessionId: 's1', resolve: () => undefined });
-  manager.pendingUserChoices.set('c2', { sessionId: 's2', resolve: () => undefined });
+  manager.pendingUserChoices.set('c1', { sessionId: 's1', choiceRequestId: 'r1', resolve: () => undefined, reject: () => undefined });
+  manager.pendingUserChoices.set('c2', { sessionId: 's2', choiceRequestId: 'r2', resolve: () => undefined, reject: () => undefined });
   manager.saveDiffSnapshot('s1', {
     beforeContent: 'before',
     afterContent: 'after',

@@ -544,6 +544,18 @@ impl SessionState {
     }
 }
 
+/// 被 abort 打断的 `userChoice` 帧 id（specs/050 FR-001）。
+///
+/// 打断靠 drop sender，等待方只能拿到 `Disconnected`，无法自行分辨「超时」与「被中止」；
+/// 而两者的工具结果口径不同（超时保留本轮、中止按既有语义收尾）。打断侧在这里留下原因，
+/// 等待方消费后即删——不读会话的 `cancel` 标志：那个标志会被消费循环随查询收尾复位，
+/// 事后读到的值不能代表「这次等待是被谁打断的」。
+///
+/// 进程级而非 per-session：帧 id 全局唯一，且条目只在「打断」到「等待方醒来」的极短
+/// 窗口内存在（`abort_session_scope` 不返回前等待方就会被唤醒）。
+static ABORTED_CHOICE_REQUESTS: std::sync::LazyLock<Mutex<HashSet<u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
 pub struct Core {
     pub bus: SharedBus,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
@@ -1135,6 +1147,9 @@ impl Core {
                 })
                 .unwrap_or(true);
             self.abort_foreground(session_id);
+            // 前台查询期间也可能有在途 userChoice（工具批里弹着确认框 / 提问）：中止要
+            // 一并打断，否则等待方会挂到超时上限才收敛（specs/050 FR-001 / AC-4）。
+            self.abort_pending_user_choice(session_id);
             // 本会话自己若是子代理（在它的对话视图里点了 abort），前台停了就不会再有
             // Reply：向创建者回报取消。普通会话由 `notify_creator_of_cancel` 自行
             // no-op；本会话的子代理只停前台、继续跑，不回报。
@@ -1320,6 +1335,10 @@ impl Core {
             .unwrap_or(true);
         self.abort_foreground(session_id);
         self.abort_background_tasks(session_id);
+        // 在途的 userChoice 要主动打断（specs/050 FR-001）：移除 pending 条目并 drop 它的
+        // sender，等待方阻塞在 `recv_timeout` 上会立刻返回 `Disconnected`，不需要轮询。
+        // `waiting_request` 随后按 `session_canceled` 判定原因并补发作废宣告。
+        self.abort_pending_user_choice(session_id);
         // 先递归子代理、后收集本会话：回报顺序与中止顺序一致（子代理逐层向自己的
         // 创建者回报，最内层先发）
         let children = crate::subagent::list_for_creator(session_id);
@@ -3203,15 +3222,27 @@ impl Core {
                 }
             }
         }
-        let Some(result) = self.waiting_request(UserBlockingRequest::user_choice(
+        let result = match self.waiting_request(UserBlockingRequest::user_choice(
             session_id,
             Value::Object(options),
-        )) else {
-            // 请求失败（无订阅者 / 超时）按「用户不带原因地拒绝」处理（终止本轮）。
-            return PermissionOutcome::Denied {
-                message: "用户拒绝操作".to_string(),
-                terminate: true,
-            };
+        )) {
+            Ok(result) => result,
+            // 回复超时：按拒绝收敛，但**不终止本轮**——模型可换一种方式继续
+            // （specs/050 FR-006；与「不带原因拒绝就结束本轮」的既有口径相区分）。
+            Err(UserChoiceFailure::TimedOut) => {
+                return PermissionOutcome::Denied {
+                    message: "用户未在超时时间内回复，按拒绝处理".to_string(),
+                    terminate: false,
+                };
+            }
+            // 中止 / 请求没能发出：沿用既有语义（终止本轮，*User Interrupted* 由
+            // 既有中止路径产出）
+            Err(UserChoiceFailure::Aborted | UserChoiceFailure::Unavailable) => {
+                return PermissionOutcome::Denied {
+                    message: "用户拒绝操作".to_string(),
+                    terminate: true,
+                };
+            }
         };
         if result.get("index").and_then(Value::as_i64) == Some(0) {
             return PermissionOutcome::Allowed {
@@ -3244,6 +3275,25 @@ impl Core {
     /// 等一次应答；超时从 pending 表移除，避免反复超时导致无界增长
     fn await_response(&self, id: u64, receiver: Receiver<Value>) -> Option<Value> {
         let response = bus::wait_response(receiver, Duration::from_secs(3_600));
+        if response.is_none() {
+            let mut bus = self.bus.lock().unwrap();
+            bus.cancel_request(id);
+        }
+        response
+    }
+
+    /// 按指定上限等一次应答（specs/050 FR-006 的用户回复超时）。
+    ///
+    /// 与 `await_response` 同一口径，只是上限由调用方给（`config::user_choice_timeout()`）。
+    /// 等待被打断（abort 侧 drop 了 sender）时 `recv_timeout` 立刻返回 `Disconnected`，
+    /// 因此这里不需要轮询——两条来源都只是「等不到」这一个返回 `None`。
+    fn await_response_with(
+        &self,
+        id: u64,
+        receiver: Receiver<Value>,
+        timeout: Duration,
+    ) -> Option<Value> {
+        let response = bus::wait_response(receiver, timeout);
         if response.is_none() {
             let mut bus = self.bus.lock().unwrap();
             bus.cancel_request(id);
@@ -3303,18 +3353,70 @@ impl Core {
     /// 只接受 `UserBlockingRequest`：真的在等用户的请求（`userChoice`）。用户选择框的
     /// 弹出 / 应答由 `userChoicePendingChanged` 与这里共同决定 `waiting`
     /// （`docs/core/session-runtime.md` 第 1 节）。
-    fn waiting_request(&self, request: UserBlockingRequest) -> Option<Value> {
-        let (id, receiver) = self.send_request(request.payload)?;
-        if let Some(state) = self.session_if_exists(&request.session_id) {
+    fn waiting_request(&self, request: UserBlockingRequest) -> Result<Value, UserChoiceFailure> {
+        let choice_request_id = request.choice_request_id.clone();
+        let session_id = request.session_id.clone();
+        let Some((id, receiver)) = self.send_request(request.payload) else {
+            return Err(UserChoiceFailure::Unavailable);
+        };
+        if let Some(state) = self.session_if_exists(&session_id) {
             state.lock().unwrap().waiting = true;
         }
         self.emit_runtime();
-        let response = self.await_response(id, receiver);
-        if let Some(state) = self.session_if_exists(&request.session_id) {
+        // 超时在发起时刻取一次：之后用户改设置不打断在途提问（specs/050 FR-006）
+        let timeout = crate::config::user_choice_timeout();
+        let response = self.await_response_with(id, receiver, timeout);
+        if let Some(state) = self.session_if_exists(&session_id) {
             state.lock().unwrap().waiting = false;
         }
         self.emit_runtime();
-        response
+        match response {
+            Some(value) => Ok(value),
+            None => {
+                // 两个来源收敛动作完全相同，但工具结果的口径不同，所以原因必须准。
+                // `recv_timeout` 只给出 `Disconnected`，原因由打断侧留下的标记判定。
+                let aborted = ABORTED_CHOICE_REQUESTS.lock().unwrap().remove(&id);
+                let reason = if aborted {
+                    UserChoiceEnd::Aborted
+                } else {
+                    UserChoiceEnd::TimedOut
+                };
+                self.cancel_user_choice(&session_id, &choice_request_id, reason);
+                Err(match reason {
+                    UserChoiceEnd::TimedOut => UserChoiceFailure::TimedOut,
+                    UserChoiceEnd::Aborted => UserChoiceFailure::Aborted,
+                })
+            }
+        }
+    }
+
+    /// 主动打断该会话在途的 `userChoice`（specs/050 FR-001）。
+    ///
+    /// 委托总线：移除 pending 条目并 drop sender，等待方立刻从 `recv_timeout` 拿到
+    /// `Disconnected`。作废宣告由等待方（`waiting_request`）统一发出，这里只负责打断。
+    fn abort_pending_user_choice(&self, session_id: &str) {
+        let mut bus = self.bus.lock().unwrap();
+        let aborted = bus.abort_pending_user_choice(session_id);
+        drop(bus);
+        if aborted.is_empty() {
+            return;
+        }
+        // 记下「这次等待是被 abort 打断的」：等待方随后的 `recv_timeout` 只会拿到
+        // `Disconnected`，分不清超时与打断，靠这里显式留下的原因判定（specs/050 FR-001）。
+        ABORTED_CHOICE_REQUESTS.lock().unwrap().extend(aborted);
+    }
+
+    /// 宣告一次 `userChoice` 作废（specs/050 FR-001 的唯一出口）。
+    ///
+    /// `waiting` 不在这里改：调用方（`waiting_request`）随后统一置 false 并
+    /// `emit_runtime()`，保持「一份事实一个写入点」。
+    fn cancel_user_choice(&self, session_id: &str, choice_request_id: &str, reason: UserChoiceEnd) {
+        self.emit(json!({
+            "type": "userChoiceCanceled",
+            "sessionId": session_id,
+            "choiceRequestId": choice_request_id,
+            "reason": reason.as_wire(),
+        }));
     }
 }
 
@@ -3339,13 +3441,26 @@ impl HostRenderRequest {
 /// 调用方无法把别的请求类型塞进标记 `waiting` 的路径。
 struct UserBlockingRequest {
     session_id: String,
+    /// Core 侧请求标识（specs/050 FR-001）：宿主按它精确撤回这一次请求。
+    /// 在 `user_choice` 内生成，与服务端载荷里的 `options.choiceRequestId` 同源。
+    choice_request_id: String,
     payload: Value,
 }
 
 impl UserBlockingRequest {
-    fn user_choice(session_id: &str, options: Value) -> Self {
+    fn user_choice(session_id: &str, mut options: Value) -> Self {
+        let choice_request_id = crate::util::unique_id("choice");
+        // 标识进 options 内层：宿主的 `UserChoiceOptions` 带着它走到 webview，
+        // 作废事件带同一个值回来（`docs/architecture/events.md` 第 2.2 节）。
+        if let Some(object) = options.as_object_mut() {
+            object.insert(
+                "choiceRequestId".to_string(),
+                json!(choice_request_id.clone()),
+            );
+        }
         Self {
             session_id: session_id.to_string(),
+            choice_request_id,
             payload: json!({
                 "type": "userChoice",
                 "sessionId": session_id,
@@ -3353,6 +3468,38 @@ impl UserBlockingRequest {
             }),
         }
     }
+}
+
+/// `userChoice` 的作废原因（specs/050 FR-001）：只影响文案与工具结果，不改变宿主的收敛动作。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UserChoiceEnd {
+    /// 等待用户回复超时（`settings.json` 的 `llm.userChoiceTimeoutSeconds`）
+    TimedOut,
+    /// 该会话被 abort 中止
+    Aborted,
+}
+
+impl UserChoiceEnd {
+    fn as_wire(self) -> &'static str {
+        match self {
+            UserChoiceEnd::TimedOut => "timedOut",
+            UserChoiceEnd::Aborted => "aborted",
+        }
+    }
+}
+
+/// `waiting_request` 没等到应答的原因（specs/050 FR-006）。
+///
+/// 让「为什么没等到」由类型承载：`request_user_choice` 与 `run_ask_user_question`
+/// 的超时 / 中止收敛口径不同，靠调用点自己分辨容易漏。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UserChoiceFailure {
+    /// 等待用户回复超时
+    TimedOut,
+    /// 会话被 abort 中止
+    Aborted,
+    /// 请求没能发出（总线未接线 / 写帧失败）
+    Unavailable,
 }
 
 /// 权限决策结果。`updated_input` 只在 UI / 权限层改写了入参时出现，
@@ -3743,11 +3890,21 @@ fn execute_tool(
     // AskUserQuestion 的问答回调：把已组装的 `UserChoiceOptions` 经
     // `CoreRequest.userChoice` 发给宿主并阻塞等待应答。
     let user_choice_session = session_id.to_string();
+    let user_choice_tool_use_id = tool_use_id.to_string();
     let user_choice_core = Arc::clone(core);
     let user_choice: tools::UserChoiceFn = Arc::new(move |options: &Value| {
+        // 发起这次提问的工具调用 id 随请求下发（specs/050 FR-003）：webview 在该工具
+        // 产出结果时按它收框，不需要等宿主再发一条撤回消息。
+        let mut options = options.clone();
+        if let Some(object) = options.as_object_mut() {
+            object.insert(
+                "toolUseId".to_string(),
+                json!(user_choice_tool_use_id.clone()),
+            );
+        }
         user_choice_core.waiting_request(UserBlockingRequest::user_choice(
             &user_choice_session,
-            options.clone(),
+            options,
         ))
     });
     // 隔离工作视图句柄（specs/045）：只有归属为隔离视图的会话才有。挂载失败时为

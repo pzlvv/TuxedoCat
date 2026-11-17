@@ -4329,6 +4329,24 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
         history::load_metadata("s1", &workspace).expect("meta")["onceMessage"]["content"],
         "*User Interrupted*"
     );
+
+    // specs/050 FR-001 / AC-4：abort 主动打断在途 userChoice 并宣告作废。
+    // 打断靠 drop sender（等待方立刻拿到 Disconnected），不是轮询会话 cancel 标记。
+    let canceled = harness
+        .sink
+        .events_of("userChoiceCanceled")
+        .into_iter()
+        .next()
+        .expect("abort 后应发一条 userChoiceCanceled");
+    assert_eq!(canceled["sessionId"], "s1");
+    assert_eq!(canceled["reason"], "aborted");
+    let issued = harness.sink.requests_of("userChoice");
+    assert_eq!(issued.len(), 1, "一次提问只发一个 userChoice 请求");
+    // 宣告里的标识与请求下发的标识同源：宿主据此精确撤回那一条 pending
+    assert_eq!(
+        canceled["choiceRequestId"], issued[0]["options"]["choiceRequestId"],
+        "作废宣告必须带发起时下发的同一 choiceRequestId"
+    );
 }
 
 #[test]
@@ -9888,4 +9906,58 @@ fn finished_sub_agent_does_not_report_cancel() {
     crate::subagent::reset_for_test();
     assert_eq!(snapshot.queued, 0, "已收尾的子代理不回报取消");
     assert_eq!(snapshot.notices.len(), 0, "已收尾的子代理不回报取消");
+}
+
+/// specs/050 FR-006 / AC-13 / AC-17：回复超时后作废宣告发出，
+/// 权限确认按拒绝收敛且**不终止本轮**（结果仍交回模型）。
+#[test]
+fn user_choice_timeout_cancels_the_request_and_keeps_the_turn_going() {
+    let sandbox = Sandbox::new("engine-user-choice-timeout");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            // 破坏性命令是 risk 模式下唯一仍会 ask 的一类
+            openai_tool_sse("call_1", "Bash", r#"{"command":"dd if=/dev/zero of=x"}"#)
+        } else {
+            openai_text_sse(&["超时后继续"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "risk");
+
+    // 把回复超时压到 1 秒：不真等 1800 秒，也不改 engine 里的分支逻辑。
+    // 在既有快照上只改这一个字段——整份替换会把 providers 清空，LLM 就不可达了。
+    {
+        let mut snapshot = crate::settings::settings_snapshot().expect("snapshot after prepare");
+        snapshot.llm.user_choice_timeout_seconds = Some(1);
+        crate::settings::apply_settings_snapshot(snapshot, Vec::new());
+    }
+
+    // userChoice 不应答 → 走超时分支（模拟用户一直不点）
+    let harness =
+        EngineHarness::start_ignoring(&["userChoice"], Capture::new(), |_| Some(json!({})));
+    submit(&harness, "s1", "执行危险命令", "u-1");
+    assert!(harness.wait_query_end());
+
+    let canceled = harness
+        .sink
+        .events_of("userChoiceCanceled")
+        .into_iter()
+        .next()
+        .expect("超时后应发一条 userChoiceCanceled");
+    assert_eq!(canceled["reason"], "timedOut");
+
+    // AC-17：按拒绝收敛，但本轮不终止——模型拿到 tool_result 并产出第二轮文本
+    let result = harness.sink.event_of("toolResult").expect("toolResult");
+    assert_eq!(result["status"], "error");
+    assert!(
+        result["output"].as_str().unwrap_or("").contains("超时"),
+        "拒绝原因应点明是超时，实际: {}",
+        result["output"]
+    );
+    assert_eq!(
+        harness.sink.events_of("toolResult").len(),
+        1,
+        "一次提问只产生一张结果卡片"
+    );
+
+    crate::settings::reset_settings_snapshot();
 }

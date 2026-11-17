@@ -202,6 +202,7 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
 | `llm.model` | 顶层遗留模型名；只在没有会话级 provider 覆盖时优先于 provider 默认模型 |
 | `llm.maxTokens` | 配置级输出上限（与模型限值取更严的那个） |
 | `llm.enableUsageStats` | 是否上报 usage 统计 |
+| `llm.userChoiceTimeoutSeconds` | 用户回复选择框的超时秒数（specs/050 FR-006）；缺省 1800，非正整数回落该值 |
 | `llm.providers` | provider 表：`baseURL` / `apiKey` / `models` / `defaultModel` / `modelLimits` |
 | `llm.modelLimitsFallback` | 模型限值的全局兜底（未配置 provider、或模型未命中任何 `modelLimits`） |
 | `mcp.enabled` | 全局默认启用的 MCP 服务器名列表 |

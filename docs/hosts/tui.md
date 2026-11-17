@@ -201,7 +201,7 @@ tui-rs/
 | CoreRequest | 行为 |
 | --- | --- |
 | `toolPermissionRequested` | 上架工具卡片（normal）；Edit/Write 且带 diff 时保存 diff 快照，manual 模式在确认框**之前**弹终端 diff 覆盖层；permResult 原样应答（'ask' 的确认框由随后的 `userChoice` 发出，不在这里弹） |
-| `userChoice` | 按会话入队（每会话最多一个，旧请求以错误帧收场）；会话 open（== 当前显示）立即弹覆盖层并上报 `userChoicePendingChanged(true)`，未 open 保留、会话打开时重投 |
+| `userChoice` | 按会话入队（每会话最多一个，旧请求以错误帧收场）；会话 open（== 当前显示）立即弹覆盖层并上报 `userChoicePendingChanged(true)`，未 open 保留、会话打开时重投；`CoreEvent.userChoiceCanceled` 到达时按 `choiceRequestId` 收回覆盖层并以错误帧收场（specs/050 FR-002） |
 
 ### 5.3 用户输入 → UiEvent / UiRequest
 
