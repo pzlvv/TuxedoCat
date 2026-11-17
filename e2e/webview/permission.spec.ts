@@ -28,6 +28,7 @@ async function requestPermission(sessionId: string): Promise<void> {
   await handle.host.send({
     type: 'requestUserChoice',
     sessionId,
+    choiceRequestId: 'req-choice-e2e-1',
     choiceId: 'choice-e2e-1',
     toolName: 'Write',
     message: 'Write 工具请求写入文件 notes.md，是否允许？',

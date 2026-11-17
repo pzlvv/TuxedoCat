@@ -668,7 +668,7 @@ const App = () => {
     handleEditQueuedMessage, handleDeleteQueuedMessage,
     handleEditIdleSuspended, handleDeleteIdleSuspended,
     handleCompress, handleUserChoiceResponse, handleUserChoiceSubmit,
-    handleAnswersSubmit, handleChoiceResponse, handleToggleFileHidden,
+    handleAnswersSubmit, handleUserChoiceCancel, handleChoiceResponse, handleToggleFileHidden,
     toggleSubSession: _toggleSubSession,
   } = useAppHandlers(appHandlerProps as any);
 
@@ -1052,6 +1052,13 @@ const App = () => {
       // 只在选择框模式下响应
       if (!userChoiceRequest) return;
 
+      // Esc 放弃这次选择（specs/050 FR-004）：在文本输入框里同样生效，语义就是「退出」。
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleUserChoiceCancel();
+        return;
+      }
+
       // 如果焦点在选择框的文本输入框中，不响应数字键
       if (document.activeElement === choiceInputRef.current) return;
 
@@ -1069,7 +1076,7 @@ const App = () => {
 
     window.addEventListener('keydown', handleGlobalKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleGlobalKeyDown, { capture: true });
-  }, [userChoiceRequest]);
+  }, [userChoiceRequest, handleUserChoiceCancel]);
 
   // 选择框显示/隐藏时的焦点管理
   useEffect(() => {
@@ -1533,6 +1540,7 @@ onClick={handleNewConversation}
               onChoiceResponse={handleChoiceResponse}
               onSubmit={handleUserChoiceSubmit}
               onAnswersSubmit={handleAnswersSubmit}
+              onCancel={handleUserChoiceCancel}
               inputFocused={inputFocused}
               choiceInputRef={choiceInputRef}
               inputSyncRef={userChoiceInputRef}

@@ -23,6 +23,8 @@ use crate::store::{ChoiceItem, PendingChoice};
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ChoiceOptions {
+    /// Core 侧请求标识（specs/050 FR-001）：作废宣告按它精确撤回这一次请求
+    pub choice_request_id: String,
     pub tool_name: String,
     pub message: String,
     pub choices: Vec<ChoiceItem>,
@@ -53,6 +55,11 @@ impl ChoiceOptions {
                 .unwrap_or_default()
         };
         ChoiceOptions {
+            choice_request_id: value
+                .get("choiceRequestId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
             tool_name: value
                 .get("toolName")
                 .and_then(Value::as_str)
@@ -196,6 +203,7 @@ impl ChoiceManager {
             let choice = PendingChoice {
                 session_id: session_id.to_string(),
                 choice_id,
+                choice_request_id: options.choice_request_id.clone(),
                 tool_name: options.tool_name.clone(),
                 message: options.message.clone(),
                 choices: options.choices.clone(),
@@ -252,6 +260,7 @@ impl ChoiceManager {
         let choice = PendingChoice {
             session_id: session_id.to_string(),
             choice_id,
+            choice_request_id: options.choice_request_id.clone(),
             tool_name: options.tool_name.clone(),
             message: options.message.clone(),
             choices: options.choices.clone(),
@@ -267,6 +276,34 @@ impl ChoiceManager {
     /// 用户已应答：移除 pending，返回该会话与帧 id（应答方据此解除 waiting 并回帧）。
     pub fn respond(&mut self, choice_id: &str) -> Option<ShownChoice> {
         self.shown.remove(choice_id)
+    }
+
+    /// Core 宣告一次 userChoice 已作废（specs/050 FR-001 / FR-002）。
+    ///
+    /// 按 **Core 侧请求标识** 挑条目（不是会话 id：同会话可能已有新请求），返回需要以错误
+    /// 应答收场的帧 id 列表——这些帧 Core 已不再等待，但保持「宿主对每个请求都有应答」的
+    /// 一致性，迟到的应答由 Core 的 pending 表丢弃。
+    pub fn cancel_by_request_id(&mut self, choice_request_id: &str) -> Vec<u64> {
+        let mut frames = Vec::new();
+        if let Some((_, options, frame_id)) = self
+            .held
+            .take_if(|(_, options, _)| options.choice_request_id == choice_request_id)
+        {
+            let _ = options;
+            frames.push(frame_id);
+        }
+        let stale: Vec<String> = self
+            .shown
+            .iter()
+            .filter(|(_, entry)| entry.choice.choice_request_id == choice_request_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            if let Some(entry) = self.shown.remove(&id) {
+                frames.push(entry.frame_id);
+            }
+        }
+        frames
     }
 
     /// 会话的 UI 侧状态已释放：丢弃挂起的回调与归属该会话的 diff 快照。

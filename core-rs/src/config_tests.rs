@@ -597,3 +597,73 @@ fn record_md_modification_rejects_corrupt_meta() {
         "错误路径同样摘锁"
     );
 }
+
+/// specs/050 FR-006 / AC-14：回复超时取自快照；缺省 1800 秒。
+#[test]
+fn user_choice_timeout_reads_the_snapshot_and_falls_back_to_1800() {
+    let sandbox = Sandbox::new("config-user-choice-timeout");
+    sandbox.write_llm_settings("http://127.0.0.1:1", "risk");
+    crate::settings::apply_from_host_environment(&json!({
+        "settings": {
+            "llm": {
+                "activeProvider": "fake",
+                "webSearch": true,
+                "thinkingEffort": "high",
+                "model": "",
+                "maxTokens": 4096,
+                "enableUsageStats": true,
+                "modelLimitsFallback": {
+                    "context": 1000,
+                    "output": 100,
+                    "apiType": "OpenAI",
+                    "thinkingTokenBudget": 10,
+                    "multimodal": false,
+                },
+                "providers": {},
+                "userChoiceTimeoutSeconds": 45,
+            },
+            "mcp": { "enabled": [] },
+            "defaultAgentMode": "risk",
+        },
+        "mcpServers": [],
+    }))
+    .expect("host environment");
+    assert_eq!(
+        user_choice_timeout(),
+        Duration::from_secs(45),
+        "读快照里的秒数"
+    );
+
+    // 字段缺失（旧快照）：回落 1800，不 panic、不把等待变成 0
+    crate::settings::apply_from_host_environment(&json!({
+        "settings": {
+            "llm": {
+                "activeProvider": "fake",
+                "webSearch": true,
+                "thinkingEffort": "high",
+                "model": "",
+                "maxTokens": 4096,
+                "enableUsageStats": true,
+                "modelLimitsFallback": {
+                    "context": 1000,
+                    "output": 100,
+                    "apiType": "OpenAI",
+                    "thinkingTokenBudget": 10,
+                    "multimodal": false,
+                },
+                "providers": {},
+            },
+            "mcp": { "enabled": [] },
+            "defaultAgentMode": "risk",
+        },
+        "mcpServers": [],
+    }))
+    .expect("host environment without the timeout field");
+    assert_eq!(
+        user_choice_timeout(),
+        Duration::from_secs(1800),
+        "缺省回落 1800"
+    );
+
+    crate::settings::reset_settings_snapshot();
+}

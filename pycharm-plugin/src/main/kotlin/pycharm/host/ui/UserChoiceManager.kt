@@ -42,7 +42,12 @@ class UserChoiceManager(
     /** 队列 pending（会话未 open 时保留） */
     private val pendingChoices = ConcurrentHashMap<String, PendingChoice>()
 
-    data class ShownChoice(val sessionId: String, val future: CompletableFuture<JsonObject>)
+    data class ShownChoice(
+        val sessionId: String,
+        /** Core 侧请求标识（specs/050 FR-001）：作废宣告按它精确撤回 */
+        val choiceRequestId: String,
+        val future: CompletableFuture<JsonObject>,
+    )
 
     private fun emitUserChoicePending(sessionId: String, pending: Boolean) {
         emitUiEvent(buildJsonObject {
@@ -129,6 +134,11 @@ class UserChoiceManager(
         postToWebview(sessionId, buildJsonObject {
             put("type", "requestUserChoice")
             put("choiceId", choiceId)
+            put("choiceRequestId", choiceRequestIdOf(options))
+            // 提问由工具发起时带上 toolUseId：工具收尾时 webview 据此收框（FR-003）
+            (options["toolUseId"] as? JsonPrimitive)?.takeIf { it.isString }?.let {
+                put("toolUseId", it.content)
+            }
             put("toolName", (options["toolName"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "")
             if (kind == "question") {
                 put("message", "")
@@ -139,10 +149,38 @@ class UserChoiceManager(
             }
         })
         emitUserChoicePending(sessionId, true)
-        val shown = ShownChoice(sessionId, pending.future)
+        val shown = ShownChoice(sessionId, choiceRequestIdOf(options), pending.future)
         shownChoices[choiceId] = shown
         // 从队列摘除：已进入「已弹出」状态
         pendingChoices.remove(sessionId, pending)
+    }
+
+    /** 从 options 取 Core 侧请求标识（specs/050 FR-001）。 */
+    private fun choiceRequestIdOf(options: JsonObject): String =
+        (options["choiceRequestId"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
+
+    /**
+     * Core 宣告一次 userChoice 已作废（specs/050 FR-001 / FR-002）：按请求标识拒答并收框。
+     *
+     * 与 TS 侧同语义：只动匹配的那一条，不补发 `userChoicePendingChanged`
+     * （`waiting` 的解除由 Core 自己置位）。标识不存在是合法 no-op。
+     */
+    fun cancelUserChoice(sessionId: String, choiceRequestId: String) {
+        val reason = IllegalStateException("User choice was canceled by core")
+        log("[UserChoiceManager] Canceling user choice $choiceRequestId for session $sessionId")
+        pendingChoices[sessionId]?.takeIf { choiceRequestIdOf(it.options) == choiceRequestId }?.let {
+            pendingChoices.remove(sessionId)
+            it.future.completeExceptionally(reason)
+        }
+        for ((choiceId, shown) in shownChoices) {
+            if (shown.choiceRequestId != choiceRequestId) continue
+            shownChoices.remove(choiceId)
+            shown.future.completeExceptionally(reason)
+        }
+        postToWebview(sessionId, buildJsonObject {
+            put("type", "userChoiceCanceled")
+            put("choiceRequestId", choiceRequestId)
+        })
     }
 
     /** webview respondUserChoice 的处理（对齐 handleRespondUserChoice 的结果形状） */

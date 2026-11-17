@@ -2837,7 +2837,7 @@ fn ask_context(sandbox: &Sandbox, response: Value) -> ToolContext {
         on_progress: None,
         cancel: None,
         user_choice: Some(std::sync::Arc::new(move |_options: &Value| {
-            Some(response.clone())
+            Ok(response.clone())
         })),
         background: None,
         subagent: None,
@@ -2952,7 +2952,7 @@ fn ask_user_question_sends_question_payload() {
         cancel: None,
         user_choice: Some(std::sync::Arc::new(move |options: &Value| {
             *sink.lock().unwrap() = Some(options.clone());
-            Some(json!({ "answers": [] }))
+            Ok(json!({ "answers": [] }))
         })),
         background: None,
         subagent: None,

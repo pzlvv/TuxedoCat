@@ -239,6 +239,15 @@ export interface UserChoiceAnswer {
 
 export interface UserChoiceRequest {
   choiceId: string;
+  /**
+   * Core 侧请求标识（specs/050 FR-001）：`userChoiceCanceled` 按它匹配要收起的这一次请求。
+   */
+  choiceRequestId: string;
+  /**
+   * 发起这次提问的工具调用 id（specs/050 FR-003）：该工具产出结果时收框。
+   * 权限确认没有单一发起工具，为 `undefined`。
+   */
+  toolUseId: string | undefined;
   toolName: string;
   message: string;
   choices?: UserChoiceOption[];

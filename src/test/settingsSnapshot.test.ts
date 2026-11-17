@@ -33,6 +33,8 @@ runTests('settingsSnapshot', async () => {
   check('空配置：providers 为空表', Object.keys(empty.llm.providers).length === 0);
   check('空配置：mcp.enabled 为空数组', empty.mcp.enabled.length === 0);
   check('空配置：defaultAgentMode 回落 risk', empty.defaultAgentMode === 'risk');
+  // specs/050 FR-006：用户回复超时的预设值
+  check('空配置：userChoiceTimeoutSeconds 默认 1800', empty.llm.userChoiceTimeoutSeconds === 1800);
 
   const badRoot = resolveSettingsSnapshot('not an object');
   check('根不是对象：等价空配置', badRoot.llm.activeProvider === '' && badRoot.mcp.enabled.length === 0);
@@ -48,6 +50,23 @@ runTests('settingsSnapshot', async () => {
   check('thinking_effort 非法：回落 high', invalid.llm.thinkingEffort === 'high');
   check('defaultAgentMode 非法：回落 risk', invalid.defaultAgentMode === 'risk');
   check('mcp.enabled 非数组：回落空数组', invalid.mcp.enabled.length === 0);
+
+  // specs/050 FR-006：回复超时只接受正整数秒，其它取值回落默认值
+  const timeoutCases: Array<[string, unknown]> = [
+    ['非数值', 'soon'],
+    ['0', 0],
+    ['负数', -5],
+    ['小数', 12.5],
+  ];
+  for (const [label, value] of timeoutCases) {
+    const snapshot = resolveSettingsSnapshot({ llm: { userChoiceTimeoutSeconds: value } });
+    check(
+      `userChoiceTimeoutSeconds ${label}：回落 1800`,
+      snapshot.llm.userChoiceTimeoutSeconds === 1800,
+    );
+  }
+  const explicitTimeout = resolveSettingsSnapshot({ llm: { userChoiceTimeoutSeconds: 60 } });
+  check('userChoiceTimeoutSeconds 正整数：透传', explicitTimeout.llm.userChoiceTimeoutSeconds === 60);
 
   const whitelist = resolveSettingsSnapshot({
     llm: { thinking_effort: 'off' },

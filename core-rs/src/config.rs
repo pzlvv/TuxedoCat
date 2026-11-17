@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -722,6 +723,22 @@ pub fn default_agent_mode() -> String {
     settings::settings_snapshot()
         .map(|snapshot| snapshot.default_agent_mode)
         .unwrap_or_else(|_| "risk".to_string())
+}
+
+/// 用户回复选择框的超时（specs/050 FR-006）：快照的 `llm.userChoiceTimeoutSeconds`。
+///
+/// 快照未就绪（`hostEnvironmentProvided` 尚未到达）或旧快照缺该字段时取 1800 秒——
+/// 与 `src/shared/settingsSnapshot.ts` 的 `DEFAULT_USER_CHOICE_TIMEOUT_SECONDS` 同值。
+/// 与 `default_web_search()` 等既有访问器同型：跨语言边界无法共享常量，取值由 UI 侧
+/// 规范化后下发，这里的回落只在「快照还没到」这个瞬时窗口生效。
+pub fn user_choice_timeout() -> Duration {
+    let seconds = settings::settings_snapshot()
+        .ok()
+        .and_then(|snapshot| snapshot.llm.user_choice_timeout_seconds)
+        // 0 秒会让等待立刻超时，按「未配置」处理
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(1800);
+    Duration::from_secs(seconds)
 }
 
 /// 解析某个文件路径所属的项目根（用于把会话工作目录表落盘前归一化）

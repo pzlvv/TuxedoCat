@@ -42,6 +42,7 @@ async function askQuestions(sessionId: string, questions: Question[]): Promise<v
   await handle.host.send({
     type: 'requestUserChoice',
     sessionId,
+    choiceRequestId: 'req-ask-e2e-1',
     choiceId: 'ask-e2e-1',
     toolName: 'AskUserQuestion',
     message: '',

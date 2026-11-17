@@ -66,7 +66,8 @@ schema 完整写出 `questions` 与 `options` 的元素形状、`minItems` / `ma
 选择框一次只呈现一个问题，底部固定进度条与导航。每题显示 `header`（有则显示）、
 `question` 与选项；`multi_select: true` 用多选控件，其余为单选。多问题时提供
 「上一页」「下一页」与进度（如 `1/3`），最后一页显示「提交」；单问题只显示该页与
-「提交」，不显示导航。
+「提交」，不显示导航。逐页选择框与权限确认框都提供「取消」入口（Esc 等效）：
+取消即放弃这次请求，不产出部分答案（specs/050 FR-004）。
 
 ### FR-004：其他项与输入框
 
@@ -132,6 +133,10 @@ checkbox 置灰，普通选项全部置灰——已勾选保持勾选、未勾�
 | `options` 元素缺 `label` 或 `label` 重复 | `InputValidationError` |
 | 未知字段 | `InputValidationError`（`unrecognized_keys`） |
 | 用户关闭会话 / 视图销毁 | 挂起的请求被拒绝，工具产出错误；不残留 waiting |
+| 回复超时（`llm.userChoiceTimeoutSeconds`，缺省 1800 秒） | core 发 `userChoiceCanceled` 宣告作废并收框；工具产出点明超时的错误，不产出部分答案；本轮继续（specs/050 FR-006） |
+| 会话被 abort 而提问在途 | core 主动打断等待并宣告作废（`reason: 'aborted'`），工具按取消收尾，不残留 waiting（specs/050 FR-001） |
+| 发起工具已收尾（成功或失败） | webview 按 `toolUseId` 收回该次提问的选择框，不再等用户（specs/050 FR-003） |
+| 用户点取消 / 按 Esc | 一次性收起并恢复主输入框；宿主以「请求得到否定答复」回给 core，工具按失败收敛且不产出部分答案（specs/050 FR-004） |
 | 全部问题都跳过 | 合法回复：每条 `selected: []`，工具正常返回 |
 
 ## 非目标

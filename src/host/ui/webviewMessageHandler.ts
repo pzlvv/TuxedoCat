@@ -1075,14 +1075,27 @@ export class WebviewMessageHandler {
   }
 
   private async handleRespondUserChoice(message: Extract<WebviewToHostMessage, { type: 'respondUserChoice' }>): Promise<void> {
-    this.log(`[WebviewMessageHandler] User choice response: ${message.choiceId}, index: ${message.index}`);
+    this.log(`[WebviewMessageHandler] User choice response: ${message.choiceId}, index: ${message.index}, canceled: ${message.canceled === true}`);
     const pending = this.userChoiceManager.pendingUserChoices.get(message.choiceId);
     if (!pending) {
+      // 请求已作废（回复超时 / abort）后用户才点：宣告已收敛过，这里按 no-op
+      // （specs/050 边界：先作废则本次作答按「请求已不存在」丢弃）。
       this.log(`[WebviewMessageHandler] Warning: No pending choice found for ${message.choiceId}`);
       return;
     }
 
     this.userChoiceManager.pendingUserChoices.delete(message.choiceId);
+
+    // 用户主动取消（specs/050 FR-004）：按「请求得到否定答复」收敛，不产出部分答案。
+    // 权限确认视为拒绝；AskUserQuestion 视为工具失败。
+    if (message.canceled === true) {
+      const reason = new Error('User canceled the choice');
+      userChoiceQueue.cancel(pending.choiceRequestId, reason);
+      pending.reject(reason);
+      this.onUserChoiceResponded?.(pending.sessionId);
+      return;
+    }
+
     const result: UserChoiceResult = message.answers
       ? {
           kind: 'question',

@@ -399,6 +399,13 @@ export class WebViewUI implements WebViewUiPort {
       crossWorkspaceAgentEnded: (e) =>
         this.onCrossWorkspaceAgentEnded(e.sessionId, e.subSessionId),
 
+      // ===== 用户选择作废（specs/050 FR-001）=====
+      // Core 宣告这次 userChoice 已放弃（回复超时 / 会话 abort）：按请求标识拒答队列、
+      // 收掉 webview 选择框。`waiting` 归零由 Core 自己置位，这里不补发
+      // `userChoicePendingChanged`（避免第二个写入点）。
+      userChoiceCanceled: (e) =>
+        this.userChoiceManager.cancelUserChoice(e.sessionId, e.choiceRequestId),
+
       // ===== 日志 =====
       log: (e) => this.log(e.message),
     };

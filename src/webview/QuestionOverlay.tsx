@@ -6,6 +6,8 @@ import { t } from './i18n';
 interface QuestionOverlayProps {
   questions: UserChoiceQuestion[];
   onSubmit: (answers: UserChoiceAnswer[]) => void;
+  /** 用户主动放弃这次提问（specs/050 FR-004）：不产出部分答案 */
+  onCancel: () => void;
   colors: Colors;
 }
 
@@ -33,7 +35,7 @@ function createDrafts(questions: UserChoiceQuestion[]): Record<string, Draft> {
  * 最后一页不自动提交。有选项时末尾附「其他」卡片：指示器与内嵌输入框并排，聚焦、
  * 点击或输入都勾选「其他」，多选勾选后 checkbox 置灰锁定、与普通选项并存。
  */
-const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, colors }) => {
+const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, onCancel, colors }) => {
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() => createDrafts(questions));
   const [index, setIndex] = useState(0);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
@@ -394,6 +396,14 @@ const QuestionOverlay: React.FC<QuestionOverlayProps> = ({ questions, onSubmit, 
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="user-choice-cancel px-3 py-[7px] rounded-lg text-sm"
+            style={{ border: `1px solid ${colors.border}`, color: colors.textPrimary, background: 'transparent' }}
+          >
+            {t('userChoice.cancel')}
+          </button>
           <button
             type="button"
             disabled={index === 0}

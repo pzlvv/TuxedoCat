@@ -85,6 +85,7 @@ export function createRecordingCoreEventHandlers(): RecordingCoreEventHandlers {
 
   const handlers: MutableCoreEventHandlers = {
     coreReady: (e) => record('coreReady', e),
+    userChoiceCanceled: (e) => record('userChoiceCanceled', e),
     conversationRewoundDone: (e) => record('conversationRewoundDone', e),
     message: (e) => record('message', e),
     streamMessage: (e) => record('streamMessage', e),

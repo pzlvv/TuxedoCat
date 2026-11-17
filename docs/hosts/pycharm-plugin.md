@@ -95,6 +95,8 @@ last_reviewed: 2026-10-31
 
 与 `src/host/ui/userChoice.ts`（`UserChoiceManager`）同语义：`userChoice` 到达即上报
 `userChoicePendingChanged`；每会话至多一个等待确认，新请求顶替旧请求（旧 Promise 以
+`userChoiceCanceled` 到达时按 core 下发的 `choiceRequestId` 拒答并收框（specs/050 FR-002），
+与 TS 侧同语义、同样不补发 `userChoicePendingChanged`。
 「被顶替」错误结束）；会话未 open 保留 pending、open / 会话加载时重投；会话关闭按补偿
 语义拒答（core 不悬挂）。应答形状 `{kind:'permission'; index; reply}` /
 `{kind:'question'; answers}`。工具卡片由宿主上架；Edit / Write 的 diff `_meta` 由 Core

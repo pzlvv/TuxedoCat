@@ -124,9 +124,11 @@ pub struct BashProgress {
 
 /// 用户问答回调：把已组装好的 `UserChoiceOptions` 发给宿主并阻塞等待应答。
 ///
-/// 返回 `None` 表示请求失败（无订阅者 / 超时 / 会话已关闭）。引擎注入真实实现
-/// （走 `CoreRequest.userChoice` 帧），单测可注入桩。
-pub type UserChoiceFn = std::sync::Arc<dyn Fn(&Value) -> Option<Value> + Send + Sync>;
+/// `Err` 携带没等到的原因（specs/050 FR-006）：超时与中止对工具结果的收敛口径不同，
+/// 让原因由类型承载而不是靠调用点分辨。引擎注入真实实现（走 `CoreRequest.userChoice`
+/// 帧），单测可注入桩。
+pub type UserChoiceFn =
+    std::sync::Arc<dyn Fn(&Value) -> Result<Value, crate::engine::UserChoiceFailure> + Send + Sync>;
 
 /// 手工转后台的循环暂停信号。
 ///
@@ -5147,13 +5149,21 @@ fn run_ask_user_question(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         "questions": questions,
     });
 
-    // 请求失败（无订阅者 / 超时）走 `ToolOutcome::Error`，最终产出
-    // `Error executing AskUserQuestion: ...`。
+    // 没等到回答一律走 `ToolOutcome::Error`，最终产出
+    // `Error executing AskUserQuestion: ...`；超时与中止的文案分开（specs/050 FR-006）。
     let Some(callback) = ctx.user_choice.as_ref() else {
         return ToolOutcome::Error("Failed to request user choice".to_string());
     };
-    let Some(response) = callback(&options) else {
-        return ToolOutcome::Error("Failed to request user choice".to_string());
+    let response = match callback(&options) {
+        Ok(response) => response,
+        Err(crate::engine::UserChoiceFailure::TimedOut) => {
+            return ToolOutcome::Error(
+                "AskUserQuestion timed out waiting for the user's reply".to_string(),
+            );
+        }
+        Err(_) => {
+            return ToolOutcome::Error("Failed to request user choice".to_string());
+        }
     };
 
     let answers = response
