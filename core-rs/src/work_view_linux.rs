@@ -259,23 +259,13 @@ fn has_cap_sys_admin() -> bool {
         .unwrap_or(false)
 }
 
-/// 能力探测：本机能否为对话建立隔离工作视图（specs/045 FR-001）。
+/// 能力探测（specs/051 FR-001）。
+///
+/// 能力的唯一 owner 是 Core，判据来自**常驻代理**（specs/051）：Core 自身不 `unshare`、
+/// 不进任何命名空间，因此「代理就绪 + 它报回 overlay 实测可挂」是唯一可能的 true 来源。
+/// 失败只回 `absent` 并带上原因，不 panic、不影响帧通道（AC-28）。
 pub fn capabilities() -> Capabilities {
-    if !entered() {
-        let reason = enter_result()
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or(None)
-            .and_then(|result| result.err())
-            .unwrap_or_else(|| "Core 尚未建立用户命名空间".to_string());
-        return Capabilities::unavailable(reason);
-    }
-    // overlay 是否真的可挂：用一次性目录实测一次，失败把内核原因带出去——比只判
-    // 命名空间更能解释「为什么勾选框不出现」。
-    match probe_overlay() {
-        Ok(()) => Capabilities::available(),
-        Err(reason) => Capabilities::unavailable(reason),
-    }
+    super::super::mount_proxy::capabilities_from(&super::super::mount_proxy::probe_capabilities())
 }
 
 /// 用临时目录实测一次 overlay 挂载（含 `userxattr`）。

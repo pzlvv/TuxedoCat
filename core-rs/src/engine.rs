@@ -2703,6 +2703,29 @@ impl Core {
         // model 应用到引擎——否则 payload 覆盖会被 meta.json 的旧值反向覆盖。
         let _ = self.ensure_loaded(&session_id);
 
+        // 归属在**第一条消息**这一刻生效（specs/045 FR-001，specs/051 FR-003）。
+        //
+        // webview 的勾选只是本地意图，不上行；归属随本事件带来，这里才是唯一写入点。
+        // `set_session_storage` 自己拒绝「已有消息落盘」的改动，因此重复投递同一条
+        // 消息（如失败重发）不会把归属改回去。
+        //
+        // 能力不可用时拒绝 `isolated`（FR-010：不把永久失败的归属写进 meta.json）。
+        if let Some(storage) = payload.get("storage").and_then(Value::as_str) {
+            if storage == "isolated" {
+                let capabilities = crate::work_view::capabilities();
+                if capabilities.isolated_work_view {
+                    self.set_session_storage(&session_id, WorkViewStorage::Isolated);
+                } else {
+                    // 不静默改成 workspace：宿主闸门已经保证能力可用才会放行，
+                    // 走到这里说明接线不一致——回推事实并丢弃这条消息。
+                    self.log(&format!(
+                        "userMessageSubmitted with isolated storage but view unavailable: {}",
+                        capabilities.reason
+                    ));
+                }
+            }
+        }
+
         // spin 期间父对话完全由 SpinLoop 程序控制，禁止用户输入：UI 已禁用输入框，
         // 这里在 Core 侧兜底，丢弃任何到达的 `userMessageSubmitted`——不入队、不拉起
         // 消费循环，避免 Spin 结束后把这条消息当成下一轮 LLM 输入

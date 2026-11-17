@@ -148,6 +148,8 @@ export function handleStreamQueryEnd(
                   filePath: queued.filePath,
                   selectedLines: queued.selectedLines,
                   fileHidden: queued.fileHidden,
+                  // 排队重发沿用该会话当前的归属（specs/051 FR-003 的闸门判据读它）
+                  storage: props.workViewStorageRef.current,
                 });
               }
             }

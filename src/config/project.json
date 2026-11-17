@@ -19,7 +19,10 @@
   "core": {
     "binaryName": "tuxedo-cat-core",
     "resourceDir": "core",
-    "deployPrefix": "tuxedo-cat"
+    "deployPrefix": "tuxedo-cat",
+    "mountProxyName": "tuxedo-cat-mount-proxy",
+    "mountProxyDir": "/usr/libexec",
+    "mountProxyProtocolVersion": 1
   },
   "schemes": {
     "preview": "tuxedo-cat-preview",

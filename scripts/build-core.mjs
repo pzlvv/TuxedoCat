@@ -57,6 +57,8 @@ const CRATE_BIN_NAME = 'standalone-core';
 /** 落位目录与文件名（来自工程配置） */
 const RESOURCE_DIR = project.core.resourceDir;
 const BINARY_NAME = project.core.binaryName;
+/** Overlay 挂载代理的产物名（specs/051 FR-005：唯一来源是 `core.mountProxyName`） */
+const MOUNT_PROXY_NAME = project.core.mountProxyName;
 
 /**
  * ASAN 变体的开关环境变量（`npm run package:asan` 经 `scripts/package-asan.mjs` 注入，
@@ -843,9 +845,77 @@ function buildTarget(target, options) {
   console.log(`[build-core] ${target.dir} 指纹 → ${fingerprintPath}`);
 
   copyBundledTools(target, outDir);
+  buildMountProxy(target, outDir, options);
 
   // asan 变体额外带 MSVC 的动态 ASAN 运行库（非 win32 目标内为 no-op）
   if (options.asan) copyAsanRuntime(outDir, target);
+}
+
+/** 挂载代理的 cargo crate 目录（specs/051 FR-005） */
+const MOUNT_PROXY_MANIFEST = join(repoRoot, 'mount-proxy-rs', 'Cargo.toml');
+/** 代理在 Rust 侧的包 / 二进制名；产物名由 `core.mountProxyName` 决定 */
+const MOUNT_PROXY_CRATE_BIN = 'mount-proxy';
+
+/**
+ * 构建并落位 Overlay 挂载代理（specs/051 FR-005「分发形态」）。
+ *
+ * **只对 Linux 目标产出**：用户 / 挂载命名空间、overlayfs、setuid 语义都是 Linux 的，
+ * Windows / macOS 目标跳过并打印原因（不是静默跳过——构建日志要能回答「为什么没有」）。
+ *
+ * 代理与 Core 同目录落位：SSH 部署按「槽位里有什么就上传什么」走，同目录让上传链路
+ * 不必再区分两者的来源路径。
+ */
+function buildMountProxy(target, outDir, options) {
+  if (target.platform !== 'linux') {
+    console.log(
+      `[build-core] ${target.dir} 跳过挂载代理（只在 Linux 目标产出：命名空间 / overlayfs / setuid 都是 Linux 语义）`,
+    );
+    return;
+  }
+  const proxyTriple = target.triple;
+  if (requiresZig(proxyTriple)) requireZig(proxyTriple);
+  const cargoArgs = ['build', '--manifest-path', MOUNT_PROXY_MANIFEST, '--target', proxyTriple];
+  if (!options.debug) cargoArgs.push('--release');
+  // 代理保持零第三方依赖、零 C 依赖，但仍要 cwd = crate 目录才能读到它自己的
+  // `.cargo/config.toml` 与相对路径的 `../src/config/project.json`（build.rs 读它取
+  // 产物名与落点）。
+  //
+  // **链接器必须经环境变量显式注入**：cargo 只从**当前工作目录**逐级向上找
+  // `.cargo/config.toml`，而本函数在仓库根运行（cwd 不是 crate 目录，cargo 就看不到
+  // 那份配置 → 回退到系统 `cc` → 本机是 Windows，没有 cc，构建失败）。这一条是实测踩
+  // 出来的：不注入时 `error: linker 'cc' not found`。
+  const proxyKey = proxyTriple.replace(/-/g, '_').toUpperCase();
+  const result = spawnSync('cargo', cargoArgs, {
+    stdio: 'inherit',
+    cwd: dirname(MOUNT_PROXY_MANIFEST),
+    env: {
+      ...process.env,
+      ...crossToolchainEnv(proxyTriple),
+      [`CARGO_TARGET_${proxyKey}_LINKER`]: 'rust-lld',
+    },
+  });
+  if (result.error) {
+    console.error(`[build-core] 无法构建挂载代理：${result.error.message}`);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    console.error(`[build-core] 挂载代理构建失败（${proxyTriple}）`);
+    process.exit(1);
+  }
+  const profileDir = options.debug ? 'debug' : 'release';
+  const built = join(
+    dirname(MOUNT_PROXY_MANIFEST),
+    'target', proxyTriple, profileDir,
+    MOUNT_PROXY_CRATE_BIN,
+  );
+  if (!existsSync(built)) {
+    console.error(`[build-core] 未找到挂载代理产物：${built}`);
+    process.exit(1);
+  }
+  const outPath = join(outDir, MOUNT_PROXY_NAME);
+  copyFileSync(built, outPath);
+  chmodSync(outPath, 0o755);
+  console.log(`[build-core] ${proxyTriple} 挂载代理 → ${outPath}`);
 }
 
 /**

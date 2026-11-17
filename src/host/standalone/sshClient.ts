@@ -255,6 +255,66 @@ export class SshClient {
     });
   }
 
+  /**
+   * 在远端执行一条命令，并把 `stdin` 写进它的标准输入（写完立即关闭）。
+   *
+   * 与 `exec` 分开而不是给它加可选参数：**凭据与代理字节只走这条通道**
+   * （specs/051 FR-004 第 3 条「只写一行进提权子进程的标准输入，随后立即关闭」、
+   * FR-005 第 1 条「内容经管道、不经路径」）。可选参数会让调用点随手退回 `exec`，
+   * 而那条路径没有 stdin，密码与字节就只能进 argv——正是要禁掉的形态。
+   */
+  async execWithStdin(
+    command: string,
+    stdin: Uint8Array,
+    timeoutMs = SSH_EXEC_TIMEOUT_MS,
+  ): Promise<SshExecResult> {
+    const client = this.requireClient();
+    return new Promise<SshExecResult>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`SSH command timed out after ${timeoutMs}ms: ${command}`));
+      }, timeoutMs);
+      timer.unref();
+      const finish = (result: SshExecResult): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      client.exec(command, (error: Error | undefined, channel: ClientChannel) => {
+        if (error) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(`SSH exec failed (${command}): ${error.message}`));
+          return;
+        }
+        let stdout = '';
+        let stderr = '';
+        channel.setEncoding('utf8');
+        channel.stderr.setEncoding('utf8');
+        channel.on('data', (chunk: string) => {
+          stdout += chunk;
+        });
+        channel.stderr.on('data', (chunk: string) => {
+          stderr += chunk;
+        });
+        channel.on('close', (code: number | null) => finish({ code: code ?? null, stdout, stderr }));
+        channel.on('error', (channelError: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(`SSH exec failed (${command}): ${channelError.message}`));
+        });
+        // 写完立刻结束：留多余输入会让 `sudo -S` 拿它当自己的重试（FR-004 第 3 条）
+        channel.end(Buffer.from(stdin));
+      });
+    });
+  }
+
+
   /** 远端主目录（SFTP 会话的起始目录就是它） */
   async homeDir(): Promise<string> {
     const sftp = await this.requireSftp();

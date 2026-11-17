@@ -21,6 +21,30 @@ export const zhDict: Record<string, string> = {
   'app.openWorkspaceHint': '请先打开一个工作区以继续使用',
   'app.workViewOption': 'Overlay 对话',
 
+  /* ── MountProxyDialog.tsx（specs/051 FR-003 / FR-004）──────── */
+  'mountProxyDialog.title': '部署挂载代理',
+  'mountProxyDialog.factRootSetuid': '它会安装一个以 root 运行、带 setuid 位的程序。',
+  'mountProxyDialog.factInstallPath': '安装落点：{path}',
+  'mountProxyDialog.factTargetHost': '目标主机：{host}',
+  'mountProxyDialog.factUserns':
+    '它会让你的账户能够创建系统当前限制的用户命名空间。',
+  'mountProxyDialog.cancel': '取消',
+  'mountProxyDialog.deploy': '部署',
+  'mountProxyDialog.retry': '重试',
+  'mountProxyDialog.close': '关闭',
+  'mountProxyDialog.running': '正在部署...',
+  'mountProxyDialog.failed': '部署失败：{reason}',
+  'mountProxyDialog.needCredential': '免密 sudo 不可用。请选择下一步：',
+  'mountProxyDialog.useSudoPassword': '提供 sudo 密码',
+  'mountProxyDialog.useRootPassword': '提供 root 密码',
+  'mountProxyDialog.showCommand': '显示命令自己执行',
+  'mountProxyDialog.sudoPasswordPlaceholder': 'sudo 密码',
+  'mountProxyDialog.rootPasswordPlaceholder': 'root 密码',
+  'mountProxyDialog.submitSecret': '提交',
+  'mountProxyDialog.manualHint': '请在你自己的终端里执行这条命令，密码全程不经过宿主：',
+  'mountProxyDialog.copyCommand': '复制',
+  'mountProxyDialog.copied': '已复制',
+
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': '确定要删除 "{title}" 吗？',
   'deleteConfirm.cancel': '取消',

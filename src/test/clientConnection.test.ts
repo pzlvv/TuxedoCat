@@ -280,7 +280,7 @@ async function run(): Promise<void> {
     const harness = createClientHarness();
     const a = harness.client.openWorkspace(WS_A) as Connection;
     harness.client.assignSession('s1', WS_A);
-    harness.client.emitToCore({ type: 'userMessageSubmitted', sessionId: 's1', content: 'hi', uuid: 'u1' });
+    harness.client.emitToCore({ type: 'userMessageSubmitted', sessionId: 's1', content: 'hi', uuid: 'u1', storage: 'workspace' });
     harness.client.emitToCore({ type: 'abortRequested', sessionId: 's1' });
     check(
       '未就绪时不发出 UiEvent',
@@ -353,6 +353,7 @@ async function run(): Promise<void> {
       sessionId: 's-remote',
       content: 'hi',
       uuid: 'u-remote',
+      storage: 'workspace',
       workspacePath: '/home/pz/proj',
     });
     check(

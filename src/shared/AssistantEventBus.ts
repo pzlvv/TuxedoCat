@@ -364,14 +364,30 @@ export type CoreRequest =
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 /**
- * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/045 FR-001）。
+ * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/051 FR-001）。
  *
- * 两个字段都必选：`reason` 在能力可用时为空串（不是 `null`——「没有原因」用空串表达，
+ * 四个字段全必选：`reason` 在能力可用时为空串（不是 `null`——「没有原因」用空串表达，
  * 与其它能力应答同一口径）。
  */
 export interface StorageCapabilities {
   /** 能否为对话建立隔离工作视图（overlay：磁盘为基线 + 对话私有上层）。 */
   isolatedWorkView: boolean;
+  /**
+   * 挂载代理的就位状态（specs/051 FR-001 根字段）。
+   *
+   * `'ready'` = 已安装、协议版本匹配、且它报回 overlay 实测可挂；`'absent'` = 未安装 /
+   * 版本不匹配 / 自检未通过——三者对界面的含义都是「需要部署」。`isolatedWorkView` 为
+   * true 时本字段必然是 `'ready'`：Core 不再自己建命名空间，能力只能由代理提供。
+   */
+  mountProxy: 'ready' | 'absent';
+  /**
+   * 部署代理是否**可能**解决当下的不可用（派生字段，推导点只有 Core 一处）。
+   *
+   * 判据：平台是 Linux 且内核有 overlayfs 且代理尚未就位。宿主不重算、不缓存，每次需要
+   * 都问 Core。`isolatedWorkView` 与 `deployable` 都为 false 时界面整块入口不渲染
+   * （specs/051 FR-002）。
+   */
+  deployable: boolean;
   /** 不可用的原因；可用时为空串。 */
   reason: string;
 }
@@ -486,6 +502,14 @@ export type UiEvent =
       content: string;
       /** 消息 uuid（宿主生成；core 落盘时沿用） */
       uuid: string;
+      /**
+       * 该会话的文件存储归属（specs/045 FR-001，specs/051 FR-003）。
+       *
+       * 归属在**第一条消息**这一刻定下：勾选只是 webview 的本地意图，随本事件一起
+       * 下发才是真的生效。Core 按它决定是否建隔离工作视图；能力不可用时拒绝写入
+       * `isolated`（FR-010：不落永久失败的归属）。
+       */
+      storage: 'workspace' | 'isolated';
       /** 图片（dataUrl 形式，随消息进入 LLM content blocks） */
       images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
       /** 引用的文件路径（展示与持久化用，是否发给 LLM 由 fileHidden 决定） */

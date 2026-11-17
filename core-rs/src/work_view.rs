@@ -43,22 +43,67 @@ pub use git_view::{ChangeEntry, ChangeScope, ChangesOutcome, FileDiffOutcome, Gi
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     /// 能否为对话建立隔离工作视图。
+    ///
+    /// 判据 = 常驻代理就绪**且**它报回 overlay 实测可挂（specs/051 FR-001）。Core 自身
+    /// 不进命名空间，因此本字段为 true 必然意味着 `mount_proxy == Ready`。
     pub isolated_work_view: bool,
+    /// 挂载代理的状态（specs/051 FR-001 的根字段）。
+    pub mount_proxy: MountProxyState,
+    /// `isolated_work_view` 为 false 时，「装代理」是否**可能**解决它（派生字段）。
+    ///
+    /// 推导点只有 Core 一处：平台是 Linux + 内核支持 overlayfs + 代理尚未就绪。宿主不重算、
+    /// 不缓存，每次需要都问 Core。
+    pub deployable: bool,
     /// 不可用的原因；可用时为空串（契约成员全必选，「没有」用空串而非 `null`）。
     pub reason: String,
+}
+
+/// 挂载代理的就位状态（`UiRequest.storageCapabilitiesRequested` 的 `mountProxy`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MountProxyState {
+    /// 已安装、协议版本匹配、且它报回 overlay 实测可挂。
+    Ready,
+    /// 未安装 / 版本不匹配 / 自检未通过 / 未拉起——三者对界面的含义都是「需要部署」。
+    Absent,
+}
+
+impl MountProxyState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MountProxyState::Ready => "ready",
+            MountProxyState::Absent => "absent",
+        }
+    }
 }
 
 impl Capabilities {
     pub fn available() -> Self {
         Self {
             isolated_work_view: true,
+            mount_proxy: MountProxyState::Ready,
+            deployable: false,
             reason: String::new(),
         }
     }
 
     pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self::with_mount_proxy(MountProxyState::Absent, false, reason)
+    }
+
+    /// 代理未就绪，但**部署它可能解决问题**（Linux + 有 overlayfs）。
+    pub fn deployable(reason: impl Into<String>) -> Self {
+        Self::with_mount_proxy(MountProxyState::Absent, true, reason)
+    }
+
+    pub fn with_mount_proxy(
+        mount_proxy: MountProxyState,
+        deployable: bool,
+        reason: impl Into<String>,
+    ) -> Self {
         Self {
             isolated_work_view: false,
+            mount_proxy,
+            deployable,
             reason: reason.into(),
         }
     }

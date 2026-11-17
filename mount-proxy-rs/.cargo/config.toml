@@ -1,0 +1,13 @@
+# 挂载代理的构建目标由 scripts/build-core.mjs 通过 `--target` 指定，这里不写死默认目标。
+
+# Linux 产物走 musl（静态，与 Core 同形态，specs/051 FR-005「分发形态」）：
+# 动态链接会让 setuid 下的 `LD_*` 一族重新成为问题，因此必须静态链接，不依赖目标机器的
+# glibc 版本。
+#
+# 链接器用 rustup 自带的 rust-lld：不依赖系统上的交叉链接器（本机是 Windows，没有 cc）。
+# 本 crate **零 C 依赖**（不引 libc，syscall 全部直接声明），因此不需要 zig 提供的 C 工具链。
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

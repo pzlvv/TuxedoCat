@@ -37,6 +37,7 @@ mod llm;
 mod mcp;
 mod mcp_config;
 mod mcp_http;
+mod mount_proxy;
 mod parent_watchdog;
 mod permission;
 mod power;
@@ -105,11 +106,13 @@ fn main() {
 
 /// 单进程 Core 模式：读 `hello` → 回 `ready` → 进入帧循环。
 fn run_core() {
-    // 对话工作视图的命名空间（specs/045）：`unshare(CLONE_NEWUSER)` 要求调用者
-    // `mm_users == 1`，进程一旦有第二个线程就必然 EINVAL，所以位置必须在**一切线程启动
-    // 之前**——包括下面的父进程看门狗。失败不阻塞启动：能力探测据此回不可用，隔离视图
-    // 对话退回真实磁盘执行（FR-007）。
-    crate::work_view::enter();
+    // **Core 自身不建命名空间、不 unshare**（specs/051 FR-007）：隔离视图由常驻挂载代理
+    // 提供，Core 只经 socketpair 请求它。这里不再有 `work_view::enter()`——旧形态靠
+    // `exec` 进代理的命名空间，会因代理拒绝而让 Core 以代理的退出码退出、触发 daemon
+    // 重启风暴（docs/adr/0018-resident-mount-proxy.md）。
+    //
+    // 代理**按需**拉起：能力查询或首次使用 Overlay 时才 `spawn`，用户从不使用 Overlay
+    // 对话时不拉起任何代理进程（specs/051 边界表）。
 
     // 父进程（宿主）消失后自行退出：扩展升级替换 / 崩溃时 `deactivate` 可能不执行，
     // 标准输入 EOF 也可能因主线程卡在同步处理而迟到。看门狗只按「父进程不存在」判定，
@@ -132,6 +135,9 @@ fn run_core() {
 
     // 宿主退出：结束全部 MCP 子进程，避免留下孤儿进程
     crate::mcp::shutdown();
+    // 断开常驻挂载代理：关闭 socketpair → 代理读到 EOF → B 退 → A 收尸
+    //（specs/051 FR-007b 的回收主路径，不依赖信号）。
+    crate::mount_proxy::shutdown();
 
     {
         let bus = shared_bus.lock().unwrap();
@@ -356,6 +362,10 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             let capabilities = crate::work_view::capabilities();
             Ok(json!({
                 "isolatedWorkView": capabilities.isolated_work_view,
+                // 代理是否就位（specs/051 FR-001 根字段）
+                "mountProxy": capabilities.mount_proxy.as_str(),
+                // 派生字段：装代理是否**可能**解决当下的不可用（推导点只在 Core）
+                "deployable": capabilities.deployable,
                 // 不可用的原因；可用时为空串（契约成员全必选，「没有」用空串而非 null）
                 "reason": capabilities.reason,
             }))

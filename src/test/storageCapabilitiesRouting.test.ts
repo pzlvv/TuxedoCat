@@ -32,7 +32,7 @@ async function run(): Promise<void> {
   const handlers: UiRequestHandlers = {
     storageCapabilitiesRequested: async (req) => {
       requests.push(req);
-      return { isolatedWorkView: true, reason: '' };
+      return { isolatedWorkView: true, mountProxy: 'ready', deployable: false, reason: '' };
     },
     workViewFilesRequested: async () => ({ ok: false as const, error: '测试桩' }),
     workViewChangesRequested: async () => ({ ok: false as const, kind: 'error' as const, error: '测试桩' }),

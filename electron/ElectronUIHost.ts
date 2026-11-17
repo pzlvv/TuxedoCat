@@ -17,11 +17,25 @@ import type { CoreEvent } from '../src/shared/AssistantEventBus.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
 import { workspaceRefKey, type WorkspaceRef } from '../src/host/workspaceRef.js';
 import { resolveRemoteFileWorkspace } from '../src/host/remoteFileResolve.js';
+import type { MountProxyTarget } from '../src/host/mountProxyInstall.js';
+import {
+  bundledProxyPathFor,
+  isLocalMountProxyInstalled,
+  resolveTarget,
+} from '../src/host/mountProxyTarget.js';
+import {
+  coreBinaryCandidates,
+  coreDeployDirPath,
+  corePlatformDir,
+  readCoreFingerprint,
+  resolveCoreBinary,
+} from '../src/host/standalone/coreBinary.js';
+import { getSessionWorkspace } from '../src/shared/history/Config.js';
 import { parseToolMutation, resolveToolWorkspace } from './toolResultSideEffects.js';
 import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { getMermaidErrorHtml, getMermaidPreviewHtml } from '../src/host/mermaidHtml.js';
 import { getMarkdownPreviewBodyHtml } from '../src/host/markdownHtml.js';
-import { PRODUCT_NAME } from '../src/config/project.js';
+import { PRODUCT_NAME, CORE_MOUNT_PROXY_NAME, CORE_RESOURCE_DIR } from '../src/config/project.js';
 import { isImageFile } from '../src/host/imageFiles.js';
 import { fileLogger } from '../src/shared/Logger.js';
 import { writeSettingsJson } from '../src/host/settingsFile.js';
@@ -628,6 +642,76 @@ export class ElectronUIHost implements UIHost {
   // settings.json 的写入口（core 只读不写；两个宿主共用同一份实现）
   updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void> {
     return writeSettingsJson(mutator);
+  }
+
+  // ===================== 挂载代理部署（specs/051）=====================
+
+  /**
+   * 解析该会话的部署目标（FR-004 / FR-009）。
+   *
+   * Electron 可以同时开本地与远端工作区，因此目标**按会话**判定：会话工作区带
+   * endpoint 就走远端（经共享 SSH 连接池），否则走本地。按月台判断会漏掉
+   * 「Windows 宿主 + 远端 Linux 工作区」这一整类场景。
+   */
+  async resolveMountProxyTarget(sessionId: string): Promise<MountProxyTarget | null> {
+    const ref = this.workspaceRefForSession(sessionId);
+    if (!ref) return null;
+    return resolveTarget({
+      workspaceRef: ref,
+      extensionPath: APP_ROOT,
+      // 按**目标平台**定位产物：远端是 Linux、宿主是 Windows 时，只有 linux 目录里有代理。
+      //
+      // 查找顺序必须与 Core 二进制**完全一致**（`coreBinaryCandidates`：`dist` 优先、
+      // `resources` 其次）：代理要和 Core 同槽位，若 Core 取自 `dist` 而代理取自
+      // `resources`，两者的 `fingerprint` 不同（实测 `592a8d78…` vs `5249b87d…`），
+      // 代理就被传到了另一个槽位，远端 Core 旁边永远看不见它。
+      resolveBundledProxy: (platform, arch) => {
+        const coreBinary = coreBinaryCandidates(APP_ROOT, platform, arch)[0];
+        if (!coreBinary) return null;
+        const candidate = bundledProxyPathFor(coreBinary);
+        return fs.existsSync(candidate) ? candidate : null;
+      },
+      readBundledBytes: async (bundledPath) => new Uint8Array(await fs.promises.readFile(bundledPath)),
+      isInstalledLocally: () => isLocalMountProxyInstalled(),
+      remoteExec: async (endpoint) => {
+        const client = await sharedClientFor(endpoint, (...args) => this.log(...args));
+        return {
+          execWithStdin: (command, stdin, timeoutMs) => client.execWithStdin(command, stdin, timeoutMs),
+          homeDir: () => client.homeDir(),
+        };
+      },
+      // 远端平台决定用哪份随包产物（与 Core 上传同口径）
+      detectRemoteTarget: async (remote) => {
+        const result = await remote.execWithStdin('uname -sm', new Uint8Array(), 20_000);
+        const text = result.stdout.trim().toLowerCase();
+        const arch = text.includes('aarch64') || text.includes('arm64') ? 'arm64' : 'x64';
+        const platform = text.includes('linux') ? 'linux' : process.platform;
+        return { platform: platform as NodeJS.Platform, arch };
+      },
+      // 槽位必须是**这份 Core 实际上传到的那个**：按目标平台解析 Core 二进制路径，
+      // 再取它旁边的 `fingerprint`。不能按宿主平台读，也不能另算一份——
+      // `resources/` 与 `dist/` 各有一份 Core 且指纹不同，读错一份代理就传到别的槽位，
+      // 远端 Core 旁边永远看不见它（实测症状：断言「远端槽位应含代理产物」失败）。
+      remoteCoreDeployDir: (platform, arch) =>
+        coreDeployDirPath(
+          readCoreFingerprint(APP_ROOT, platform, arch),
+        ),
+    });
+  }
+
+  /**
+   * 会话所属的工作区引用。
+   *
+   * 先按「会话 → 工作目录路径」查（宿主维护的那张表），再在打开的工作区里按路径找
+   * 带 endpoint 的引用；查不到时退回活动工作区（单工作区场景）。
+   */
+  private workspaceRefForSession(sessionId: string): WorkspaceRef | undefined {
+    const sessionPath = getSessionWorkspace(sessionId);
+    if (sessionPath) {
+      const ref = this.getOpenWorkspaceRefs().find((candidate) => candidate.path === sessionPath);
+      if (ref) return ref;
+    }
+    return this.getWorkspaceRef();
   }
 
   // ===================== Electron 专有：预览窗口 =====================

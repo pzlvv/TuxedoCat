@@ -12,6 +12,7 @@ import { createSessionState, SessionStatesStore } from './sessionState';
 import UserChoiceOverlay from './UserChoiceOverlay';
 import LLMConfigPanel from './LLMConfigPanel';
 import { RewindConfirmDialog } from './components/RewindConfirmDialog';
+import { MountProxyDialog, type MountProxyDeployState } from './components/MountProxyDialog';
 import { rewindPreview as computeRewindPreview } from './rewindTimeline';
 import { canExpandCompact as shouldShowCompactExpand, compactVisibleMessages, type CompactArchiveView } from './compactExpand';
 import { postMessage, getHasWorkspace, getInjectedSessionId, getEffectiveHostInfo, onConversationListOwnerChanged, navigateToConversation, getIsPrewarmView, getInitialTheme } from './webviewEnv';
@@ -211,10 +212,19 @@ const App = () => {
   // Skills for slash-command autocomplete
   const [skills, setSkills] = useState<Array<{ name: string; description: string; isBuiltin?: boolean }>>([]);
   /**
-   * Overlay 对话能力（specs/045 FR-001）：由宿主转发 Core 的应答。`null` 是等待态
-   * ——能力未到达前**不渲染**勾选框（不猜 false，也不猜 true）。
+   * 是否渲染「Overlay 对话」入口（specs/051 FR-002：`isolatedWorkView || deployable`）。
+   * 由宿主转发 Core 的应答。`null` 是等待态——能力未到达前**不渲染**勾选框
+   * （不猜 false，也不猜 true）。
    */
   const [workViewCapable, setWorkViewCapable] = useState<boolean | null>(null);
+  /**
+   * 挂载代理部署的进行状态（specs/051 FR-003 / FR-004 / FR-008）。
+   *
+   * `null` 表示没有进行中的部署。值全部来自宿主的 `mountProxyDeployState`——闸门在宿主
+   * 侧（FR-003 的判据要读 Core 事实，webview 只是投影），webview 不推断进度、不判 ready、
+   * 也不在 `done` 时自己重发消息（重发是宿主的事）。
+   */
+  const [mountProxyDeployState, setMountProxyDeployState] = useState<MountProxyDeployState | null>(null);
   /**
    * 能力查询在挂载后跑一次：Core 的能力在它的生命周期内不变，不需要重复问。
    * 应答按来源视图投递（`WebviewMessageHandler` 用 `ctx.sender` 定向），所以预热视图在
@@ -227,20 +237,24 @@ const App = () => {
   /** 新建对话空状态的勾选状态；只在「还没发过消息」时有意义 */
   const [workViewSelected, setWorkViewSelected] = useState(false);
   /**
+   * 归属的**同步**镜像（specs/051 FR-003 的闸门判据来源）。
+   *
+   * `workViewSelected` 是 state，`handleWorkViewChange` 里 set 之后同一次事件循环内
+   * 读到的仍是旧值——发送消息时若读 state，会出现「刚勾上却按 workspace 发」。
+   * `startNewConversation` 已经吃过这个亏（用 setState 前的值），这里用 ref 兜住。
+   */
+  const workViewStorageRef = useRef<'workspace' | 'isolated'>('workspace');
+  /**
    * 勾选「Overlay 对话」（specs/045 FR-001）。
    *
-   * 必须补发一条消息：勾选框在 `startNewConversation` **之后**才渲染（该消息已经带着
-   * 初始归属 `workspace` 发出去了），只改本地状态的话 Core 永远不知道用户勾了。
+   * **勾选本身不上行**：它只是「这条即将发出的消息要用隔离视图」的本地意图。归属随
+   * 第一条 `sendMessage` 一起下发（`SendMessageWire.storage`），由宿主在那一刻决定
+   * 是否先走部署闸门、再把它交给 Core。这样归属只有一次写入时机，不存在
+   * 「勾选已上行、消息还没发」的中间态。
    */
   const handleWorkViewChange = useCallback((selected: boolean) => {
     setWorkViewSelected(selected);
-    const sessionId = currentSessionIdRef.current;
-    if (!sessionId) return;
-    postMessage({
-      type: 'setConversationStorage',
-      sessionId,
-      storage: selected ? 'isolated' : 'workspace',
-    });
+    workViewStorageRef.current = selected ? 'isolated' : 'workspace';
   }, []);
   /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
   const [workspaces, setWorkspaces] = useState<Array<{ id: string; path: string; displayName: string }>>([]);
@@ -596,6 +610,8 @@ const App = () => {
     setTheme, setThemeInitialized, setCurrentFile, setSelectedLines,
     setConversationTitle, setMaxContextTokens, setSkills, setWorkspaces, setMcpServers, setConversationDropdownOpen,
     setWorkViewCapable: (capable: boolean) => setWorkViewCapable(capable),
+    setMountProxyDeployState: (state: MountProxyDeployState | null) => setMountProxyDeployState(state),
+    workViewStorageRef,
     setCurrentSessionId, setParentSessionId, setCreator, setAgentMode, setThinkingMode,
     setModelRef, setWebSearch, setContextLength, setQueuedMessage,
     setUserChoiceRequest, setNamingSessions, setStreamingVersion, setForceScrollKey,
@@ -653,6 +669,9 @@ const App = () => {
     isDeletingRef, listLoadedOnceRef, setCurrentSessionIdRef, inputAreaRef,
     COMMAND_HISTORY_MAX, _appMountTime,
     idleSuspendedRef, setIdleSuspendedVersion, sessionRuntimeStatesRef, sessionIdleVersion,
+    // 发送消息时随载荷带上归属（specs/051 FR-003 的闸门判据来源）。
+    // ref 对象本身恒定，不进依赖数组（它不在 useMemo 的依赖里也能用）。
+    workViewStorageRef,
   }), [
     currentFile, selectedLines, fileHidden, conversations, conversationsLoading,
     conversationDropdownOpen, conversationTitle, currentSessionId, parentSessionId,
@@ -824,12 +843,14 @@ const App = () => {
     postMessage({
       type: 'startNewConversation',
       sessionId: newSessionId,
-      // 归属在第一条消息落盘前确定（specs/045 FR-001）：勾选了隔离视图就带上去，
-      // 之后不再改
-      storage: workViewSelected ? 'isolated' : 'workspace',
+      // 建档时一律 `workspace`：勾选框在**建档之后**才渲染，此刻用户还没机会勾。
+      // 真正的隔离归属随第一条 `sendMessage` 下发（`SendMessageWire.storage`），
+      // 由宿主在那一刻决定是否先走部署闸门（specs/051 FR-003）。
+      storage: 'workspace',
     });
     // 新对话从「未勾选」开始：勾选框只属于刚建的那一个空状态
     setWorkViewSelected(false);
+    workViewStorageRef.current = 'workspace';
     // 聚焦输入框，并把光标放回草稿里的原位置
     setTimeout(() => {
       mainInputRef.current?.focus();
@@ -1480,7 +1501,9 @@ onClick={handleNewConversation}
           userScrolledAwayRef={userScrolledAwayRef}
           isLoadingConversation={isLoadingConversation}
           showWorkViewOption={
-            // 只在**新对话、还没发过消息**时给入口：归属在第一条消息落盘前确定
+            // 只在**新对话、还没发过消息**时给入口：归属在第一条消息落盘前确定。
+            // 渲染判据是 `isolatedWorkView || deployable`（specs/051 FR-002），由
+            // `setWorkViewCapable` 折算后到达这里。
             workViewCapable === true && messages.length === 0 && !isLoadingConversation
           }
           workViewSelected={workViewSelected}
@@ -1515,6 +1538,27 @@ onClick={handleNewConversation}
               if (!sessionId || !targetUuid) return;
               postMessage({ type: 'rewindConversation', sessionId, targetUuid });
             }}
+          />
+        ) : null}
+
+        {/* 挂载代理部署对话框（specs/051 FR-003 / FR-004）：状态全部来自宿主 */}
+        {mountProxyDeployState !== null ? (
+          <MountProxyDialog
+            colors={colors}
+            state={mountProxyDeployState}
+            onDeploy={() => postMessage({ type: 'requestMountProxyDeploy' })}
+            onChooseMethod={(method) => {
+              if (method === 'manualCommand') {
+                // 零密码通道（FR-004 第 2 条）：命令文本由宿主给，webview 不拼命令
+                postMessage({ type: 'showMountProxyManualCommand' });
+                return;
+              }
+              // 选密码来源本身不发送任何东西：等用户填完再 `submitMountProxyCredential`
+            }}
+            onSubmitSecret={(method, secret) => {
+              postMessage({ type: 'submitMountProxyCredential', method, secret });
+            }}
+            onCancel={() => postMessage({ type: 'cancelMountProxyDeploy' })}
           />
         ) : null}
 

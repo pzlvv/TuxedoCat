@@ -119,7 +119,8 @@ e2e/
 │   └── electronApp.ts          # Electron 启动器：沙箱隔离 + CDP 直连 + 活动视图解析
 ├── webview/                    # webview UI 级场景用例（覆盖的 US 见 user-stories 附录）
 ├── electron/                   # Electron 整应用场景用例（同上）；remoteSshExecution /
-│                               #   remoteTaskSurvival / remoteChangeList 三条跑真实 SSH 远端
+│                               #   remoteTaskSurvival / remoteChangeList /
+│                               #   overlayMountProxyRemote 四条跑真实 SSH 远端
 ├── remoteWorkspace/            # 远端目录选择器页面（路径框编辑 / 选中项 / Tab 补全 / 焦点常驻）
 ├── terminal/                   # 远程终端页面（标签 / 断开态与重连 / 主题跟随 / 复制粘贴）
 └── tui/                        # TUI 安装程序 e2e（构建 / 自解压 / 载荷可执行 / 启动守卫，docs/features/tui-installer.md）

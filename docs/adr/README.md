@@ -23,6 +23,8 @@
 | [0014](0014-bash-detach-escape-hatch.md) | Bash 的 detach 定位为管辖豁免开关而非执行模式 | 已采纳 |
 | [0015](0015-pycharm-plugin-host.md) | 第四宿主以 PyCharm 插件直连帧通道并复用 webview 渲染 | 已采纳 |
 | [0016](0016-bash-restricted-gate.md) | Bash 的 restricted 定为模型面收紧开关（缺省为真），取代无条件 sleep 闸门 | 已采纳 |
+| [0017](0017-root-mount-proxy.md) | Overlay 挂载由 root 属主 + setuid 位的代理做特权前置 | 被 [0018](0018-resident-mount-proxy.md) 取代 |
+| [0018](0018-resident-mount-proxy.md) | 命名空间由常驻代理持有，Core 自身不进命名空间 | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

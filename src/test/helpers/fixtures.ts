@@ -216,6 +216,8 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     closeConversationView: async () => undefined,
     // 配置文件
     updateSettingsJson: async () => undefined,
+    // 挂载代理部署（specs/051）：测试宿主默认解析不出目标，用例要测就经 overrides 注入
+    resolveMountProxyTarget: async () => null,
   };
 
   const host = Object.assign(base, overrides, { sent, broadcast });
