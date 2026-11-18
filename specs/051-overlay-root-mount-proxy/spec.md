@@ -275,13 +275,17 @@ Windows / macOS 目标不产出该文件。
 7. 父进程（= A）**不退出**：降权后转入 `waitpid(B)` 循环，此后只做收尸，不持任何特权。
    A 不能提前退出的两个硬理由：B 已在新 userns 里、自己写不了 `uid_map`（需父 userns 的
    `CAP_SETUID`）；且 A 退出会让 B 被 reparent。
-8. **`PDEATHSIG` 必须在凭证变更之后设置**：`prctl(2)` 明确「effective user ID / effective
-   group ID / filesystem user ID / filesystem group ID 变更会**清除** parent-death signal」。
-   A 在 `setresuid` 之后才设「指向 Core」的 `PDEATHSIG`；B 在 `setresuid(0,0,0)` 之后才设
-   「指向 A」的。顺序写反则兜底实际不存在（`mount-proxy-rs/src/privilege.rs` 现状就是
-   先设后改凭证，需一并修正）。
-9. **回收主路径是 socketpair EOF，不是 `PDEATHSIG`**（见 FR-007b）。`PDEATHSIG` 只兜底
-   「A 异常死亡」这一种情形。
+8. **B 的 `PDEATHSIG` 必须在凭证变更之后设置**：`prctl(2)` 明确「effective user ID /
+   effective group ID / filesystem user ID / filesystem group ID 变更会**清除**
+   parent-death signal」，B 在 `setresuid` 之后才设「指向 A」的那一条。
+   **A 自己不设 `PDEATHSIG`**：`PR_SET_PDEATHSIG` 跟的是 parent **task**（父线程）而不是
+   父进程，而 Core 在工具批的短命线程里 `spawn` A——设了它，这条线程一收尾内核就杀掉 A，
+   A 的死再顺着 B 的 `PDEATHSIG` 带走 B
+   （[defect](../defects/mount-proxy-dies-with-tool-thread.md)）。Linux 没有「父进程死亡」
+   的接口，A←Core 这一段因此没有信号兜底，由第 9 条的回收链承担。
+9. **回收主路径是 socketpair EOF**（见 FR-007b）：Core 死 → fd 关闭 → B 读到 EOF 退出 →
+   A 的 `waitpid` 返回 → A 退出。这条链不依赖进程父子关系、也不受「Core 在哪条线程里
+   `spawn` A」影响。
 10. 子进程等 ack 必须有超时；父进程写映射失败必须 `kill` 子进程再退出，不留无映射的孤儿。
 
 **一次性模式**分两类：
@@ -384,10 +388,11 @@ daemon ──spawn──▶ Core（帧循环，**永不进入命名空间**）
 
 - **A 是 Core 的子进程**：pid 由 Core 持有，daemon 观察到的 Core pid 不变。B 是 A 的子进程，
   被 reparent 后不再是任何人的语义子进程，但它只通过 socketpair 与 Core 通信。
-- **回收靠 socketpair EOF，不靠 `PDEATHSIG`**：Core 死 → 它持有的 socket 端关闭 → B 读到 EOF
+- **回收靠 socketpair EOF**：Core 死 → 它持有的 socket 端关闭 → B 读到 EOF
   → B 退出 → A 的 `waitpid` 返回 → A 退出。这条链不依赖进程父子关系，因此覆盖 Core 被
-  `SIGKILL` 的情形。`PR_SET_PDEATHSIG` 只用于 A←Core 这一段（A 直接是 Core 的子进程），
-  B 的 `PDEATHSIG` 指向 A，仅作为 A 异常死亡时的兜底。
+  `SIGKILL` 的情形，也不受「Core 在哪条线程里 `spawn` A」影响。A 自己不设 `PDEATHSIG`
+  （它跟的是父**线程**，见 FR-006 第 8 条）；B 的 `PDEATHSIG` 指向 A，作为 A 异常死亡时的
+  兜底。
 - **A 在写完映射后降回真实 uid，但不退出**：它此后只剩 `waitpid` 一个职责，不持有任何特权。
 - 代理崩溃或被杀时，Core 把能力改判为 `absent` 并在下一次需要时重新拉起；不重启 Core、
   不断帧通道。
@@ -452,7 +457,7 @@ SSH 远端 Linux 工作区走同一套逻辑：宿主把代理随 Core 一起上
 | 代理未安装 / 版本不匹配 / 提权被拒 / 命名空间建立失败 | 能力 `absent` 并点名原因；**Core 照常启动并服务帧通道，daemon 不观察到退出** |
 | 槽位里有已分发的代理产物但未安装（`root:root` + setuid 未生效） | 该产物**不**被当作可执行代理；能力 `absent`，界面在发第一条消息时弹部署确认（入口不预先提示） |
 | 常驻代理在运行中被杀 | 帧通道不断；能力改判 `absent`，下次需要时重新拉起 |
-| Core 退出 / 被 kill | 常驻代理经 `PR_SET_PDEATHSIG` 与 Core 显式回收双保险被清理，不留孤儿 |
+| Core 退出 / 被 kill | 常驻代理经 socketpair EOF 回收链被清理（B 读到 EOF 退出 → A 收尸退出），不留孤儿 |
 | 用户从不使用 Overlay 对话 | 不拉起任何代理进程 |
 | Linux 但内核无 overlayfs | `deployable: false`，`reason` 点名该项；不提示部署（装代理也解决不了） |
 | 本机允许非特权用户命名空间但代理未安装 | 仍是 `isolatedWorkView: false` + `deployable: true`——Core 不再自己建命名空间，能力必须由代理提供 |

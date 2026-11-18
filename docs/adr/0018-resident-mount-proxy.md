@@ -52,10 +52,13 @@ daemon ──spawn──▶ Core（帧循环，不进命名空间）
   whiteout 全部 `EOVERFLOW`，实测见 `specs/defects/mount-proxy-cannot-mkdir-under-private-tmpfs.md`）。
 - **A 与 B 不能合并成一个进程**：A 退出会让 B 被 reparent，而 B 的 `PDEATHSIG` 绑在 A 上。
   A 在 fork 之后立刻降权，此后只剩收尸一个职责。
-- **回收主路径是 socketpair EOF，不是 `PR_SET_PDEATHSIG`**：Core 死 → fd 关闭 → B 读 EOF
-  退出 → A 的 `waitpid` 返回 → A 退出。这条链不依赖进程父子关系，覆盖 Core 被 `SIGKILL`。
-  `PDEATHSIG` 只兜底「A 异常死亡」，且必须在凭证变更**之后**设置（`prctl(2)` 明确
-  euid/egid/fsuid/fsgid 变更会清除它）。
+- **回收主路径是 socketpair EOF**：Core 死 → fd 关闭 → B 读 EOF 退出 → A 的 `waitpid`
+  返回 → A 退出。这条链不依赖进程父子关系，覆盖 Core 被 `SIGKILL`。
+- **代理不设指向 Core 的 `PDEATHSIG`**：`PR_SET_PDEATHSIG` 跟的是 parent **task**
+  （父线程），而 Core 在工具批的短命线程里 `spawn` 代理——设了它，工具线程一收尾代理就
+  被 `SIGKILL`（`specs/defects/mount-proxy-dies-with-tool-thread.md`）。B 的 `PDEATHSIG`
+  仍指向 A（同一个 fork 出来的父子关系，不受线程影响），且必须在其凭证变更**之后**设置
+  （`prctl(2)` 明确 euid/egid/fsuid/fsgid 变更会清除它）。
 - **需要看叠加视图的 Core 侧操作全部经代理代执行**：Bash、Read、Write、Edit、Grep、Glob、
   `workViewFilesRequested`、`workViewChangesRequested`、`workViewFileDiffRequested`。
 - **代理不可用只让能力回 `absent`**：Core 照常启动、照常服务帧通道，daemon 不观察到退出。

@@ -503,6 +503,72 @@ test('FR-009 已安装时能力 ready、Core pid 不变、帧通道正常', asyn
   expect(lastToolResult(mockLlm!.requests[1])).toContain('frame-ok');
 });
 
+/**
+ * 代理的寿命是整个 Core，不是「拉起它的那条工具线程」（`specs/051` FR-007b）。
+ *
+ * 回归的形态很具体：Core 在工具批的**短命线程**里 `spawn` 代理，而
+ * `PR_SET_PDEATHSIG` 跟的是 parent **task** 而不是 parent process——工具线程一收尾，
+ * 内核就把代理 `SIGKILL` 掉，此后同会话每条工具都回「挂载代理已退出：读到 EOF」。
+ * 因此本条必须让**多条**工具跑在同一个会话里：只发一条的用例（AC-31 / FR-006）
+ * 恰好是在那条还没退出的线程里，永远看不到这个缺陷。
+ */
+test('FR-007 连续工具调用不因工具线程收尾而丢代理', async () => {
+  await ensureProxyInstalled();
+
+  // 预置一个下层源文件：Read 与第二条 Bash 都要真的读到内容，否则「读成功」无从断言
+  const sourcePath = `${remoteWs}/main.c`;
+  const sourceBody = ['#include <stdio.h>', 'int main(void) {', '  puts("SEQUENTIAL-OK");', '  return 0;', '}', ''].join('\n');
+  await sshExec(`cat > ${shQuote(sourcePath)} <<'EOF'\n${sourceBody}EOF`);
+
+  const chatPage = await launchWithRemoteWorkspace();
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  // 四步覆盖三条不同通道：spawn（Bash）、readFile（Read）、spawn（Bash）、
+  // spawn + 相对路径（Bash 的 cwd 语义）。第二条的 Read 是缺陷首发点。
+  const steps: Array<{ name: string; args: Record<string, unknown> }> = [
+    {
+      name: 'Bash',
+      args: { command: `ls -la ${shQuote(remoteWs)}`, description: 'List files in workspace' },
+    },
+    { name: 'Read', args: { file_path: `${remoteWs}/main.c` } },
+    {
+      name: 'Bash',
+      args: { command: `cat ${shQuote(`${remoteWs}/main.c`)}`, description: 'Show main.c contents' },
+    },
+    { name: 'Bash', args: { command: 'pwd && ls', description: 'Print working directory' } },
+  ];
+
+  mockLlm!.setHandler((req) => {
+    const done = req.body.messages.filter((message) => message.role === 'tool').length;
+    if (done >= steps.length) return { kind: 'text', text: 'SEQUENTIAL-TOOLS-DONE' };
+    return { kind: 'tool', name: steps[done].name, args: steps[done].args };
+  });
+
+  await chatPage.fill('textarea.input-textarea', '连续工具调用');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('SEQUENTIAL-TOOLS-DONE').first()).toBeVisible({
+    timeout: 180_000,
+  });
+
+  // 逐步断言而不是只看最后一条：失败的那一步必须点名（第 1 步成功、第 2 步起全红是
+  // 本缺陷的指纹，只看总结果会把「哪一步开始坏」丢掉）。
+  const results = mockLlm!.requests
+    .filter((request) => request.body.messages[request.body.messages.length - 1]?.role === 'tool')
+    .map((request) => lastToolResult(request))
+    .slice(-steps.length);
+  expect(results, `应拿到 ${steps.length} 条工具结果`).toHaveLength(steps.length);
+  results.forEach((result, index) => {
+    expect(result, `第 ${index + 1} 步（${steps[index].name}）不该报代理退出：${result}`).not.toMatch(
+      /代理已退出|读到 EOF/,
+    );
+  });
+  // 第一条 Bash 真的跑到了视图里（有 main.c），Read 真的读到了源文件
+  expect(results[0]).toContain('main.c');
+  expect(results[1]).toContain('int main');
+  expect(results[2]).toContain('int main');
+});
+
 test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo 无泄漏', async () => {
   // 前置：代理必须就位；没装就先装（单独 `-g` 跑这条时不会因此静默跳过）
   await ensureProxyInstalled();
@@ -857,6 +923,19 @@ test.describe('privileged', () => {
 
     const chatPage = await launchWithRemoteWorkspace();
     await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+    // **必须真的建一个隔离会话**：代理是「会话第一次需要视图时」才拉起的
+    // （`docs/core/mount-proxy.md` 第 5 节「按需拉起」）。只让勾选框可见就轮到下一步，
+    // 代理永远不会出现——本用例曾因此恒在「代理进程出现」上超时。
+    await chatPage.locator('input[data-work-view-option]').check();
+    mockLlm!.setHandler((req) => {
+      if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+        return { kind: 'text', text: 'RECYCLE-PROBE-DONE' };
+      }
+      return { kind: 'tool', name: 'Bash', args: { command: 'printf ok', description: 'recycle probe' } };
+    });
+    await chatPage.fill('textarea.input-textarea', '拉起代理');
+    await chatPage.press('textarea.input-textarea', 'Enter');
+    await expect(chatPage.getByText('RECYCLE-PROBE-DONE').first()).toBeVisible({ timeout: 120_000 });
 
     // AC-26b：A 是 Core 的直接子进程、B 是 A 的子进程
     const corePid = (await remoteProcesses(CORE_PROCESS_PATTERN))

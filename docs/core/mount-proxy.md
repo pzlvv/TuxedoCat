@@ -81,6 +81,13 @@ sudo rm -f /usr/libexec/<core.mountProxyName> /usr/libexec/<core.mountProxyName>
 目的是让 A 留在原处只做收尸：B 的 `PR_SET_PDEATHSIG` 绑在 A 上，A 一旦退出 B 会被
 reparent 且信号不再生效。A 在 fork 之后立刻降权，此后不持任何特权。
 
+**A 自己不设 `PDEATHSIG`。** `prctl(2)` 的 `PR_SET_PDEATHSIG` 跟的是 parent **task**
+（父线程）而不是父进程，而 Core 是在工具批的短命线程里 `spawn` 代理的——设了它，拉起
+代理的那条工具线程一收尾，内核立刻 `SIGKILL` A，A 的死再顺着 B 的 `PDEATHSIG` 带走 B。
+表现为同会话第一条工具成功、此后每条工具都回「挂载代理已退出：读到 EOF」
+（[defect](../../specs/defects/mount-proxy-dies-with-tool-thread.md)）。回收由下面的 socketpair EOF
+承担，与父线程无关。
+
 **`umask(077)` 的两个后果必须显式处理**：由 root 建出来的目录会落成 `0700` 且归 root，
 降权后的进程读不了。因此每建一个目录都 `chmod 0755` + `chown` 给真实用户；写进视图的
 标记文件同样要 `chmod 0644` + `chown`（overlay 的 upper 会继承这份元数据，问题会一路带到
@@ -146,9 +153,9 @@ Core 侧不需要任何路径映射——脚本里写死的绝对路径、`$PWD`
 **按需拉起**：登记发生在会话创建时，代理在第一次真正需要视图时（工具调用或能力查询）才
 `spawn`。用户从不使用 Overlay 对话时不产生任何进程。
 
-**回收主路径是 socketpair EOF，不是 `PDEATHSIG`**：Core 死 → fd 关闭 → B 读到 EOF 退出
-→ A 的 `waitpid` 返回 → A 退出。这条链不依赖进程父子关系，因此覆盖 Core 被 `SIGKILL`
-的情形。`PDEATHSIG` 只兜底「A 异常死亡」。
+**回收主路径是 socketpair EOF**：Core 死 → fd 关闭 → B 读到 EOF 退出 → A 的 `waitpid`
+返回 → A 退出。这条链不依赖进程父子关系，因此覆盖 Core 被 `SIGKILL` 的情形，也不受
+「Core 在哪条线程里 `spawn` 代理」影响（代理自身不设 `PDEATHSIG`，理由见第 3 节）。
 
 **代理被杀不带走 Core**：能力查询与下一次工具调用都会发现已有句柄已死，摘掉它并重新拉起
 （不重启 Core）。

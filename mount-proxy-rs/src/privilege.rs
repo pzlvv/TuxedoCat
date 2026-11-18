@@ -262,6 +262,11 @@ fn bind_over_workspace(source: &Path, target: &Path) -> Result<(), String> {
 /// 是让 A 留在原处只做 `waitpid` 收尸：B 的 `PR_SET_PDEATHSIG` 绑在 A 上，A 一旦退出
 /// B 会被 reparent 且信号不再生效。A 在 fork 之后立刻降回真实 uid，此后不持任何特权。
 ///
+/// **A 自己不设指向 Core 的 `PDEATHSIG`**：`PR_SET_PDEATHSIG` 跟的是 parent **task**
+/// （父线程），而 Core 在工具批的短命线程里 `spawn` 本进程——设了它，工具线程一收尾
+/// 内核就杀掉 A，A 的死再顺着 B 的 `PDEATHSIG` 带走 B
+///（`specs/defects/mount-proxy-dies-with-tool-thread.md`）。回收由 socketpair EOF 承担。
+///
 /// ```text
 /// A（父，fork 后立刻降权到真实 uid）
 ///    · 只做 waitpid(B) 收尸
@@ -333,8 +338,15 @@ where
         }
         return Err(format!("特权挂载器降权失败：{reason}"));
     }
-    // `PDEATHSIG` 指向 Core 必须**在降权之后**设置（凭证变更会清掉它）。
-    let _ = sys::set_pdeathsig();
+    // `PDEATHSIG` 在这里**不设**：Core 是在工具批的短命线程里 `spawn` 本进程的，而
+    // `prctl(2)` 的 `PR_SET_PDEATHSIG` 跟的是 parent **task**（父线程）而不是父进程。
+    // 设了它之后，拉起代理的那条工具线程一收尾，内核立刻 `SIGKILL` A，A 的死再顺着
+    // B 的 `PDEATHSIG` 带走 B——表现是同会话第一条工具成功、此后每条工具都回
+    // 「挂载代理已退出：读到 EOF」（`specs/defects/mount-proxy-dies-with-tool-thread.md`）。
+    //
+    // 回收本来就不依赖它：主路径是 socketpair EOF（Core 死 → fd 关闭 → B 读到 EOF 退出
+    // → A 的 `waitpid` 返回），覆盖 Core 被 `SIGKILL` 的情形且与父线程无关
+    //（`docs/core/mount-proxy.md` 第 5 节）。
     Ok(Forked {
         child_exit_code: reap(pid),
     })

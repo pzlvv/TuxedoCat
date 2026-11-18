@@ -29,7 +29,7 @@ spec 见 [spec.md](spec.md)，方案见 [plan.md](plan.md)。勾选状态即进�
 - [x] **T030**（FR-007b / FR-006）：删掉旧 T007 的「监督目标程序」循环。A 写完映射后 `setresuid` 降权、**保持存活**只做 `waitpid(B)`；B 成为常驻代理本体、不 `exec` 任何目标。完成判据：单测断言 A 降权后 `geteuid()` 为真实 uid、B 存活且命名空间内 `getuid()` 为 0、A 不持任何特权。
 - [x] **T031**（FR-007b）：新增 `--serve` 形态与 `serve.rs` 常驻循环：在传入的 fd 上收帧、按请求 `fork` 工具子进程、回传 stdout / stderr / exit。完成判据：假 Core 桩驱动一次 `spawn` 与一次 `listDir` 走通。
 - [x] **T032**（FR-007 / FR-007b）：`protocol.rs`：与 Core 共用的帧定义（长度前缀 + JSON）。字段变更必须两侧同步并由单测锁死；运行期协议版本与安装握手版本分开。完成判据：两侧各自解析同一份 fixture 成功。
-- [x] **T033**（FR-007b）：回收链——A 的 `PDEATHSIG` 指向 Core 作兜底，B 的指向 A；**主路径是 socketpair EOF**：Core 死 → fd 关闭 → B 读 EOF 退出 → A 的 `waitpid` 返回。完成判据：Core 被 `SIGKILL`（不给任何清理机会）后 A 与 B 在 1 秒内消失，`ps` 无残留。
+- [x] **T033**（FR-007b）：回收链——B 的 `PDEATHSIG` 指向 A 作兜底，A 自己不设 `PDEATHSIG`（它跟的是父**线程**，见 FR-006 第 8 条）；**主路径是 socketpair EOF**：Core 死 → fd 关闭 → B 读 EOF 退出 → A 的 `waitpid` 返回。完成判据：Core 被 `SIGKILL`（不给任何清理机会）后 A 与 B 在 1 秒内消失，`ps` 无残留。
 - [x] **T044**（FR-007）：fd 纪律——Core ↔ 代理 socketpair 两端、A ↔ B 之间所有 fd 设 `CLOEXEC`；工具子进程只继承自己的 stdin / stdout / stderr。完成判据：单测断言工具子进程的 `/proc/self/fd` 里没有通信 fd。
 
 ## 3. Core 侧
