@@ -120,4 +120,5 @@ src/mount_proxy/linux/client.rs:907:9:
 | 代理侧既有回归 | `cargo test --manifest-path mount-proxy-rs/Cargo.toml` | 绿 | 9 条全过（`protocol` 那一半；Linux 专属用例同样不编译） |
 | 格式基线 | `npm run fmt:rust:check` | 绿 | 四个 crate 的 `cargo fmt --check` 全过 |
 | 文档守卫 | `npm run test:unit -- docs-lint` | 绿 | 2 组全过（本缺陷规格的章节与 status 由该守卫校验） |
-| 修复后测试（Linux 执行） | `npm run test:core`（CI `tests` job） | not-run | 本机没有可执行 Linux 二进制的环境（无 WSL 发行版、无 qemu / 容器），用例的执行结果只能在推送后的 CI 上确认 |
+| 修复后测试（Linux 执行） | CI run `44235306849` 的 `tests` job（`npm run test:core`） | 绿 | job 整体 `pass`（10m32s），`test:core` 走过 `core-rs` 并首次真正执行 `mount-proxy-rs` 那一半；同一 run 的 `docs-lint` 也 `pass` |
+| 本机执行说明 | — | skipped | 本机没有可执行 Linux 二进制的环境（无 WSL 发行版、无 qemu / 容器），这 6 条用例只能由 CI 确认——因此上一行是唯一有效的执行证据 |
