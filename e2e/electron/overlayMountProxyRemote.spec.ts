@@ -685,6 +685,91 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   expect(createdRow?.plus, '新增文件按全文计行（内容一行）').toBe(1);
 });
 
+test('Overlay 对话：Write 的风车必须收起，且工具卡片上屏期间不出现无指示空窗', async () => {
+  await ensureProxyInstalled();
+
+  const chatPage = await launchWithRemoteWorkspace();
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  // 采样「thinking 可见 / 有无 running 风车」：只要两者同时为假，界面上就没有任何
+  // 进行中的指示。空窗按一次提问的完整生命周期取，逐帧记录。
+  await chatPage.evaluate(() => {
+    const w = window as unknown as {
+      __idle?: number[];
+      __stopSampling?: boolean;
+      __lastActive?: number;
+    };
+    w.__idle = [];
+    w.__stopSampling = false;
+    w.__lastActive = 0;
+    const tick = (): void => {
+      if (w.__stopSampling) return;
+      const wrapper = document.querySelector('.thinking-animation-wrapper');
+      const thinking = wrapper !== null && !wrapper.hasAttribute('data-hidden');
+      const running = document.querySelectorAll('.msg-timeline-item.msg-timeline-dot-running').length;
+      const now = performance.now();
+      const lastActive = w.__lastActive ?? 0;
+      if (thinking || running > 0) {
+        w.__lastActive = now;
+      } else if (lastActive > 0) {
+        // 从「上一次活跃」到现在的这段就是无指示区间：只在结束于一次新的活跃时计入
+        w.__idle!.push(now - lastActive);
+        w.__lastActive = 0;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+
+  const target = `${remoteWs}/overlay-card-state.txt`;
+  mockLlm!.setHandler((req) => {
+    if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'CARD-STATE-DONE' };
+    }
+    return {
+      kind: 'tool',
+      name: 'Write',
+      args: { file_path: target, content: 'card state\n' },
+      preamble: '我来写这个文件。',
+    };
+  });
+  await chatPage.fill('textarea.input-textarea', '写一张卡片状态的截图');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('CARD-STATE-DONE').first()).toBeVisible({ timeout: 180_000 });
+
+  // 判据 1（问题一）：工具成功后不得残留 running 风车。
+  // `updateToolStatus.success` 可能先于 `addMessage`（上架卡片）到达；旧实现把它塞进
+  // 只在 conversationLoaded 回放的缓冲，实时会话里卡片会永久停在 running。
+  await expect(chatPage.locator('.msg-timeline-dot-running')).toHaveCount(0, { timeout: 30_000 });
+
+  // 判据 2（问题二）：卡片上屏期间不得出现「thinking 已消失、风车还没亮」的空窗。
+  // 旧实现在 `addMessage(toolcall)` 上无条件关 thinking，而状态更新可能晚到。
+  const idleGaps = await chatPage.evaluate(() => {
+    const w = window as unknown as { __idle?: number[]; __stopSampling?: boolean };
+    w.__stopSampling = true;
+    return w.__idle ?? [];
+  });
+  const worst = idleGaps.length > 0 ? Math.max(...idleGaps) : 0;
+  expect(
+    worst,
+    `工具卡片上屏期间出现 ${Math.round(worst)}ms 无指示空窗（各段：${idleGaps.map((n) => Math.round(n)).join(', ')}）`,
+  ).toBeLessThan(150);
+
+  // 判据 3：写入确实落进叠加视图、真实磁盘没有该文件。
+  const listed = await chatPage.evaluate(async () => {
+    const api = (window as unknown as {
+      electronAPI?: { postMessage: (m: unknown) => void };
+    }).electronAPI;
+    return typeof api?.postMessage === 'function';
+  });
+  expect(listed, 'webview 与宿主消息通道应可用').toBe(true);
+  expect(
+    (await sshExec(`test -e ${shQuote(target)} && echo yes || echo no`)).stdout.trim(),
+    'Overlay 对话的写入不得落到真实磁盘',
+  ).toBe('no');
+});
+
 test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo 无泄漏', async () => {
   // 前置：代理必须就位；没装就先装（单独 `-g` 跑这条时不会因此静默跳过）
   await ensureProxyInstalled();

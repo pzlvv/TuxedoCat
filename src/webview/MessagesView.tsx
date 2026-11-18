@@ -23,6 +23,7 @@ import { StreamStatsLabel } from './StreamStatsLabel';
 import { uiFontSizePx } from './fontSize';
 import { isAutoMessageOrigin as isAutoOrigin } from '../shared/utils/messageOrigin';
 import { firstLineSummary, parseBackgroundCompletion } from './autoMessageCard';
+import { isToolCardRunning } from './toolCardStatus';
 
 /**
  * Pre-computed stable tool component map — created once outside the component
@@ -1844,11 +1845,11 @@ const SegmentTimeline = memo(function SegmentTimeline({
         color: statusColor,
         // 状态点类型：普通圆点与运行中风扇由 CSS 伪元素绘制（不占 DOM 节点），
         // 只有 thinking 涟漪动画需要真实 DOM（见 buildThinkingItem）。
-        // 'normal'（等待用户授权）与 'running'（执行中）都属于「工具还没结束」，
-        // 都显示旋转的 loading 风扇：否则从历史恢复的待确认工具（restore 时标成
-        // 'normal'）会显示普通圆点，与实时确认时的表现不一致。
-        dotKind: message.role === 'toolcall'
-          && (message.status === 'running' || message.status === 'normal')
+        // 判据与卡片内容的渲染口径一致（`isToolCardRunning`）：`'normal'`（等待用户
+        // 授权）与 `'running'`（执行中）都算「还没结束」，状态尚未到达（`undefined`）
+        // 也算——卡片内容此时按 `status || 'running'` 显示执行中，时间线若还是普通圆点，
+        // thinking 让位后界面上就没有任何进行中的指示了。
+        dotKind: message.role === 'toolcall' && isToolCardRunning(message.status)
           ? 'running'
           : 'plain',
         children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onRetryQuery={onRetryQuery} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
