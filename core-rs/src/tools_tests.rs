@@ -5053,6 +5053,9 @@ fn bash_schema_exposes_detach_with_minimal_description() {
 /// Bash schema 暴露 `restricted`，说明保持防护性最小披露（specs/049 FR-006 / AC-12）：
 /// 只声明默认值与常规取值，判据细节与逃生口只在闸门失败文案里给，`default: true`
 /// 与运行期读取口径（`bash_restricted` 缺省 true）同值。
+///
+/// 模型可见文本一律英文，且不提前点明它管的是哪两类写法——用途由失败文案在命中时揭示
+/// （`docs/features/background-bash.md` 第 2 节 FR-006）。
 #[test]
 fn bash_schema_exposes_restricted_with_minimal_description() {
     let definition = definitions()
@@ -5063,13 +5066,27 @@ fn bash_schema_exposes_restricted_with_minimal_description() {
     assert_eq!(restricted["type"], "boolean");
     assert_eq!(restricted["default"], true);
     let description = restricted["description"].as_str().expect("description");
-    assert!(description.contains("默认 true"), "got {description}");
-    assert!(description.contains("通常传 true"), "got {description}");
-    // 最小披露：判据细节（具体命令形态）与逃生口措辞不写进 schema
-    for leaked in ["sleep", "sed", "restricted: false", "cd"] {
+    assert!(description.contains("true"), "got {description}");
+    assert!(
+        !description.chars().any(|ch| {
+            ('\u{2E80}'..='\u{9FFF}').contains(&ch) || ('\u{FF00}'..='\u{FFEF}').contains(&ch)
+        }),
+        "schema 说明应为英文: {description}"
+    );
+    // 最小披露：判据细节、用途归类与逃生口措辞都不写进 schema
+    for leaked in [
+        "sleep",
+        "sed",
+        "restricted: false",
+        "cd",
+        "poll",
+        "wait",
+        "read",
+        "Read",
+    ] {
         assert!(
             !description.contains(leaked),
-            "schema 不得复述判据细节（命中 {leaked}）: {description}"
+            "schema 不得复述判据细节或提前点用途（命中 {leaked}）: {description}"
         );
     }
 }

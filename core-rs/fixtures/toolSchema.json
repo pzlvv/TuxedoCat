@@ -30,7 +30,7 @@
         },
         "restricted": {
           "type": "boolean",
-          "description": "默认 true。通常传 true：restricted 会拒绝等待类与替读类的命令写法，失败文案会说明出路；只有确实需要这类写法时才显式传 false。",
+          "description": "Defaults to true; normally pass true.",
           "default": true
         }
       }
