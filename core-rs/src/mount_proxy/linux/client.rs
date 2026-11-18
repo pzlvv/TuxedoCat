@@ -722,21 +722,30 @@ pub fn verify_installed(path: &Path) -> Result<PathBuf, String> {
             return Err(format!("无法读取挂载代理 {}（{error}）", path.display()));
         }
     };
-    if meta.uid() != 0 {
+    judge_installed_facts(path, meta.uid(), meta.mode())?;
+    Ok(path.to_path_buf())
+}
+
+/// 落点判据里只吃「属主 uid + 模式」两个事实的那两段（属主 / 恰好 04755）。
+///
+/// 与读 `metadata` 的那半分开，是为了让每一条判据都能被单独驱动：临时目录造出来的
+/// 文件属于跑测试的 uid，在非 root 的机器上（CI runner 是 uid 1001）永远先在属主上
+/// 返回，模式那一条根本走不到。
+fn judge_installed_facts(path: &Path, uid: u32, mode: u32) -> Result<(), String> {
+    if uid != 0 {
         return Err(format!(
-            "{} 的属主是 uid {}（要求 root），视为未部署",
-            path.display(),
-            meta.uid()
+            "{} 的属主是 uid {uid}（要求 root），视为未部署",
+            path.display()
         ));
     }
-    let mode = meta.mode() & 0o7777;
+    let mode = mode & 0o7777;
     if mode != 0o4755 {
         return Err(format!(
             "{} 的模式是 {mode:04o}（要求恰好 04755），视为未部署",
             path.display()
         ));
     }
-    Ok(path.to_path_buf())
+    Ok(())
 }
 
 /// 拉起一个会话代理并完成握手。
@@ -882,6 +891,13 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    /// 判据用例里的示例落点：只需要一个「路径」用于拼错误文案，文件不必真的存在。
+    ///
+    /// 由构建期烧进来的常量拼出，不手抄产品名——那样才与 `locate()` 看向同一个落点。
+    fn proxy_slot() -> PathBuf {
+        Path::new(PROXY_DIR).join(PROXY_NAME)
+    }
+
     /// 造一个临时"槽位"，按需设置属主与模式
     fn slot(mode: u32) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
@@ -900,12 +916,13 @@ mod tests {
     /// RT-1：槽位里有 0755 产物但未安装 → 判据回「未部署」，且原因点名模式不满足。
     ///
     /// 这是上一轮的故障链起点：0755 的随包产物被当成可执行代理。
+    ///
+    /// 直接驱动纯判据并显式给 `uid = 0`：造出来的临时文件属于跑测试的 uid，非 root 机器上
+    /// 会先在属主那一条返回（`rejects_non_root_owner`），模式这一条永远走不到。
     #[test]
     fn rejects_artifact_without_setuid_bit() {
-        let (dir, file) = slot(0o755);
-        let error = verify_installed(&file).unwrap_err();
+        let error = judge_installed_facts(&proxy_slot(), 0, 0o755).unwrap_err();
         assert!(error.contains("04755"), "{error}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 不存在时点名「未部署」，而不是回一个笼统的 io 错误
@@ -918,9 +935,37 @@ mod tests {
     /// 组 / 其他可写视为未部署（04755 之外再多任何写位都不行）
     #[test]
     fn rejects_group_or_other_writable() {
-        let (dir, file) = slot(0o4757);
-        let error = verify_installed(&file).unwrap_err();
+        let error = judge_installed_facts(&proxy_slot(), 0, 0o4757).unwrap_err();
         assert!(error.contains("04755"), "{error}");
+    }
+
+    /// 属主判据独立于模式：属主不是 root 时点名 uid，不把原因混成「模式不对」。
+    ///
+    /// 造不出 root 属主的临时文件，因此这条只能经纯判据驱动。
+    #[test]
+    fn rejects_non_root_owner() {
+        let error = judge_installed_facts(&proxy_slot(), 1001, 0o4755).unwrap_err();
+        assert!(error.contains("uid 1001"), "{error}");
+        assert!(
+            !error.contains("04755"),
+            "属主不满足时不该把原因说成模式问题：{error}"
+        );
+    }
+
+    /// 四条判据全满足才回已部署（`locate` 的成功路径，同样只能经纯判据驱动）
+    #[test]
+    fn accepts_root_owned_04755() {
+        assert!(judge_installed_facts(&proxy_slot(), 0, 0o4755).is_ok());
+    }
+
+    /// 真实 metadata 走一遍：临时槽位里的产物一律判「未部署」。
+    ///
+    /// 不锁定具体是哪一条原因——属主是跑测试的 uid，非 root 的机器（CI runner）命中属主
+    /// 判据，root 机器命中模式判据；两条判据各自的拒绝理由由上两条用例逐条锁定。
+    #[test]
+    fn rejects_temp_slot_whatever_the_runner_uid() {
+        let (dir, file) = slot(0o755);
+        assert!(verify_installed(&file).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

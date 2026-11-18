@@ -44,6 +44,23 @@ fn case_of(op: &str) -> serde_json::Value {
         .unwrap_or_else(|| panic!("fixture 里没有 {op} 的用例"))
 }
 
+/// 帧在**线上**的字段集合：`op` 与 `fields` 合并。
+///
+/// `Frame` 把 `op` 单独存一个字段、只在 `encode()` 时才写进载荷对象，而 fixture 的
+/// `request` 描述的是线上形态（含 `"op"`）。对拍必须按线上形态比，否则每条用例都会在
+/// `op` 上报「缺字段」——那条断言测的是 `Frame` 的内部表示，不是契约。
+fn wire_fields(frame: &Frame) -> serde_json::Map<String, serde_json::Value> {
+    let mut all = serde_json::Map::new();
+    all.insert(
+        "op".to_string(),
+        serde_json::Value::String(frame.op.clone()),
+    );
+    for (key, value) in &frame.fields {
+        all.insert(key.clone(), value.clone());
+    }
+    all
+}
+
 /// 断言本模块实际发出的帧**字段集合**与 fixture 声明的一致。
 ///
 /// 只比字段名与 JSON 类型，不比具体值：值由调用方给（路径 / 内容都是动态的），而
@@ -52,9 +69,9 @@ fn assert_request_shape(op: &str, actual: &Frame) {
     // 先落成具名值：直接索引表达式产生的是临时值，借用会在语句结束就失效
     let case = case_of(op);
     let expected = case["request"].as_object().expect("request 必须是对象");
+    let actual = wire_fields(actual);
     for (key, want) in expected {
         let got = actual
-            .fields
             .get(key)
             .unwrap_or_else(|| panic!("{op} 的请求缺字段 {key}（Core 没发，或 fixture 过期）"));
         let same_kind = matches!(
@@ -71,7 +88,7 @@ fn assert_request_shape(op: &str, actual: &Frame) {
         );
     }
     // 反向：Core 多发的字段 fixture 里也要有，否则代理侧的解析用例看不到它
-    for key in actual.fields.keys() {
+    for key in actual.keys() {
         assert!(
             expected.contains_key(key),
             "{op} 发了 fixture 未声明的字段 {key}：先更新 mountProxyProtocol.json"
@@ -86,6 +103,30 @@ fn contract_protocol_version_matches() {
         IPC_PROTOCOL_VERSION as u64,
         "fixture 与 Core 的运行期协议版本必须一致"
     );
+}
+
+/// 对拍不是「永远绿」：画面多一个 fixture 未声明的字段必须红。
+///
+/// 反向用例存在的理由与正向用例相同——`wire_fields` 把 `op` 合进合集之后，如果某个环节
+/// 退化成只比交集，正向的四条会照样绿。
+#[test]
+#[should_panic(expected = "fixture 未声明的字段")]
+fn request_shape_rejects_undeclared_field() {
+    let frame = Frame::new("ping")
+        .with_id(1)
+        .with("surprise", serde_json::Value::from(1u64));
+    assert_request_shape("ping", &frame);
+}
+
+/// 另一半：fixture 声明了而 Core 没发，必须红（契约漏发字段）。
+#[test]
+#[should_panic(expected = "缺字段")]
+fn request_shape_rejects_missing_field() {
+    // readFile 的契约要求 `path` 与 `maxBytes` 都在
+    let frame = Frame::new("readFile")
+        .with_id(4)
+        .with("path", serde_json::Value::String("/w/a.txt".into()));
+    assert_request_shape("readFile", &frame);
 }
 
 /// `writeFile` 的 `bytes` 是**十六进制字符串**——问题 1 的 Core 侧对拍点。

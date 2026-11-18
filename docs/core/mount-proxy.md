@@ -199,7 +199,7 @@ daemon 观察到 Core 退出。
 | 需求 | 落点 | 验证 |
 | --- | --- | --- |
 | 产物名 / 落点 / 协议版本 | `src/config/project.json`、两个 crate 的 `build.rs` | `npm run test:unit -- brand-literal config` |
-| 落点判据（root:root 04755） | `core-rs/src/mount_proxy/linux/client.rs::locate` | `mountProxyGate` / `mountProxyTarget` 单测；真机 `stat` |
+| 落点判据（root:root 04755） | `core-rs/src/mount_proxy/linux/client.rs` 的 `locate` / `verify_installed` / `judge_installed_facts` | `client.rs` 的 `tests`（属主与模式两条判据各自独立驱动）、`rejects_missing_slot`；`mountProxyGate` / `mountProxyTarget` 单测；真机 `stat` |
 | 入口自检与请求收紧 | `mount-proxy-rs/src/privilege.rs::entry_rejection` / `tighten` | 纯函数矩阵单测（含在 `test:mount-proxy`） |
 | 特权阶段时序 | `mount-proxy-rs/src/privilege.rs::enter_mount_namespace` / `establish_after_mount` | `--self-check`（真机车道） |
 | 代执行协议与 `id` 关联 | `mount-proxy-rs/src/protocol.rs`、`serve.rs`；`core-rs/src/mount_proxy/linux/client.rs` | 两侧单测 + 真机端到端 |
