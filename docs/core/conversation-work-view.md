@@ -13,15 +13,21 @@ last_reviewed: 2026-11-12
 
 ## 1. 能力
 
-`UiRequest.storageCapabilitiesRequested` 应答 `{ isolatedWorkView, reason }`：
+`UiRequest.storageCapabilitiesRequested` 应答 `{ isolatedWorkView, mountProxy, deployable, reason }`：
 
-| 字段 | 含义 | 判据 |
-| --- | --- | --- |
-| `isolatedWorkView` | 能否为对话建立 Overlay 工作视图 | 用户命名空间可建 + overlayfs 可挂（含 `userxattr`） |
-| `reason` | 不可用的原因；可用时为空串 | 依次点名平台 / 用户命名空间 / overlayfs 哪一项不满足 |
+| 字段 | 角色 | 含义 | 判据 |
+| --- | --- | --- | --- |
+| `isolatedWorkView` | 根 | 此刻就能为对话建立 Overlay 视图 | 常驻挂载代理就绪**且**它报回 overlay 实测可挂 |
+| `mountProxy` | 根 | 代理是否就位 | `'ready'` / `'absent'`：安装判据、协议版本、自检三者全过才是 ready |
+| `deployable` | 派生 | 部署代理是否**可能**解决当下的不可用 | Linux 且内核有 overlayfs；代理已就绪时恒 false |
+| `reason` | 根 | 不可用的原因；可用时为空串 | 点名代理缺失 / 版本不匹配 / 自检失败哪一项 |
 
-界面在 `isolatedWorkView` 为 true 时才渲染入口。为 false 时整块入口不出现——不给「勾选后
-静默无效」的形态。
+`deployable` 的推导点只有 Core 一处，宿主不重算、不缓存。`isolatedWorkView: true` 与
+`mountProxy: 'absent'` 的组合不可达：Core 不建命名空间，能力只能由代理提供。
+
+界面在 `isolatedWorkView || deployable` 时渲染入口。两者都不成立时整块入口不出现——不给
+「勾选后静默无效」的形态。入口本身不带任何前置提示：需要部署时由宿主在发第一条消息时弹
+确认。代理的形态、特权阶段与协议见 [docs/core/mount-proxy.md](mount-proxy.md)。
 
 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但
 Core 是。
@@ -129,51 +135,72 @@ userxattr
 ## 4. 命名空间
 
 ```text
-run_core() 最早（单线程）
-  unshare(CLONE_NEWUSER) + 写 id 映射     ← 拿到命名空间内的 CAP_SYS_ADMIN
-  unshare(CLONE_NEWNS) + / 设为私有传播    ← 本进程的挂载不泄漏给宿主
-
-每次工具 / Bash 子进程
-  unshare(CLONE_NEWNS)                    ← 取一份私有挂载副本
-  bind <视图挂载点> → <真实工作区路径>      ← 路径字符串不变，内容换成叠加结果
-  exec
+Core（帧循环）                              ← 永不进入命名空间、不 unshare、不 exec
+  │ 某个隔离会话第一次需要视图时 spawn + socketpair
+  ▼
+挂载代理 A（setuid 启动，euid 0）
+  unshare(CLONE_NEWNS) + / 设为私有传播      ← 在 fork 之前，A / B 共享同一份挂载表
+  建视图目录并 chown 给真实用户
+  挂 overlay，自查 mountinfo 里恰好出现一次
+  bind 视图 → 真实工作区路径                 ← 路径字符串不变，内容换成叠加结果
+  fork ──▶ B；A 降回真实 uid，此后只 waitpid
+            │
+            ▼
+          代理 B（站在命名空间里，跑帧循环）
+            └─ fork ──▶ 工具子进程
 ```
 
-`CLONE_NEWUSER` 必须在单线程时执行：内核要求调用者 `mm_users == 1`，进程一旦有第二个
-线程就必然 `EINVAL`。位置因此固定在 `run_core()` 开头、任何后台线程启动之前。
+**没有 user namespace。** 代理是 setuid root 启动的，在初始 userns 里本来就持
+`CAP_SYS_ADMIN`；再建 `CLONE_NEWUSER` 只会换来一个残缺的 id 映射，让 `mkdir` 与 overlay
+的 whiteout 全部 `EOVERFLOW`（实测见
+[specs/defects/mount-proxy-cannot-mkdir-under-private-tmpfs.md](../../specs/defects/mount-proxy-cannot-mkdir-under-private-tmpfs.md)）。
 
-进命名空间失败不阻塞 Core 启动：能力探测据此回不可用，Overlay 对话退回真实磁盘执行。
+**不采用 `setns`**：内核不允许进程加入一个既有的用户命名空间后取得其 capability，
+「代理建好空间、Core 再进去」在 Linux 上不可实现。Core 要看叠加视图，只能经代理代执行。
+
+**一个隔离会话一个代理**，视图在它建立时挂好：没有「之后还要挂新东西」的需求，因此不需要
+第二个特权进程常驻。代理缺失或建立失败只让能力回 `absent`，Core 照常启动与服务帧通道。
 
 ## 5. 工具语义
 
 工具对视图**透明**：路径解析、相对路径、`cwd` 行为与不带隔离的对话完全一致，用户看到的
 路径字符串仍是真实工作区路径。
 
-实现上，工具解析出真实路径后经视图句柄映射成视图内路径再读写；对外的输出（工具结果、
-diff 展示、`file_path`）仍是真实路径。
+实现上，工具的文件 IO 与 Bash 命令全部**经常驻挂载代理代执行**：Core 不在命名空间里，
+它自己 `open()` / `spawn` 看到的都是真实磁盘。代理已经把视图 bind 到真实工作区路径上，
+因此代执行时路径原样传过去就是叠加结果，不需要映射。对外的输出（工具结果、diff 展示、
+`file_path`）仍是真实路径。
 
 Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`cd` 全部按真实工作区路径工作，
 因为 bind 只改内容来源、不改路径。
+
+前台的 `toolProgress`、中止（`ctx.cancel`）与后台任务同样走这条通道：Core 不持有工具的
+`Child` 句柄，中止翻译成 `kill` 请求；后台任务的输出由 Core 追加进任务输出文件，退出码
+取自代理的 `exit` 应答。
 
 ## 6. 生命周期
 
 | 时机 | 动作 |
 | --- | --- |
-| `conversationStarted`（`storage: isolated`） | 登记归属；视图**只登记**，不建目录不挂载 |
-| 第一次工具调用 | 建目录并挂 overlay；失败记日志，工具按真实磁盘执行 |
-| `conversationClosed` | 卸载挂载，**保留**上层目录（改动跨重启保留） |
-| `conversationDeleted` | 卸载并回收整个视图目录；失败只记日志 |
+| `conversationStarted`（`storage: isolated`） | 登记归属；视图**只登记**，不建目录、不拉起代理 |
+| 第一次工具调用（或能力查询） | 拉起该会话的代理：它建目录、挂 overlay、bind 到工作区；失败时工具**报错**（fail-closed） |
+| `conversationClosed` | 丢弃代理（关闭 socketpair → 它读到 EOF 自行退出），**保留**上层目录（改动跨重启保留） |
+| `conversationDeleted` | 丢弃代理并回收整个视图目录；失败只记日志 |
+| `conversationStorageConverted` | 存量隔离会话转成真实工作区归属：丢弃代理、归属落盘为 `workspace` |
 
-惰性建立的理由：纯声明性对话（只发一条消息就关）不该在磁盘上留下视图目录。
+惰性拉起的理由：纯声明性对话（只发一条消息就关）不该在磁盘上留下视图目录，也不该产生
+任何代理进程。
 
 ## 7. 失败路径
 
 | 情形 | 预期 |
 | --- | --- |
-| 非 Linux 平台 | 能力回 unavailable，原因点名平台 |
-| 用户命名空间不可用（seccomp / 容器限制） | 同上，原因点名该项 |
-| overlayfs 不支持 `userxattr` | 同上；不做「删文件可用、删目录失败」的半成品 |
-| 视图建立失败（磁盘不可写等） | 工具按真实磁盘执行，原因记进 Core 日志 |
+| 非 Linux 平台 | 能力回 unavailable，`deployable: false`，原因点名平台 |
+| 代理未部署 / 落点判据不满足 | `mountProxy: 'absent'`、`deployable: true`，原因点名缺失 |
+| 代理的运行期协议与 Core 不匹配 | 同上，原因点名版本 |
+| 代理自检失败（命名空间 / 挂载 / 断言） | 同上，原因透传代理给出的那一条 |
+| 视图建立失败（磁盘不可写等） | 该会话的工具调用**报错**，改动不落真实磁盘；原因记进 Core 日志 |
+| 代理运行中被杀 | 能力改判 `absent`；下一次需要时重新拉起，不重启 Core |
 | 视图未建立时的只读请求（列目录 / 变更清单 / 两侧原文） | 回失败侧（变更清单带 `kind: 'error'`），由宿主显示错误行；不退回磁盘，也不替调用方建视图 |
 | 视图里跑 git 失败（可执行缺失 / 子命令非零退出） | 回失败侧并带上失败原因，不回退磁盘清单 |
 | 会话删除时回收失败 | 删除照常完成，日志记录残留路径 |
@@ -187,5 +214,8 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 
 ## 9. 平台
 
-只在 Linux 上提供。overlayfs 与非特权用户命名空间都是 Linux 内核能力；其它平台编译出同
-签名类型，能力恒回不可用。
+只在 Linux 上提供。挂载命名空间、overlayfs 与 setuid 语义都是 Linux 内核能力；其它平台
+编译出同签名类型，能力恒回不可用、`deployable` 恒 false。
+
+「非特权用户命名空间是否可用」**不再是**能力前提：命名空间由 setuid 代理在初始 userns 里
+建立，与那条限制无关。

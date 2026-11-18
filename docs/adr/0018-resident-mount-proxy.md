@@ -4,7 +4,8 @@
 - 日期：2026-11-14
 - 取代：[ADR-0017](0017-root-mount-proxy.md)
 - 规格：[specs/051-overlay-root-mount-proxy](../../specs/051-overlay-root-mount-proxy/spec.md)
-- 实施状态：方案成立，代码未落地（上一轮实施的代码已还原，结论保留）
+- 实施状态：已落地。形态在实现时进一步收敛为**一个隔离会话一个代理**（视图在建立
+  时挂好，不需要第二个特权进程长驻），理由见本文「后果」一节的最后两条
 
 ## 背景（Context）
 
@@ -36,18 +37,21 @@ ADR-0017 定下的形态是「特权前置 + Core `exec` 自身」：`run_core()
 
 ```text
 daemon ──spawn──▶ Core（帧循环，不进命名空间）
-                    │ socketpair（CLOEXEC）
+                    │ socketpair（CLOEXEC）；每个隔离会话一份
                     ▼
-                  代理 A（setuid 启动，euid 0；写完 id 映射后降回真实 uid，只做 waitpid）
+                  代理 A（setuid 启动，euid 0；挂载做完后降回真实 uid，只做 waitpid）
                     │
-                    └─ fork ──▶ 代理 B（持 CLONE_NEWUSER + CLONE_NEWNS，真正干活）
+                    └─ fork ──▶ 代理 B（持 CLONE_NEWNS，真正干活）
                                   └─ fork ──▶ 工具子进程
 ```
 
 要点：
 
-- **A 与 B 不能合并成一个进程**：进入新 userns 的进程无法给自己写 `uid_map`——写映射需要
-  **父 userns** 的 `CAP_SETUID`。A 留在父 userns 才写得成，且 A 退出会让 B 被 reparent。
+- **没有 user namespace**：代理是 setuid root 启动的，在初始 userns 里本来就持
+  `CAP_SYS_ADMIN`；再建 `CLONE_NEWUSER` 只会换来残缺的 id 映射（`mkdir` 与 overlay 的
+  whiteout 全部 `EOVERFLOW`，实测见 `specs/defects/mount-proxy-cannot-mkdir-under-private-tmpfs.md`）。
+- **A 与 B 不能合并成一个进程**：A 退出会让 B 被 reparent，而 B 的 `PDEATHSIG` 绑在 A 上。
+  A 在 fork 之后立刻降权，此后只剩收尸一个职责。
 - **回收主路径是 socketpair EOF，不是 `PR_SET_PDEATHSIG`**：Core 死 → fd 关闭 → B 读 EOF
   退出 → A 的 `waitpid` 返回 → A 退出。这条链不依赖进程父子关系，覆盖 Core 被 `SIGKILL`。
   `PDEATHSIG` 只兜底「A 异常死亡」，且必须在凭证变更**之后**设置（`prctl(2)` 明确
@@ -84,3 +88,8 @@ daemon ──spawn──▶ Core（帧循环，不进命名空间）
   这条此前不存在的 fd 边界。两者都不改变「代理不是沙箱」的论断，但需要写进挂载代理规格
   （`docs/core/mount-proxy.md`，尚未落地）的威胁模型。
 - 允许列表的撤销在常驻期不生效（只在入口读一次），需重启 Core 或杀掉代理。
+- 一个隔离会话一个代理意味着 N 个隔离会话 = N 组 A/B 进程。这是刻意的取舍：视图在会话
+  建立时就挂好，之后没有新的挂载需求，因此不需要一个长期持 `CAP_SYS_ADMIN` 的进程去
+  按需挂载；代价是进程数随隔离会话数增长。
+- 工具代执行带来一条此前不存在的 fd 边界（Core ↔ 代理）。代理的 fd 1 / fd 2 只归它
+  自己，工具的三条管道由它新建——这条约束由 `mount-proxy-rs/src/exec.rs` 与单测保证。

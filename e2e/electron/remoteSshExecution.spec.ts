@@ -36,10 +36,9 @@ const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1
  *   npm run test:e2e:electron -- remoteSshExecution
  */
 
-import { requireSshEnvironment, detectLlmAdvertiseHost } from '../helpers/testEnvironment';
+import { requireSshEnvironment } from '../helpers/testEnvironment';
 
 const SSH = requireSshEnvironment();
-const ADVERTISE_HOST = SSH.llmAdvertiseHost ?? detectLlmAdvertiseHost();
 
 test.setTimeout(300_000);
 
@@ -158,7 +157,7 @@ test.afterEach(async () => {
 /** 启动应用并恢复预置的远程工作区；返回绑定该工作区的聊天视图 */
 async function launchWithRemoteWorkspace(remotePath = remoteWs): Promise<Awaited<ReturnType<AppHandle['chatPage']>>> {
   const ref = remotePath === remoteWs ? remoteRef : { ...remoteRef, path: remotePath };
-  mockLlm = await startMockLlm({ workspaceDir: remotePath, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  mockLlm = await startMockLlm({ workspaceDir: remotePath, listenHost: '0.0.0.0', reverseTunnel: SSH });
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,
@@ -433,7 +432,7 @@ test('陈旧状态文件：daemon 被强杀后按「没有 daemon」重新引导
 });
 
 test('manual 权限模式：远程 Bash 弹确认、允许后在远端执行', async () => {
-  mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,
@@ -520,7 +519,7 @@ test('US-42 远程（SSH）文件浏览：树来自远端、悬停显示修改�
  */
 test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读取失败）', async () => {
   test.setTimeout(600_000);
-  /** 转发开关：false = 掐断（远端不可用），true = 正常连到本机 sshd */
+  /** 转发开关：false = 掐断（远端不可用），true = 正常连到真实 sshd */
   let forwarding = false;
   /** 活的客户端 socket：收尾时先销毁，否则 proxy.close() 在仍有连接时永不回调 */
   const sockets = new Set<net.Socket>();
@@ -532,7 +531,12 @@ test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读�
       socket.destroy();
       return;
     }
-    const upstream = net.connect(SSH.port, '127.0.0.1');
+    // 转发到**环境文件里的真实 sshd**（host 可能是远端机），不是本机回环。
+    //
+    // 早期实现写的是 `net.connect(SSH.port, '127.0.0.1')`：把远端端口当本机 sshd 端口用。
+    // 本机没跑 sshd 时（绝大多数开发机）这一步恒 ECONNREFUSED，表现为 `reconnect failed
+    // … Connection lost before handshake`——与重连逻辑无关，是脚手架接错了地址。
+    const upstream = net.connect(SSH.port, SSH.host);
     sockets.add(upstream);
     upstream.on('close', () => sockets.delete(upstream));
     upstream.on('error', () => socket.destroy());
@@ -570,7 +574,7 @@ test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读�
     // 另开一个本地工作区：`launchApp` 要等一个 webview 聊天视图出现，而活动项落在
     // 不可用的远程工作区时聊天区是占位页（data:text/html），没有聊天视图可等
     const localDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'e2e-ws-ready-'));
-    mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+    mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
     app = await launchApp({
       repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
       mockLlm,
@@ -793,7 +797,7 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
   await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
   const fingerprint = localFingerprint();
   await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`);
-  mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,

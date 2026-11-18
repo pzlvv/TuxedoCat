@@ -275,6 +275,30 @@ fn apply_value(command: &mut Command, path: &OsStr) {
     command.env("PATH", path);
 }
 
+/// 把「交给 shell 子进程」的环境变量取成 `KEY=VALUE` 列表（常驻挂载代理代执行用）。
+///
+/// 为什么不是直接继承 `std::env::vars()`：代理按 FR-006「不读自己的环境变量」，它只
+/// `execve` 传入的 envp。因此 Core 必须把子进程该有的环境**显式**列出来，而 PATH 不能是
+/// 进程继承的那份——注入规则与 `apply()` 必须是同一份（否则一条命令在隔离会话里能跑、
+/// 在真实磁盘对话里找不到 `rg`）。
+///
+/// 白名单而不是全量继承：`LD_*` / `GIT_*` 这类会改变代理侧行为的变量不该穿过这条边界
+/// （代理是 setuid 启动的，历史上 `LD_PRELOAD` 正是那条攻击面）。
+pub fn child_env() -> Result<Vec<String>, String> {
+    let user = current()?.shell().to_os_string();
+    let dirs = search_path_dirs_for_test_or_now();
+    let prefixed = prepend_bundled_dirs(&user, &dirs, shell_form_of(&user));
+    let mut out = vec![format!("PATH={}", prefixed.to_string_lossy())];
+    for key in [
+        "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            out.push(format!("{key}={value}"));
+        }
+    }
+    Ok(out)
+}
+
 /// 把一份「可能是 Git Bash / MSYS2 混合形态」的 PATH 归一成原生进程认的 Windows 形式。
 ///
 /// 为什么需要：进程环境的 PATH 在从 Git Bash 启动的进程里是**混合**的——前半段是

@@ -60,6 +60,12 @@ impl WorkViewHandle {
         Ok(real.to_path_buf())
     }
 
+    /// 非 Linux 上永远取不到句柄，因此没有调用方（同本结构的其它方法）
+    #[allow(dead_code)]
+    pub fn proxy(&self) -> &std::sync::Arc<crate::mount_proxy::SessionProxy> {
+        unreachable!("非 Linux 上 WorkViewHandle 不可构造")
+    }
+
     pub fn mount_point(&self) -> std::path::PathBuf {
         std::path::PathBuf::new()
     }

@@ -24,6 +24,7 @@
 //!
 //! 平台：只在 Linux 上提供能力。其它平台编译出同签名类型，能力恒回不可用。
 
+#[allow(unused_imports)]
 pub use imp::{
     bind_view_onto_workspace, capabilities, changes, enter, file_diff, list_view_dir, release,
     remove, WorkView, WorkViewHandle,

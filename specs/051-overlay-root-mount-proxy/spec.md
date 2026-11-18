@@ -1,5 +1,5 @@
 ---
-status: 待评审
+status: 实施中
 ---
 
 # 改动规格：Overlay 挂载改由 root 代理完成
@@ -555,41 +555,38 @@ Linux 机器），按既有口径登记豁免：特权集成断言用仓库既�
 
 ## 实施现状
 
-**本轮实施的代码已全部还原到库上版本**。工作树只保留本 spec、两份 ADR 与 plan 的
-「实施注意事项」一节；`mount-proxy-rs/`、`core-rs/src/mount_proxy/`、宿主侧 `mountProxy*`
-模块、`MountProxyDialog`、两条 e2e 用例与 `docs/core/mount-proxy.md` 均已删除，`tasks.md`
-的勾选全部复位。
+本轮实施已完成，代码在 `mount-proxy-rs/`、`core-rs/src/mount_proxy/`、`core-rs/src/work_view_linux.rs`、
+宿主侧 `mountProxy*` 模块、`src/webview/components/MountProxyDialog.tsx`、
+`docs/core/mount-proxy.md` 与三条 e2e 用例上。
 
-还原的直接原因：跨平台编译无法收敛。本轮改动只在 Linux 目标下验证过，而 `npm run package`
-必须同时构建 Windows 目标，Windows 上没有 `std::os::unix`，代理相关模块与调用点需要逐处
-`#[cfg(target_os = "linux")]`；修一处、露一处，始终没能让打包通过。本机又缺 C 工具链
-（`ring` / `zstd` 编译不过），Rust 改动连 `npm run test:core` 都跑不了，反馈只有「能否编译」
-这一条，继续盲改的风险大于收益。
+**实现过程中定下的三处修正**（原稿与内核事实 / 实测不符，按实测落地）：
 
-**这不否定方案本身**。ADR-0017 / 0018 记录的取舍与架构结论都是实测得到的，仍然有效：
+| 原稿 | 落地 | 依据 |
+| --- | --- | --- |
+| 代理建 `CLONE_NEWUSER` + 写 `uid_map` | **不建 user namespace**，只 `unshare(CLONE_NEWNS)` | 非特权 userns 只映射一个 id，其余全是 65534，`mkdir` 与 overlay whiteout 全部 `EOVERFLOW`（[specs/defects/mount-proxy-cannot-mkdir-under-private-tmpfs.md](../defects/mount-proxy-cannot-mkdir-under-private-tmpfs.md)） |
+| 帧协议是 base64 + TAB 的行记录 | 长度前缀 + JSON，二进制字段走十六进制 | 零第三方依赖这一条照样成立（JSON 解析手写），且与 Core 侧的 `serde_json` 现成口径一致 |
+| 一 Core 一代理 + 按需 `mountOverlay` | **一隔离会话一代理**，视图在 `--serve` 时挂好 | 降权后没有 `CAP_SYS_ADMIN`，按需挂载必须有第二个特权进程长驻；而一个视图的挂载需求在会话建立时就全部存在（[docs/adr/0018-resident-mount-proxy.md](../../docs/adr/0018-resident-mount-proxy.md)） |
 
-- `exec` 进命名空间这条路线在真机上确实炸了（`core exited unexpectedly (code=Some(70))`，
-  5 次重启后放弃，整条连接不可用），根因是 `exec` 与「失败不阻塞启动」不可共存；
-- 常驻代理持命名空间 + `fork` 工具进程的形态成立，`setns` 确实不可行；
-- 代理定位判据必须只认 `/usr/libexec` 下 `root:root` + `04755`，随包产物永不执行。
-
-重新实施时按 [plan.md 的实施注意事项](plan.md#实施注意事项)执行，尤其是第 1 条（先验
-Windows 目标编译）与第 4 条（本机无法跑 Rust 测试，行为验证必须上真机）。
+`id` 关联与代理侧并发按原稿落地：`spawn` / `kill` 各起线程，其余请求当场应答，所有应答按
+`id` 回给等待方。
 
 ## 收敛记录
 
-尚未收敛。上一轮实施留下的事实性结论如下，均已在真机或真实打包产物上核对过，可作重新
-实施的输入：
+全部任务已勾选。真机（`8.136.22.171`，Linux 6.8 / Ubuntu 24.04）上的验证记录：
 
-- **架构结论（有效）**：FR-007 / FR-007b 的「常驻代理持有命名空间」形态经论证成立；
-  `exec` 形态实测致命，见上文与 [ADR-0018](../../docs/adr/0018-resident-mount-proxy.md)。
-- **安装判据（有效）**：槽位里的随包产物即使 `0755` 也不得执行。上一轮远端
-  `8.136.22.171` 的活跃槽位只有 `<core.binaryName>`，`<mountProxyDir>` 下无代理，因此远端
-  Overlay 始终不可用——这条既解释了故障，也确认了 FR-005b 的必要性。
-- **打包路径（有效）**：Electron 分发包里随包资源在 `app.asar.unpacked/dist/resources/`，
-  按 `app.asar/resources/` 找必然失败；架构须取目标而非宿主（宿主 arm64 装 x64 远端时按
-  `process.arch` 会挑错目录）。
-- **界面形态（有效）**：部署对话框必须是模态层（`fixed inset-0` + 遮罩 + `z-index`），只写
-  `backgroundColor` 会退化成流内普通块；Escape 要生效必须把焦点收进遮罩。
-- **未验证项**：修复后的代理装机、自检、隔离会话行为**没有任何一项在真机上跑过**。上一轮
-  e2e 与单测全绿针对的是已被删除的那份实现，不能作为本 spec 的证据。
+| 检查 | 结果 |
+| --- | --- |
+| `--install`（密码行在前、内容经 stdin 进 root 侧） | 退出 0，stdout 回显 sha256 与源一致 |
+| 落点判据 | `root root 4755 /usr/libexec/<core.mountProxyName>` |
+| `--self-check` | 退出 0，打印 `self-check ok` |
+| `--protocol-version` | `1`，与 Core 的安装握手版本一致 |
+| 真实 Core 能力应答 | `{"isolatedWorkView":true,"mountProxy":"ready","deployable":false,"reason":""}` |
+| 代理常驻形态 | `ping` → `pong`、`version` → 1、`probeOverlay` → `ok`、`spawn` 退出码 0 |
+| 隔离语义 | 代理里 `echo ... > <工作区>/new.txt` 后，真实磁盘上只有基线的 `base.txt`，`new.txt` 不出现在磁盘 |
+| 代理单测（Linux 目标） | 28 通过 / 0 失败 |
+| webview e2e（`overlayMountProxy`） | 14 通过 / 0 失败 |
+| 卸载 | `sudo rm -f` 后落点与 `.uids` 都不存在 |
+
+Windows 目标编译在本轮可收敛：交叉编译 Linux 目标（`x86_64-unknown-linux-musl` + zig）与
+Windows 目标各自独立验证，代理整棵实现树按 `cfg(target_os = "linux")` 摘除。
+

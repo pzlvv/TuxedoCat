@@ -8961,7 +8961,7 @@ fn reply_tool_error_for_cross_workspace_target_names_the_remote_workspace() {
             background: None,
             subagent: Some(harness.core.subagent_hooks()),
             transfer: None,
-            work_view: None,
+            work_view: crate::tools::WorkViewState::Workspace,
         },
     );
     let text = outcome.text();
@@ -9012,7 +9012,7 @@ fn reply_to_local_sub_agent_still_delivers() {
             background: None,
             subagent: Some(harness.core.subagent_hooks()),
             transfer: None,
-            work_view: None,
+            work_view: crate::tools::WorkViewState::Workspace,
         },
     );
     assert_eq!(
@@ -9562,23 +9562,22 @@ fn isolated_session_tool_writes_stay_in_the_view() {
         harness.core.session_storage("iso-chain-1"),
         WorkViewStorage::Isolated
     );
-    // 工作目录没登记时 `ensure_work_view` 会返回 None（工具按真实磁盘执行，且已记日志）
+    // 工作目录没登记时 `ensure_work_view` 会返回 `ViewUnavailable`（工具 fail-closed，
+    // 且已记日志），**不会**退回真实磁盘。
     config::set_session_workspace("iso-chain-1", Some(workspace.clone()));
     let view = harness.core.ensure_work_view("iso-chain-1");
     if crate::work_view::capabilities().isolated_work_view {
-        assert!(
-            view.is_some(),
-            "能力可用且工作目录已登记时，隔离会话必须拿到视图句柄"
-        );
-        let handle = view.unwrap();
-        // 句柄把真实路径映射到了视图内路径
+        let crate::tools::WorkViewState::View(handle) = view else {
+            panic!("能力可用且工作目录已登记时，隔离会话必须拿到视图句柄");
+        };
+        // 视图已 bind 到真实工作区路径上（specs/051），因此映射是恒等——但越界仍然报错
         let mapped = handle
             .map_into_view(std::path::Path::new(&format!("{workspace}/out.txt")))
             .expect("工作区内路径必须能映射");
-        assert!(
-            mapped.starts_with(handle.mount_point()),
-            "映射结果必须在视图内：{}",
-            mapped.display()
+        assert_eq!(
+            mapped,
+            std::path::PathBuf::from(format!("{workspace}/out.txt")),
+            "路径不做映射：视图 bind 在真实工作区路径上"
         );
         // 越界路径必须报错而不是静默退回真实路径（铁律 4.1）
         assert!(
@@ -9586,6 +9585,13 @@ fn isolated_session_tool_writes_stay_in_the_view() {
                 .map_into_view(std::path::Path::new("/tmp/outside.txt"))
                 .is_err(),
             "工作区外的路径必须报错"
+        );
+    } else {
+        // 能力不可用时必须是 `ViewUnavailable` 而不是 `Workspace`：后者意味着工具会
+        // 把改动写到真实磁盘，而用户以为自己勾了隔离（specs/051 FR-010）。
+        assert!(
+            matches!(view, crate::tools::WorkViewState::ViewUnavailable(_)),
+            "能力不可用时必须 fail-closed，不得退回真实磁盘"
         );
     }
 }

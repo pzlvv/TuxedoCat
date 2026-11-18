@@ -129,6 +129,18 @@ extern "C" {
     pub fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     pub fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     pub fn pipe(fds: *mut c_int) -> c_int;
+    /// 带 flags 的 `pipe(2)`：`O_CLOEXEC` 一步到位（工具代执行的三条管道要用）
+    pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
+    /// 复制 fd 到指定编号（工具子进程把管道接到 0 / 1 / 2）
+    pub fn dup2(oldfd: c_int, newfd: c_int) -> c_int;
+    /// 自立进程组（工具整组被杀的前提）
+    pub fn setpgid(pid: c_int, pgid: c_int) -> c_int;
+    /// 换掉进程映像：argv / envp 都是以 NULL 结尾的指针数组
+    pub fn execve(
+        path: *const c_char,
+        argv: *const *const c_char,
+        envp: *const *const c_char,
+    ) -> c_int;
     pub fn chdir(path: *const c_char) -> c_int;
     pub fn freopen(path: *const c_char, mode: *const c_char, stream: *mut c_void) -> *mut c_void;
 }
@@ -175,7 +187,10 @@ pub const POLLERR: i16 = 0x0008;
 /// `statx` 之类带结构体的路径，本 crate 需要的是「成功或失败的 errno」，不需要 std 的
 /// 额外语义（递归、父目录检查），因此直接 syscall 是更可靠的选择。
 ///
-/// `mode` 受进程 `umask` 影响，与 C 的 `mkdir` 完全一致。
+/// **`mode` 不受 umask 影响**：`mkdir(2)` 的 mode 会被进程 umask 削掉高位，而本程序在
+/// 入口就 `umask(077)`，`mkdir(p, 0o755)` 实际落成 `0700`。特权阶段建的目录随后要交给
+/// 降权后的服务本体与工具使用（`os error 13: Permission denied`，真机实测），因此这里
+/// 建完 `chmod` 一次，把 mode 显式设成调用方要的值。
 pub fn make_dir(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
     let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -187,6 +202,9 @@ pub fn make_dir(path: &std::path::Path) -> Result<(), String> {
     unsafe { *__errno_location() = 0 };
     let rc = unsafe { mkdir(path_c.as_ptr(), 0o755) };
     if rc == 0 {
+        // umask(077) 会把 0755 削成 0700：显式改回来，让降权后的用户与工具进得去。
+        // 失败不当错误返回——目录已建成，权限问题会在真正的读写处暴露得更具体。
+        unsafe { chmod(path_c.as_ptr(), 0o755) };
         return Ok(());
     }
     let errno = unsafe { *__errno_location() };
@@ -201,9 +219,22 @@ pub fn make_dir(path: &std::path::Path) -> Result<(), String> {
     ))
 }
 
-// `mkdir(2)`：libc 的包装会正确处理 errno 并做 `-1` 归一，是本 crate 需要的语义。
+/// 显式设一个路径的 mode（`chmod(2)`；不受 umask 影响，与建目录时同一需要）
+pub fn chmod_path(path: &std::path::Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("路径含 NUL 字节：{}", path.display()))?;
+    check(
+        unsafe { chmod(path_c.as_ptr(), mode) },
+        &format!("chmod({} → {mode:04o})", path.display()),
+    )
+}
+
+// `mkdir(2)` / `chmod(2)`：libc 的包装会正确处理 errno 并做 `-1` 归一，是本 crate
+// 需要的语义。
 extern "C" {
     fn mkdir(path: *const c_char, mode: c_uint) -> c_int;
+    fn chmod(path: *const c_char, mode: c_uint) -> c_int;
 }
 
 // `errno` 的取法（`__errno_location()` 在 glibc / musl 上都可用）
@@ -226,6 +257,26 @@ pub fn check(rc: CInt, what: &str) -> Result<(), String> {
     } else {
         Err(format!("{what} 失败（{}）", last_error()))
     }
+}
+
+/// 把一个路径的属主改成 `uid:gid`（特权阶段建完目录后交给真实用户）。
+///
+/// 特权阶段建的目录默认归 root；降权后的服务本体与工具以用户身份进去，属主不对就会在
+/// 写入处报 `Permission denied`（真机实测）。这里是那条交接的唯一落点。
+pub fn chown(path: &std::path::Path, uid: u32, gid: u32) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let path_c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("路径含 NUL 字节：{}", path.display()))?;
+    check(
+        unsafe { libc_chown(path_c.as_ptr(), uid, gid) },
+        &format!("chown({} → {uid}:{gid})", path.display()),
+    )
+}
+
+// `chown(2)`（避免与 std 的符号冲突，单独取一个本地名）
+extern "C" {
+    #[link_name = "chown"]
+    fn libc_chown(path: *const c_char, owner: CUInt, group: CUInt) -> c_int;
 }
 
 /// `getuid()`（调用者的**真实** uid；setuid 位不影响它）

@@ -40,6 +40,14 @@ npm run build:core:linux-x64
 npx playwright test -c e2e/playwright.config.ts --project=electron-ssh remoteChangeList
 ```
 
+远端车道里 Core 跑在测试机上，要回连本机的 mock LLM。mock 经 **SSH 反向隧道**暴露到
+测试机回环（`startMockLlm` 的 `reverseTunnel`，端口由远端分配），因此本机在 NAT 后也能跑，
+`environments.json` 不需要额外配地址。
+
+早期版本让远端直连本机内网地址（`llmAdvertiseHost`），本机在 NAT 后时那条路不通，
+症状是**0 个模型请求、界面一直转圈**——看起来像工具链缺陷，其实是 mock 不可达。
+需要直连时仍可配 `llmAdvertiseHost`（隧道优先，两者不冲突）。
+
 Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modules/electron`。
 
 Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道会被本机安全策略

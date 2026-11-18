@@ -35,7 +35,15 @@ mod imp;
 #[path = "mount_proxy/unsupported.rs"]
 mod imp;
 
-pub use imp::{probe_capabilities, shutdown, CapabilityProbe};
+// 导出的是模块的对外接口：非 Linux 构建里一部分成员暂时没有调用方（例如
+// `existing_proxy` 只在 Linux 的视图层用），因此整组标记允许未使用。
+#[allow(unused_imports)]
+pub use imp::{
+    existing_proxy, probe_capabilities, release_session, session_proxy, shutdown, state_of,
+    CapabilityProbe,
+};
+#[allow(unused_imports)]
+pub use imp::{PathFacts, SessionProxy, SpawnOutcome, SpawnSpec, View};
 
 /// 代理的安装位点（诊断与测试用）
 pub fn installed_path() -> String {

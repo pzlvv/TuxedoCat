@@ -22,8 +22,6 @@
 //! 顺序里的每一步都是约束，不可重排。理由见 FR-006 与
 //! `docs/core/mount-proxy.md` 的「特权阶段时序与加固」节。
 
-use crate::protocol::{Frame, Value};
-use crate::remote_fd::FdStream;
 use crate::sys;
 use std::ffi::CString;
 use std::fs;
@@ -142,6 +140,104 @@ pub struct Forked {
     pub child_exit_code: i32,
 }
 
+/// 一次性特权前置的入参：要在**降权之前**完成的挂载动作。
+///
+/// ## 为什么挂载必须发生在降权之前，且不能按需做
+///
+/// 按需挂载要求「降权之后仍有一个进程持有 `CAP_SYS_ADMIN`」，那正是旧形态里 A 长驻的
+/// 理由。改为「一隔离会话一代理」之后这个理由消失了：一个代理只服务一个视图，视图在
+/// 会话建立时就该挂好，之后没有任何新的挂载需求。于是 A 不再需要长驻，也不再需要一条
+/// B→A 的挂载通道——挂载在 fork 之前由 root 身份做完，B 与它共享同一份挂载表。
+///
+/// 这条形态还顺手解决了另一件事：视图必须 **bind 到真实工作区路径** 上（specs/045 的
+/// 透明性），而 bind 同样要 `CAP_SYS_ADMIN`。它在同一个特权窗口里完成，B 起的工具因此
+/// 直接看真实路径就是叠加结果。
+pub struct PrivilegedSetup<'a> {
+    /// 视图的 lower（真实工作区）
+    pub lower: &'a Path,
+    /// 视图的 upper
+    pub upper: &'a Path,
+    /// 视图的 work
+    pub work: &'a Path,
+    /// 叠加视图的挂载点
+    pub merged: &'a Path,
+    /// bind 的目标：真实工作区路径（工具看到的就是它）
+    pub workspace: &'a Path,
+}
+
+/// 进入挂载命名空间 → 挂 overlay → 把视图 bind 到工作区路径上（全部在 fork 之前）。
+///
+/// 调用方是已 `tighten()` 的 root 身份代理。成功返回后本进程处于一份私有挂载表里，
+/// 视图已就位；随后的 `establish_after_mount` 负责 fork 与降权。
+pub fn enter_mount_namespace(setup: &PrivilegedSetup) -> Result<(), String> {
+    if sys::effective_uid() != 0 {
+        return Err(format!(
+            "建立挂载命名空间要求 euid 为 0，实际 {}",
+            sys::effective_uid()
+        ));
+    }
+    // 1. 挂载命名空间必须在 fork **之前**建立：unshare(CLONE_NEWNS) 只影响调用进程，
+    //    fork 出来的子进程继承的是调用之后的挂载表，两者才是同一份。
+    sys::check(
+        unsafe { sys::unshare(sys::CLONE_NEWNS) },
+        "unshare(CLONE_NEWNS)",
+    )?;
+    // 根挂载默认是 shared，不标 private 的话一个 ns 里的挂载会传播回宿主。
+    sys::make_private_root()?;
+
+    // 2. 视图目录：**由 root 建、立刻 chown 给真实用户**。
+    //
+    //    不能让降权后的 B 自己建：它已经不在特权阶段，建不出 `mount` 需要的目录布局；
+    //    也不能留着 root 属主——B 与工具以用户身份进去，属主不对就会在写入处报
+    //    `Permission denied`（真机实测）。
+    for dir in [setup.upper, setup.work, setup.merged] {
+        sys::make_dir(dir)?;
+        sys::chown(dir, sys::real_uid(), sys::real_gid())?;
+    }
+    // 3. 挂 overlay
+    mount_fs(setup.lower, setup.upper, setup.work, setup.merged)?;
+    if mount_count(setup.merged) != 1 {
+        let _ = umount_path(setup.merged);
+        return Err(format!(
+            "挂载后 {} 在 mountinfo 里出现 {} 次（应为 1 次）",
+            setup.merged.display(),
+            mount_count(setup.merged)
+        ));
+    }
+    // 挂上之后由 root 读一次：`mount(2)` 返回 0 只说明内核收下了请求。这一步在降权之前，
+    // 因此能把「挂载没生效」与「降权后权限不足」两类失败分开报（两者在真机上都出现过）。
+    std::fs::read_dir(setup.merged)
+        .map_err(|error| format!("挂载后读 {} 失败（{error}）", setup.merged.display()))?;
+    // 4. 把视图 bind 到真实工作区路径上（specs/045 的透明性：工具看到真实路径就是叠加结果）
+    bind_over_workspace(setup.merged, setup.workspace)?;
+    Ok(())
+}
+
+/// 一份挂载表里 bind：`mount --bind <merged> <workspace>`，递归。
+///
+/// **递归**不可省：工作区里可能已经有子挂载（`node_modules` 的 tmpfs、用户自己的 bind
+/// 挂载），非递归 bind 只复制顶层目录本身，子挂载的内容会露出来。
+fn bind_over_workspace(source: &Path, target: &Path) -> Result<(), String> {
+    let source_c = cstring(source.as_os_str().as_bytes())?;
+    let target_c = cstring(target.as_os_str().as_bytes())?;
+    sys::check(
+        unsafe {
+            sys::mount(
+                source_c.as_ptr(),
+                target_c.as_ptr(),
+                std::ptr::null(),
+                sys::MS_BIND | sys::MS_REC,
+                std::ptr::null(),
+            )
+        },
+        &format!(
+            "把视图 {} 挂到工作区 {}",
+            source.display(),
+            target.display()
+        ),
+    )
+}
+
 /// 建立**挂载命名空间**，fork 成「特权挂载器 A」+「服务本体 B」，B 里执行 `body`。
 ///
 /// ## 为什么没有 user namespace
@@ -160,60 +256,28 @@ pub struct Forked {
 /// 建 `CLONE_NEWUSER` 是主动把自己降进一个残缺的映射。因此现在只用
 /// `unshare(CLONE_NEWNS)`：挂载隔离照样成立，且全程没有 id 映射问题。
 ///
-/// ## 为什么是两个进程
+/// ## 为什么仍然要 fork
 ///
-/// 常驻期要**按需**挂载每个会话的 overlay（Core 发 `mountOverlay` 才挂），而
-/// `mount(2)` 需要 `CAP_SYS_ADMIN`。单进程降权之后就再也挂不了了。因此：
+/// 挂载已完成（`enter_mount_namespace`），A 不再需要保持特权做任何事。fork 的唯一目的
+/// 是让 A 留在原处只做 `waitpid` 收尸：B 的 `PR_SET_PDEATHSIG` 绑在 A 上，A 一旦退出
+/// B 会被 reparent 且信号不再生效。A 在 fork 之后立刻降回真实 uid，此后不持任何特权。
 ///
 /// ```text
-/// A（特权挂载器，euid 0，初始 userns）
-///    · unshare(CLONE_NEWNS) + MS_REC|MS_PRIVATE   ← fork 之前，A / B 共享这份挂载表
-///    · fork ──▶ B
-///    · 只做 mount / umount 两个原语，不碰业务、不读 Core 的帧
-///    · waitpid(B) 收尸
+/// A（父，fork 后立刻降权到真实 uid）
+///    · 只做 waitpid(B) 收尸
+///    · 不碰业务、不读 Core 的帧
 ///
-/// B（服务本体，降权到真实 uid）
+/// B（子，同样降权到真实 uid）
 ///    · 跑帧循环（serve.rs），业务全部在这里
-///    · 挂载请求转发给 A（见 serve::MountRequester）
-///    · 自己是用户身份，`mount(2)` 会被内核拒绝——特权只留在 A
+///    · 已经站在挂载命名空间里、视图已 bind 到工作区
 /// ```
-///
-/// 挂载命名空间在 fork **之前**建立，A 与 B 因此共享同一份挂载表：A 挂上的视图 B
-/// 立刻可见，这也是实测确认过的形态（B 以用户身份在 A 挂好的 merged 目录里读写正常）。
 ///
 /// `body` 必须**永不返回**（以 `_exit` 结束）：回到 fork 之后共享的栈是未定义行为。
 /// 返回类型写 `()` 而不是 `!`（`!` 作为闭包返回类型在 stable Rust 上仍 experimental）。
-pub fn establish<F>(uid: u32, gid: u32, body: F) -> Result<Forked, String>
+pub fn establish_after_mount<F>(uid: u32, gid: u32, body: F) -> Result<Forked, String>
 where
-    F: FnOnce(i32),
+    F: FnOnce(),
 {
-    // 入口自检已确认 euid==0 且 real uid != 0（FR-006）。这里再防御性核对一次：少
-    // CAP_SYS_ADMIN 时 unshare 可能静默成功、后续 mount 才失败，报错点离根因很远。
-    if sys::effective_uid() != 0 {
-        return Err(format!(
-            "建立挂载命名空间要求 euid 为 0，实际 {}",
-            sys::effective_uid()
-        ));
-    }
-
-    // 1. 挂载命名空间必须在 fork **之前**建立：unshare(CLONE_NEWNS) 只影响调用进程，
-    //    fork 出来的子进程继承的是调用之后的挂载表，两者才是同一份。
-    sys::check(
-        unsafe { sys::unshare(sys::CLONE_NEWNS) },
-        "unshare(CLONE_NEWNS)",
-    )?;
-    // 根挂载默认是 shared，不标 private 的话一个 ns 里的挂载会传播回宿主。
-    sys::make_private_root()?;
-
-    // 2. A / B 之间的双向通道（B 发挂载请求，A 回结果）。用 socketpair 而不是管道：
-    //    挂载请求与结果都要带载荷，全双工省掉两根管道与方向错位的坑。
-    let mut pair = [0i32; 2];
-    sys::check(
-        unsafe { sys::socketpair(sys::AF_UNIX, sys::SOCK_STREAM, 0, pair.as_mut_ptr()) },
-        "建挂载器通道",
-    )?;
-    let (a_fd, b_fd) = (pair[0], pair[1]);
-
     let parent_pid = unsafe { sys::getpid() };
     let pid = unsafe { sys::fork() };
     if pid < 0 {
@@ -221,9 +285,8 @@ where
     }
     if pid == 0 {
         // ── 子进程 = B（服务本体）：永不返回 ──
-        let _ = unsafe { sys::close(a_fd) };
-        // 降权必须在 fs 操作**之前**：视图目录要按用户身份建，属主才正确。先建后降权
-        // 会让目录属于 root，用户在自己的视图里写不动（实测）。
+        //
+        // 降权必须在任何 fs 操作**之前**：工具与视图目录都按用户身份做事，属主才正确。
         if let Err(reason) = drop_to_real_ids(uid, gid) {
             eprintln!("[mount-proxy] 服务本体降权失败：{reason}");
             unsafe { sys::_exit(64) };
@@ -253,67 +316,57 @@ where
             eprintln!("[mount-proxy] 置 NO_NEW_PRIVS 失败：{reason}");
             unsafe { sys::_exit(64) };
         }
-        body(b_fd);
+        body();
         // `body` 约定以 `_exit` 结束；走到这里说明它返回了（未定义行为的边界）
         eprintln!("[mount-proxy] 内部错误：服务本体返回了");
         unsafe { sys::_exit(77) }
     }
 
-    // ── 父进程 = A（特权挂载器）：服务 B 直到它退出 ──
-    let _ = unsafe { sys::close(b_fd) };
-    let child_exit_code = mounter_loop(a_fd, pid);
-    // B 已退出（mounter_loop 在 EOF 后 waitpid），A 也收工了
-    let _ = unsafe { sys::close(a_fd) };
-    Ok(Forked { child_exit_code })
+    // ── 父进程 = A：降权后只收尸 ──
+    //
+    // 挂载已在 fork 之前做完，A 不再需要 root。先降权再 `waitpid`：此后 A 即使被
+    // 诱导，也没有任何能力可用（FR-006 第 7 条 / AC-22）。
+    if let Err(reason) = drop_to_real_ids(uid, gid) {
+        // 降权失败：直接杀掉 B 再退出，不留一个持命名空间、父进程仍是 root 的孤儿
+        unsafe {
+            sys::kill(pid, sys::SIGKILL);
+        }
+        return Err(format!("特权挂载器降权失败：{reason}"));
+    }
+    // `PDEATHSIG` 指向 Core 必须**在降权之后**设置（凭证变更会清掉它）。
+    let _ = sys::set_pdeathsig();
+    Ok(Forked {
+        child_exit_code: reap(pid),
+    })
 }
 
-/// A 的主循环：只处理挂载请求，直到 B 关闭通道（= B 已退出）。
-///
-/// 协议极简，且**只有两个 op**：把挂载能力收窄到最小面。A 不解析业务帧、不持有任何
-/// 状态机——它只是 B 的一只手。
-///
-/// 返回 B 的 pid（供调用方记录）；EOF 视为正常结束。
-fn mounter_loop(fd: i32, child_pid: i32) -> i32 {
-    let mut stream = FdStream::new(fd);
+/// 等一个子进程退出并返回它的退出码
+fn reap(pid: i32) -> i32 {
+    let mut status = 0;
     loop {
-        let frame = match Frame::read_from(&mut stream) {
-            Ok(Some(frame)) => frame,
-            // EOF：B 已退出（或被 SIGKILL），A 跟着收工
-            Ok(None) => break,
-            Err(reason) => {
-                eprintln!("[mount-proxy] 挂载器读请求失败：{reason}");
-                break;
+        let reaped = unsafe { sys::waitpid(pid, &mut status, 0) };
+        if reaped == pid {
+            return decode_wait_status(status);
+        }
+        if reaped < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
             }
-        };
-        let reply = match frame.op.as_str() {
-            "mount" => match mount_request(&frame) {
-                Ok(merged) => Frame::new("ok")
-                    .with("ok", Value::Bool(true))
-                    .with("merged", Value::Str(merged)),
-                Err(reason) => Frame::new("error").with("message", Value::Str(reason)),
-            },
-            "umount" => match umount_request(&frame) {
-                Ok(()) => Frame::new("ok").with("ok", Value::Bool(true)),
-                Err(reason) => Frame::new("error").with("message", Value::Str(reason)),
-            },
-            other => {
-                Frame::new("error").with("message", Value::Str(format!("挂载器不接受 op {other}")))
-            }
-        };
-        if let Err(reason) = reply.write_to(&mut stream) {
-            eprintln!("[mount-proxy] 挂载器写应答失败：{reason}");
-            break;
+            eprintln!("[mount-proxy] 收尸失败：{error}");
+            return 6;
         }
     }
-    // 收尸，不留僵尸
-    let mut status = 0;
-    let reaped = unsafe { sys::waitpid(child_pid, &mut status, 0) };
-    if reaped != child_pid {
-        let error = std::io::Error::last_os_error();
-        eprintln!("[mount-proxy] 挂载器收尸失败：{error}");
-        return 6;
-    }
-    decode_wait_status(status)
+}
+
+/// 挂载点当前在 `/proc/self/mountinfo` 里出现几次
+fn mount_count(mount: &Path) -> usize {
+    let text = mount.to_string_lossy();
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.split_whitespace().nth(4) == Some(text.as_ref()))
+        .count()
 }
 
 /// 把 `waitpid` 的 status 解成退出码：正常退出取高 8 位，被信号杀死按 `128 + 信号`。
@@ -326,31 +379,6 @@ fn decode_wait_status(status: i32) -> i32 {
     } else {
         128 + signal
     }
-}
-
-/// `mount` 请求：`lower` / `upper` / `work` / `merged` 四个路径。
-///
-/// 视图目录由 B（用户身份）建好并拥有；A 只做挂载这一步。
-fn mount_request(frame: &Frame) -> Result<String, String> {
-    let lower = PathBuf::from(frame.str_field("lower")?);
-    let upper = PathBuf::from(frame.str_field("upper")?);
-    let work = PathBuf::from(frame.str_field("work")?);
-    let merged = PathBuf::from(frame.str_field("merged")?);
-    // 挂载点必须已经由 B（用户身份）建好：A 是 euid 0 且 umask(077)，由它建出来的
-    // 目录是 `root:root 0700`，B 挂上之后自己读不了。这里只检查存在，不建。
-    if !merged.is_dir() {
-        return Err(format!(
-            "挂载点 {} 不存在或不是目录（应由服务本体以用户身份建好）",
-            merged.display()
-        ));
-    }
-    mount_fs(&lower, &upper, &work, &merged)?;
-    Ok(merged.to_string_lossy().into_owned())
-}
-
-fn umount_request(frame: &Frame) -> Result<(), String> {
-    let merged = PathBuf::from(frame.str_field("merged")?);
-    umount_path(&merged)
 }
 
 /// `mount("overlay", merged, "overlay", 0, "lowerdir=...")`

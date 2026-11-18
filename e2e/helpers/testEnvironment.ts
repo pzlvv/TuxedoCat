@@ -22,8 +22,11 @@ export interface SshTestEnvironment {
   user: string;
   password: string;
   /**
-   * mock LLM 对外广播的主机（可选）：远端 Core 要回连本机的 mock LLM，baseURL 用它。
-   * 缺省自动探测本机对外 IPv4（优先 192.168.*）。
+   * mock LLM 对外广播的主机（可选）：**直连方案**用，远端 Core 按它回连本机的 mock。
+   *
+   * 远端车道默认走 SSH 反向隧道（`startMockLlm` 的 `reverseTunnel`），不需要这一项——
+   * 隧道把 mock 暴露到远端回环，本机在 NAT 后也能用。只有当本机有对远端可达的地址、
+   * 且不想建隧道时才配它；配了也与隧道不冲突（隧道优先）。
    */
   llmAdvertiseHost?: string;
 }
@@ -176,7 +179,14 @@ export function assertEnvironmentFileIfPresent(): void {
   loadEnvironmentFile();
 }
 
-/** 本机对外（LAN）IPv4：优先 192.168.*（物理网卡常见段；172.x 虚拟网关远端未必可达） */
+/**
+ * 本机对外（LAN）IPv4：优先 192.168.*（物理网卡常见段；172.x 虚拟网关远端未必可达）。
+ *
+ * 这是**直连方案**的地址探测，远端车道默认已改走 SSH 反向隧道（见
+ * `mockLlmServer.ts` 的 `openReverseTunnel`），不再需要它——本机在 NAT 后时这个地址
+ * 对远端不可达，硬用会让远端 Core 的模型请求全部超时（症状：0 个请求、界面一直转圈）。
+ * 保留给「本机有对远端可达的地址、且不想建隧道」的场景，以及需要该地址做其它断言时。
+ */
 export function detectLlmAdvertiseHost(): string {
   const fallbacks: string[] = [];
   for (const interfaces of Object.values(os.networkInterfaces())) {

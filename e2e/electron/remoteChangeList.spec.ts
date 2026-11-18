@@ -8,7 +8,7 @@ import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { CONFIG_DIR_NAME, CORE_BINARY_NAME, ENV_PREFIX, LOG_FILE_NAME } from '../../src/config/project';
-import { requireSshEnvironment, detectLlmAdvertiseHost } from '../helpers/testEnvironment';
+import { requireSshEnvironment } from '../helpers/testEnvironment';
 
 /** 远端状态目录 / 进程匹配模式（产品身份唯一来源 `src/config/project.json`，
  *  用例里不落字面量；pkill 模式首字符加 [] 不匹配执行它的远端 shell 自身） */
@@ -57,7 +57,6 @@ const modeSeg = (mode: 'tree' | 'doc' | 'changes') => `#filesModeSwitch .files-m
  */
 
 const SSH = requireSshEnvironment();
-const ADVERTISE_HOST = SSH.llmAdvertiseHost ?? detectLlmAdvertiseHost();
 
 /**
  * 打开主进程的远端取数计数钩子（`electron/main.ts` 的 `E2E_REMOTE_GIT_OPS_ENV`）。
@@ -226,7 +225,7 @@ async function initRemoteRepo(name: string): Promise<string> {
 /** 启动应用并打开远程工作区；返回侧栏页（文件浏览器在上面的固定容器里） */
 async function launchWithRemoteWorkspace(remotePath: string): Promise<Awaited<ReturnType<AppHandle['sidebarPage']>>> {
   const ref = remotePath === remoteWs ? remoteRef : { ...remoteRef, path: remotePath };
-  mockLlm = await startMockLlm({ workspaceDir: remotePath, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  mockLlm = await startMockLlm({ workspaceDir: remotePath, listenHost: '0.0.0.0', reverseTunnel: SSH });
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,

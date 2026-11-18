@@ -31,6 +31,8 @@
 //! 对这些 op 明确回「未实现」，不静默成功。
 
 #[cfg(target_os = "linux")]
+mod exec;
+#[cfg(target_os = "linux")]
 mod privilege;
 // 帧协议是纯 std 的编解码，不碰 unix / libc：跨平台编译，让它的测试在
 // Windows 开发机上也能真实执行（整树摘掉会让 `cargo test` 报「0 个测试 ok」）。
@@ -117,31 +119,55 @@ mod linux {
         }
     }
 
-    /// 常驻形态：建立命名空间并进入帧循环（永不返回）
+    /// 常驻形态：建立命名空间、挂好视图、bind 到工作区，然后进入帧循环（永不返回）
+    ///
+    /// 入参（FR-006：只经 argv，不读环境变量）：
+    ///
+    /// | 参数 | 含义 |
+    /// | --- | --- |
+    /// | `--fd <n>` | 与 Core 之间的 socketpair 子端 |
+    /// | `--lower <path>` | 视图的 lower（真实工作区） |
+    /// | `--upper <path>` | 视图的 upper |
+    /// | `--work <path>` | 视图的 work |
+    /// | `--merged <path>` | 叠加视图的挂载点 |
+    /// | `--workspace <path>` | bind 的目标：真实工作区路径 |
     fn serve_mode(args: &[String]) -> ! {
-        // `--fd <n>` 是唯一的入参：通信 fd 只来自 argv，不读环境变量
-        let fd = match parse_fd(args) {
-            Ok(fd) => fd,
+        let options = match parse_serve_args(args) {
+            Ok(options) => options,
             Err(reason) => {
                 eprintln!("[{PROXY_NAME}] {reason}");
                 std::process::exit(2);
             }
         };
-        // 请求收紧必须在 fork 之前：之后的分支都不该再持有宽集合
+        // 请求收紧必须在建立命名空间之前：之后的分支都不该再持有宽集合
         if let Err(reason) = privilege::tighten() {
             eprintln!("[{PROXY_NAME}] 请求收紧失败：{reason}");
             std::process::exit(4);
         }
         let uid = sys::real_uid();
         let gid = sys::real_gid();
-        // 建挂载命名空间并 fork：B（子进程）拿到 b_fd 后进入服务循环，永不返回；
-        // A（本进程）在 establish 里做完挂载器循环才返回。
-        let forked = match privilege::establish(uid, gid, |mounter_fd| {
-            serve::run_as_resident(fd, mounter_fd);
+        // 挂载必须在**降权之前**完成：建命名空间、挂 overlay、bind 到工作区三步都要
+        // CAP_SYS_ADMIN，降权之后再也没有进程持有它（见 privilege::enter_mount_namespace）。
+        let setup = privilege::PrivilegedSetup {
+            lower: &options.lower,
+            upper: &options.upper,
+            work: &options.work,
+            merged: &options.merged,
+            workspace: &options.workspace,
+        };
+        if let Err(reason) = privilege::enter_mount_namespace(&setup) {
+            eprintln!("[{PROXY_NAME}] 建立挂载命名空间失败：{reason}");
+            std::process::exit(5);
+        }
+        // 视图根目录记进进程内槽位：serve 侧不读环境变量，只认这一处
+        serve::set_view_root(options.merged.clone());
+        // fork 出 B（服务本体）后立刻降权；A 此后只做收尸
+        let forked = match privilege::establish_after_mount(uid, gid, || {
+            serve::run_as_resident(options.fd);
         }) {
             Ok(forked) => forked,
             Err(reason) => {
-                eprintln!("[{PROXY_NAME}] 建立挂载命名空间失败：{reason}");
+                eprintln!("[{PROXY_NAME}] fork 失败：{reason}");
                 std::process::exit(5);
             }
         };
@@ -150,21 +176,57 @@ mod linux {
         std::process::exit(forked.child_exit_code);
     }
 
-    /// 解析 `--fd <n>`
-    fn parse_fd(args: &[String]) -> Result<i32, String> {
+    /// `--serve` 的入参
+    struct ServeOptions {
+        fd: i32,
+        lower: std::path::PathBuf,
+        upper: std::path::PathBuf,
+        work: std::path::PathBuf,
+        merged: std::path::PathBuf,
+        workspace: std::path::PathBuf,
+    }
+
+    /// 解析 `--serve` 的参数：全部必填，缺一个就报错（不猜默认路径）
+    fn parse_serve_args(args: &[String]) -> Result<ServeOptions, String> {
+        let mut fd: Option<i32> = None;
+        let mut lower = None;
+        let mut upper = None;
+        let mut work = None;
+        let mut merged = None;
+        let mut workspace = None;
         let mut index = 0;
         while index < args.len() {
-            if args[index] == "--fd" {
-                let Some(value) = args.get(index + 1) else {
-                    return Err("--fd 缺参数".to_string());
-                };
-                return value
-                    .parse::<i32>()
-                    .map_err(|_| format!("--fd 的值不是整数：{value}"));
+            let flag = args[index].as_str();
+            let Some(value) = args.get(index + 1) else {
+                return Err(format!("{flag} 缺参数"));
+            };
+            match flag {
+                "--fd" => {
+                    fd = Some(
+                        value
+                            .parse::<i32>()
+                            .map_err(|_| format!("--fd 的值不是整数：{value}"))?,
+                    );
+                }
+                "--lower" => lower = Some(std::path::PathBuf::from(value)),
+                "--upper" => upper = Some(std::path::PathBuf::from(value)),
+                "--work" => work = Some(std::path::PathBuf::from(value)),
+                "--merged" => merged = Some(std::path::PathBuf::from(value)),
+                "--workspace" => workspace = Some(std::path::PathBuf::from(value)),
+                other => return Err(format!("--serve 不接受参数 {other}")),
             }
-            index += 1;
+            index += 2;
         }
-        Err("--serve 需要 --fd <n>（Core 传入的 socketpair 子端）".to_string())
+        Ok(ServeOptions {
+            fd: fd.ok_or_else(|| {
+                "--serve 需要 --fd <n>（Core 传入的 socketpair 子端）".to_string()
+            })?,
+            lower: lower.ok_or_else(|| "--serve 需要 --lower <path>".to_string())?,
+            upper: upper.ok_or_else(|| "--serve 需要 --upper <path>".to_string())?,
+            work: work.ok_or_else(|| "--serve 需要 --work <path>".to_string())?,
+            merged: merged.ok_or_else(|| "--serve 需要 --merged <path>".to_string())?,
+            workspace: workspace.ok_or_else(|| "--serve 需要 --workspace <path>".to_string())?,
+        })
     }
 
     /// 入口闸门：入口自检 + 允许列表校验（FR-006「入口自检」）
@@ -175,14 +237,14 @@ mod linux {
         privilege::entry_rejection(sys::effective_uid(), sys::real_uid(), &allowed)
     }
 
-    /// `--self-check`（FR-005「自检归属唯一」）：建挂载命名空间 → 降权 → 挂 overlay →
+    /// `--self-check`（FR-005「自检归属唯一」）：建挂载命名空间 → 挂 overlay → 降权 →
     /// 断言 → 卸载。
     ///
-    /// 断言（AC-19），每条失败都点名是哪一条：
-    /// 1. 建命名空间后 `CapEff` 仍含 `CAP_SYS_ADMIN`（证明挂载确实可用）；
-    /// 2. 降权后 `getuid()` / `geteuid()` 都是真实 uid（证明 body 不以 root 运行）；
-    /// 3. 降权后仍能挂载 overlay（证明特权用在正确的位置——挂载在降权前完成）;
-    /// 4. 视图目录落在真实磁盘上且可写（证明持久化，不依赖 tmpfs）。
+    /// 断言，每条失败都点名是哪一条：
+    /// 1. 挂载在降权**之前**由 root 完成，降权后进程不该再持 `CAP_SYS_ADMIN`；
+    /// 2. 降权后 `getuid()` / `geteuid()` / `getsuid()` 都是真实 uid（不以 root 运行）；
+    /// 3. 挂载表可读且视图在表里恰好一次；
+    /// 4. 叠加视图读得到 lower 的内容（挂载真的生效，不是空目录）。
     ///
     /// 自检由代理自身实现，**不 exec 任何目标**（FR-005「自检归属唯一」）。
     fn self_check() -> i32 {
@@ -196,28 +258,82 @@ mod linux {
             eprintln!("[{PROXY_NAME}] 请求收紧失败：{reason}");
             return 4;
         }
-        // 建命名空间 + fork 出挂载器；断言在 B（已降权）里跑，挂载经 A 完成
-        if let Err(reason) =
-            privilege::establish(uid, gid, |mounter_fd| self_check_body(uid, mounter_fd))
-        {
-            eprintln!("[{PROXY_NAME}] 建立挂载命名空间失败：{reason}");
+        // 固定路径、不读 `TMPDIR`（FR-006「请求收紧」）
+        let root =
+            std::path::Path::new("/tmp").join(format!("tc-self-check-{}", std::process::id()));
+        let lower = root.join("lower");
+        let upper = root.join("upper");
+        let work = root.join("work");
+        let merged = root.join("merged");
+        // 自检只验「命名空间 + overlay」这条链，因此 bind 目标是 lower 自己：挂载点与
+        // bind 目标不能是同一处（mount 会拒绝），lower 是可写的临时目录。
+        let bind_target = lower.clone();
+        let prepared = (|| -> Result<(), String> {
+            // 目录由 root 建、立刻交给真实用户：自检的断言在降权之后跑，属主不对就会
+            // 在读叠加视图那一步报 Permission denied（真机实测）。
+            for dir in [&root, &lower, &bind_target] {
+                sys::make_dir(dir)?;
+                sys::chown(dir, uid, gid)?;
+            }
+            // 标记文件写完之后要立刻交给真实用户：`umask(077)` 让它落成 root:root 0600，
+            // 降权后的断言读它必然 `Permission denied`（真机实测）。overlay 的 upper 侧
+            // 复制的正是这份元数据，所以问题会一路带到 merged 与 bind 后的路径上。
+            let marker = lower.join("marker.txt");
+            std::fs::write(&marker, "self-check\n")
+                .map_err(|error| format!("写 lower 标记文件失败：{error}"))?;
+            sys::chown(&marker, uid, gid)?;
+            sys::chmod_path(&marker, 0o644)?;
+            Ok(())
+        })();
+        if let Err(reason) = prepared {
+            eprintln!("[{PROXY_NAME}] 自检准备失败：{reason}");
+            let _ = std::fs::remove_dir_all(&root);
             return 5;
         }
-        0
+        let bind_workspace = root.join("workspace");
+        if let Err(reason) =
+            sys::make_dir(&bind_workspace).and_then(|()| sys::chown(&bind_workspace, uid, gid))
+        {
+            eprintln!("[{PROXY_NAME}] 自检准备失败：{reason}");
+            let _ = std::fs::remove_dir_all(&root);
+            return 5;
+        }
+        let setup = privilege::PrivilegedSetup {
+            lower: &lower,
+            upper: &upper,
+            work: &work,
+            merged: &merged,
+            workspace: &bind_workspace,
+        };
+        if let Err(reason) = privilege::enter_mount_namespace(&setup) {
+            eprintln!("[{PROXY_NAME}] 建立挂载命名空间失败：{reason}");
+            let _ = std::fs::remove_dir_all(&root);
+            return 5;
+        }
+        let forked = match privilege::establish_after_mount(uid, gid, || {
+            self_check_body(uid, &merged, &bind_workspace)
+        }) {
+            Ok(forked) => forked,
+            Err(reason) => {
+                eprintln!("[{PROXY_NAME}] 自检 fork 失败：{reason}");
+                let _ = std::fs::remove_dir_all(&root);
+                return 5;
+            }
+        };
+        let _ = std::fs::remove_dir_all(&root);
+        forked.child_exit_code
     }
 
-    /// 命名空间里的断言；以退出码表达结论（0 = 全过，不返回）
-    fn self_check_body(real_uid: u32, mounter_fd: i32) {
+    /// 降权之后的断言；以退出码表达结论（0 = 全过，不返回）
+    fn self_check_body(real_uid: u32, merged: &std::path::Path, bind_target: &std::path::Path) {
         let mut failures: Vec<String> = Vec::new();
 
-        // 1. B 降权后**不该**再有 CAP_SYS_ADMIN——特权只留在 A（挂载器）。
-        //    这条同时是「二进程拆分确实生效」的证据：若 B 仍持 CAP_SYS_ADMIN，
-        //    说明降权没做到位，mount 能力还暴露在服务主体上。
+        // 1. 降权后**不该**再有 CAP_SYS_ADMIN——挂载已在降权之前做完（FR-006 第 7 条）。
         if sys::has_cap_sys_admin() {
-            failures.push("服务本体降权后仍持有 CAP_SYS_ADMIN".to_string());
+            failures.push("降权后仍持有 CAP_SYS_ADMIN".to_string());
         }
 
-        // 2. 降权后三个 uid 都必须是真实 uid——body 不允许以 root 运行
+        // 2. 三个 uid 都必须是真实 uid——body 不允许以 root 运行
         let (mut ru, mut eu, mut su) = (0u32, 0u32, 0u32);
         match unsafe { sys::getresuid(&mut ru, &mut eu, &mut su) } {
             0 => {
@@ -230,7 +346,7 @@ mod linux {
             _ => failures.push(format!("getresuid 失败：{}", sys::last_error())),
         }
 
-        // 3. 仍挂在私有挂载命名空间里：读到的 mountinfo 必须带上 private 传播标记
+        // 3. 仍挂在私有挂载命名空间里：读到的 mountinfo 必须可读且带挂载表
         match std::fs::read_to_string("/proc/self/mountinfo") {
             Ok(text) => {
                 if !text.lines().any(|line| line.contains(" - ")) {
@@ -240,10 +356,51 @@ mod linux {
             Err(error) => failures.push(format!("读 mountinfo 失败：{error}")),
         }
 
-        // 挂一个真实 overlay 再卸载：能力判据不能只靠 CapEff。
-        // 挂载经 A（特权挂载器）完成，B 自己挂必然 EPERM。
-        if let Err(reason) = self_check_overlay(mounter_fd) {
-            failures.push(format!("overlay 实测失败：{reason}"));
+        // 先把身份与目录权限打出来：真机上的 Permission denied 需要能区分「属主不对」
+        // 与「挂载没生效」，否则只能靠猜。
+        eprintln!(
+            "[{PROXY_NAME}] 自检诊断：uid={} merged={} workspace={}",
+            real_uid,
+            describe_path(merged),
+            describe_path(bind_target)
+        );
+
+        // 4. 叠加视图读得到 lower 的内容（挂载真的生效）；bind 之后真实工作区路径看到
+        //    的也是同一份内容——这是 specs/045 透明性的直接证据。
+        for (label, path) in [("叠加视图", merged), ("bind 后的工作区", bind_target)] {
+            // 先列目录：读不到文件时「目录进不去」与「文件不存在」的原因完全不同，
+            // 而 `read_to_string` 的 io::Error 在这两种情形下都是同一条 errno 文案。
+            if let Err(error) = std::fs::read_dir(path) {
+                failures.push(format!(
+                    "{label}目录打不开：{error}（{}，可执行位={:?}，mnt ns={}）",
+                    describe_path(path),
+                    std::fs::metadata(path)
+                        .map(|m| {
+                            use std::os::unix::fs::PermissionsExt;
+                            m.permissions().mode()
+                        })
+                        .ok(),
+                    std::fs::read_link("/proc/self/ns/mnt")
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
+                ));
+                continue;
+            }
+            match std::fs::read_to_string(path.join("marker.txt")) {
+                Ok(seen) if seen.trim() == "self-check" => {}
+                Ok(seen) => failures.push(format!("{label}内容不对：{seen:?}")),
+                Err(error) => failures.push(format!(
+                    "读{label}失败：{error}（目录 {}：{}；父目录 {}：{}）",
+                    path.display(),
+                    describe_path(path),
+                    path.parent()
+                        .map(|parent| parent.display().to_string())
+                        .unwrap_or_default(),
+                    path.parent()
+                        .map(describe_path)
+                        .unwrap_or_else(|| "?".to_string())
+                )),
+            }
         }
 
         if failures.is_empty() {
@@ -259,45 +416,13 @@ mod linux {
         std::process::exit(1);
     }
 
-    /// 自检里的 overlay 实测：在真实磁盘上建 lower / upper / work / merged，挂上、读叠加
-    /// 内容、卸载。
-    ///
-    /// 目录落在 B 自己的临时目录下（**不是 tmpfs**）：视图内容要跨重启保留，用户的修改
-    /// 才恢复得回来。这也顺带证明「真实磁盘 + 挂载命名空间」这条链成立——不需要
-    /// 用户命名空间，也不需要 fuse-overlayfs。
-    ///
-    /// 挂载经 A 完成：B 在自检时已经降权，自己没有 `mount(2)` 的能力。
-    fn self_check_overlay(mounter_fd: i32) -> Result<(), String> {
-        // 固定路径、不读 `TMPDIR`（FR-006「请求收紧」：常驻形态不读环境变量）
-        let root =
-            std::path::Path::new("/tmp").join(format!("tc-self-check-{}", std::process::id()));
-        let lower = root.join("lower");
-        let upper = root.join("upper");
-        let work = root.join("work");
-        let merged = root.join("merged");
-        let result = (|| -> Result<(), String> {
-            // `merged` 也由 B 建：A 是 euid 0 且 umask(077)，它建的目录 B 读不了
-            for dir in [&root, &lower, &upper, &work, &merged] {
-                sys::make_dir(dir)?;
-            }
-            std::fs::write(
-                lower.join("marker.txt"),
-                "self-check
-",
-            )
-            .map_err(|error| format!("写 lower 标记文件失败：{error}"))?;
-            serve::mount_for_self_check(mounter_fd, &lower, &upper, &work, &merged)?;
-            let seen = std::fs::read_to_string(merged.join("marker.txt"))
-                .map_err(|error| format!("读叠加视图里的标记文件失败：{error}"))?;
-            if seen.trim() != "self-check" {
-                return Err(format!("叠加视图内容不对：{seen:?}"));
-            }
-            Ok(())
-        })();
-        // 无论成败都先卸再删：留下挂载点会让 remove_dir_all 报 EBUSY
-        serve::unmount_for_self_check(mounter_fd, &merged);
-        let _ = std::fs::remove_dir_all(&root);
-        result
+    /// 一句描述路径的属主与权限（自检断言用：把「凭什么不可读」说清楚）
+    fn describe_path(path: &std::path::Path) -> String {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) => format!("{}:{} {:04o}", meta.uid(), meta.gid(), meta.mode() & 0o7777),
+            Err(error) => format!("stat 失败（{error}）"),
+        }
     }
 
     /// 输出一行到标准输出并**立即刷新**。
@@ -339,16 +464,34 @@ mod linux {
         use super::*;
 
         #[test]
-        fn parses_fd_flag() {
-            let args = vec!["--fd".to_string(), "7".to_string()];
-            assert_eq!(parse_fd(&args).unwrap(), 7);
+        fn parses_all_serve_flags() {
+            let args = vec![
+                "--fd".to_string(),
+                "7".to_string(),
+                "--lower".to_string(),
+                "/ws".to_string(),
+                "--upper".to_string(),
+                "/up".to_string(),
+                "--work".to_string(),
+                "/wk".to_string(),
+                "--merged".to_string(),
+                "/mg".to_string(),
+                "--workspace".to_string(),
+                "/ws".to_string(),
+            ];
+            let options = parse_serve_args(&args).unwrap();
+            assert_eq!(options.fd, 7);
+            assert_eq!(options.lower.to_string_lossy(), "/ws");
+            assert_eq!(options.workspace.to_string_lossy(), "/ws");
         }
 
         #[test]
         fn rejects_missing_and_bad_fd() {
-            assert!(parse_fd(&[]).is_err());
-            assert!(parse_fd(&["--fd".to_string()]).is_err());
-            assert!(parse_fd(&["--fd".to_string(), "x".to_string()]).is_err());
+            assert!(parse_serve_args(&[]).is_err());
+            assert!(parse_serve_args(&["--fd".to_string()]).is_err());
+            assert!(parse_serve_args(&["--fd".to_string(), "x".to_string()]).is_err());
+            // 只给 fd、缺视图路径：必须报错，不猜默认路径
+            assert!(parse_serve_args(&["--fd".to_string(), "7".to_string()]).is_err());
         }
     }
 }

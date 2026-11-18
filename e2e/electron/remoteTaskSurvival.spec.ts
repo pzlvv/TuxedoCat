@@ -31,10 +31,9 @@ const SIDEBAR_ITEM = '#list .item[data-session-id]';
  * `npm run build:core:linux-x64`。运行：`npm run test:e2e:ssh -- remoteTaskSurvival`。
  */
 
-import { requireSshEnvironment, detectLlmAdvertiseHost } from '../helpers/testEnvironment';
+import { requireSshEnvironment } from '../helpers/testEnvironment';
 
 const SSH = requireSshEnvironment();
-const ADVERTISE_HOST = SSH.llmAdvertiseHost ?? detectLlmAdvertiseHost();
 
 test.setTimeout(300_000);
 
@@ -219,7 +218,7 @@ function armSleepTaskHandler(mockLlm: MockLlm): void {
 }
 
 test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消）、后台运行后远端 Core 存活', async () => {
-  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
   await startLongTask(chatPage);
@@ -270,7 +269,7 @@ test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消�
 });
 
 test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、任务继续完成', async () => {
-  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
   await startLongTask(chatPage);
@@ -331,7 +330,7 @@ test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、
 
 test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色未读完成灯（AC-4）', async () => {
   test.setTimeout(420_000);
-  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
   await startLongTask(chatPage);
@@ -376,7 +375,7 @@ test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色�
 });
 
 test('US-64 立即关闭：远端 Core 终止（现行关闭路径）', async () => {
-  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
   await startLongTask(chatPage);
@@ -397,7 +396,7 @@ test('US-64 立即关闭：远端 Core 终止（现行关闭路径）', async ()
 });
 
 test('US-64 退出确认链：取消中止整个退出，应用与任务都继续（AC-12）', async () => {
-  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', advertiseHost: ADVERTISE_HOST });
+  const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
   await startLongTask(chatPage);

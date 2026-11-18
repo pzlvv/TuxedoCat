@@ -2,7 +2,7 @@
 
 - 状态：被取代（[ADR-0018](0018-resident-mount-proxy.md)）
 - 日期：2026-11-14
-- 规格：`docs/core/mount-proxy.md`（未落地）、
+- 规格：[docs/core/mount-proxy.md](../core/mount-proxy.md)、
   [docs/core/conversation-work-view.md](../core/conversation-work-view.md)
 
 ## 背景（Context）

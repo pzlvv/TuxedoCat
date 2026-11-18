@@ -1,14 +1,36 @@
-//! Linux 上的代理客户端实现（specs/051 FR-005b / FR-007 / FR-007b）。
+//! Linux 上的代理客户端（specs/051 FR-007 / FR-007b）。
+//!
+//! 本文件只做两件事：**会话 → 常驻代理**的登记表，以及能力探测。帧收发与代执行原语
+//! 在 `linux/client.rs` 里。
+//!
+//! ## 能力探测为什么也要拉起代理
+//!
+//! 「本机能不能挂 overlay」只有真挂一次才知道，而 Core 不在任何命名空间里、没有
+//! `CAP_SYS_ADMIN`（ADR-0018），自己挂必然失败。因此探测本身就是一次「拉一个临时代理、
+//! 让它挂一次、再收掉」——结论来自唯一有资格的进程。
+//!
+//! 探测失败不改任何状态：能力回 `absent` 并带上代理给的原因（FR-001 的 `reason`）。
 
-use super::{PROXY_DIR, PROXY_NAME};
+use crate::mount_proxy::{MountProxyState, PROXY_DIR, PROXY_NAME};
+use client::ViewPaths;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use std::io::{BufReader, Read, Write};
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+#[path = "linux/client.rs"]
+mod client;
+
+pub use client::{SessionProxy, SpawnOutcome, SpawnSpec};
+
+/// 一个路径的事实（`stat` 的应答）
+pub struct PathFacts {
+    pub exists: bool,
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub size: u64,
+}
+/// 视图的四条路径 + bind 目标
+pub type View = ViewPaths;
 
 /// 能力探测的结果（平台无关的载体）
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,48 +41,120 @@ pub struct CapabilityProbe {
     pub reason: String,
 }
 
-/// 常驻代理的连接（进程句柄 + 帧通道）。
-struct Connection {
-    child: Child,
-    stream: UnixStream,
-    reader: BufReader<UnixStream>,
+/// 会话 id → 常驻代理。
+///
+/// 一个隔离会话一个代理：代理持有该会话视图的挂载命名空间，工具由它 fork
+/// （见 `mount-proxy-rs/src/privilege.rs` 的进程图）。
+///
+/// 存 `Arc`：调用方（工具层）在一条工具调用期间持有句柄，登记表同时保留自己那一份。
+/// 最后一个 `Arc` 被丢弃时才真正回收进程——因此「会话关闭」与「在途工具调用」不会
+/// 互相踩（会话关闭后仍在跑的那条 Bash 不会因为 fd 被提前关掉而静默丢输出）。
+fn sessions() -> &'static Mutex<HashMap<String, Arc<SessionProxy>>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<SessionProxy>>>> = OnceLock::new();
+    SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-impl Drop for Connection {
-    /// 关闭连接并回收进程。
-    ///
-    /// **回收主路径是 socketpair EOF**（FR-007b）：`UnixStream` 被丢弃 → Core 这端关闭 →
-    /// 代理 B 读到 EOF 自行退出 → A 的 `waitpid` 返回。这里 `kill` 只是兜底，覆盖 B 已
-    /// 卡死的情况。
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// 全局连接（每个 Core 进程一份：一个常驻代理服务一个 Core，非目标明确不跨工作区复用）。
-fn connection() -> &'static Mutex<Option<Connection>> {
-    static CONNECTION: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
-    CONNECTION.get_or_init(|| Mutex::new(None))
-}
-
-/// 本次探测过程中记录的原因（代理没拉起时也能解释为什么）
-fn last_reason() -> &'static Mutex<String> {
-    static REASON: OnceLock<Mutex<String>> = OnceLock::new();
-    REASON.get_or_init(|| Mutex::new(String::new()))
-}
-
-fn set_reason(reason: impl Into<String>) {
-    if let Ok(mut slot) = last_reason().lock() {
-        *slot = reason.into();
-    }
-}
-
-fn reason() -> String {
-    last_reason()
+/// 取某会话的代理；不在（或已死）时按需拉起。
+///
+/// `paths` 是视图的四条路径 + bind 目标。拉起失败只回错误，不改任何全局状态：调用方
+/// （工具层）据此报错，**不退回真实磁盘**（FR-010 的 fail-closed）。
+///
+/// 已登记但进程已死时摘掉它再拉一个新的——这是 FR-007 的「代理运行中被杀后，下次需要
+/// 时重新拉起、不重启 Core」。能力查询与工具调用都走这里，因此两条路径都能自愈。
+pub fn session_proxy(session_id: &str, paths: ViewPaths) -> Result<Arc<SessionProxy>, String> {
+    let mut table = sessions()
         .lock()
-        .map(|guard| guard.clone())
-        .unwrap_or_default()
+        .map_err(|error| format!("代理登记表损坏（{error}）"))?;
+    if let Some(existing) = table.get(session_id) {
+        if existing.is_alive() {
+            return Ok(Arc::clone(existing));
+        }
+    }
+    if table.remove(session_id).is_some() {
+        eprintln!("[core] 会话 {session_id} 的挂载代理已退出，重新拉起");
+    }
+    let proxy = Arc::new(client::spawn_session(session_id, &paths)?);
+    table.insert(session_id.to_string(), Arc::clone(&proxy));
+    Ok(proxy)
+}
+
+/// 已登记的代理（不拉起）；工具与视图取数用它在「该会话没有代理」时明确报错。
+pub fn existing_proxy(session_id: &str) -> Option<Arc<SessionProxy>> {
+    sessions()
+        .lock()
+        .ok()
+        .and_then(|table| table.get(session_id).cloned())
+        .filter(|proxy| proxy.is_alive())
+}
+
+/// 丢弃某会话的代理（会话关闭 / 删除时调用）。
+///
+/// 丢弃 = 关闭 socketpair = 代理读到 EOF 自行退出（FR-007b 的回收主路径，不依赖信号）。
+/// 在途工具仍持有自己的 `Arc`，它们的输出不会因此丢失。
+pub fn release_session(session_id: &str) {
+    if let Ok(mut table) = sessions().lock() {
+        table.remove(session_id);
+    }
+}
+
+/// 结束全部会话代理（Core 退出时调用）
+pub fn shutdown() {
+    if let Ok(mut table) = sessions().lock() {
+        table.clear();
+    }
+}
+
+/// 探测能力（FR-001 的四个字段都从这里推）。
+///
+/// 每次都反映**当前**状态，不用启动期缓存：代理随时可能消失（AC-28b / AC-28d）。
+pub fn probe_capabilities() -> CapabilityProbe {
+    // `overlay_usable` 回答的是「部署代理**可能**解决问题吗」：需要 Linux 有 overlayfs
+    // 且代理二进制本身存在（否则装它也无从谈起——那是「未部署」，由 `deployable` 表达）。
+    //
+    // 注意这两个条件都不是「now 能挂」：能不能挂由下面真挂一次回答。
+    let overlay_usable = kernel_has_overlay();
+    let probe_root =
+        std::path::Path::new("/tmp").join(format!("tc-core-probe-{}", std::process::id()));
+    let lower = probe_root.join("lower");
+    let upper = probe_root.join("upper");
+    let work = probe_root.join("work");
+    let merged = probe_root.join("merged");
+    let workspace = probe_root.join("workspace");
+    let result = (|| -> Result<(), String> {
+        for dir in [&lower, &workspace] {
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("建探测目录 {} 失败（{error}）", dir.display()))?;
+        }
+        // 视图必须非空：代理把「读到的视图是空的」判成挂载没生效
+        std::fs::write(lower.join("probe.txt"), b"probe\n")
+            .map_err(|error| format!("写探测文件失败（{error}）"))?;
+        let paths = ViewPaths {
+            lower: lower.clone(),
+            upper,
+            work,
+            merged,
+            workspace,
+        };
+        // 探测用的代理不进会话表：`spawn_session` 失败即判不可用
+        let proxy = client::spawn_session("__probe__", &paths)?;
+        drop(proxy);
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&probe_root);
+    match result {
+        Ok(()) => CapabilityProbe {
+            ready: true,
+            overlay_ok: true,
+            overlay_usable,
+            reason: String::new(),
+        },
+        Err(reason) => CapabilityProbe {
+            ready: false,
+            overlay_ok: false,
+            overlay_usable,
+            reason,
+        },
+    }
 }
 
 /// 内核是否支持 overlayfs
@@ -68,287 +162,20 @@ fn reason() -> String {
 /// 不复用 `/proc/self/mountinfo`：能力判据要回答「**能不能**挂」，不是「现在挂没挂」。
 fn kernel_has_overlay() -> bool {
     std::fs::read_to_string("/proc/filesystems")
-        .map(|text| {
-            text.lines()
-                .any(|line| line.split_whitespace().last() == Some("overlay"))
-        })
+        .map(|text| text.lines().any(|line| line.trim() == "nodev\toverlay"))
         .unwrap_or(false)
 }
 
-/// 安装位点是否满足 FR-005b 的三条判据：
-/// `st_uid == 0`、`st_mode == 04755`、`(mode & 0o022) == 0`。
-///
-/// **随包目录里的同名产物永不执行**：槽位里那份只是「上传 / 安装的源」，把它当成可执行
-/// 代理会得到 `euid != 0` 的拒绝——上一轮就是这么炸的（spec 的「实施现状」）。
-fn locate() -> Result<PathBuf, String> {
-    let path = Path::new(PROXY_DIR).join(PROXY_NAME);
-    let meta = match std::fs::metadata(&path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!(
-                "挂载代理未部署：{} 不存在（需要部署）",
-                path.display()
-            ));
-        }
-        Err(error) => {
-            return Err(format!("无法读取挂载代理 {}（{error}）", path.display()));
-        }
-    };
-    if meta.uid() != 0 {
-        return Err(format!(
-            "{} 的属主是 uid {}（要求 root），视为未部署",
-            path.display(),
-            meta.uid()
-        ));
-    }
-    let mode = meta.mode() & 0o7777;
-    if mode != 0o4755 {
-        return Err(format!(
-            "{} 的模式是 {mode:04o}（要求恰好 04755），视为未部署",
-            path.display()
-        ));
-    }
-    if meta.mode() & 0o022 != 0 {
-        return Err(format!(
-            "{} 的组 / 其他可写（模式 {mode:04o}），视为未部署",
-            path.display()
-        ));
-    }
-    Ok(path)
-}
-
-/// 拉起常驻代理并完成握手。
-///
-/// `--fd <n>` 传的是 socketpair 的**子端**；代理按 FR-006 不读环境变量，fd 只经 argv。
-fn spawn(proxy: &Path) -> Result<Connection, String> {
-    let (core_end, proxy_end) =
-        UnixStream::pair().map_err(|error| format!("建 socketpair 失败（{error}）"))?;
-    // 子端必须在 exec 时保持打开：`pre_exec` 里清 CLOEXEC 是 Linux 独有的做法，
-    // 但更简单的是让 Command 只继承这一个 fd（其余一律 Stdio::null）。
-    let proxy_fd = proxy_end.as_raw_fd();
-    let mut command = Command::new(proxy);
-    command
-        .arg("--serve")
-        .arg("--fd")
-        .arg(proxy_fd.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        // 代理的诊断走它自己的 fd 2；这里接给 Core 的 stderr，好让原因进日志
-        .stderr(Stdio::inherit());
-    // 保留子端 fd：`pre_exec` 在 fork 之后、exec 之前跑
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        command.pre_exec(move || {
-            // **只把通信 fd 的 CLOEXEC 清掉，不遍历 `/proc/self/fd` 去关其它 fd**：
-            // `read_dir` 会自己占一个目录 fd，而遍历过程中把它关掉会让 Rust 的迭代器
-            // 走进未定义路径（实测症状：代理一启动就 `Connection reset by peer`）。
-            //
-            // fd 纪律由 `Stdio::null()` 与 Command 的默认 CLOEXEC 保证：父进程的其余
-            // fd 全部带 CLOEXEC，exec 后自动消失，不需要逐个 close。
-            clear_cloexec(proxy_fd);
-            Ok(())
-        });
-    }
-    let child = command
-        .spawn()
-        .map_err(|error| format!("拉起挂载代理 {} 失败（{error}）", proxy.display()))?;
-    // Core 这端不需要子端了
-    drop(proxy_end);
-
-    let stream = core_end;
-    let mut reader = BufReader::new(
-        stream
-            .try_clone()
-            .map_err(|error| format!("复制代理连接失败（{error}）"))?,
-    );
-    // 握手：先问运行期协议版本，再确认它能在自己的命名空间里挂 overlay
-    let version = request(&stream, &mut reader, "version")?;
-    let ipc_version = version
-        .get("ipcVersion")
-        .and_then(|value| value.as_i64())
-        .ok_or_else(|| "代理的 version 应答缺 ipcVersion".to_string())?;
-    if ipc_version != CORE_SIDE_IPC_VERSION {
-        return Err(format!(
-            "代理的运行期协议版本是 {ipc_version}，Core 期望 {CORE_SIDE_IPC_VERSION}：需要重新部署"
-        ));
-    }
-    Ok(Connection {
-        child,
-        stream,
-        reader,
-    })
-}
-
-/// Core 侧期望的运行期 IPC 协议版本（与 `mount-proxy-rs/src/protocol.rs` 的
-/// `IPC_PROTOCOL_VERSION` 必须一致；Agent 侧改动需同步这里）。
-const CORE_SIDE_IPC_VERSION: i64 = 1;
-
-extern "C" {
-    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-}
-const F_GETFD: i32 = 1;
-const F_SETFD: i32 = 2;
-const FD_CLOEXEC: i32 = 1;
-
-/// 清掉一个 fd 的 CLOEXEC 位（让 exec 后的代理能继承它）
-fn clear_cloexec(fd: i32) {
-    unsafe {
-        let flags = fcntl(fd, F_GETFD);
-        if flags >= 0 {
-            let _ = fcntl(fd, F_SETFD, flags & !FD_CLOEXEC);
-        }
+/// 挂载代理的状态（供 `Capabilities` 的 `mountProxy` 字段用）
+pub fn state_of(probe: &CapabilityProbe) -> MountProxyState {
+    if probe.ready && probe.overlay_ok {
+        MountProxyState::Ready
+    } else {
+        MountProxyState::Absent
     }
 }
 
-/// 发一条请求并读一条应答。
-///
-/// 帧格式与 `mount-proxy-rs/src/protocol.rs` 一致：`<8 位十六进制长度>\n<JSON>`。
-fn request(
-    mut stream: &UnixStream,
-    reader: &mut BufReader<UnixStream>,
-    op: &str,
-) -> Result<serde_json::Value, String> {
-    let payload = serde_json::json!({ "op": op }).to_string();
-    let frame = format!("{:08x}\n{}", payload.len(), payload);
-    stream
-        .write_all(frame.as_bytes())
-        .map_err(|error| format!("向代理发送 {op} 失败（{error}）"))?;
-    stream
-        .flush()
-        .map_err(|error| format!("刷新代理连接失败（{error}）"))?;
-    read_reply(reader, op)
-}
-
-/// 读一条应答帧。
-fn read_reply(reader: &mut BufReader<UnixStream>, op: &str) -> Result<serde_json::Value, String> {
-    let mut header = [0u8; 9];
-    reader
-        .read_exact(&mut header)
-        .map_err(|error| format!("读 {op} 应答的帧头失败（{error}）"))?;
-    if header[8] != b'\n' {
-        return Err(format!("{op} 应答的帧头缺换行终止符"));
-    }
-    let len_text =
-        std::str::from_utf8(&header[..8]).map_err(|_| format!("{op} 应答的帧头不是 ASCII"))?;
-    let len = usize::from_str_radix(len_text.trim(), 16)
-        .map_err(|_| format!("{op} 应答的帧头不是十六进制"))?;
-    let mut payload = vec![0u8; len];
-    reader
-        .read_exact(&mut payload)
-        .map_err(|error| format!("读 {op} 应答的载荷失败（{error}）"))?;
-    serde_json::from_slice(&payload).map_err(|error| format!("{op} 应答不是合法 JSON（{error}）"))
-}
-
-/// 探测能力（FR-001 的四个字段都从这里推）。
-///
-/// 每次都反映**当前**状态，不用启动期缓存：代理随时可能消失（AC-28b / AC-28d）。
-pub fn probe_capabilities() -> CapabilityProbe {
-    let overlay_usable = kernel_has_overlay();
-    // 拿连接（必要时拉起）。失败只记录原因，不 panic、不退出。
-    let ready = match ensure_connected() {
-        Ok(()) => true,
-        Err(reason) => {
-            set_reason(reason);
-            false
-        }
-    };
-    if !ready {
-        let message = reason();
-        return CapabilityProbe {
-            ready: false,
-            overlay_ok: false,
-            overlay_usable,
-            reason: message,
-        };
-    }
-    // 代理在：让它重新实测一次 overlay（不缓存，与「每次反映当前状态」同一口径）
-    //
-    // `probeOverlay` 的应答可能是 `{op:"ok"}` 或 `{op:"error", message:"..."}`。两种都要
-    // 把**代理给出的原因**透出去：静默把 error 当成「不可用」会让 reason 变成空串，界面
-    // 就失去了「为什么勾选框不出现」的解释（`docs/architecture/principles.md` 第 1 节：
-    // 不静默降级）。
-    let overlay_ok = match with_connection(|conn| {
-        let mut reader = BufReader::new(
-            conn.stream
-                .try_clone()
-                .map_err(|error| format!("复制代理连接失败（{error}）"))?,
-        );
-        request(&conn.stream, &mut reader, "probeOverlay")
-    }) {
-        Ok(reply) => {
-            if reply["op"].as_str() == Some("ok") {
-                true
-            } else {
-                let message = reply["message"]
-                    .as_str()
-                    .unwrap_or("代理的 probeOverlay 应答既不是 ok 也没有 message");
-                set_reason(format!("挂载代理 overlay 实测不成立：{message}"));
-                false
-            }
-        }
-        Err(re) => {
-            set_reason(format!("代理 overlay 实测请求失败：{re}"));
-            false
-        }
-    };
-    CapabilityProbe {
-        ready: true,
-        overlay_ok,
-        overlay_usable,
-        reason: if overlay_ok { String::new() } else { reason() },
-    }
-}
-
-/// 确保连接可用（必要时拉起代理）。
-fn ensure_connected() -> Result<(), String> {
-    let mut guard = connection()
-        .lock()
-        .map_err(|error| format!("代理连接表损坏（{error}）"))?;
-    if guard.is_some() {
-        return Ok(());
-    }
-    let proxy = locate()?;
-    let spawned = spawn(&proxy)?;
-    *guard = Some(spawned);
-    Ok(())
-}
-
-/// 在持有连接的情况下执行一个操作。
-fn with_connection<T>(f: impl FnOnce(&mut Connection) -> Result<T, String>) -> Result<T, String> {
-    let mut guard = connection()
-        .lock()
-        .map_err(|error| format!("代理连接表损坏（{error}）"))?;
-    let conn = guard
-        .as_mut()
-        .ok_or_else(|| "挂载代理尚未拉起".to_string())?;
-    f(conn)
-}
-
-/// 向代理发一条请求（供挂载侧使用）。
-pub fn call(op: &str, fields: Vec<(&str, serde_json::Value)>) -> Result<serde_json::Value, String> {
-    with_connection(|conn| {
-        let mut payload = serde_json::Map::new();
-        payload.insert("op".to_string(), serde_json::Value::String(op.to_string()));
-        for (key, value) in fields {
-            payload.insert(key.to_string(), value);
-        }
-        let text = serde_json::Value::Object(payload).to_string();
-        let frame = format!("{:08x}\n{}", text.len(), text);
-        conn.stream
-            .write_all(frame.as_bytes())
-            .map_err(|error| format!("向代理发送 {op} 失败（{error}）"))?;
-        conn.stream
-            .flush()
-            .map_err(|error| format!("刷新代理连接失败（{error}）"))?;
-        read_reply(&mut conn.reader, op)
-    })
-}
-
-/// 结束代理连接（Core 退出时调用）。
-///
-/// 丢弃连接 = 关闭 socketpair = 代理读到 EOF 自行退出（FR-007b 的回收主路径）。
-pub fn shutdown() {
-    if let Ok(mut guard) = connection().lock() {
-        *guard = None;
-    }
+/// 诊断用：代理的安装位点
+pub fn installed_path() -> String {
+    format!("{PROXY_DIR}/{PROXY_NAME}")
 }

@@ -286,13 +286,15 @@ CI 车道**：需要 root 的断言一律走特权车道并按既有 `markSkippe
 | --- | --- | --- |
 | 首次使用远端触发部署 | AC-1 / AC-7 / AC-34 | `electron-ssh`（远端未装机时的确认框文案含真实主机名） |
 | 部署后能力 `ready` 且不重启 Core | AC-29 / FR-008 | `electron-ssh`（`mountProxy: 'ready'`，Core pid 不变） |
-| 隔离会话改动不落磁盘 | AC-31 / AC-34 | `electron-ssh`（Overlay 会话 Write 后 SFTP 直读真实目录，内容未变） |
+| 隔离会话改动不落磁盘 | AC-31 / AC-34 | `electron-ssh`（Overlay 会话 Write 后 SFTP 直读真实目录，内容未变；Write 结果必须成功且不含 error） |
+| 视图不可用时 fail-closed | FR-010 | `electron-ssh`（不部署代理：Write 与 Bash 都报错，真实磁盘上不出现文件） |
+| 双端帧契约 | FR-007 | `cargo test`（两侧共用 `core-rs/fixtures/mountProxyProtocol.json`，单侧改编码另一侧立刻红） |
 | 挂载无泄漏 | AC-28j | `electron-ssh`（会话关闭后 `mountinfo` 无该 overlay 条目） |
 | 卸载命令幂等 | AC-36 / FR-012 | `electron-ssh`（文档命令执行两次，第二次也成功且位点不存在） |
 | 审计行 | AC-37 / FR-012 | `electron-ssh`（Core 日志含主机名 / 落点 / sha256 / 安装者 uid 四要素） |
 | 安装形态 | AC-15 / AC-17 | `privileged`（`root:root` + `04755`；同内容重装不重写） |
-| 自检四断言 | AC-19 | `privileged`（`CapEff` / `uid_map` / 命名空间内 uid / 宿主 uid） |
-| 进程链与回收 | AC-26 / AC-26b / AC-26c / AC-27 | `privileged`（A 是 Core 子进程、B 是 A 子进程、`SIGKILL` Core 后 1 秒内无残留、Core 自身 `uid_map` 只有一行） |
+| 自检四断言 | AC-19 | `privileged`（降权后无 `CAP_SYS_ADMIN` / 三个 uid 全为真实值 / mountinfo 恰好一条 / 视图可读）——代理不建 userns，断言集随架构改过 |
+| 进程链与回收 | AC-26 / AC-26b / AC-26c / AC-27 | `privileged`（A 是 Core 子进程、B 是 A 子进程、`SIGKILL` Core 后 1 秒内无残留、Core 自身不在命名空间里） |
 | 代理拒绝面 | AC-21 / AC-22 / AC-25 | `privileged`（直接以调用者身份执行代理 → 非零退出；A 降权后 `getuid()`） |
 
 ### 前置与执行

@@ -15,7 +15,7 @@ import {
   CORE_MOUNT_PROXY_NAME,
   LOG_FILE_NAME,
 } from '../../src/config/project';
-import { requireSshEnvironment, detectLlmAdvertiseHost } from '../helpers/testEnvironment';
+import { requireSshEnvironment } from '../helpers/testEnvironment';
 
 /**
  * Overlay 挂载代理：真实 SSH 远端的安装、自检与隔离（`specs/051` FR-005 / FR-006 /
@@ -46,7 +46,6 @@ import { requireSshEnvironment, detectLlmAdvertiseHost } from '../helpers/testEn
 
 
 const SSH = requireSshEnvironment();
-const ADVERTISE_HOST = SSH.llmAdvertiseHost ?? detectLlmAdvertiseHost();
 
 test.setTimeout(600_000);
 
@@ -240,6 +239,52 @@ async function uninstallProxy(): Promise<{ code: number | null; stdout: string; 
   return sshExecWithStdin(`sudo -S -p '' rm -f ${REMOTE_PROXY_PATH}`, `${SSH.password}\n`);
 }
 
+/**
+ * 经界面完成部署：勾 Overlay → 发消息 → 确认框 → 部署 → 提交 sudo 密码 → 等到能力 ready。
+ *
+ * 抽出来是因为它有两类调用方：`FR-009` 验的是**首次部署**的完整链路（确认框文案、Core pid
+ * 不变），后续用例验的是隔离行为，只需要「代理已就位」这个前提。让后者复用同一段交互，
+ * 单独 `-g` 跑某条用例时就不会因为前置用例没跑而静默跳过。
+ */
+async function deployProxyViaUi(chatPage: Awaited<ReturnType<AppHandle['chatPage']>>): Promise<void> {
+  const dialog = chatPage.locator('[data-mount-proxy-dialog="confirm"]');
+  await expect(dialog).toBeVisible({ timeout: 60_000 });
+  // 确认 → 远端免密 sudo 不可用（实测）→ 三选一 → 提交 sudo 密码
+  await dialog.locator('[data-mount-proxy-action="deploy"]').click();
+  const passwordAction = dialog.locator('[data-mount-proxy-action="sudo-password"]');
+  await expect(passwordAction, '远端免密 sudo 不可用时应给三选一').toBeVisible({ timeout: 120_000 });
+  await passwordAction.click();
+  await dialog.locator('input[data-mount-proxy-secret]').fill(SSH.password);
+  await chatPage.keyboard.press('Enter');
+  // AC-29：部署 + 自检成功后能力转 ready（宿主重查，不重启 Core）
+  await expect
+    .poll(async () => (await readCapabilities(chatPage)).mountProxy, { timeout: 240_000 })
+    .toBe('ready');
+}
+
+/**
+ * 保证远端已装代理；没装就经界面装一次。
+ *
+ * 与 `FR-009` 的分工：那条**断言**首次部署的完整过程，这条只保证前置成立。装完即关掉
+ * 这一轮应用，调用方随后自建干净会话——部署用的那次 Overlay 勾选不该带进被测会话。
+ */
+async function ensureProxyInstalled(): Promise<void> {
+  if ((await proxyInstalled()).installed) return;
+  const chatPage = await launchWithRemoteWorkspace();
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+  await chatPage.fill('textarea.input-textarea', '部署挂载代理（前置）');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await deployProxyViaUi(chatPage);
+  await app!.close();
+  app = null;
+  mockLlm!.close();
+  mockLlm = null;
+  // 这里**不**调 `resetRemoteDaemon`：调用方紧接着就要建链，杀掉刚起来的 daemon 会让
+  // 下一条会话连到一个正在退出的进程上（表现为消息发出后既无模型请求也无工具执行）。
+  // 清场由 `beforeEach` 统一负责，它在每条用例开始前做。
+}
+
 /** 远程 exec 并写入标准输入（密码只走 stdin，不进 argv——FR-004 第 3 条） */
 function sshExecWithStdin(
   command: string,
@@ -297,7 +342,7 @@ async function launchWithRemoteWorkspace(): Promise<Awaited<ReturnType<AppHandle
   mockLlm = await startMockLlm({
     workspaceDir: remoteWs,
     listenHost: '0.0.0.0',
-    advertiseHost: ADVERTISE_HOST,
+    reverseTunnel: SSH,
   });
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
@@ -317,6 +362,22 @@ function lastToolResult(req: RecordedRequest | undefined): string {
   const last = req.body.messages[req.body.messages.length - 1];
   if (!last || last.role !== 'tool') return '';
   return typeof last.content === 'string' ? last.content : JSON.stringify(last.content);
+}
+
+/**
+ * 找到**倒数第二条**请求里最后一条 `tool` 消息的结果。
+ *
+ * 单轮探测用 `lastToolResult(requests[1])` 就够；一个会话里发两轮时，第二轮的
+ * 「工具结果」出现在第二次请求里而不是 `requests[3]`（每条消息都会重放历史，索引
+ * 取决于模型何时收尾）。按「含有该工具名的最后一条 tool 结果」扫比猜索引稳。
+ */
+function toolResultMatching(requests: RecordedRequest[], needle: string): string {
+  for (let index = requests.length - 1; index >= 0; index -= 1) {
+    const result = lastToolResult(requests[index]);
+    if (result && result.includes(needle)) return result;
+  }
+  // 找不到时回最后一条结果：断言会按内容报错，报出的是真实拿到的东西
+  return lastToolResult(requests[requests.length - 1]);
 }
 
 // ─────────────────────── 普通段：远端安装与隔离 ───────────────────────
@@ -393,8 +454,7 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
   // AC-29：部署 + 自检成功后能力转 ready（宿主重查，不重启 Core）
   await expect
     .poll(async () => (await readCapabilities(chatPage)).mountProxy, { timeout: 240_000 })
-    .toBe('ready');
-  expect((await readCapabilities(chatPage)).isolatedWorkView).toBe(true);
+    .toBe('ready');  expect((await readCapabilities(chatPage)).isolatedWorkView).toBe(true);
 
   // FR-008：Core pid 未变（部署不重启 Core）
   const corePidAfter = (await remoteProcesses(CORE_PROCESS_PATTERN))
@@ -444,8 +504,8 @@ test('FR-009 已安装时能力 ready、Core pid 不变、帧通道正常', asyn
 });
 
 test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo 无泄漏', async () => {
-  const { installed } = await proxyInstalled();
-  test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；不做修复`);
+  // 前置：代理必须就位；没装就先装（单独 `-g` 跑这条时不会因此静默跳过）
+  await ensureProxyInstalled();
 
   const chatPage = await launchWithRemoteWorkspace();
   const targetName = 'overlay-only.txt';
@@ -470,9 +530,16 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('OVERLAY-WRITE-DONE').first()).toBeVisible({ timeout: 120_000 });
 
-  // AC-31：写进了叠加视图，真实磁盘没变
-  const toolResult = lastToolResult(mockLlm!.requests[1]);
-  expect(toolResult, `Write 不应报错：${toolResult}`).not.toContain('error');
+  // AC-31：写进了叠加视图，真实磁盘没变。
+  //
+  // 两条断言缺一不可：只查磁盘会漏掉「写成功但写到别处」，只查结果会漏掉「报了错
+  // 却已经落盘」。`specs/defects/mount-proxy-write-file-payload-type.md` 的形态正是
+  // 前者——Write 每次都报错，而磁盘确实没变，只看磁盘这条会绿。
+  const toolResult = toolResultMatching(mockLlm!.requests, targetName);
+  expect(toolResult, `Write 必须成功且不回 error：${toolResult}`).not.toMatch(
+    /error|不可用|failed/i,
+  );
+  expect(toolResult, 'Write 结果应包含成功写出的内容或路径').toContain(targetName);
   expect((await sshExec(`test -e ${shQuote(realPath)} && echo yes || echo no`)).stdout.trim()).toBe(
     'no',
   );
@@ -492,6 +559,192 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   expect(leaked.stdout.trim() === '' || leaked.stdout.trim() === '0', '挂载点不得泄漏到宿主机').toBe(
     true,
   );
+});
+
+/**
+ * 隔离会话里**编译并运行**：`main.c` 预置在真实磁盘，`gcc` 的产物只能落在叠加视图。
+ *
+ * 与 `AC-31` 的分工：那条只验证 Write 通道写新文件；这条走 Bash 通道，验证「一个真实的
+ * 编译器把真实磁盘上的源文件编译成可执行文件并跑通」——产物由编译器和动态链接器生成，
+ * 不是应用层写出去的文件，覆盖的是 `exec` 阶段的隔离（`specs/051` FR-006）。
+ *
+ * 判据三条同时成立：
+ *
+ * 1. 编译 + 运行成功（`gcc main.c -o app && ./app` 输出约定的字符串）；
+ * 2. 真实磁盘上 `app` 不存在——即产物只在叠加视图；
+ * 3. 真实磁盘上的 `main.c` 未被动过（内容与权限不变），确认下层是只读的。
+ *
+ * 第 1 条不可缺少：只看磁盘会漏掉「编译失败 + 磁盘本来就没文件」这种假绿，而这正是
+ * `specs/defects/mount-proxy-write-file-payload-type.md` 的形态。
+ */
+test('FR-006 隔离会话里 gcc 编译运行 main.c，产物只在叠加视图、不落真实磁盘', async () => {
+  // 前置：代理必须就位。没装就先经界面装（单独 `-g` 跑这条时不会因此静默跳过）
+  await ensureProxyInstalled();
+
+  const sourceName = 'main.c';
+  const binaryName = 'overlay-build-app';
+  const sourcePath = `${remoteWs}/${sourceName}`;
+  const binaryPath = `${remoteWs}/${binaryName}`;
+  // 输出的字符串充当「这确实是刚编出来的程序」的凭据：只有真的跑起来才会出现
+  const banner = 'OVERLAY-BUILD-OK-42';
+
+  // 预置源文件到**真实磁盘**（overlay 的下层）：编译时它必须可见，才谈得上「读下层、写上层」
+  const sourceBody = [
+    '#include <stdio.h>',
+    'int main(void) {',
+    `  puts("${banner}");`,
+    '  return 0;',
+    '}',
+    '',
+  ].join('\n');
+  await sshExec(`cat > ${shQuote(sourcePath)} <<'EOF'\n${sourceBody}EOF`);
+  // 记下源文件的指纹：用例结束时它必须原样不动（下层只读）
+  const sourceDigestBefore = (await sshExec(`sha256sum ${shQuote(sourcePath)}`)).stdout.trim();
+  expect(sourceDigestBefore, 'main.c 预置失败').not.toBe('');
+  // 基线：真实磁盘上不存在编译产物
+  expect((await sshExec(`test -e ${shQuote(binaryPath)} && echo yes || echo no`)).stdout.trim()).toBe(
+    'no',
+  );
+
+  const chatPage = await launchWithRemoteWorkspace();
+
+  // 勾上 Overlay 建隔离会话
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  // 一条命令完成编译 + 运行：`&&` 保证编译失败时不会跑旧产物；先删掉可能残留的产物，
+  // 避免「读了上一次成功的产物」这种假绿。
+  const command = [
+    `cd ${shQuote(remoteWs)}`,
+    `rm -f ${shQuote(binaryName)}`,
+    'gcc -O0 -o overlay-build-app main.c',
+    './overlay-build-app',
+  ].join(' && ');
+
+  mockLlm!.setHandler((req) => {
+    if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'OVERLAY-COMPILE-DONE' };
+    }
+    return {
+      kind: 'tool',
+      name: 'Bash',
+      args: { command, description: `编译并运行 ${sourceName}`, restricted: false },
+    };
+  });
+  await chatPage.fill('textarea.input-textarea', `编译运行 ${sourceName}`);
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('OVERLAY-COMPILE-DONE').first()).toBeVisible({
+    timeout: 120_000,
+  });
+
+  // 判据 1：编译与运行都成功。Bash 结果里应同时出现 banner（真的跑起来了）与无错误。
+  //
+  // `banner` 是 stdout，`error` 是失败标记——两者分开断言：只查 banner 会漏掉「跑通了但
+  // 编译有 warning 被当成失败」这类误判，只查 error 会漏掉「静默失败但没报错」。
+  const toolResult = toolResultMatching(mockLlm!.requests, binaryName);
+  expect(toolResult, `Bash 必须成功且不回 error：${toolResult}`).not.toMatch(
+    /error|不可用|failed|not found|No such file/i,
+  );
+  expect(toolResult, `编译出的程序必须真的跑出 ${banner}：${toolResult}`).toContain(banner);
+
+  // 判据 2：产物不在真实磁盘上——这是本用例的核心。
+  //
+  // 在**对话之外**的普通 SSH 会话里查：Core 的 Bash 跑在代理建立的 mount namespace 里，
+  // 这条连接不在其中，看到的就是真实根文件系统。
+  expect(
+    (await sshExec(`test -e ${shQuote(binaryPath)} && echo yes || echo no`)).stdout.trim(),
+    `编译产物 ${binaryName} 不得出现在真实磁盘上`,
+  ).toBe('no');
+
+  // 判据 3：下层源文件未被改动（overlay 的写不该穿透到 lowerdir）
+  const sourceDigestAfter = (await sshExec(`sha256sum ${shQuote(sourcePath)}`)).stdout.trim();
+  expect(sourceDigestAfter, 'main.c 不得被写穿到真实磁盘').toBe(sourceDigestBefore);
+});
+
+/**
+ * FR-010 的反面：视图**不可用**时宿主必须拦下消息，不让它进 Core。
+ *
+ * 分层分工（改这条用例前先读）：
+ *
+ * - **工具侧**「视图不可用 → Write / Bash 报错且不落磁盘」由 Core 单测覆盖
+ *   （`core-rs/src/tools_tests.rs` 的 `write_fails_closed_when_view_unavailable` /
+ *   `bash_fails_closed_when_view_unavailable`）。端到端**构造不出**那个状态：
+ *   宿主在消息到达 Core 之前就按 `capabilities.isolatedWorkView` 把它拦进部署确认框
+ *   （`src/host/ui/webviewMessageHandler.ts` 的 `shouldBlockForMountProxy`），
+ *   所以 Core 根本收不到工具调用。
+ * - **宿主侧**拦截本身在这里验：装了又卸掉代理（能力从 ready 转回 unavailable）
+ *   之后发消息，必须弹确认框、消息不进 Core、真实磁盘上不出现文件。
+ *
+ * 早期版本把这条写成「不部署代理 → 直接发消息 → 期望工具报错」，它依赖执行顺序
+ * （前面的用例已经把代理装上了），而且假设的方向不成立——消息压根到不了工具。
+ */
+test('FR-010 代理不可用时宿主拦下消息：弹确认框、不进 Core、不落真实磁盘', async () => {
+  // 前置：先装好并建会话，再卸载代理 —— 这样能力是从 ready 变成 unavailable 的，
+  // 走的正是「用着用着代理没了」这条真实路径。
+  await ensureProxyInstalled();
+
+  const chatPage = await launchWithRemoteWorkspace();
+  const writeTarget = 'fail-closed-write.txt';
+  const writePath = `${remoteWs}/${writeTarget}`;
+
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  // 第一轮：视图正常，Write 落进叠加视图（不进真实磁盘）——证明前提成立
+  mockLlm!.setHandler((req) => {
+    if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'WARMUP-DONE' };
+    }
+    return { kind: 'tool', name: 'Write', args: { file_path: writePath, content: 'warmup\n' } };
+  });
+  await chatPage.fill('textarea.input-textarea', '预热一轮');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('WARMUP-DONE').first()).toBeVisible({ timeout: 120_000 });
+  const warmupResult = toolResultMatching(mockLlm!.requests, writeTarget);
+  expect(warmupResult, `预热轮 Write 应当成功（视图可用）：${warmupResult}`).not.toMatch(
+    /error|不可用|Overlay/i,
+  );
+  expect(
+    (await sshExec(`test -e ${shQuote(writePath)} && echo yes || echo no`)).stdout.trim(),
+    '预热轮写的是叠加视图，真实磁盘不该有',
+  ).toBe('no');
+
+  // 拆掉前提：卸载代理
+  const removed = await uninstallProxy();
+  expect(removed.code, `卸载代理失败：${removed.stderr}`).toBe(0);
+  expect((await proxyInstalled()).installed, '本用例要求此刻代理不可用').toBe(false);
+
+  // 第二轮：代理没了 → 宿主拦下消息，弹确认框
+  const requestsBefore = mockLlm!.requests.length;
+  mockLlm!.setHandler(() => ({ kind: 'text', text: 'SHOULD-NOT-REACH-MODEL' }));
+  await chatPage.fill('textarea.input-textarea', '代理没了再写一次');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+
+  const dialog = chatPage.locator('[data-mount-proxy-dialog="confirm"]');
+  await expect(dialog, '代理不可用时宿主必须弹部署确认框').toBeVisible({ timeout: 60_000 });
+  await expect(dialog.locator('[data-fact="target-host"]')).toContainText(SSH.host);
+
+  // 消息没进 Core：模型没收到新请求，界面也没有留下用户气泡
+  //
+  // 气泡数是 0 而不是 1：宿主把这条消息拦下后会**撤回**已渲染的气泡（内容留在输入框
+  // 等用户决定），所以界面上不该看到它——这正是 `specs/051` FR-003 的 AC-7
+  // 「确认框期间界面上没有用户气泡」的同一条约束。
+  expect(
+    mockLlm!.requests.length,
+    '被拦下的消息不得到达模型（到达了说明宿主没拦住）',
+  ).toBe(requestsBefore);
+  await expect(chatPage.locator('.message-user')).toHaveCount(0);
+
+  // 真实磁盘上仍然没有该文件
+  expect(
+    (await sshExec(`test -e ${shQuote(writePath)} && echo yes || echo no`)).stdout.trim(),
+    '被拦下的消息不得产生任何磁盘写入',
+  ).toBe('no');
+
+  await app!.close();
+  app = null;
+  mockLlm!.close();
+  mockLlm = null;
 });
 
 test('FR-012 AC-36 文档里的卸载命令幂等：连跑两次都成功且位点消失', async () => {
@@ -549,23 +802,38 @@ test.describe('privileged', () => {
     expect(after.stdout.trim()).toBe(before.stdout.trim());
   });
 
-  test('AC-19 自检四断言：CapEff / uid_map / 命名空间内 uid / 宿主 uid', async () => {
+  test('AC-19 自检四断言：降权后无 CAP_SYS_ADMIN / 三个 uid / mountinfo 一条 / 视图可读', async () => {
     const { installed } = await proxyInstalled();
     test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；自检无法验证（不做修复）`);
 
-    // 代理自身的 --self-check：不满足条件时非零退出并点名断言（AC-19 / T008）
+    // 代理自身的 --self-check：不满足条件时非零退出并点名断言（AC-19 / T008）。
+    //
+    // 四条断言的内容随架构改过：代理**不再建 user namespace**（ADR-0018 / 真机实测
+    // `mkdir` 在残缺 userns 里必 EOVERFLOW），因此断言集从「CapEff 含 CAP_SYS_ADMIN /
+    // uid_map 一行」改成下面这组——名字与实现必须一起改，否则用例名在撒谎。
     const selfCheck = await sshExec(`${REMOTE_PROXY_PATH} --self-check`);
     expect(selfCheck.code, `自检失败：${selfCheck.stderr}`).toBe(0);
+    expect(selfCheck.stdout).toContain('self-check ok');
 
-    // 四项断言逐条核实（自检的实现者可能把细节写进 stderr，这里独立复核关键两项）
-    // 1) 宿主侧 getuid() 仍是调用者真实 uid（Core / 调用者不因代理变 root）
+    // 1) 宿主侧 uid 仍是调用者真实 uid（代理的 setuid 只作用于它自己）
     const hostUid = await sshExec('id -u');
-    expect(hostUid.stdout.trim()).toBe('1001');
-    // 2) 命名空间内的映射只有一行，且映射的是真实 uid（不映射宿主 0）
-    //    代理 `--self-check` 的内部命名空间随进程退出，改为断言协议版本与配置可用
+    expect(hostUid.stdout.trim()).toMatch(/^\d+$/);
+    expect(hostUid.stdout.trim()).not.toBe('0');
+
+    // 2) 运行期协议版本可用且是数字（与 Core 的安装握手版本分开）
     const version = await sshExec(`${REMOTE_PROXY_PATH} --protocol-version`);
     expect(version.code, `代理 --protocol-version 应成功：${version.stderr}`).toBe(0);
     expect(version.stdout.trim()).toMatch(/^\d+$/);
+
+    // 3) 自检的诊断行点名了降权后的 uid 与视图目录（断言不成立时它不会打印 ok）
+    expect(selfCheck.stderr, '自检应回报降权后的真实 uid').toMatch(/uid=\d+/);
+
+    // 4) 自检不留下残留挂载：它挂完自己卸掉
+    const leaked = await sshExec(`grep -c 'tc-self-check-' /proc/self/mountinfo || true`);
+    expect(
+      leaked.stdout.trim() === '' || leaked.stdout.trim() === '0',
+      '自检不得在宿主 mountinfo 里留下挂载',
+    ).toBe(true);
   });
 
   test('AC-21 代理被调用者直接执行时拒绝：非零退出并给出原因', async () => {

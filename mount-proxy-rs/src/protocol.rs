@@ -41,13 +41,18 @@ pub enum Value {
     /// 阶段二直接接上；现在删掉会让阶段二重新定义一遍编码口径。
     #[allow(dead_code)]
     Bytes(Vec<u8>),
-    /// JSON 数组（阶段二的 `spawn.argv` / `spawn.env` 用）。
+    /// JSON 数组（`spawn.argv` / `spawn.env` 用）。
     ///
     /// 阶段一只在**解析**时需要它：未知 op 的请求也可能带数组载荷，解析器不能因此
     /// 整帧失败（实测踩到：`spawn` 帧带 `argv: [...]`，解析器报「值既不是字符串也不是
     /// 数字」并让整个进程退出，连前一条合法请求的应答都没送到）。
     #[allow(dead_code)]
     Array(Vec<Value>),
+    /// JSON 对象（`listDir` 的目录项用）。
+    ///
+    /// 嵌套对象只在**应答**里出现，但解析器同样要能吃下它——Core 侧的读线程会把
+    /// 请求原样记进日志，一条带对象的帧不能因此整帧失败。
+    Object(Vec<(String, Value)>),
     Null,
 }
 
@@ -76,6 +81,49 @@ impl Frame {
             Some(Value::Str(text)) => Ok(text),
             Some(_) => Err(format!("字段 {key} 不是字符串")),
             None => Err(format!("缺字段 {key}")),
+        }
+    }
+
+    /// 数组字段（`spawn.argv` / `spawn.env`）
+    pub fn array_field(&self, key: &str) -> Result<&[Value], String> {
+        match self.get(key) {
+            Some(Value::Array(items)) => Ok(items),
+            Some(_) => Err(format!("字段 {key} 不是数组")),
+            None => Err(format!("缺字段 {key}")),
+        }
+    }
+
+    /// 字符串数组字段（`spawn.argv` / `spawn.env` 的元素必须是字符串，否则直接拒绝）
+    ///
+    /// 不做 `to_string()` 兜底：`argv` 里出现数字 / 布尔说明 Core 侧编码错了，
+    /// 静默转成字符串会让工具收到一个谁也不认识的参数。
+    pub fn string_array_field(&self, key: &str) -> Result<Vec<String>, String> {
+        self.array_field(key)?
+            .iter()
+            .map(|item| match item {
+                Value::Str(text) => Ok(text.clone()),
+                other => Err(format!("字段 {key} 含非字符串元素：{other:?}")),
+            })
+            .collect()
+    }
+
+    /// 带上请求 id（`id` 关联，见本模块头注释的「并发」）
+    ///
+    /// 请求与应答都带同一个 `id`：Core 侧读线程据此把应答分派到等待中的请求，代理侧
+    /// 才能让多条请求同时在途。没有它，一条长 Bash 会把同会话的 Read 卡在队头。
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.fields.push(("id".to_string(), Value::Num(id as i64)));
+        self
+    }
+
+    /// 请求 id；缺省（老协议帧 / 单测里的裸帧）回 0。
+    ///
+    /// 用 `0` 而不是 `Err`：挂载类请求在阶段一就不带 id，回错误会让既有调用点全部
+    /// 要处理一个不可能发生的情形。`0` 是 Core 侧永远不会分配的保留值。
+    pub fn id(&self) -> u64 {
+        match self.get("id") {
+            Some(Value::Num(n)) if *n > 0 => *n as u64,
+            _ => 0,
         }
     }
 
@@ -175,6 +223,17 @@ impl Value {
                     out.push_str(&item.to_json());
                 }
                 out.push(']');
+                out
+            }
+            Value::Object(fields) => {
+                let mut out = String::from("{");
+                for (index, (key, value)) in fields.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&json_pair(key, &value.to_json()));
+                }
+                out.push('}');
                 out
             }
             Value::Null => "null".to_string(),
@@ -413,9 +472,10 @@ impl<'a> Parser<'a> {
             // 的应答都来不及发）
             Some(b'[') => self.parse_array(),
             Some(b'{') => {
-                // 嵌套对象按「解析后丢弃」处理：阶段一不读嵌套字段
-                self.skip_object()?;
-                Ok(Value::Null)
+                // 嵌套对象按对象解析（应答里的 `listDir` 目录项就是对象）。旧实现
+                // 「解析后丢弃」在本 crate 只做请求解析时成立，现在应答也要原样序列化，
+                // 丢弃会让目录项变成一堆 `null`。
+                self.parse_object()
             }
             _ => Err(format!(
                 "值既不是字符串、数字、布尔、null、数组也不是对象（首字符 {}）",
@@ -450,21 +510,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// 跳过一个完整的 JSON 对象（不保留内容）
-    fn skip_object(&mut self) -> Result<(), String> {
+    /// 解析对象并**保留**内容（`listDir` 的目录项要原样回给 Core）
+    fn parse_object(&mut self) -> Result<Value, String> {
         self.expect(b'{')?;
+        let mut fields: Vec<(String, Value)> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.at += 1;
-            return Ok(());
+            return Ok(Value::Object(fields));
         }
         loop {
             self.skip_ws();
-            let _key = self.parse_string()?;
+            let key = self.parse_string()?;
             self.skip_ws();
             self.expect(b':')?;
             self.skip_ws();
-            let _value = self.parse_value()?;
+            let value = self.parse_value()?;
+            fields.push((key, value));
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {
@@ -472,7 +534,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(b'}') => {
                     self.at += 1;
-                    return Ok(());
+                    return Ok(Value::Object(fields));
                 }
                 _ => return Err("JSON 对象未闭合".to_string()),
             }
@@ -520,6 +582,18 @@ fn utf8_len(first: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn id_roundtrips_and_defaults_to_zero() {
+        let frame = Frame::new("readFile")
+            .with_id(7)
+            .with("path", Value::Str("/a".into()));
+        let mut cursor = std::io::Cursor::new(frame.encode());
+        let decoded = Frame::read_from(&mut cursor).unwrap().unwrap();
+        assert_eq!(decoded.id(), 7);
+        // 不带 id 的帧（阶段一的挂载请求）回保留值 0，不报错
+        assert_eq!(Frame::new("ping").id(), 0);
+    }
 
     #[test]
     fn roundtrip_str_and_num() {

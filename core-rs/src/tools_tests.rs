@@ -48,7 +48,7 @@ fn context(sandbox: &Sandbox) -> ToolContext {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     }
 }
 
@@ -551,7 +551,7 @@ fn bash_manual_background_converts_and_requests_loop_pause() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     let handle = std::thread::spawn(move || {
         execute(
@@ -800,7 +800,7 @@ fn bash_sleep_timeout_is_the_default_deadline_when_below_the_sleep_duration() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     let outcome = execute(
@@ -904,7 +904,7 @@ fn bash_abort_kills_a_sleep_command() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     let flag = std::sync::Arc::clone(&cancel);
     std::thread::spawn(move || {
@@ -992,7 +992,7 @@ fn bash_abort_still_lands_while_a_grandchild_holds_the_pipe() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     let flag = std::sync::Arc::clone(&cancel);
     std::thread::spawn(move || {
@@ -1039,7 +1039,7 @@ fn bash_completion_wins_over_a_cancel_that_lands_after_the_shell_exits() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     let flag = std::sync::Arc::clone(&cancel);
     // shell 毫秒级退出，abort 在它退出之后才置位（宽限 1s 内工具已收尾）
@@ -1169,7 +1169,7 @@ fn background_context(
         background: Some(background_hooks(&captured)),
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     }
 }
 
@@ -1482,7 +1482,7 @@ fn bash_reports_streaming_progress() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     let outcome = execute(
@@ -1526,7 +1526,7 @@ fn bash_progress_preview_is_capped_at_four_kilobytes() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     // 输出远大于 4K：`fullOutput` 必须带上省略标记，`totalBytes` 仍是完整长度
@@ -2033,6 +2033,69 @@ fn base64_encode_matches_rfc4648() {
 }
 
 // ==================== Write ====================
+
+/// 隔离会话但视图不可用时，Write 必须 fail-closed：报错且**不落真实磁盘**。
+///
+/// 这是 `specs/051` FR-010 的工具侧判据。端到端测不到这一层——远端车道里宿主会在
+/// 消息到达 Core 之前按 `capabilities.isolatedWorkView` 把它拦进部署确认框
+/// （`src/host/ui/webviewMessageHandler.ts` 的 `shouldBlockForMountProxy`），
+/// 因此「Core 收到工具调用、但视图建不起来」只在单测这层能稳定构造。
+///
+/// 判据两条缺一不可：只查磁盘会漏掉「报了错但已经写了」，只查错误文案会漏掉
+/// 「报错的同时把内容落到了真实磁盘」——后者正是
+/// `specs/defects/mount-proxy-isolation-fail-open.md` 记录的形态。
+#[test]
+fn write_fails_closed_when_view_unavailable() {
+    let sandbox = Sandbox::new("tools-write-view-unavailable");
+    let target = sandbox.workspace.join("must-not-land.txt");
+    let mut ctx = context(&sandbox);
+    ctx.work_view = crate::tools::WorkViewState::ViewUnavailable("代理不可用".to_string());
+
+    let outcome = execute(
+        "Write",
+        &json!({ "file_path": target.to_string_lossy(), "content": "leak\n" }),
+        &ctx,
+    );
+    let message = text(&outcome);
+    assert!(
+        message.contains("Overlay") || message.contains("不可用"),
+        "视图不可用时 Write 必须报错并点名原因，实际：{message}"
+    );
+    assert!(
+        !target.exists(),
+        "视图不可用时 Write 不得落真实磁盘：{}",
+        target.display()
+    );
+}
+
+/// 同上，Bash 也必须 fail-closed。
+///
+/// 与 Write 分开是因为它们是两条独立分支：前台 Bash 在 `run_bash` 里按三态判断，
+/// 曾经按「有没有代理」判断过一次（代理缺失时落到本机 spawn，命令直接写真实磁盘，
+/// 见 `specs/defects/mount-proxy-isolation-fail-open.md`）。
+#[test]
+fn bash_fails_closed_when_view_unavailable() {
+    let sandbox = Sandbox::new("tools-bash-view-unavailable");
+    let target = sandbox.workspace.join("must-not-land-bash.txt");
+    let mut ctx = context(&sandbox);
+    ctx.work_view = crate::tools::WorkViewState::ViewUnavailable("代理不可用".to_string());
+
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": format!("echo leak > {}", target.display()), "description": "probe" }),
+        &ctx,
+    );
+    let message = text(&outcome);
+    assert!(
+        message.contains("Overlay") || message.contains("不可用"),
+        "视图不可用时 Bash 必须报错并点名原因，实际：{message}"
+    );
+    assert!(
+        !target.exists(),
+        "视图不可用时 Bash 不得落真实磁盘：{}",
+        target.display()
+    );
+}
 
 #[test]
 fn write_requires_a_path() {
@@ -2600,7 +2663,7 @@ fn todo_write_updates_the_session_table() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     let outcome = execute(
         "TodoWrite",
@@ -2639,7 +2702,7 @@ fn todo_write_empty_list_clears_the_table() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     execute(
         "TodoWrite",
@@ -2669,7 +2732,7 @@ fn todo_write_failure_keeps_the_previous_table() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     execute(
         "TodoWrite",
@@ -2842,7 +2905,7 @@ fn ask_context(sandbox: &Sandbox, response: Value) -> ToolContext {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     }
 }
 
@@ -2957,7 +3020,7 @@ fn ask_user_question_sends_question_payload() {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     execute(
         "AskUserQuestion",
@@ -4239,7 +4302,7 @@ fn agent_target_selects_remote_spawn_hook() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     // 不带 target：本机钩子
@@ -4302,7 +4365,7 @@ fn agent_over_limit_queues_and_returns_immediately() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     // 占满槽位（绕过工具直取：测试自身承担 acquire/release 的配对责任）
@@ -4369,7 +4432,7 @@ fn agent_cancelled_before_dispatch_does_not_queue() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     let outcome = execute(
@@ -4407,7 +4470,7 @@ fn agent_empty_target_is_rejected() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     let outcome = execute(
         "Agent",
@@ -4439,7 +4502,7 @@ fn agent_target_rejected_when_host_does_not_support_it() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
     // 单测进程没有宿主环境快照 → cross_workspace_agent() 为 false
     let outcome = execute(
@@ -4745,7 +4808,7 @@ fn transfer_test_context(
         background: None,
         subagent: None,
         transfer: hook,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     }
 }
 
@@ -4770,7 +4833,7 @@ fn agent_dispatch_appends_transfer_reminder() {
         background: None,
         subagent: Some(hooks),
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     };
 
     let remote_input = json!({ "prompt": "x", "agentRole": "Master", "target": "HOST:/b" });

@@ -322,29 +322,131 @@ pub struct ToolContext {
     pub subagent: Option<SubAgentHooks>,
     /// 跨工作区传输钩子（`Transfer`，specs/028）。单测不设置时该工具报错。
     pub transfer: Option<TransferHook>,
-    /// 对话工作视图句柄（specs/045）：隔离视图对话的工具读写走它映射到的叠加视图，
-    /// 对外报的仍是真实工作区路径。`None` = 该对话直接操作磁盘。
-    pub work_view: Option<crate::work_view::WorkViewHandle>,
+    /// 对话工作视图（specs/045 + specs/051 FR-010）。
+    ///
+    /// 三态判别，因为「该会话不是隔离归属」与「隔离归属但视图不可用」是两件事：前者
+    /// 正常走真实磁盘，后者必须变成工具错误。把两者都压成 `None` 会让隔离视图建立失败
+    /// 悄悄退回磁盘（fail-open）。
+    pub work_view: WorkViewState,
+}
+
+/// `ToolContext` 的工作视图状态（specs/051 FR-010）。
+pub enum WorkViewState {
+    /// 该对话直接操作真实磁盘。
+    Workspace,
+    /// 隔离归属且有可用视图：文件 IO 经常驻挂载代理代执行。
+    View(crate::work_view::WorkViewHandle),
+    /// 隔离归属但视图不可用：任何路径解析都返回错误，**不**退回真实磁盘。
+    ViewUnavailable(String),
+}
+
+impl WorkViewState {
+    /// 非隔离会话的缺省值（绝大多数单测与真实磁盘对话用它）
+    pub fn workspace() -> Self {
+        WorkViewState::Workspace
+    }
 }
 
 impl ToolContext {
-    /// 把工具要访问的真实路径换成实际读写路径（隔离视图里是叠加视图内路径）。
+    /// 把工具要访问的真实路径换成实际读写路径（specs/051：视图已 bind 到真实路径，
+    /// 因此这里是恒等；它仍校验路径落在工作区内）。
     ///
     /// 所有工具都用它解析「该读哪个文件」，因此视图对工具是透明的：路径字符串对用户
-    /// 仍是真实工作区路径，只有 `std::fs` 调用看到视图内路径。
+    /// 仍是真实工作区路径。
     ///
-    /// 越界返回错误而不是退回真实路径：静默降级会让隔离对话的工具绕过视图直接写磁盘，
-    /// 而调用方毫不知情（`docs/architecture/principles.md` 铁律 4.1）。
+    /// 越界 / 视图不可用都返回错误而不是退回真实路径：静默降级会让隔离对话的工具绕过
+    /// 视图直接写磁盘，而调用方毫不知情（`docs/architecture/principles.md` 铁律 4.1）。
     pub fn io_path(&self, real: &std::path::Path) -> Result<std::path::PathBuf, String> {
         match &self.work_view {
-            Some(handle) => handle.map_into_view(real),
-            None => Ok(real.to_path_buf()),
+            WorkViewState::Workspace => Ok(real.to_path_buf()),
+            WorkViewState::View(handle) => handle.map_into_view(real),
+            WorkViewState::ViewUnavailable(reason) => Err(format!(
+                "该对话的 Overlay 视图不可用：{reason}；改动不落真实磁盘，请先修好挂载代理"
+            )),
         }
     }
 
-    /// 隔离视图的挂载点；`None` = 该对话直接操作磁盘（Bash 不进私有命名空间）。
-    pub fn overlay_mount(&self) -> Option<std::path::PathBuf> {
-        self.work_view.as_ref().map(|handle| handle.mount_point())
+    /// 该对话的代理（隔离会话且有视图时）；其余情形 `None`。
+    pub fn proxy(&self) -> Option<&std::sync::Arc<crate::mount_proxy::SessionProxy>> {
+        match &self.work_view {
+            WorkViewState::View(handle) => Some(handle.proxy()),
+            _ => None,
+        }
+    }
+
+    /// 读一个文件：隔离会话经代理，其余走 `std::fs`。
+    pub fn read_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, String> {
+        let io_path = self.io_path(path)?;
+        match self.proxy() {
+            Some(proxy) => proxy.read_file(&io_path, None),
+            None => std::fs::read(&io_path).map_err(|error| error.to_string()),
+        }
+    }
+
+    /// 读一个文件（带上限）：隔离会话经代理，其余走 `std::fs`。
+    pub fn read_bytes_limited(
+        &self,
+        path: &std::path::Path,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, String> {
+        let io_path = self.io_path(path)?;
+        match self.proxy() {
+            Some(proxy) => proxy.read_file(&io_path, Some(max_bytes)),
+            None => {
+                use std::io::Read;
+                let mut file = std::fs::File::open(&io_path).map_err(|e| e.to_string())?;
+                let mut buffer = Vec::new();
+                file.by_ref()
+                    .take(max_bytes)
+                    .read_to_end(&mut buffer)
+                    .map_err(|e| e.to_string())?;
+                Ok(buffer)
+            }
+        }
+    }
+
+    /// 写一个文件：隔离会话经代理，其余走 `std::fs`。
+    pub fn write_bytes(&self, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+        let io_path = self.io_path(path)?;
+        match self.proxy() {
+            Some(proxy) => proxy.write_file(&io_path, bytes),
+            None => {
+                if let Some(parent) = io_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                std::fs::write(&io_path, bytes).map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    /// 路径的事实（存在 / 类型 / 大小）：隔离会话经代理，其余走 `std::fs`。
+    pub fn stat_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<crate::mount_proxy::PathFacts, String> {
+        let io_path = self.io_path(path)?;
+        match self.proxy() {
+            Some(proxy) => proxy.stat(&io_path),
+            None => match std::fs::symlink_metadata(&io_path) {
+                Ok(meta) => Ok(crate::mount_proxy::PathFacts {
+                    exists: true,
+                    is_file: meta.file_type().is_file(),
+                    is_dir: meta.file_type().is_dir(),
+                    is_symlink: meta.file_type().is_symlink(),
+                    size: meta.len(),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(crate::mount_proxy::PathFacts {
+                        exists: false,
+                        is_file: false,
+                        is_dir: false,
+                        is_symlink: false,
+                        size: 0,
+                    })
+                }
+                Err(error) => Err(error.to_string()),
+            },
+        }
     }
 }
 
@@ -1760,12 +1862,19 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         let description = input_str(input, "description")
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| command.clone());
-        return match crate::bash_task::spawn_background(
+        // 视图状态显式传入：后台命令与前台同一判据（`ViewUnavailable` 在这里是
+        // 「该会话不存在代理」，因此只有 `View` 才走代执行）
+        let view = match &ctx.work_view {
+            WorkViewState::View(handle) => Some(handle),
+            _ => None,
+        };
+        return match crate::bash_task::spawn_background_with_view(
             &command,
             &cwd,
             &description,
             &ctx.session_id,
             ctx.background.clone(),
+            view,
         ) {
             Ok(task_id) => {
                 ToolOutcome::Success(background_result_text(&task_id, "", "", false, None))
@@ -1795,26 +1904,24 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 隐藏子进程控制台窗口（否则每次执行命令都会闪一个窗口）
     util::hide_console(&mut cmd);
 
-    // 隔离视图对话（specs/045）：在**子进程**里取一份私有挂载命名空间副本，把视图 bind
-    // 到真实工作区路径上再 exec。这样脚本里写死的绝对路径、`$PWD`、`cd` 全部照常工作，
-    // 而内容来自「磁盘 + 本对话改动」的叠加视图。
+    // 隔离视图对话（specs/051 FR-007）：命令由常驻挂载代理代执行。
     //
-    // 必须在 `pre_exec` 里做：`unshare(CLONE_NEWNS)` 只影响调用进程及其子孙，放在父进程
-    // 里会污染 Core 自身；而 bind 必须在 exec 之前完成，否则 shell 已经按旧挂载启动。
-    if let Some(mount_point) = ctx.overlay_mount() {
-        let workspace = std::path::PathBuf::from(&cwd);
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(move || {
-                crate::work_view::bind_view_onto_workspace(&mount_point, &workspace)
-                    .map_err(|reason| std::io::Error::other(reason))
-            });
+    // **不能在 Core 里 spawn**：Core 不在任何命名空间里（ADR-0018），它 spawn 的进程
+    // 看到的是真实磁盘；而视图的 bind 是在代理的特权阶段完成的，只有代理的子孙进程站在
+    // 那份挂载表上。因此这里把整条命令行交给代理，输出再流式收回来。
+    //
+    // 判据是三态而不是「有没有代理」：隔离会话的代理缺失时必须**报错**，不能落到下面
+    // 本机 spawn 的那条路上——那会把命令写到真实磁盘，而界面仍标着隔离。
+    match &ctx.work_view {
+        WorkViewState::View(_) => {
+            return run_bash_through_proxy(&shell, &command, &cwd, ctx, timeout_ms)
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (mount_point, workspace);
+        WorkViewState::ViewUnavailable(reason) => {
+            return ToolOutcome::Error(format!(
+                "Bash: 该对话的 Overlay 视图不可用：{reason}；命令未执行，改动不落真实磁盘"
+            ))
         }
+        WorkViewState::Workspace => {}
     }
 
     let mut child = match cmd.spawn() {
@@ -2024,6 +2131,129 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     } else {
         ToolOutcome::Success(content)
     }
+}
+
+/// 经常驻挂载代理执行前台 Bash（specs/051 FR-007 的代执行边界）。
+///
+/// 输出与中止语义与本地 spawn 分支一致：`toolProgress` 按块上报，`ctx.cancel` 置位后
+/// 把 `kill` 发给代理（Core 不持有 `Child` 句柄，中止必须翻译成请求）。
+///
+/// 超时在这里**不**杀进程：与本地分支同一口径，超时由调用方（引擎）决定是否转后台。
+/// 代理侧的 `kill` 只服务中止与「等待应答超时」两种情形。
+fn run_bash_through_proxy(
+    shell: &crate::shell::ShellInfo,
+    command: &str,
+    cwd: &str,
+    ctx: &ToolContext,
+    timeout_ms: u64,
+) -> ToolOutcome {
+    let Some(proxy) = ctx.proxy() else {
+        return ToolOutcome::Error("Bash: 该会话没有可用的挂载代理".to_string());
+    };
+    let mut argv = vec![shell.path.clone()];
+    argv.extend(shell.args.iter().cloned());
+    argv.push(command.to_string());
+    let env = match crate::shell_env::child_env() {
+        Ok(env) => env,
+        Err(error) => return ToolOutcome::Error(format!("Bash: {error}")),
+    };
+    let spec = crate::mount_proxy::SpawnSpec {
+        argv,
+        cwd: std::path::PathBuf::from(cwd),
+        env,
+        stdin: None,
+    };
+    let id = match proxy.start_spawn(spec) {
+        Ok(id) => id,
+        Err(error) => return ToolOutcome::Error(format!("Bash: {error}")),
+    };
+    let started = std::time::Instant::now();
+    // 超时设为「死线 + 一段余量」：死线到了由**引擎**决定转后台，这里只防止代理永不
+    // 回应导致工具线程挂死。
+    let wait = if timeout_ms == 0 {
+        std::time::Duration::from_secs(24 * 60 * 60)
+    } else {
+        std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(30)
+    };
+    let mut full: Vec<u8> = Vec::new();
+    let mut stderr_all: Vec<u8> = Vec::new();
+    let progress = ctx.on_progress.clone();
+    let outcome = proxy.wait_spawn(
+        id,
+        wait,
+        ctx.cancel.as_deref(),
+        |stdout_chunk, stderr_chunk| {
+            full.extend_from_slice(stdout_chunk);
+            stderr_all.extend_from_slice(stderr_chunk);
+            if let Some(callback) = &progress {
+                let text = String::from_utf8_lossy(&full).to_string();
+                callback(BashProgress {
+                    output: preview_of(&text, 4096),
+                    full_output: preview_of(&text, 4096),
+                    elapsed_time_seconds: started.elapsed().as_secs_f64(),
+                    total_lines: text.lines().count(),
+                    total_bytes: full.len(),
+                    timeout_ms,
+                });
+            }
+        },
+    );
+    let cancelled = ctx
+        .cancel
+        .as_ref()
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false);
+    match outcome {
+        Ok(outcome) => {
+            // 与本地分支同形：stdout 在前，stderr 追加在后，非零退出追加 Exit code
+            let mut output = String::from_utf8_lossy(&outcome.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&outcome.stderr).to_string();
+            if !stderr.is_empty() {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&stderr);
+            }
+            let status = outcome.code;
+            if status != 0 && !cancelled {
+                output.push_str(&format!("\nExit code: {status}"));
+            }
+            let trimmed = crate::util::js_trim(&output);
+            let mut content = if trimmed.is_empty() {
+                "(无输出)".to_string()
+            } else {
+                trimmed.to_string()
+            };
+            if cancelled {
+                content.push_str(
+                    "
+Command was interrupted",
+                );
+            }
+            if status != 0 || cancelled {
+                ToolOutcome::CommandFailed {
+                    text: content,
+                    exit_code: if cancelled { 130 } else { status },
+                }
+            } else {
+                ToolOutcome::Success(content)
+            }
+        }
+        Err(error) => ToolOutcome::Error(format!("Bash: {error}")),
+    }
+}
+
+/// 取文本的尾部预览（与本地管道的 4K 预览同一口径）
+fn preview_of(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    // 按字符边界截，避免把一个多字节字符切成两半
+    let mut start = text.len() - limit;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_string()
 }
 
 /// 前台管道的共享汇。
@@ -3396,15 +3626,23 @@ fn format_xlsx_data(
 }
 
 /// 读取 xlsx/xlsm。
+/// 从**字节**解析工作簿。
+///
+/// 收字节而不是路径：隔离会话的文件在代理的挂载命名空间里，Core 自己 `open()` 看到的是
+/// 磁盘（视图对它是空的）。字节由 `ToolContext::read_bytes` 取来——隔离会话经代理、其余
+/// 直接 `std::fs`，解析这一层不需要知道来源。
 fn read_xlsx_content(
+    bytes: &[u8],
     path: &Path,
     offset: Option<u64>,
     limit: Option<u64>,
     sheet_name: Option<&str>,
 ) -> Result<XlsxReadResult, String> {
-    use calamine::{open_workbook_auto, Reader};
+    use calamine::{open_workbook_auto_from_rs, Reader};
+    let _ = path;
 
-    let mut workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
+    let mut workbook = open_workbook_auto_from_rs(std::io::Cursor::new(bytes.to_vec()))
+        .map_err(|err| err.to_string())?;
     let mut all_sheet_names: Vec<String> = workbook.sheet_names();
     all_sheet_names.retain(|name| name != "WpsReserved_CellImgList");
 
@@ -3464,10 +3702,10 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     };
     // 真实路径（对用户可见、用于输出与 diff）与 IO 路径（隔离视图里是视图内路径）
     let path = expand_path(&ctx.cwd, &file_path);
-    let io_path = match ctx.io_path(&path) {
-        Ok(path) => path,
-        Err(reason) => return ToolOutcome::Error(format!("Read: {reason}")),
-    };
+    // 路径解析只为校验它落在工作区内；真正的 IO 走下面的 `ctx.*` 原语
+    if let Err(reason) = ctx.io_path(&path) {
+        return ToolOutcome::Error(format!("Read: {reason}"));
+    }
 
     let limit = input_u64(input, "limit");
     if let Some(limit) = limit {
@@ -3488,36 +3726,46 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     // 整文件读取（未传 limit）时先做 256KB 上限检查；xlsx / 图片文件豁免。
     if limit.is_none() && !is_xlsx && media_type.is_none() {
-        if let Ok(meta) = std::fs::metadata(&io_path) {
-            if meta.is_file() && meta.len() > READ_MAX_SIZE_BYTES {
+        if let Ok(facts) = ctx.stat_path(&path) {
+            if facts.is_file && facts.size > READ_MAX_SIZE_BYTES {
                 return ToolOutcome::Error(format!(
                     "File ({}) exceeds maximum allowed size ({}). Use offset and limit parameters to read specific portions of the file.",
-                    format_file_size(meta.len()),
+                    format_file_size(facts.size),
                     format_file_size(READ_MAX_SIZE_BYTES),
                 ));
             }
         }
     }
 
-    // 存在性与类型判断一律看 `io_path`：隔离视图对话的基线来自磁盘、改动在上层，
-    // 「文件在不在」的答案只能由视图给出。这里曾用真实路径判断，导致视图里刚写出的
+    // 存在性与类型判断一律经 `stat_path`（隔离会话里它走代理）：视图的基线与改动都在
+    // 那个命名空间里，答案只能由视图给出。这里曾用真实路径判断，导致视图里刚写出的
     // 文件被判成不存在（`docs/architecture/principles.md` 铁律 4.4：一份事实只有一个
     // 读取点，工具看到的文件系统就是视图）。
-    if !io_path.exists() {
+    let facts = match ctx.stat_path(&path) {
+        Ok(facts) => facts,
+        Err(err) => return ToolOutcome::Error(format!("Read failed: {err}")),
+    };
+    if !facts.exists {
         return ToolOutcome::Error(format!("File not found: {}", path.display()));
     }
 
     // `isbinaryfile` 对非普通文件（目录 / 设备等）抛
     // `Path provided was not a file!`。此前直接 `fs::read` 会返回平台相关的
     // 权限 / EISDIR 文案（Windows 是「拒绝访问。(os error 5)」）。
-    if !io_path.is_file() {
+    if !facts.is_file {
         return ToolOutcome::Error("Path provided was not a file!".to_string());
     }
 
     // xlsx / xlsm：绕过二进制检查与常规文本读取
     if is_xlsx {
         let sheet = input_str(input, "sheet").filter(|value| !value.is_empty());
-        return match read_xlsx_content(&io_path, offset, limit, sheet.as_deref()) {
+        // 代理代执行时不能给它一条「看起来是本机路径」的实参去打开——xlsx 解析需要
+        // 字节，因此先把文件读过来再在本地解析。
+        let bytes = match ctx.read_bytes(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => return ToolOutcome::Error(format!("Read failed: {err}")),
+        };
+        return match read_xlsx_content(&bytes, &path, offset, limit, sheet.as_deref()) {
             Ok(result) => ToolOutcome::Success(format_read_output(
                 &result.content,
                 result.start_line,
@@ -3529,7 +3777,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         };
     }
 
-    let bytes = match std::fs::read(&io_path) {
+    let bytes = match ctx.read_bytes(&path) {
         Ok(bytes) => bytes,
         Err(err) => return ToolOutcome::Error(format!("Read failed: {err}")),
     };
@@ -3652,18 +3900,25 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     };
     // 真实路径（对用户可见、用于输出与 diff）与 IO 路径（隔离视图里是视图内路径）
     let path = expand_path(&ctx.cwd, &file_path);
-    let io_path = match ctx.io_path(&path) {
-        Ok(path) => path,
+    // 路径解析只为校验它落在工作区内；真正的 IO 走下面的 `ctx.*` 原语
+    if let Err(reason) = ctx.io_path(&path) {
+        return ToolOutcome::Error(format!("Write: {reason}"));
+    }
+    // 「文件是否存在」必须经同一条通道问（隔离会话里那是代理的视图，不是 Core 看到的磁盘）
+    let action = match ctx.stat_path(&path) {
+        Ok(facts) if facts.exists => "update",
+        Ok(_) => "create",
         Err(reason) => return ToolOutcome::Error(format!("Write: {reason}")),
     };
-    // 视图里「文件是否存在」看 io_path：隔离视图对话的基线来自磁盘，两者一致
-    let action = if io_path.exists() { "update" } else { "create" };
     // 写入前的原始内容（文件不存在时为 null），用于 UI 的 diff 展示与回滚
-    let before_content = std::fs::read_to_string(&io_path).ok();
+    let before_content = ctx
+        .read_bytes(&path)
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string());
     // 读后失效守卫（specs/038 FR-001）：文件存在时必须「本会话读过且内容未变」。
     // 读原始字节而不是 `before_content`：后者在非法 UTF-8 上是 `None`，会被误判成
     // 「文件不存在」而放行覆盖。`before_content` 本身是给 UI 的 diff 用的。
-    let before_bytes = std::fs::read(&io_path).ok();
+    let before_bytes = ctx.read_bytes(&path).ok();
     if let Some(message) = crate::read_guard::verify(
         &ctx.session_id,
         &ctx.cwd,
@@ -3673,18 +3928,15 @@ fn run_write(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     ) {
         return ToolOutcome::Error(message);
     }
-    if let Some(parent) = io_path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            return ToolOutcome::Error(format!("Write: mkdir failed: {err}"));
-        }
-    }
-    match std::fs::write(&io_path, content) {
+    // 父目录由 `write_bytes` 负责：隔离会话里它经代理建（Core 自己建在磁盘上，
+    // 视图里看不到那条目录）
+    match ctx.write_bytes(&path, content.as_bytes()) {
         Ok(()) => {
             // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
             config::record_md_modification(&ctx.cwd, &path);
             // 写成功后刷新读取记录（specs/038 FR-002）：读回字节，而不是直接用
             // `content.as_bytes()`——记录必须与真实内容一致，否则下一次 Edit 会被自己误拒。
-            if let Ok(written) = std::fs::read(&io_path) {
+            if let Ok(written) = ctx.read_bytes(&path) {
                 crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
             }
             let line_count = content.split('\n').count();
@@ -4170,21 +4422,30 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let limit = input_u64(input, "limit");
     // 真实路径（对用户可见、用于输出与 diff）与 IO 路径（隔离视图里是视图内路径）
     let path = expand_path(&ctx.cwd, &file_path);
-    let io_path = match ctx.io_path(&path) {
-        Ok(path) => path,
-        Err(reason) => return ToolOutcome::Error(format!("Edit: {reason}")),
+    // 路径解析只为校验它落在工作区内；真正的 IO 走下面的 `ctx.*` 原语
+    if let Err(reason) = ctx.io_path(&path) {
+        return ToolOutcome::Error(format!("Edit: {reason}"));
+    }
+    // 先判存在再读：代理侧的读错误只有一段字符串，分不出「文件不存在」与别的失败。
+    // 用 `stat_path` 得到的事实区分两条文案——它与读走同一条通道（隔离会话经代理）。
+    let exists = match ctx.stat_path(&path) {
+        Ok(facts) => facts.exists,
+        Err(err) => return ToolOutcome::Error(format!("Edit: read failed: {err}")),
     };
-    let content = match std::fs::read_to_string(&io_path) {
-        Ok(text) => text,
+    if !exists {
         // Edit 用 `fs.readFile` 读盘，文件不存在时 Node 抛
         // `ENOENT: no such file or directory, open '<path>'`。此前 Rust 返回
         // 平台相关的 `Edit: read failed: 系统找不到指定的文件。`。
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return ToolOutcome::Error(format!(
-                "ENOENT: no such file or directory, open '{}'",
-                path.display()
-            ))
-        }
+        return ToolOutcome::Error(format!(
+            "ENOENT: no such file or directory, open '{}'",
+            path.display()
+        ));
+    }
+    let content = match ctx
+        .read_bytes(&path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+    {
+        Ok(text) => text,
         Err(err) => return ToolOutcome::Error(format!("Edit: read failed: {err}")),
     };
     // 读后失效判定放在 `read_to_string` 成功之后（specs/038 FR-001）：文件不存在时
@@ -4322,13 +4583,13 @@ fn run_edit(input: &Value, ctx: &ToolContext) -> ToolOutcome {
 
     let line_count = count_lines(&updated);
 
-    match std::fs::write(&io_path, updated) {
+    match ctx.write_bytes(&path, updated.as_bytes()) {
         Ok(()) => {
             // 非 git 工作区内的 md 修改登记（specs/030 FR-004；内部自行判定不满足即返回）
             config::record_md_modification(&ctx.cwd, &path);
             // 写成功后刷新读取记录（specs/038 FR-002）：同一会话里连续的多次 Edit
             // 不需要插一次 Read；记录用读回的磁盘字节，保证与真实落盘一致。
-            if let Ok(written) = std::fs::read(&io_path) {
+            if let Ok(written) = ctx.read_bytes(&path) {
                 crate::read_guard::record_write(&ctx.session_id, &ctx.cwd, &path, &written);
             }
             let replacement = if replacements_made == 1 {
@@ -4385,6 +4646,50 @@ const RIPGREP_TIMEOUT: Duration = Duration::from_secs(20);
 /// 这一点会影响 `--glob` 的语义：ripgrep 对含 `/` 的 glob 模式是相对「当前工作
 /// 目录」而非搜索根匹配的。此前把 cwd 设成搜索根，`sub/*.txt` 在 Standalone 能
 /// 命中（宿主 cwd 下没有 `sub/`），此前设成搜索根时结果不同。
+/// 跑一条 `rg` 命令。
+///
+/// `ctx` 决定谁执行：隔离会话经常驻挂载代理（视图在**它的**命名空间里，Core 自己 spa
+/// 出来的 `rg` 看不到叠加层），其余直接 spawn。两条路的输出形状必须一致——调用方按行
+/// 解析，不能有一条路多出前缀。
+fn run_ripgrep_with(args: &[String], ctx: Option<&ToolContext>) -> Result<String, String> {
+    if let Some(context) = ctx {
+        if context.proxy().is_some() {
+            return run_ripgrep_through_proxy(args, context);
+        }
+    }
+    run_ripgrep(args)
+}
+
+/// 经代理跑 `rg`，只回 stdout（stderr 并入错误信息）。
+fn run_ripgrep_through_proxy(args: &[String], ctx: &ToolContext) -> Result<String, String> {
+    let Some(proxy) = ctx.proxy() else {
+        return Err("该会话没有可用的挂载代理".to_string());
+    };
+    let mut argv = vec![ripgrep_path()];
+    argv.extend(args.iter().cloned());
+    let env = crate::shell_env::child_env()?;
+    let id = proxy.start_spawn(crate::mount_proxy::SpawnSpec {
+        argv,
+        cwd: std::path::PathBuf::from(&ctx.cwd),
+        env,
+        stdin: None,
+    })?;
+    let outcome = proxy.wait_spawn(
+        id,
+        RIPGREP_TIMEOUT + std::time::Duration::from_secs(5),
+        None,
+        |_stdout, _stderr| {},
+    )?;
+    // rg 的退出码 1 = 无匹配，不是错误（与本地分支同一口径）
+    if outcome.code != 0 && outcome.code != 1 {
+        return Err(format!(
+            "ripgrep failed: {}",
+            String::from_utf8_lossy(&outcome.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&outcome.stdout).to_string())
+}
+
 fn run_ripgrep(args: &[String]) -> Result<String, String> {
     let executable = ripgrep_path();
     let mut cmd = Command::new(&executable);
@@ -4658,7 +4963,7 @@ fn run_grep(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     }
     args.push(search_path.clone());
 
-    match run_ripgrep(&args) {
+    match run_ripgrep_with(&args, Some(ctx)) {
         Ok(stdout) => {
             let lines = ripgrep_lines(&stdout);
             let (limited, applied_limit) = apply_head_limit(&lines, head_limit, offset);
@@ -4824,7 +5129,7 @@ fn run_glob(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         "--hidden".into(),
         search_dir.clone(),
     ];
-    match run_ripgrep(&args) {
+    match run_ripgrep_with(&args, Some(ctx)) {
         Ok(stdout) => {
             let lines = ripgrep_lines(&stdout);
             let absolute: Vec<String> = lines
