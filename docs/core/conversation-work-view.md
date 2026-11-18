@@ -44,8 +44,10 @@ Core 是。
 | `UiRequest.workViewChangesRequested` | `sessionId`、`scope`（`doc` / `all`，与侧栏同一判别值） | `{ ok: true, entries }` 或 `{ ok: false, kind: 'not-a-git-workspace' \| 'error', error }` |
 | `UiRequest.workViewFileDiffRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, kind: 'git', before: string \| null, after }`、`{ ok: true, kind: 'not-a-git-workspace', after }` 或 `{ ok: false, error }` |
 
-视图尚未建立（会话还没调用过工具）时三者都回失败侧：由宿主决定显示磁盘基线还是报错，
-Core 不替它决定。`dir` / `path` 越界（绝对路径、`..`）一律拒绝。
+视图不需要事先建立：三个取数请求在取数前都会把该会话的视图备好
+（与工具调用同一个入口），因此用户进对话就展开资源管理器也能看到叠加视图的内容。
+`dir` / `path` 越界（绝对路径、`..`）一律拒绝；会话不是 Overlay 归属、或视图建不起来时
+三者回失败侧，由宿主显示错误行——Core 不替它改列磁盘。
 
 `workViewChangesRequested` 列出该对话视图里相对 HEAD 的改动：改磁盘已有文件、对话内新建、
 以及只用 Bash 写出的文件都进清单——判据是「视图内容 vs HEAD」，不是工具旁路的记录。
@@ -183,7 +185,7 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 | 时机 | 动作 |
 | --- | --- |
 | `conversationStarted`（`storage: isolated`） | 登记归属；视图**只登记**，不建目录、不拉起代理 |
-| 第一次工具调用（或能力查询） | 拉起该会话的代理：它建目录、挂 overlay、bind 到工作区；失败时工具**报错**（fail-closed） |
+| 第一次工具调用，或第一次视图取数（列目录 / 变更清单 / 两侧原文） | 拉起该会话的代理：它建目录、挂 overlay、bind 到工作区；失败时工具与取数都**报错**（fail-closed） |
 | `conversationClosed` | 丢弃代理（关闭 socketpair → 它读到 EOF 自行退出），**保留**上层目录（改动跨重启保留） |
 | `conversationDeleted` | 丢弃代理并回收整个视图目录；失败只记日志 |
 | `conversationStorageConverted` | 存量隔离会话转成真实工作区归属：丢弃代理、归属落盘为 `workspace` |
@@ -201,7 +203,7 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 | 代理自检失败（命名空间 / 挂载 / 断言） | 同上，原因透传代理给出的那一条 |
 | 视图建立失败（磁盘不可写等） | 该会话的工具调用**报错**，改动不落真实磁盘；原因记进 Core 日志 |
 | 代理运行中被杀 | 能力改判 `absent`；下一次需要时重新拉起，不重启 Core |
-| 视图未建立时的只读请求（列目录 / 变更清单 / 两侧原文） | 回失败侧（变更清单带 `kind: 'error'`），由宿主显示错误行；不退回磁盘，也不替调用方建视图 |
+| 视图未建立时的只读请求（列目录 / 变更清单 / 两侧原文） | 先按需建立该会话的视图再取数；建立失败回失败侧（变更清单带 `kind: 'error'`），由宿主显示错误行；不退回磁盘 |
 | 视图里跑 git 失败（可执行缺失 / 子命令非零退出） | 回失败侧并带上失败原因，不回退磁盘清单 |
 | 会话删除时回收失败 | 删除照常完成，日志记录残留路径 |
 

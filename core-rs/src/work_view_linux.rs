@@ -253,7 +253,10 @@ impl WorkViewHandle {
 /// 经代理代执行：视图挂载在代理的命名空间里，Core 自己 `read_dir` 只能看到空目录
 /// （`docs/core/conversation-work-view.md` 第 4 节）。
 ///
-/// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：视图未建立时回 `Err` 而不是
+/// 调用前必须经 `Core::ensure_work_view` 把视图备好：本函数只做取数，`None` 在这里
+/// 的含义是「该会话没有视图」，不替调用方决定怎么补救。
+///
+/// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：视图取不到时回 `Err` 而不是
 /// 偷偷列磁盘——那是两个不同的事实，由宿主决定怎么呈现。
 pub fn list_view_dir(session_id: &str, dir: &str) -> Result<Vec<serde_json::Value>, String> {
     let handle = WorkViewHandle::of(session_id)
@@ -275,25 +278,17 @@ pub fn list_view_dir(session_id: &str, dir: &str) -> Result<Vec<serde_json::Valu
 
 /// 把 `'/'` 分隔的相对路径解析成可安全拼到工作区上的相对路径。
 ///
-/// 拒绝绝对路径与 `..` 分量：渲染层传来的字符串不可信，越界会读到视图之外
-/// （与 `electron/sidebarFiles.ts::resolveWithinRoot` 同一口径，那边用
-/// `path.relative` 的回跳结果判，这里按分量判——Core 侧不引路径库的平台差异）。
+/// 判据只有一份：`super::check_view_relative`（请求分支在建立视图之前也调它）。
+/// 这里只把校验过的字符串转成 `PathBuf` 并丢掉空段与 `.`。
 fn sanitize_view_relative(dir: &str) -> Result<PathBuf, String> {
+    super::check_view_relative(dir)?;
     let mut relative = PathBuf::new();
     for segment in dir.split('/') {
-        match segment {
-            // 空串来自开头的 '/' 或 '//'；'.' 是无操作
-            "" | "." => continue,
-            ".." => return Err(format!("路径 {dir} 越界：不允许 '..' 分量")),
-            other => {
-                if other.contains('\\') {
-                    // 反斜杠在 POSIX 上是合法文件名字符，但渲染层约定 '/' 分隔——
-                    // 出现反斜杠说明调用方拼错了，拒绝而不是猜它想表达什么
-                    return Err(format!("路径 {dir} 含反斜杠：约定用 '/' 分隔"));
-                }
-                relative.push(other);
-            }
+        // 空串来自 '//'；'.' 是无操作
+        if segment.is_empty() || segment == "." {
+            continue;
         }
+        relative.push(segment);
     }
     Ok(relative)
 }
@@ -334,6 +329,8 @@ pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
 /// 命令由代理代执行：git 必须在视图里跑（`changes` 用 `--work-tree` 指向真实工作区，
 /// 而真实工作区在 Core 侧就是磁盘）。临时索引放在视图外的 scratch 目录，避免取数污染
 /// `upper`（理由见 `work_view_changes.rs`）。
+///
+/// 与 `list_view_dir` 同一前提：调用前经 `Core::ensure_work_view` 备好视图。
 pub fn changes(session_id: &str, scope: &str) -> Result<super::ChangesOutcome, String> {
     let handle = WorkViewHandle::of(session_id)
         .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;

@@ -40,6 +40,35 @@ mod git_view;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub use git_view::{ChangeEntry, ChangeScope, ChangesOutcome, FileDiffOutcome, GitView};
 
+/// 取数请求里的相对路径校验（`dir` / `path`）：`'/'` 分隔，不允许绝对路径、`..` 分量
+/// 与反斜杠。
+///
+/// 平台无关且无副作用，因此放在这里：请求分支要在**建立视图之前**先拒掉越界路径
+/// （非法请求不该触发拉起代理这种副作用），而建立视图是平台实现的事。
+pub fn check_view_relative(text: &str) -> Result<(), String> {
+    // 绝对路径拒掉而不是「去掉开头的斜杠当相对路径」：渲染层约定只传工作区相对路径，
+    // 出现开头的 '/' 说明调用方拼错了（同 .gitignore 风格的静默归一化会让越界请求
+    // 看起来成功，而返回的是另一个位置的内容）。
+    if text.starts_with('/') {
+        return Err(format!("路径 {text} 越界：不允许绝对路径"));
+    }
+    for segment in text.split('/') {
+        match segment {
+            // 空串来自中间的 '//'；'.' 是无操作
+            "" | "." => continue,
+            ".." => return Err(format!("路径 {text} 越界：不允许 '..' 分量")),
+            other => {
+                if other.contains('\\') {
+                    // 反斜杠在 POSIX 上是合法文件名字符，但渲染层约定 '/' 分隔——
+                    // 出现反斜杠说明调用方拼错了，拒绝而不是猜它想表达什么
+                    return Err(format!("路径 {text} 含反斜杠：约定用 '/' 分隔"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 本能力的应答（`UiRequest.storageCapabilitiesRequested`，specs/045 FR-001）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {

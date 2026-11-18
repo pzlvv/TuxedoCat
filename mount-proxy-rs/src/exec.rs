@@ -35,6 +35,7 @@ use crate::protocol::{Frame, Value};
 use crate::sys;
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 /// 一条在跑的工具进程。
@@ -300,11 +301,55 @@ struct Pipeline {
     stderr: Option<i32>,
 }
 
+/// 按**请求自带的** `env` 里的 `PATH` 查可执行文件（`execve(2)` 自己不查）。
+///
+/// 为什么需要：`execve` 把 `argv[0]` 当路径，没有 `execvp` 的 PATH 搜索。裸名
+/// （`git` / `rg` / `bash`）会直接 `ENOENT`，子进程以 126 退出且 **stderr 为空**——
+/// 调用方只看到「命令失败」而没有任何原因，`workViewChangesRequested` 就是这样报
+/// `git rev-parse 失败：`（冒号后为空）的。查表只能用请求带来的 `PATH`（FR-006：
+/// 代理不读自己的环境），`argv[0]` 含 `/` 时按调用方给的原样执行。
+///
+/// 解析必须在 `fork` 之前完成：fork 之后只允许 async-signal-safe 调用，而这里要
+/// `stat` 文件与分配字符串。
+fn resolve_executable(program: &str, env: &[String]) -> Result<String, String> {
+    if program.contains('/') {
+        return Ok(program.to_string());
+    }
+    let path_var = env
+        .iter()
+        .find_map(|entry| entry.strip_prefix("PATH="))
+        .ok_or_else(|| {
+            format!("无法执行 {program}：spawn 的 env 里没有 PATH（代理不读自己的环境）")
+        })?;
+    for dir in path_var.split(':') {
+        // 空分量按 POSIX 表示当前目录
+        let candidate = if dir.is_empty() {
+            std::path::PathBuf::from(program)
+        } else {
+            std::path::Path::new(dir).join(program)
+        };
+        let Ok(meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        // 可执行位：与 `access(X_OK)` 同一判据的可见部分（属主 / 组 / 其它任一可执行）
+        if meta.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        return Ok(candidate.to_string_lossy().to_string());
+    }
+    Err(format!(
+        "找不到可执行文件 {program}（PATH={path_var}）；工具进程未启动"
+    ))
+}
+
 /// `fork` + `execve`：子进程只持有自己的三条管道，其余 fd 一律 `CLOEXEC` 自动消失。
 ///
 /// 不用 `std::process::Command`：本 crate 零依赖且要求「只 `execve` 传入的 envp、
-/// 不读自己的环境、不跑 `$SHELL -lc`」（FR-007），`Command` 会自己合并环境并做
-/// PATH 查找，正好与这条要求冲突。`argv[0]` 由 Core 给绝对路径，这里不查 PATH。
+/// 不读自己的环境、不跑 `$SHELL -lc`」（FR-007），`Command` 会自己合并环境，正好与
+/// 这条要求冲突。PATH 查找由 [`resolve_executable`] 显式做（只在请求带的 `env` 里查）。
 fn spawn_child(
     request: &SpawnRequest,
     id: u64,
@@ -317,8 +362,10 @@ fn spawn_child(
 
     // 子进程要 exec 的路径与 cwd 必须在 fork 之前转成 CString：fork 之后只允许
     // async-signal-safe 调用，`CString::new` 会分配内存。
-    let argv: Vec<CString> = request
-        .argv
+    let program = resolve_executable(&request.argv[0], &request.env)?;
+    let mut request_argv = request.argv.clone();
+    request_argv[0] = program;
+    let argv: Vec<CString> = request_argv
         .iter()
         .map(|item| CString::new(item.as_str()).map_err(|_| "argv 含 NUL".to_string()))
         .collect::<Result<_, _>>()?;
@@ -622,5 +669,42 @@ mod tests {
         assert_eq!(request.id, 9);
         assert_eq!(request.stdin, Some(b"hi".to_vec()));
         assert!(request.env.is_empty());
+    }
+
+    /// 裸名要按请求带来的 PATH 解析成绝对路径（`execve(2)` 自己不查 PATH）。
+    ///
+    /// 不解析时裸名工具一律以 126 退出且 stderr 为空——`workViewChangesRequested`
+    /// 的 `git rev-parse 失败：`（冒号后为空）就是这个形态。
+    #[test]
+    fn resolves_bare_program_through_request_path() {
+        let dir = std::env::temp_dir().join(format!("tc-proxy-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("probe-tool");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let env = vec![format!("PATH=/nonexistent:{}", dir.display())];
+        let resolved = resolve_executable("probe-tool", &env).expect("应能按 PATH 解析");
+        assert_eq!(resolved, program.to_string_lossy().to_string());
+
+        // 含 `/` 的原样执行：不查 PATH
+        assert_eq!(resolve_executable("/bin/sh", &env).unwrap(), "/bin/sh");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 找不到时报错并点名 PATH（不静默以 126 退出、也不读代理自己的环境）。
+    #[test]
+    fn reports_missing_program_with_request_path() {
+        let env = vec!["PATH=/nonexistent-tc-proxy".to_string()];
+        let error = resolve_executable("no-such-tool", &env).unwrap_err();
+        assert!(error.contains("no-such-tool"), "{error}");
+        assert!(error.contains("/nonexistent-tc-proxy"), "{error}");
+
+        // 请求不带 PATH：代理不读自己的环境，因此也不能"猜"一个
+        let empty: Vec<String> = Vec::new();
+        let error = resolve_executable("no-such-tool", &empty).unwrap_err();
+        assert!(error.contains("PATH"), "{error}");
     }
 }

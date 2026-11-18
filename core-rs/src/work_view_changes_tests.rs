@@ -8,6 +8,24 @@
 
 use super::{count_lines, parse_numstat_z, parse_paths_z, ChangeScope};
 
+/// 取数路径的越界校验（specs/046 FR-002）：平台无关、无副作用，因此请求分支能在
+/// **建立视图之前**先拒掉非法请求——非法路径不该触发拉起代理。
+#[test]
+fn relative_path_check_rejects_escapes() {
+    for bad in ["..", "../etc", "/etc", "a/../../b", "dir\\file"] {
+        assert!(
+            crate::work_view::check_view_relative(bad).is_err(),
+            "越界 / 反斜杠路径 {bad} 必须被拒绝"
+        );
+    }
+    for good in ["", ".", "src", "src/app/main.ts", "src//app"] {
+        assert!(
+            crate::work_view::check_view_relative(good).is_ok(),
+            "合法相对路径 {good} 不该被拒绝"
+        );
+    }
+}
+
 /// 普通条目：`<add>\t<del>\t<path>\0`
 #[test]
 fn parses_plain_numstat_entries() {

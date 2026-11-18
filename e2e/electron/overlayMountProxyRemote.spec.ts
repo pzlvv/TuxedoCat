@@ -569,6 +569,122 @@ test('FR-007 连续工具调用不因工具线程收尾而丢代理', async () =
   expect(results[2]).toContain('int main');
 });
 
+/**
+ * 侧栏文件资源管理器在 Overlay 对话下的取数（`specs/046` FR-002 / FR-003 / FR-004）。
+ *
+ * 三件事只有整应用 + 真实远端 Core 能验：
+ *
+ * 1. **视图未建立时列目录要按需拉起视图**，而不是回一条「没有已挂载的视图」错误行。
+ *    Overlay 对话是惰性建立的（`docs/core/conversation-work-view.md` 第 6 节），
+ *    用户完全可能一进对话就展开资源管理器——那里必须看到叠加视图的内容。
+ * 2. **树的内容是视图而不是磁盘**：对话内新建的文件要出现，磁盘上同目录没有它。
+ * 3. **变更视图能在视图里跑 git**（specs/047）：代理代执行时 `argv[0]` 是裸名，
+ *    `execve(2)` 不查 PATH，因此它必须按请求带来的 `PATH` 自己解析。
+ */
+test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变更清单都取视图内容', async () => {
+  await ensureProxyInstalled();
+
+  // 磁盘基线：一个 git 仓库，含一个子目录与一个文件（下层，视图可见但不能改）
+  const readme = `${remoteWs}/readme.md`;
+  const subDir = `${remoteWs}/src`;
+  const overlayOnly = `${remoteWs}/overlay-explorer-only.txt`;
+  await sshExec(`mkdir -p ${shQuote(subDir)} && printf 'disk\\n' > ${shQuote(readme)}`);
+  await sshExec(
+    `cd ${shQuote(remoteWs)} && git init -q . && git add -A `
+    + `&& git -c user.email=a@b -c user.name=c commit -qm init`,
+  );
+  expect((await sshExec(`test -e ${shQuote(overlayOnly)} && echo yes || echo no`)).stdout.trim()).toBe('no');
+
+  const chatPage = await launchWithRemoteWorkspace();
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  // 纯文本一轮：会话落盘（storage: isolated），但**不调用任何工具**——视图因此尚未建立
+  mockLlm!.setHandler(() => ({ kind: 'text', text: 'EXPLORER-BASELINE-DONE' }));
+  await chatPage.fill('textarea.input-textarea', '先不调工具');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('EXPLORER-BASELINE-DONE').first()).toBeVisible({ timeout: 120_000 });
+
+  const sidebar = await app!.sidebarPage();
+  await expect(sidebar.locator('#filesSection')).toBeVisible({ timeout: 60_000 });
+  await expect(sidebar.locator('#filesTitle')).toHaveText('文件资源管理器 (overlay)', { timeout: 30_000 });
+
+  // 展开文件分区（幂等：分区标题是折叠开关，重复点击会把分区收起来）
+  const expandFiles = async (): Promise<void> => {
+    await expect(sidebar.locator('#filesHeader')).toBeVisible({ timeout: 30_000 });
+    const expanded = await sidebar.locator('#filesSection')
+      .evaluate((el) => el.classList.contains('expanded'));
+    if (!expanded) await sidebar.locator('#filesHeader').click();
+    await expect(sidebar.locator('#filesSection')).toHaveClass(/expanded/, { timeout: 30_000 });
+  };
+  await expandFiles();
+
+  const rows = async (): Promise<string[]> => sidebar.evaluate(() =>
+    Array.from(document.querySelectorAll('#filesTree .file-row[data-path]'))
+      .map((el) => el.getAttribute('data-path') ?? ''));
+  const hintRows = async (): Promise<string[]> => sidebar.evaluate(() =>
+    Array.from(document.querySelectorAll('#filesTree .file-row.file-hint'))
+      .map((el) => (el.textContent ?? '').trim()));
+
+  // 判据 1：视图尚未建立时也要列出叠加视图的内容（不能是错误行）
+  await expect
+    .poll(async () => (await rows()).sort(), { timeout: 60_000 })
+    .toContain('readme.md');
+  expect(await hintRows(), `资源管理器不得显示错误行：${(await hintRows()).join(' | ')}`).toHaveLength(0);
+  expect((await rows()).sort(), '磁盘基线里的子目录同样要列出').toContain('src');
+
+  // 判据 2：对话内新建的文件（只落私有上层）出现，磁盘上没有它
+  mockLlm!.setHandler((req) => {
+    if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'EXPLORER-WRITE-DONE' };
+    }
+    return {
+      kind: 'tool',
+      name: 'Write',
+      args: { file_path: overlayOnly, content: 'overlay explorer\n' },
+    };
+  });
+  await chatPage.fill('textarea.input-textarea', '写一个只在视图里的文件');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('EXPLORER-WRITE-DONE').first()).toBeVisible({ timeout: 120_000 });
+
+  await expect
+    .poll(async () => (await rows()).sort(), { timeout: 60_000 })
+    .toContain('overlay-explorer-only.txt');
+  expect(
+    (await sshExec(`test -e ${shQuote(overlayOnly)} && echo yes || echo no`)).stdout.trim(),
+    '该文件只属于对话的叠加视图，真实磁盘上不得存在',
+  ).toBe('no');
+
+  // 判据 3：变更视图在视图里跑 git（代理按请求的 PATH 解析裸名 git）
+  //
+  // IPC 回包是**已组装的渲染行**（目录在前、层级展开、行数徽标），不是 Core 的
+  // `entries`：侧栏对磁盘与视图两条来源共用 `buildDocRows` 同一份组装
+  // （`electron/main.ts` 的 `sidebar:files-doc-list-overlay`）。
+  const changes = await sidebar.evaluate(async () => {
+    const api = (window as unknown as {
+      sidebarAPI?: { filesDocListOverlay: (sid: string, scope: 'doc' | 'all') => Promise<unknown> };
+    }).sidebarAPI;
+    const sid = document.querySelector('#list .item.active')?.getAttribute('data-session-id') ?? null;
+    if (!sid || !api) return null;
+    return await api.filesDocListOverlay(sid, 'all');
+  });
+  expect(changes, '应能取到 overlay 的变更清单').not.toBeNull();
+  const changesResult = changes as {
+    ok: boolean;
+    rows?: Array<{ rel: string; plus: number | null; minus: number | null }>;
+    error?: string;
+  };
+  expect(changesResult.ok, `变更清单必须成功：${changesResult.error ?? ''}`).toBe(true);
+  const changedRows = changesResult.rows ?? [];
+  expect(
+    changedRows.map((row) => row.rel),
+    '对话内新建的文件进变更清单',
+  ).toContain('overlay-explorer-only.txt');
+  const createdRow = changedRows.find((row) => row.rel === 'overlay-explorer-only.txt');
+  expect(createdRow?.plus, '新增文件按全文计行（内容一行）').toBe(1);
+});
+
 test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo 无泄漏', async () => {
   // 前置：代理必须就位；没装就先装（单独 `-g` 跑这条时不会因此静默跳过）
   await ensureProxyInstalled();
