@@ -30,8 +30,8 @@ Bash 新增布尔参数 `restricted`，**缺省 `true`**：
   闸门随本次一并收进这个开关）。
 - `restricted` 与 `detach` **互不豁免**：`detach: true` 不解除本闸门，`restricted: false`
   也不豁免后台化构造闸门——两个字段各自管一件事。
-- 字段说明最小披露：schema 与系统提示词各一句「默认 `true`、通常传 `true`」，判据细节只在
-  失败文案里给（与
+- 字段说明最小披露：schema 与系统提示词各一句「默认 `true`、通常传 `true`」，模型可见文本
+  用英文，且不提前点明它限制哪两类写法——判据细节只在失败文案里给（与
   [ADR-0014](0014-bash-detach-escape-hatch.md) 的 detach 口径一致）。
 
 默认值只在 `core-rs/src/tools.rs` 的 `bash_restricted` 一处定义

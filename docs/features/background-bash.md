@@ -45,7 +45,7 @@ last_reviewed: 2026-11-16
   - **AC-17**（FR-005）：GIVEN `restricted: true` WHEN 命令去掉所有 `cd` 段后只剩 `sed`（`cd src && sed -n 1p a.ts`、`sed -i 's/a/b/' f`）THEN 工具结果失败，文案引导用 `Read` 工具
   - **AC-18**（FR-005）：GIVEN `restricted: true` WHEN 命令是 `sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、`git diff | sed -n '1,20p'` THEN 不被本条拦下，按既有权限路径处理
   - **AC-19**（FR-005）：GIVEN `restricted: false` WHEN 命令含 `sleep` 或只有 `cd` + `sed` THEN 两条限制都不生效，按既有权限判定与前台超时路径执行
-  - **AC-20**（FR-006）：GIVEN 工具的 LLM 可见定义与系统提示词 WHEN 读 Bash 段 THEN `restricted` 字段类型是 `boolean`，说明里写明默认 `true`、通常传 `true`
+  - **AC-20**（FR-006）：GIVEN 工具的 LLM 可见定义与系统提示词 WHEN 读 Bash 段 THEN `restricted` 字段类型是 `boolean`、显式带 `default: true`，说明是英文且只声明「默认 `true`、通常传 `true`」，不复述判据、不提前点明它限制哪两类写法
   - **AC-21**（FR-007）：GIVEN 命令被闸门拦下（sleep 或 sed 任一分支） WHEN 读失败文案 THEN 末尾是同一句 `- If you are certain this is a false positive, re-run the same command with restricted: false.`
   - **AC-22**（FR-007）：GIVEN 模型判断是误拦截 WHEN 把原命令带上 `restricted: false` 重跑 THEN 闸门不再拦（回到既有权限路径）
 
@@ -210,14 +210,15 @@ LLM 面失败文案（逐字锁定，不插值）：
 
 放行范围：`restricted: false` 的任意命令、引号内 / 注释里的 `sleep` / `sed` 字样、
 heredoc 正文、首词不是 `sleep` / `cd` / `sed` 的写法（绝对路径、`timeout` 包裹、`nosleep`）。
-工具 schema 的 `restricted` 说明与系统提示词 Bash 段各有一句「默认 `true`、通常传 `true`」，
-不展开用法与案例。
+说明面的最小披露口径（schema 与系统提示词各一句、不展开用法与案例）见
+[FR-006](#fr-006restricted-的说明面)。
 
 ### FR-006：`restricted` 的说明面
 
 `restricted` 的 schema 成员显式带 `default: true`（与 `bash_restricted` 的读取口径同值），
-说明文字一句「默认 `true`、通常传 `true`」；系统提示词只有一句
-`The restricted parameter is normally true.`——判据细节与逃生口都在失败文案里给，提示词与
+说明文字是英文的一句「默认 `true`、通常传 `true`」——只声明默认值与常规取值，不复述判据、
+不提前点明它限制哪两类写法；系统提示词只有一句
+`The restricted parameter is normally true.`。判据细节与逃生口都在失败文案里给，提示词与
 schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属于模型可见契约，
 `schema_parity_tests` 逐字对照 `core-rs/fixtures/toolSchema.json`。
 

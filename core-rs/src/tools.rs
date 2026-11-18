@@ -512,9 +512,10 @@ const BASH_DETACH_GATE_MESSAGE: &str = "Bash: command uses `{}`.\n\
 - Need it to keep running after this session ends — e.g. installing/starting a system-level service or daemon: re-run the same command with detach: true.";
 
 /// Bash 工具 `restricted` 参数的说明文本。防护性最小口径：只声明默认值与常规取值——
-/// 详细判据只在闸门失败文案里给（`docs/features/background-bash.md` 第 2 节 FR-006
-/// 的最小披露要求）。
-const BASH_RESTRICTED_FIELD: &str = "默认 true。通常传 true：restricted 会拒绝等待类与替读类的命令写法，失败文案会说明出路；只有确实需要这类写法时才显式传 false。";
+/// 不复述判据、不提前点用途，详细判据只在闸门失败文案里给
+/// （`docs/features/background-bash.md` 第 2 节 FR-006 的最小披露要求）。
+/// 模型可见文本用英文。
+const BASH_RESTRICTED_FIELD: &str = "Defaults to true; normally pass true.";
 
 /// `restricted` 闸门的 sleep 分支失败文案
 /// （`docs/features/background-bash.md` 第 2 节 FR-002，逐字锁定、不插值）。
