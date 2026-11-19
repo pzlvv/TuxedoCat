@@ -108,13 +108,12 @@ export function matchSshEntries(
 /**
  * 历史候选：下发给「打开远程工作区」窗口的条目，**不含口令**。
  *
- * 候选列表只用于展示（host / 端口 / 用户）与筛选，不需要口令；选定某条候选时，
- * 窗口按去重键经 `sshHistoryEntry` 单独取整条（含口令）回填表单——口令只在
- * 用户显式选定的那一次跨进程，不随整表常驻页面内存。
+ * 候选列表只用于展示（host / 端口 / 用户）与筛选；选定候选只回填这三项。口令不下发
+ * 页面：它由主进程在认证链里作为「已保存的口令」取用（specs/052 FR-006）。
  */
 export type SshHistoryCandidate = Omit<SshHistoryEntry, 'password'>;
 
-/** 剥掉口令：历史整表下发渲染进程前调用（口令按选定项单独取） */
+/** 剥掉口令：历史整表下发渲染进程前调用（口令只留在主进程内） */
 export function toSshHistoryCandidate(entry: SshHistoryEntry): SshHistoryCandidate {
   return { host: entry.host, port: entry.port, user: entry.user };
 }

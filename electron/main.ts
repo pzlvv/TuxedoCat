@@ -49,6 +49,7 @@ import {
   type SshHistoryEntry,
 } from '../src/host/sshHistory.js';
 import { DirectoryOperationError } from '../src/host/standalone/CoreDaemon.js';
+import type { DirectoryListing } from '../src/host/standalone/daemonProtocol.js';
 import {
   localWorkspaceRef,
   remoteWorkspaceRef,
@@ -59,6 +60,7 @@ import {
   workspaceRefDisplayPath,
   workspaceRefKey,
   workspaceRefKeyMatches,
+  type WorkspaceAuth,
   type WorkspaceEndpoint,
   type WorkspaceRef,
 } from '../src/host/workspaceRef.js';
@@ -67,7 +69,7 @@ import {
   resolveMachineName,
   resolveWorkspaceByIdentity,
 } from '../src/host/workspaceIdentity.js';
-import { hostname } from 'os';
+import { homedir, hostname } from 'os';
 import { recordKnownHostFingerprint, SshHostKeyError } from '../src/host/standalone/sshClient.js';
 import { WorkspaceAvailabilityState } from './workspaceAvailability.js';
 import {
@@ -148,6 +150,7 @@ import {
   type OpenSource,
 } from './fileOpen.js';
 import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
+import { runSshAuthChain, endpointWithAuth, authFromSource } from '../src/host/sshConnectChain.js';
 import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
 import {
   readWorkspaceState,
@@ -3545,7 +3548,7 @@ function describeError(error: unknown): string {
  */
 function parseRemoteConnectRequest(
   raw: unknown,
-): { ok: true; value: WorkspaceEndpoint } | { ok: false; error: string } {
+): { ok: true; value: WorkspaceEndpoint; password: string | null } | { ok: false; error: string } {
   const parsed = buildRemoteEndpoint(raw);
   if (parsed.ok) return parsed;
   const messages: Record<RemoteConnectError, string> = {
@@ -3553,7 +3556,6 @@ function parseRemoteConnectRequest(
     host: tt('请填写 SSH 主机地址', 'SSH host is required'),
     port: tt('SSH 端口必须是 1-65535 之间的数字', 'SSH port must be a number between 1 and 65535'),
     user: tt('请填写 SSH 登录用户', 'SSH login user is required'),
-    password: tt('请填写 SSH 登录密码', 'SSH password is required'),
   };
   return { ok: false, error: messages[parsed.error] };
 }
@@ -3613,19 +3615,52 @@ function openRemoteWorkspaceDialog(): void {
     if (!win.isDestroyed()) win.close();
   };
 
+  /**
+   * 建链一次（含远端引导）：成功回目录列举，失败把异常抛给认证链分类
+   * （`docs/core/core-remote.md` 第 2.8 节，specs/052 FR-002 / FR-009）。
+   */
+  const tryConnect = async (
+    base: WorkspaceEndpoint,
+    auth: WorkspaceAuth,
+  ): Promise<DirectoryListing> => listRemoteDirectories(endpointWithAuth(base, auth), null);
+
   ipcMain.handle('remote-workspace:connect', async (event, raw: unknown) => {
-    if (!isSender(event.sender)) return { ok: false, error: 'invalid sender' };
+    if (!isSender(event.sender)) return { ok: false, reason: 'error', error: 'invalid sender' };
     const request = parseRemoteConnectRequest(raw);
-    if (!request.ok) return { ok: false, error: request.error };
-    const endpoint = request.value;
+    if (!request.ok) return { ok: false, reason: 'error', error: request.error };
+    const base = request.value;
     try {
-      // SSH 接入时这一步会完成「发现 / 部署 / 启动」，可能要几秒
-      const listing = await listRemoteDirectories(endpoint, null);
+      let auth: WorkspaceAuth;
+      let listing: DirectoryListing;
+      if (request.password !== null) {
+        // 口令浮层的提交：用户已经把口令给了，不再退回私钥 / agent 重试
+        // （既无意义，又会让服务端把失败计数加到公钥上）
+        auth = { kind: 'sshPassword', password: request.password };
+        listing = await tryConnect(base, auth);
+      } else {
+        const outcome = await runSshAuthChain({
+          // 默认私钥目录与环境都取宿主进程自身的：这是「本机有什么身份」的事实来源
+          sshDir: path.join(homedir(), '.ssh'),
+          env: { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK },
+          savedPassword: savedPasswordFor(base),
+          attempt: (source) => tryConnect(base, authFromSource(source)),
+          log: (...args: unknown[]) => fileLogger.info('remote-workspace', args.map((arg) => String(arg)).join(' ')),
+        });
+        if (!outcome.ok) {
+          if (outcome.reason === 'needPassword') {
+            // 还不动窗口尺寸：口令浮层要盖在同一个表单上
+            return { ok: false, reason: 'needPassword', error: outcome.cause };
+          }
+          return { ok: false, reason: 'error', error: outcome.cause };
+        }
+        auth = outcome.auth;
+        listing = outcome.result;
+      }
+
+      const endpoint = endpointWithAuth(base, auth);
       connected = endpoint;
-      // SSH 接入成功即记入连接历史：以「连上」为准，不是「选完目录」——
-      // 用户可能停在目录选择这一步，下次仍希望一键回填表单
-      const auth = endpoint.auth;
-      if (auth !== null && auth.kind === 'sshPassword') {
+      // 只有口令认证成功才写口令（私钥 / agent 成功不凭空造出带口令的历史项）
+      if (auth.kind === 'sshPassword') {
         rememberSshConnection({
           host: endpoint.host,
           port: endpoint.port ?? 22,
@@ -3645,7 +3680,7 @@ function openRemoteWorkspaceDialog(): void {
         endpoint: { host: endpoint.host, port: endpoint.port ?? 0, user: endpoint.user },
       };
     } catch (error) {
-      return { ok: false, error: describeError(error) };
+      return { ok: false, reason: 'error', error: describeError(error) };
     }
   });
 
@@ -3723,17 +3758,12 @@ function openRemoteWorkspaceDialog(): void {
     return { ok: true };
   });
 
-  // SSH 连接历史：候选只带 host / 端口 / 用户（展示与筛选不需要口令）；
-  // 口令按选定项经 `remote-workspace:ssh-history-entry` 单独取——不随整表常驻页面
+  // SSH 连接历史：候选只带 host / 端口 / 用户（展示与筛选不需要口令）。
+  // 保存的口令由主进程在认证链里取用（`savedPasswordFor`），页面任何时刻都不持有它
+  // （specs/052 FR-006）。
   ipcMain.handle('remote-workspace:ssh-history', (event) => {
     if (!isSender(event.sender)) return [];
     return readSshHistory().map(toSshHistoryCandidate);
-  });
-
-  ipcMain.handle('remote-workspace:ssh-history-entry', (event, key: unknown) => {
-    if (!isSender(event.sender)) return null;
-    if (typeof key !== 'string') return null;
-    return readSshHistory().find((entry) => sshHistoryKey(entry) === key) ?? null;
   });
 
   ipcMain.handle('remote-workspace:ssh-history-remove', (event, key: unknown) => {
@@ -3756,7 +3786,6 @@ function openRemoteWorkspaceDialog(): void {
     ipcMain.removeHandler('remote-workspace:delete');
     ipcMain.removeHandler('remote-workspace:open');
     ipcMain.removeHandler('remote-workspace:ssh-history');
-    ipcMain.removeHandler('remote-workspace:ssh-history-entry');
     ipcMain.removeHandler('remote-workspace:ssh-history-remove');
     ipcMain.removeListener('remote-workspace:cancel', onCancel);
     if (remoteWorkspaceWindow === win) remoteWorkspaceWindow = undefined;
@@ -4721,6 +4750,21 @@ function rememberSshConnection(entry: SshHistoryEntry): void {
     ...readWorkspaceState(),
     recentSshConnections: rememberSshEntry(readSshHistory(), entry),
   });
+}
+
+/**
+ * 该目标在连接历史里的口令（认证链的「已保存口令」来源，specs/052 FR-002）。
+ *
+ * 按 `sshHistoryKey` 的去重键取最新一条；没有就返回 `null`——「没有保存的口令」是认证链
+ * 的一个正常状态，不是错误。口令仍只在主进程内使用，不下发页面（FR-006）。
+ */
+function savedPasswordFor(endpoint: WorkspaceEndpoint): string | null {
+  const key = sshHistoryKey({
+    host: endpoint.host,
+    port: endpoint.port ?? 22,
+    user: endpoint.user ?? '',
+  });
+  return readSshHistory().find((entry) => sshHistoryKey(entry) === key)?.password ?? null;
 }
 
 /** 各模式的最小窗口尺寸（读取历史尺寸时用于过滤非法值） */

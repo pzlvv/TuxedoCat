@@ -14,13 +14,20 @@
 import { normalizeWorkspacePath, sameWorkspace } from './workspacePaths.js';
 
 /**
- * 远程凭证（`docs/core/core-remote.md` 第 2 节）。
+ * 远程凭证（`docs/core/core-remote.md` 第 2.8 节）。
  *
- * 只有 SSH 口令一种：SSH 完成机器级鉴权，daemon 的 token 由引导流程从远端状态文件
- * 取得、只在控制通道第一帧使用。`kind` 判别字段保留，便于后续新增凭证种类。
- * 凭证不进总线载荷、不下发 Core；宿主侧的落盘与恢复见 `workspaceState.ts`。
+ * SSH 完成机器级鉴权，daemon 的 token 由引导流程从远端状态文件取得、只在控制通道第一帧
+ * 使用。`kind` 判别字段区分两种形态：
+ * - `sshPassword`：口令本身，建链时直接用作 password 认证；
+ * - `sshKey`：私钥**身份**描述。`keyPath` 是本机私钥文件路径，`null` 表示走 ssh-agent。
+ *   形态里不含私钥正文、不含 passphrase——私钥只在建链那一刻从磁盘读（specs/052 FR-007）。
+ *
+ * 判等与身份键口径见 `src/host/sshTarget.ts`；落盘与恢复见 `workspaceState.ts`。
+ * 凭证不进总线载荷、不下发 Core。
  */
-export type WorkspaceAuth = { kind: 'sshPassword'; password: string };
+export type WorkspaceAuth =
+  | { kind: 'sshPassword'; password: string }
+  | { kind: 'sshKey'; keyPath: string | null };
 
 /** 远程 endpoint（本地为 null） */
 export interface WorkspaceEndpoint {

@@ -79,13 +79,13 @@ export function applyTerminalShortcuts(nextTab: string, prevTab: string): void {
  * 打开（或聚焦）该工作区的终端窗口。
  *
  * 入口已按 `canOpenRemoteTerminal` 把关；endpoint / 凭证缺失在这里直接抛错
- * （不过度 fallback，架构铁律 4.1）。
+ * （不过度 fallback，架构铁律 4.1）。凭证种类不限：口令与私钥身份都可用（specs/052 FR-007）。
  */
 export function openTerminalWindow(options: TerminalWindowOptions): void {
   const { ref } = options;
   const endpoint = ref.endpoint;
-  if (!endpoint || endpoint.auth === null || endpoint.auth.kind !== 'sshPassword') {
-    throw new Error(`terminal requires a remote workspace with sshPassword auth: ${refDisplayForLog(ref)}`);
+  if (!endpoint || endpoint.auth === null) {
+    throw new Error(`terminal requires a remote workspace with a credential: ${refDisplayForLog(ref)}`);
   }
   const key = workspaceRefKey(ref);
   const existing = windows.get(key);

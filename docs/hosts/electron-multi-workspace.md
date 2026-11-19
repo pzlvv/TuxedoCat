@@ -370,8 +370,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 - 入口是标签页右键菜单：远程（SSH）工作区的标签页显示「打开终端」，作用于右键的那张
   标签（不必是活动项）；本地工作区同位置为「打开命令行」（见 8.2 节），两者按端点互斥，
   一张标签只出现其一。
-- 「打开终端」仅当该工作区带可用凭证时可点（`canOpenRemoteTerminal`），无凭证置灰；
-  右键菜单每次弹出时构建、可用性即时判定，条目 `run` 内再判一次（防弹出与点击的时序差）。
+- 「打开终端」仅当该工作区带可用凭证时可点（`canOpenRemoteTerminal`：只看有没有凭证，口令与私钥身份都可用），无凭证置灰；右键菜单每次弹出时构建、可用性即时判定，条目 `run` 内再判一次（防弹出与点击的时序差）。
 - 同一入口有键盘路径：单一菜单条目「打开命令行 / 打开终端」（随活动工作区端点分叉
   文案与可用性，见第 7 节）与快捷键（默认 Ctrl+Alt+T，可改键）都作用于**活动工作区**，
   与右键菜单共用 `spawnTerminalAt` / `openRemoteTerminalFor` 同一套入口语义；无活动
@@ -423,8 +422,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
 ### 14.5 连接复用与鉴权
 
 - shell 通道开在与侧栏文件浏览器（含文档视图的 git 探测与记录读取，specs/030）同一
-  endpoint 连接池上（`sharedClientFor`，按
-  `sshTargetKey` 缓存）：同一条 SSH 连接多路复用，口令鉴权与主机密钥 TOFU 不重复发生。
+  endpoint 连接池上（`sharedClientFor`，按 `sshTargetKey` 缓存）：同一条 SSH 连接多路复用，
+  认证与主机密钥 TOFU 不重复发生。缓存键含凭证身份（`sshAuthIdentity`），口令、私钥文件、
+  agent 各算不同目标——换凭证即换连接。
 - 终端窗口打开期间对该连接登记一份租约（`retainRemoteFilesClient`），与工作区租约独立计数，全部归零才真正断开。
 - 终端是该 endpoint 首个使用者且主机密钥与 known-hosts 记录不一致时，走与远程接入同一套
   的告警确认（`confirmHostKeyChange`）；确认后 `recordKnownHostFingerprint` 重建信任并

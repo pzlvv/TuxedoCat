@@ -21,6 +21,8 @@ body {
 }
 
 body {
+  /* 口令浮层用 absolute inset:0 盖住整个窗口：body 必须是它的定位基准 */
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -376,4 +378,48 @@ button:disabled {
  */
 .hidden {
   display: none;
+}
+
+/* ---------- 口令浮层（specs/052 FR-004） ----------
+
+   只有认证链（私钥 → agent → 已保存的口令）全部走不通时才出现。遮罩盖住整个窗口
+   （含选目录视图，虽然那时不会出现），浮层期间接入表单由页面逻辑整体 disabled。 */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 45%);
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.dialog {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 50px rgb(0 0 0 / 50%);
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 浮层里的原因行允许换行：认证链的失败原文可能较长，截断会让用户看不懂为什么被问 */
+.dialog .hint {
+  word-break: break-word;
 }

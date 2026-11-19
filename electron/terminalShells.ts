@@ -256,10 +256,15 @@ export class TerminalSessionGroup {
   }
 }
 
-/** 标签页右键「打开终端」的可用性口径（docs/hosts/electron-multi-workspace.md 第 14.1 节）：该工作区为远程且带可用凭证 */
+/**
+ * 标签页右键「打开终端」的可用性口径（docs/hosts/electron-multi-workspace.md 第 14.1 节）：
+ * 该工作区为远程且带可用凭证。
+ *
+ * 只看「有没有凭证」，不区分凭据种类：口令与私钥身份都可建链（specs/052 FR-007）。
+ */
 export function canOpenRemoteTerminal(ref: WorkspaceRef | null | undefined): boolean {
   const endpoint = ref?.endpoint;
-  return endpoint != null && endpoint.auth != null && endpoint.auth.kind === 'sshPassword';
+  return endpoint != null && endpoint.auth != null;
 }
 
 export type TerminalFontSizePreference = 'medium' | 'large' | 'xlarge';

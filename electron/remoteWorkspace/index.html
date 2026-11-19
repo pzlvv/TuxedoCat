@@ -26,10 +26,6 @@
             <span class="field-label" id="sshUserLabel"></span>
             <input id="sshUser" class="text-input" type="text" spellcheck="false" autocomplete="off" />
           </label>
-          <label class="field" for="sshPassword">
-            <span class="field-label" id="sshPasswordLabel"></span>
-            <input id="sshPassword" class="text-input" type="password" autocomplete="off" />
-          </label>
         </div>
       </div>
 
@@ -67,6 +63,27 @@
         <button id="open" class="primary" type="button"></button>
       </div>
     </section>
+
+    <!--
+      口令浮层：只有认证链（私钥 → agent → 已保存的口令）全部走不通时才出现。
+      模态：浮层期间接入表单不可编辑；Esc / 取消回到表单并保留已填内容。
+    -->
+    <div class="overlay hidden" id="passwordOverlay">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
+        <h2 class="dialog-title" id="passwordTitle"></h2>
+        <p class="hint" id="passwordReason"></p>
+        <label class="field" for="sshPassword">
+          <span class="field-label" id="sshPasswordLabel"></span>
+          <input id="sshPassword" class="text-input" type="password" autocomplete="off" />
+        </label>
+        <p class="error" id="passwordError"></p>
+        <div class="actions">
+          <span class="spacer"></span>
+          <button id="cancelPassword" type="button"></button>
+          <button id="submitPassword" class="primary" type="button"></button>
+        </div>
+      </div>
+    </div>
 
     <!-- 目录行的右键菜单：重命名 / 删除 -->
     <div class="context-menu hidden" id="contextMenu">

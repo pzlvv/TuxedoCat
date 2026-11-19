@@ -79,14 +79,32 @@ export function parseSerializedEndpoint(value: unknown): WorkspaceEndpoint | nul
   return { host, port: port ?? null, user: user ?? null, auth: parsedAuth };
 }
 
-/** 校验落盘的凭证；认不出的 `kind` 一律丢弃（不做「有就用」的降级） */
+/**
+ * 校验落盘的凭证；认不出的 `kind` 一律丢弃（不做「有就用」的降级）。
+ *
+ * 两种形态（specs/052 FR-008）：
+ * - `sshPassword`：必须带非空口令；
+ * - `sshKey`：`keyPath` 必须**显式存在**——非空字符串是私钥文件路径，`null` 表示 ssh-agent；
+ *   缺字段不是「走 agent」，按整项丢弃处理（不猜）。
+ *
+ * 私钥正文与 passphrase 都不在落盘结构里（FR-007）。
+ */
 export function parseSerializedAuth(value: unknown): WorkspaceAuth | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const auth = value as { kind?: unknown; password?: unknown };
-  if (auth.kind !== 'sshPassword') return null;
-  return typeof auth.password === 'string' && auth.password.length > 0
-    ? { kind: 'sshPassword', password: auth.password }
-    : null;
+  const auth = value as { kind?: unknown; password?: unknown; keyPath?: unknown };
+  if (auth.kind === 'sshPassword') {
+    return typeof auth.password === 'string' && auth.password.length > 0
+      ? { kind: 'sshPassword', password: auth.password }
+      : null;
+  }
+  if (auth.kind === 'sshKey') {
+    if (!('keyPath' in auth)) return null;
+    if (auth.keyPath === null) return { kind: 'sshKey', keyPath: null };
+    return typeof auth.keyPath === 'string' && auth.keyPath.length > 0
+      ? { kind: 'sshKey', keyPath: auth.keyPath }
+      : null;
+  }
+  return null;
 }
 
 /** 旧版本状态文件里与工作目录有关的字段（新版本读的是 `openWorkspaces` / `activeWorkspaceKey`） */

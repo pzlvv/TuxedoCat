@@ -106,8 +106,10 @@ Connection 持有：
   去重键（`workspaceRefKey`）只取 `(scheme, endpoint)`，不进本地路径规范化
   （`path.resolve('')` 得到宿主进程的当前目录，会与真实工作区撞键）。
 - **Core 只见 `path`**：endpoint 与凭证不下发到 Core，也不进入配置快照。
-- `auth` 是判别联合，`kind` 唯一决定控制通道怎么建（[docs/core/core-remote.md 第 2 节](core-remote.md#2-远程服务start--kill)）：
-  只有 `{ kind: 'sshPassword' }`（`ssh`，口令只用于建 SSH 连接）。
+- `auth` 是判别联合，`kind` 唯一决定建链用哪种凭证
+  （[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）：
+  `{ kind: 'sshPassword', password }` 或 `{ kind: 'sshKey', keyPath }`（`keyPath` 为私钥文件
+  路径，`null` 表示 ssh-agent）。私钥正文与 passphrase 不进 `auth`、不落盘。
 - `ssh` 下 `host` / `port` 是 SSH 的地址与端口，daemon 的端口由引导流程从远端状态文件
   取得，不写进引用。
 - `workspaceEndpointKey` 取 `(scheme, user, host, port)`：同一 endpoint 的多个工作区共用
@@ -129,8 +131,10 @@ Connection 持有：
 
 ### 4.2 远程打开流程（Electron）
 
-1. 菜单 / 标题栏加号选「打开远程工作区」，填 SSH 表单（IP / 端口 / 用户 / 口令）；
-   Host 自动部署并启动远端 Core（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）；
+1. 菜单 / 标题栏加号选「打开远程工作区」，填 SSH 表单（IP / 端口 / 用户——**没有口令字段**）；
+   Host 按认证链选凭证并自动部署、启动远端 Core
+   （[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）：先试默认私钥与
+   ssh-agent，再试连接历史里保存的口令；都不成立时才弹出模态口令浮层问一次；
 2. Host 把输入收敛成 `endpoint`，**连接成功后立刻**列出远端主目录，弹出远端目录选择器
    （[docs/core/core-remote.md 第 2.6 节](core-remote.md#26-远端目录选择)）；
 3. 选定目录后按 `remoteWorkspaceRef` 加入打开集合：`(scheme, endpoint, path)`；
@@ -138,14 +142,20 @@ Connection 持有：
 
 - `scheme` 恒为 `ssh`（`src/host/workspaceRef.ts::remoteWorkspaceRef`）。
 - 「连接」这一步包含部署与启动，可能较慢；窗口在此期间显示进度提示。
+- **口令浮层**：接入结果只有三种——连上、需要口令、终止性失败。需要口令时表单字段整体
+  不可编辑、焦点在口令输入框；提交失败保持浮层并回显原因（不设次数上限、不显示剩余次数），
+  Esc / 取消回到表单且保留已填内容、不建链、不写历史。不可达 / 超时 / 主机密钥变更属于
+  终止性失败，直接在表单上报错，不弹浮层。
 - **SSH 连接历史**（`src/host/sshHistory.ts`）：SSH 接入**连上即**记入
   `recentSshConnections`（以「连上」为准，不是「选完目录」——用户可能停在目录选择
-  这一步，下次仍要一键回填）。host 输入框聚焦时弹出最多 6 条候选，文案
-  `<user>@<host>(:port)`（端口 22 不显示）；关键字对 `user@host` / `user@host:port` /
-  裸 `host` 匹配，**前缀匹配排在非前缀匹配之前**、同级按最近连接在前。候选列表**不含
-  口令**（展示与筛选只要 host / 端口 / 用户）；选定候选后按去重键单独取整条（含口令）
-  回填表单——口令只在用户显式选定的那一次跨进程，不随整表常驻页面；候选行右侧的
-  删除按钮清掉这条历史。
+  这一步，下次仍要一键回填）。**只有口令认证成功才写口令**；私钥 / agent 成功不写、也不
+  改动已有条目的口令字段，「换凭证即换目标」由连接目标键承担（见
+  [docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）。
+  host 输入框聚焦时弹出最多 6 条候选，文案 `<user>@<host>(:port)`（端口 22 不显示）；
+  关键字对 `user@host` / `user@host:port` / 裸 `host` 匹配，**前缀匹配排在非前缀匹配
+  之前**、同级按最近连接在前。候选列表与选定回填**都不含口令**（展示与筛选只要
+  host / 端口 / 用户）：保存的口令由主进程在认证链里取用，页面任何时刻都不持有它；
+  候选行右侧的删除按钮清掉这条历史。
 
 ---
 
@@ -240,12 +250,14 @@ Connection 持有：
 | `openWorkspaces` | 打开集合（按标签页顺序）：本地项是路径字符串，远程项是 `{ scheme, path, endpoint }` |
 | `activeWorkspaceKey` | 活动项的去重键（`workspaceRefKey`） |
 | `recentWorkspaces` | 最近打开的工作区（最多 20 个，最近的在最前），与 `openWorkspaces` 同格式 |
-| `recentSshConnections` | SSH 连接历史（最多 20 条，最近连接在前）：`{ host, port, user, password }`，同一 `user@host:port` 只留最新一条；口令明文，供「打开远程工作区」的表单回填与候选（第 4.2 节） |
+| `recentSshConnections` | SSH 连接历史（最多 20 条，最近连接在前）：`{ host, port, user, password }`，同一 `user@host:port` 只留最新一条；口令明文，只在认证链里作为「已保存的口令」取用，不随候选下发页面（第 4.2 节） |
 
-- **远程凭证明文落盘**：`endpoint.auth`（`sshPassword`）随引用一起写进
-  `workspace-state.json`，SSH 连接历史里的口令同一条规则。这是「重启后直接恢复并打开
-  已连接过的工作区」的前提；该文件属于宿主本地状态，不进 core、不进配置快照、不参与
-  会话数据。
+- **远程凭证落盘**：`endpoint.auth` 随引用一起写进 `workspace-state.json`——口令形态是
+  明文口令；私钥形态只有身份描述（`keyPath` 为文件路径或 `null` 表示 agent），**不含私钥
+  正文与 passphrase**。SSH 连接历史里的口令同为明文。这是「重启后直接恢复并打开已连接过
+  的工作区」的前提；该文件属于宿主本地状态，不进 core、不进配置快照、不参与会话数据。
+- **恢复时凭证不可用**（私钥被删、agent 里身份没了、主机不再接受该公钥）落进既有的
+  「远程不可连」形态：标签页保留、标记不可用、提供重新连接入口，不静默丢弃该项。
 - **启动恢复与可用性判定**：本地项在恢复时检查目录是否存在，不存在的**保留在打开集合里**
   并标记为不可用；远程项从启动起处于建链中，由宿主经 `probeRemoteEndpoint` 逐 endpoint
   探测落定（传输层建链，**3 秒建链超时，远端引导不计入**——opener 的 `prepare` 先完成
@@ -272,7 +284,8 @@ Connection 持有：
 ## 10. 不覆盖范围
 
 - 远程凭证的加密存储与钥匙串集成（当前是明文落盘，见第 9 节）；
-- SSH 的密钥 / agent 认证（当前只有口令）；
+- 加密私钥的 passphrase 交互与面板里手选私钥文件（默认私钥与 agent 之外的手选路径、
+  passphrase 记忆都未提供）；
 - 远程 daemon 的部署由 Host 自动完成（[docs/core/core-remote.md 第 2.8 节](core-remote.md#28-ssh-接入ssh-scheme)）；
 - 宿主进程内对断网的自动重连（远程工作区在重启后连不上时保留占位页与重连按钮，
   重试由用户动作触发）；
@@ -292,7 +305,8 @@ Connection 持有：
 8. 会话按 `sessionId` 路由到正确 Connection；查不到归属时报错。
 9. 同一 endpoint 的多个工作区共用一个 daemon；不同 endpoint 各自独立。
 10. 远程连接失败时报错，不建立 Connection。
-11. 关闭并重启宿主后，打开集合里的本地与远程项都被恢复；远程项按落盘凭证重新接入。
+11. 关闭并重启宿主后，打开集合里的本地与远程项都被恢复；远程项按落盘凭证重新接入——
+    私钥形态不需要用户重新输入任何东西，身份不再可用时落进「远程不可连」形态。
 12. 最近列表同时包含本地与远程项；远程项按 id 打开（同一路径在不同机器上是两项）。
 13. 状态文件里形状不合法的项被丢弃，不影响其余项的恢复。
 

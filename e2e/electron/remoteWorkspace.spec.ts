@@ -11,7 +11,8 @@ import type { MockLlm } from '../helpers/mockLlmServer';
  * - 接入方式只有 SSH 表单，打开不聚焦任何输入框，窗口不建菜单栏（Alt 不呼出菜单）；
  * - SSH 连接历史候选：host 聚焦弹出（最多 6 条）、文案 `<user>@<host>(:port)`
  *   （端口 22 不显示）、关键字前缀匹配排在非前缀匹配之前（同级按时间）、
- *   选定候选回填整表单（含口令）、候选行右侧删除按钮清历史并落盘。
+ *   选定候选只回填 host / 端口 / 用户、候选行右侧删除按钮清历史并落盘；
+ * - 表单里没有口令输入（specs/052 FR-001）：口令只在认证链走不通时的浮层里问。
  */
 
 let mockLlm: MockLlm;
@@ -87,6 +88,9 @@ test('接入方式只有 SSH 表单且打开不聚焦输入框，无历史时不
   await expect(dialog.locator('#paneConnectionString')).toHaveCount(0);
   // 打开不抢输入框焦点：activeElement 停在 body（不是任何一个输入框）
   await expect(dialog.locator('#paneSsh')).toBeVisible();
+  // 首屏没有口令输入：口令只属于「认证链走不通」时才出现的浮层（specs/052 FR-001 / AC-1）
+  await expect(dialog.locator('#connectView input[type="password"]')).toHaveCount(0);
+  await expect(dialog.locator('#passwordOverlay')).toBeHidden();
   await expect
     .poll(() => dialog.evaluate(() => document.activeElement?.tagName ?? ''))
     .not.toBe('INPUT');
@@ -165,7 +169,7 @@ test('关键字筛选：前缀匹配排在更近的非前缀匹配之前，无�
   await expect(dialog.locator('#sshSuggestions')).toBeHidden();
 });
 
-test('选定候选回填整表单（host / 端口 / 用户 / 口令）并收起候选', async () => {
+test('选定候选只回填 host / 端口 / 用户（口令不随候选下发）并收起候选', async () => {
   app = await launchApp({
     repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
     mockLlm,
@@ -179,7 +183,8 @@ test('选定候选回填整表单（host / 端口 / 用户 / 口令）并收起�
   await expect(dialog.locator('#sshHost')).toHaveValue('build-1');
   await expect(dialog.locator('#sshPort')).toHaveValue('2222');
   await expect(dialog.locator('#sshUser')).toHaveValue('dev');
-  await expect(dialog.locator('#sshPassword')).toHaveValue('pw-dev');
+  // 口令不进表单：表单里没有密码输入，候选也不再回填它（specs/052 FR-001 / FR-006）
+  await expect(dialog.locator('#sshPassword')).toBeHidden();
   await expect(dialog.locator('#sshSuggestions')).toBeHidden();
 });
 

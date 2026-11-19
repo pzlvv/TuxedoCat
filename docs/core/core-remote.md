@@ -17,7 +17,7 @@ last_reviewed: 2026-10-17
 2. **常驻后台 daemon**：`start` 以 `start-daemon` 拉起一个脱离终端与进程组的后台进程，诊断按指纹追加到配置目录的 `logs/`（第 2.1 节）。
 3. **按构建指纹落槽位**：状态文件、`start` 互斥锁与诊断日志都按指纹区分，多版本 Core 在同一台机器上各占一个槽位、各跑一个 daemon，互不踩踏（第 2.3 节）。
 4. **状态文件是唯一端口来源**：daemon 恒绑 `127.0.0.1`、端口交给内核分配，实际端口只有 daemon 自己写进状态文件（第 2.3 节）。
-5. **SSH 是唯一接入方式**：控制通道经 SSH 转发接入，daemon 端口不出目标机器，用户只填 SSH 连接信息（第 2.4 节 / 第 2.8 节）。
+5. **SSH 是唯一接入方式**：控制通道经 SSH 转发接入，daemon 端口不出目标机器，用户只填主机 / 端口 / 登录用户；凭证按认证链自动选取，口令只在私钥与 agent 都用不了时按需询问（第 2.4 节 / 第 2.8 节）。
 6. **按需部署**：远端槽位没有可执行文件时上传本机携带的对应平台产物；指纹槽位存在即视为同版本，不做产物哈希比对（第 2.8 节）。
 7. **远端目录选择**：`listDirectories` / `createDirectory` / `renameDirectory` / `deleteDirectory` 四个控制通道帧支撑远端目录选择器（第 2.6 节）。
 8. **本地同机不走 daemon**：本地工作区由 Host 直接用 `stdio` 起一个 Core 进程，daemon 只服务远程 endpoint（第 2.7 节）。
@@ -209,10 +209,19 @@ last_reviewed: 2026-10-17
 
 建链（`src/host/standalone/sshTransport.ts`）：
 
-1. 按 SSH 的 host / port / user / 口令建立连接（口令鉴权；主机密钥首次记录、之后不一致
-   即报错，指纹存 `~/<configDir>/known-hosts.json`。指纹变更时宿主弹告警展示新旧指纹，
-   用户确认后经 `recordKnownHostFingerprint` 把新指纹写回再重连——
-   模块本身不提供「跳过校验」的连接方式）；
+1. 按 SSH 的 host / port / user 与**认证链**建立的凭证建连接。认证链的顺序固定为
+   「默认私钥 → ssh-agent → 已保存的口令 → 询问用户」（`src/host/sshAuth.ts` 的
+   `sshAuthChain` 是这条顺序的唯一一处定义）：
+   - 默认私钥按 `id_ed25519` / `id_ecdsa` / `id_rsa` / `id_dsa` 的顺序逐条尝试；
+   - `SSH_AUTH_SOCK` 可用时尝试 agent；
+   - 连接历史里该 `user@host:port` 的口令排在私钥之后；
+   - 以上都「认证不成立」时，宿主弹口令浮层问一次。
+   `classifySshFailure` 把失败分成两类：`auth`（认证不成立，推进到下一个来源）与
+   `fatal`（不可达 / 超时 / 主机密钥不一致，直接报错、不弹浮层）。加密或损坏的私钥按
+   「该来源不可用」跳过，不询问 passphrase。
+   主机密钥首次记录、之后不一致即报错，指纹存 `~/<configDir>/known-hosts.json`。指纹变更
+   时宿主弹告警展示新旧指纹，用户确认后经 `recordKnownHostFingerprint` 把新指纹写回再重连
+   ——模块本身不提供「跳过校验」的连接方式；
 2. 引导远端 daemon（`sshDaemonBootstrap.ts`，见下）；
 3. 在远端开一条 `direct-tcpip` 转发通道到该 daemon（等价于 `ssh -W`），它就是要用的
    控制通道；控制帧与 [docs/core/standalone-core.md 第 5.2 节](standalone-core.md#52-帧类型)完全一致。
@@ -262,3 +271,8 @@ last_reviewed: 2026-10-17
   再说」。
 - SSH 连接的生命周期就是控制通道的生命周期：SSH 断开等于控制通道断开，该连接上的
   全部 Core 一并关闭（其余连接不受影响，见第 2.5 节）。
+- 凭证形态是判别联合（`WorkspaceAuth`）：`sshPassword`（口令）与 `sshKey`（私钥身份——
+  `keyPath` 指向本机私钥文件，`null` 表示 ssh-agent）。私钥身份**不含私钥正文与
+  passphrase**：两者都不落盘、不进跨进程载荷，私钥只在建链那一刻从磁盘读。
+- 连接目标的身份键包含凭证身份：换口令、换私钥文件、从私钥切到 agent 都视为不同目标，
+  各自建链、不互相复用；同一凭证同一目标仍复用同一条连接。

@@ -118,3 +118,10 @@
   纯函数与它逐字段一致），清掉失去对侧的 `divergences` 条目。验收判据：`rg -n "Embedded" core-rs/fixtures/
   core-rs/src/` 只剩真正描述历史的注释；`cargo test --manifest-path core-rs/Cargo.toml` 全绿（清理后
   `schema_parity_tests` 的豁免集合收缩，`Edit.replace_all` 的类型 / 必填比对转入常规断言且仍然通过）。
+
+- **加密私钥的 passphrase 交互与手选私钥**（[specs/052](specs/052-ssh-key-first-connect/spec.md) 非目标）：
+  远程接入的认证链当前把带 passphrase 的私钥当作不可用直接跳过，也不提供手选私钥文件
+  的入口。方向：认证链在「所有来源都不可用」时把「输入 passphrase 解一条加密私钥」与
+  「口令浮层」并列成选项；面板增加可选私钥路径，指定时优先于默认私钥顺序。验收判据：
+  passphrase 只用于解密私钥、不进 argv / 环境变量 / 日志，解密失败回到来源选择；
+  指定私钥路径后认证链以它为第一来源；`sshIdentity` 单测覆盖两种来源的优先级。

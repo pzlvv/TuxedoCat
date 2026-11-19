@@ -1,5 +1,5 @@
 /**
- * Electron preload - 「打开远程工作区」窗口专用（`docs/core/core-remote.md` 第 2 节）。
+ * Electron preload - 「打开远程工作区」窗口专用（`docs/core/core-remote.md` 第 2.8 节）。
  *
  * 暴露 remoteWorkspaceAPI：连远端 Core、列 / 新建 / 删除远端目录、打开选中的远端目录。
  * 页面（`electron/remoteWorkspace/`）只负责显示与收集输入，格式校验与文件系统操作都在主进程。
@@ -11,7 +11,6 @@ import type { RemoteWorkspaceAPI } from './remoteWorkspace/types.js';
 const api: RemoteWorkspaceAPI = {
   connect: (request) => ipcRenderer.invoke('remote-workspace:connect', request),
   sshHistory: () => ipcRenderer.invoke('remote-workspace:ssh-history'),
-  sshHistoryEntry: (key) => ipcRenderer.invoke('remote-workspace:ssh-history-entry', key),
   removeSshHistoryEntry: (key) => ipcRenderer.invoke('remote-workspace:ssh-history-remove', key),
   list: (path) => ipcRenderer.invoke('remote-workspace:list', path),
   create: (path) => ipcRenderer.invoke('remote-workspace:create', path),

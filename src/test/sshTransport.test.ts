@@ -17,7 +17,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createChecker, runTests } from './helpers/harness';
 import { ensureRemoteDaemonShared } from '../host/standalone/sshTransport';
-import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
+import type { SshExecResult, SshFileInfo, SshTarget } from '../host/standalone/sshClient';
 import type { RemoteSsh } from '../host/standalone/sshDaemonBootstrap';
 import { REMOTE_DEPLOY_ROOT } from '../host/standalone/sshDaemonBootstrap';
 import { coreBinaryFileName, coreDeployDirPath, coreDeployFdPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
@@ -32,7 +32,7 @@ const BINARY_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/${coreBinaryFil
 const RIPGREP_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${coreDeployRipgrepPath()}/rg`;
 const FD_PATH = `${HOME}/${REMOTE_DEPLOY_ROOT}/${coreDeployFdPath()}/fd`;
 const START_COMMAND = `'${BINARY_PATH}' start --idle-exit 30`;
-const TARGET = { host: '203.0.113.7', port: 22, user: 'dev', password: 'secret' };
+const TARGET: SshTarget = { host: '203.0.113.7', port: 22, user: 'dev', auth: { kind: 'password', password: 'secret' } };
 
 /** 假的远端 SSH：文件系统、可执行文件与转发可达性都可控；记录 start / 上传次数 */
 class FakeSsh implements RemoteSsh {

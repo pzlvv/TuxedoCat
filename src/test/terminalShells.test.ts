@@ -25,7 +25,7 @@ import {
   type TerminalSize,
   type TerminalTab,
 } from '../../electron/terminalShells';
-import { localWorkspaceRef, remoteWorkspaceRef } from '../host/workspaceRef';
+import { localWorkspaceRef, remoteWorkspaceRef, type WorkspaceAuth } from '../host/workspaceRef';
 
 /** 可编程的假通道：记录写与 resize，测试用 emit* 驱动事件 */
 class FakeChannel implements TerminalChannel {
@@ -147,7 +147,7 @@ async function openTab(fx: ReturnType<typeof makeGroup>, size: TerminalSize = SI
   return channel;
 }
 
-function sshRef(auth: { kind: 'sshPassword'; password: string } | null) {
+function sshRef(auth: WorkspaceAuth | null) {
   return remoteWorkspaceRef({ host: '10.0.0.1', port: 22, user: 'root', auth }, '/srv/demo');
 }
 
@@ -305,6 +305,14 @@ runTests('terminalShells', async () => {
   // ---------- 纯函数 ----------
 
   check('canOpenRemoteTerminal：远程带口令凭证可用', canOpenRemoteTerminal(sshRef({ kind: 'sshPassword', password: 'pw' })));
+  check(
+    'canOpenRemoteTerminal：私钥身份凭证同样可用（specs/052 FR-007）',
+    canOpenRemoteTerminal(sshRef({ kind: 'sshKey', keyPath: '/home/pz/.ssh/id_ed25519' })),
+  );
+  check(
+    'canOpenRemoteTerminal：agent 凭证同样可用',
+    canOpenRemoteTerminal(sshRef({ kind: 'sshKey', keyPath: null })),
+  );
   check('canOpenRemoteTerminal：本地工作区不可用', !canOpenRemoteTerminal(localWorkspaceRef('/tmp')));
   check('canOpenRemoteTerminal：远程无凭证不可用', !canOpenRemoteTerminal(sshRef(null)));
   check('canOpenRemoteTerminal：未打开工作区不可用', !canOpenRemoteTerminal(undefined));

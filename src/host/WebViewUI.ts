@@ -28,6 +28,7 @@ import {
 } from './crossWorkspaceRouting.js';
 import { fsEndpoint, runSessionTransfer, type TransferEndpoint } from './workspaceTransfer.js';
 import { SshClient } from './standalone/sshClient.js';
+import { authSourceFor } from './sshTarget.js';
 import { SSH_WORKSPACE_SCHEME } from './workspaceRef.js';
 import { hostname as osHostname } from 'os';
 import type { SpinDesign } from './SpinDesign.js';
@@ -597,7 +598,8 @@ export class WebViewUI implements WebViewUiPort {
         return { error: `unsupported workspace scheme for transfer (${label}): ${ref.scheme}` };
       }
       const { host, port, user, auth } = ref.endpoint;
-      if (user === null || auth === null || auth.kind !== 'sshPassword') {
+      // 只看「有没有凭证」：口令与私钥身份都能建传输连接（specs/052 FR-007 / AC-18）
+      if (user === null || auth === null) {
         return { error: `workspace credentials are unavailable (${label}): ${workspaceAgentId(ref, machineName)}` };
       }
       // 就绪判定与 specs/023 同口径：传输不依赖目标 Core 的会话，但要求工作区连接活着
@@ -606,7 +608,7 @@ export class WebViewUI implements WebViewUiPort {
         return { error: `target workspace is not ready: ${workspaceAgentId(ref, machineName)}` };
       }
       const client = new SshClient(
-        { host, port: port ?? 22, user, password: auth.password },
+        { host, port: port ?? 22, user, auth: authSourceFor(auth) },
         (...args: unknown[]) => this.log(args.map((arg) => String(arg)).join(' ')),
       );
       sshClients.push(client);

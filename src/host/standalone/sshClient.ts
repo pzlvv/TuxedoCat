@@ -15,8 +15,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Client, type ClientChannel, type SFTPWrapper, type FileEntryWithStats } from 'ssh2';
+import { Client, utils, type ClientChannel, type SFTPWrapper, type FileEntryWithStats } from 'ssh2';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
+import type { SshAuthSource } from '../sshAuth.js';
 import type { TransferEndpoint } from '../workspaceTransfer.js';
 
 /** SSH 连接目标 */
@@ -25,8 +26,16 @@ export interface SshTarget {
   /** SSH 端口（默认 22） */
   port: number;
   user: string;
-  password: string;
+  /** 认证来源（口令 / 私钥文件 / ssh-agent），见 `../sshAuth.ts`（specs/052） */
+  auth: SshAuthSource;
 }
+
+/**
+ * 私钥文件的大小上限（字节）。
+ *
+ * 私钥都是几 KB 的文本；加上限只为挡住「某个巨大文件被命名为 id_rsa」时把内存读爆。
+ */
+const MAX_PRIVATE_KEY_BYTES = 256 * 1024;
 
 /**
  * 远端目录项（SFTP readdir 的归类结果）。
@@ -158,9 +167,11 @@ export class SshClient {
   async connect(): Promise<void> {
     if (this.connected) return;
     if (this.client) throw new SshDisconnectedError('SSH client is connecting or closed.');
+    const { host, port, user } = this.target;
+    // 认证材料只在「建链这一刻」准备：凭证对象里只有来源描述，私钥正文不常驻（specs/052 FR-007）
+    const authOptions = this.authOptions();
     const client = new Client();
     this.client = client;
-    const { host, port, user } = this.target;
     /** 失败原因统一带上目标：ssh2 的原文（如「认证方式全部失败」）看不出连的是谁 */
     const describe = (error: Error): Error => this.hostKeyMismatch ?? new Error(
       `SSH connection to ${user}@${host}:${port} failed: ${error.message}`,
@@ -197,15 +208,52 @@ export class SshClient {
           host,
           port,
           username: this.target.user,
-          password: this.target.password,
           readyTimeout: SSH_CONNECT_TIMEOUT_MS,
           // 空闲时探活：容器网络丢包时链路不会假死
           keepaliveInterval: 15_000,
           keepaliveCountMax: 3,
           hostHash: 'sha256',
           hostVerifier: (fingerprint: string) => this.verifyHostKey(fingerprint),
+          ...authOptions,
         });
     });
+  }
+
+  /**
+   * 认证来源 → ssh2 的 connect 选项（`docs/core/core-remote.md` 第 2.8 节，specs/052）。
+   *
+   * 三种来源的准备失败都**直接抛错**，由认证链按 `classifySshFailure` 判为「认证不成立」
+   * 并推进到下一个来源（FR-003）：这里不做「跳过」的决定——跳过属于认证链。
+   *
+   * 私钥先用 `utils.parseKey` 预检：加密私钥在没有 passphrase 时以明确错误暴露，
+   * 而不是等握手阶段报一句看不出原因的认证失败。
+   */
+  private authOptions(): { password: string } | { agent: string } | { privateKey: Buffer } {
+    const auth = this.target.auth;
+    if (auth.kind === 'password') return { password: auth.password };
+    if (auth.kind === 'agent') {
+      const socket = process.env.SSH_AUTH_SOCK;
+      if (typeof socket !== 'string' || socket.length === 0) {
+        throw new Error('ssh-agent is not available (SSH_AUTH_SOCK is not set).');
+      }
+      return { agent: socket };
+    }
+    let key: Buffer;
+    try {
+      const stat = fs.statSync(auth.keyPath);
+      if (stat.size > MAX_PRIVATE_KEY_BYTES) {
+        throw new Error(`file is larger than ${MAX_PRIVATE_KEY_BYTES} bytes`);
+      }
+      key = fs.readFileSync(auth.keyPath);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`private key ${auth.keyPath} is not readable: ${reason}`);
+    }
+    const parsed = utils.parseKey(key);
+    if (parsed instanceof Error) {
+      throw new Error(`private key ${auth.keyPath} cannot be parsed: ${parsed.message}`);
+    }
+    return { privateKey: key };
   }
 
   /** 在远端执行一条命令；退出码非 0 由调用方判断（本方法不抛错） */

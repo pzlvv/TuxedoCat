@@ -79,6 +79,9 @@ function main(): void {
   const sshPortInput = element<HTMLInputElement>('sshPort');
   const sshUserInput = element<HTMLInputElement>('sshUser');
   const sshPasswordInput = element<HTMLInputElement>('sshPassword');
+  const passwordOverlay = element<HTMLElement>('passwordOverlay');
+  const passwordReason = element<HTMLElement>('passwordReason');
+  const passwordError = element<HTMLElement>('passwordError');
   const pickerError = element<HTMLElement>('pickerError');
   const pickerSubtitle = element<HTMLElement>('pickerSubtitle');
   const pathInput = element<HTMLInputElement>('pathInput');
@@ -109,8 +112,11 @@ function main(): void {
   sshPortInput.placeholder = labels.sshPortPlaceholder;
   element<HTMLElement>('sshUserLabel').textContent = labels.sshUserLabel;
   sshUserInput.placeholder = labels.sshUserPlaceholder;
+  // 口令不在表单里：它只属于「认证链都走不通」时才弹出的浮层
+  element<HTMLElement>('passwordTitle').textContent = labels.passwordTitle;
   element<HTMLElement>('sshPasswordLabel').textContent = labels.sshPasswordLabel;
-  sshPasswordInput.placeholder = labels.sshPasswordPlaceholder;
+  element<HTMLButtonElement>('submitPassword').textContent = labels.passwordSubmit;
+  element<HTMLButtonElement>('cancelPassword').textContent = labels.cancel;
   // 端口给一个默认值（22）：表单里唯一有合理默认的一项
   sshPortInput.value = '22';
   element<HTMLButtonElement>('connect').textContent = labels.connect;
@@ -153,28 +159,65 @@ function main(): void {
 
   // ---------- 第一步：接入方式（SSH 表单） ----------
 
-  /** 组装接入请求；形状校验在主进程（`buildRemoteEndpoint`） */
-  function currentRequest(): RemoteConnectRequest {
+  /**
+   * 组装接入请求；形状校验在主进程（`buildRemoteEndpoint`）。
+   *
+   * `password` 为 `null` 表示走认证链（私钥 → agent → 保存的口令）——表单上的「连接」
+   * 恒走这条路径；只有口令浮层里的提交才带上用户刚输入的口令（specs/052 FR-002 / FR-004）。
+   */
+  function currentRequest(password: string | null): RemoteConnectRequest {
     return {
       host: sshHostInput.value,
       port: sshPortInput.value,
       user: sshUserInput.value,
-      password: sshPasswordInput.value,
+      password,
     };
   }
 
+  /** 表单上的「连接」：不带口令，让认证链自己决定用哪种凭证 */
   function connect(): void {
-    if (busy) return;
+    void connectWithPassword(null);
+  }
+
+  /** 口令浮层的提交：只试这一次输入的口令（与「连接」共用同一个下方实现） */
+  function submitPassword(): void {
+    const password = sshPasswordInput.value;
+    if (password.length === 0) {
+      passwordError.textContent = labels.sshPasswordRequired;
+      sshPasswordInput.focus();
+      return;
+    }
+    void connectWithPassword(password);
+  }
+
+  /**
+   * 一次接入尝试的共同实现（AC-12：浮层的回车 / 提交与表单的「连接」走同一条路径）。
+   *
+   * `password === null` → 认证链；否则只试这一次口令。结果按判别联合分叉：
+   * `needPassword` 弹浮层，`error` 停在表单上报错（网络 / 主机密钥变更不弹浮层）。
+   */
+  function connectWithPassword(password: string | null): Promise<void> {
+    if (busy) return Promise.resolve();
     connectError.textContent = '';
     setBusy(true);
     // SSH 首次接入要上传产物并启动 daemon：明确告诉用户这一步会慢
     connectStatus.textContent = labels.connecting;
-    api
-      .connect(currentRequest())
+    return api
+      .connect(currentRequest(password))
       .then((result) => {
         connectStatus.textContent = '';
         if (!result.ok) {
           setBusy(false);
+          if (result.reason === 'needPassword') {
+            // 浮层已经开着 = 这次是用户提交的口令被拒：保持浮层、回显原因、选中便于重输
+            // （AC-10，不设尝试次数上限）；否则是首次需要口令
+            if (passwordOverlay.classList.contains('hidden')) {
+              openPasswordOverlay(result.error);
+            } else {
+              showPasswordFailure(result.error);
+            }
+            return;
+          }
           connectError.textContent = result.error;
           return;
         }
@@ -182,10 +225,13 @@ function main(): void {
         pickerSubtitle.textContent = formatLabel(labels.pickerSubtitle, {
           endpoint: user ? `${user}@${host}:${port}` : `${host}:${port}`,
         });
+        // 先落定忙态再收浮层：`closePasswordOverlay` 按当时的忙态决定表单是否放行，
+        // 顺序反了会把接入表单留在 disabled 状态（下一步虽然已切换视图，但状态要干净）
+        setBusy(false);
+        closePasswordOverlay();
         connectView.classList.add('hidden');
         pickerView.classList.remove('hidden');
         listing = result.listing;
-        setBusy(false);
         renderListing();
         pathInput.focus();
       })
@@ -196,9 +242,70 @@ function main(): void {
       });
   }
 
+  // ---------- 口令浮层（specs/052 FR-004） ----------
+
+  /**
+   * 弹出模态口令浮层。
+   *
+   * `reason` 是认证链最后一次失败的原因（不是网络错误——那种情况根本走不到这里）；
+   * 浮层期间接入表单整体不可编辑，浮层关闭后回到原表单内容（AC-7 / AC-11）。
+   */
+  function openPasswordOverlay(reason: string): void {
+    passwordError.textContent = '';
+    sshPasswordInput.value = '';
+    passwordReason.textContent = formatLabel(labels.passwordReason, {
+      reason,
+      endpoint: `${sshUserInput.value}@${sshHostInput.value}:${sshPortInput.value}`,
+    });
+    passwordOverlay.classList.remove('hidden');
+    setConnectFormDisabled(true);
+    sshPasswordInput.focus();
+  }
+
+  /**
+   * 浮层已打开时，这次口令被拒：保留浮层与已输入内容、回显原因、选中文本便于重输
+   * （AC-10：不设次数上限、不显示「剩余尝试次数」）。
+   */
+  function showPasswordFailure(reason: string): void {
+    passwordError.textContent = reason;
+    setConnectFormDisabled(true);
+    sshPasswordInput.focus();
+    sshPasswordInput.select();
+  }
+
+  /** 关闭浮层并回到表单：不建链、不写历史、不清表单（AC-11） */
+  function closePasswordOverlay(): void {
+    if (passwordOverlay.classList.contains('hidden')) return;
+    passwordOverlay.classList.add('hidden');
+    passwordError.textContent = '';
+    // 口令不留存：页面任何时刻不保留用户输入过的口令（FR-006）
+    sshPasswordInput.value = '';
+    // 连接进行中时不要把表单放开：否则浮层里按 Esc 能绕过忙态再点一次「连接」
+    setConnectFormDisabled(busy);
+  }
+
+  /** 浮层期间锁住接入表单；`setBusy` 之外单独开关，因为浮层与连接忙态是两件事 */
+  function setConnectFormDisabled(value: boolean): void {
+    sshHostInput.disabled = value;
+    sshPortInput.disabled = value;
+    sshUserInput.disabled = value;
+    element<HTMLButtonElement>('connect').disabled = value;
+    element<HTMLButtonElement>('cancelConnect').disabled = value;
+  }
+
   element<HTMLButtonElement>('connect').addEventListener('click', connect);
   element<HTMLButtonElement>('cancelConnect').addEventListener('click', () => api.cancel());
-  for (const input of [sshHostInput, sshPortInput, sshUserInput, sshPasswordInput]) {
+  element<HTMLButtonElement>('submitPassword').addEventListener('click', submitPassword);
+  element<HTMLButtonElement>('cancelPassword').addEventListener('click', closePasswordOverlay);
+  sshPasswordInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') submitPassword();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !passwordOverlay.classList.contains('hidden')) {
+      closePasswordOverlay();
+    }
+  });
+  for (const input of [sshHostInput, sshPortInput, sshUserInput]) {
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') connect();
     });
@@ -247,16 +354,13 @@ function main(): void {
         });
       });
       row.append(text, remove);
-      // 选定即整表单回填：候选不含口令，按去重键向主进程取整条（含口令）
+      // 选定只回填 host / 端口 / 用户：口令不随候选下发，由主进程在认证链里取用
+      // （specs/052 FR-006 / AC-16）
       row.addEventListener('click', () => {
-        void api.sshHistoryEntry(sshHistoryKey(entry)).then((full) => {
-          if (!full) return;
-          sshHostInput.value = full.host;
-          sshPortInput.value = String(full.port);
-          sshUserInput.value = full.user;
-          sshPasswordInput.value = full.password;
-          hideSuggestions();
-        });
+        sshHostInput.value = entry.host;
+        sshPortInput.value = String(entry.port);
+        sshUserInput.value = entry.user;
+        hideSuggestions();
       });
       sshSuggestions.appendChild(row);
     }
