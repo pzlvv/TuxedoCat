@@ -357,15 +357,14 @@ fn ask_user_question_denied_in_auto_mode() {
 
     // `resolve_tool_permission`（引擎实际路径）下发的形状一致：
     // permResult 只有 behavior + message，displayArgs 原样透传入参
-    let (perm_result, display_args) =
-        resolve_tool_permission(
-            "AskUserQuestion",
-            &args,
-            "auto",
-            CWD,
-            "session-1",
-            &crate::tools::WorkViewState::workspace(),
-        );
+    let (perm_result, display_args) = resolve_tool_permission(
+        "AskUserQuestion",
+        &args,
+        "auto",
+        CWD,
+        "session-1",
+        &crate::tools::WorkViewState::workspace(),
+    );
     assert_eq!(
         perm_result,
         json!({ "behavior": "deny", "message": ASK_USER_QUESTION_AUTO_DENY_MESSAGE })
@@ -732,7 +731,14 @@ fn permission_policy_matches_the_fixture() {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .unwrap_or(SESSION);
-            resolve_tool_permission(tool, &args, mode, &cwd, session_id, &crate::tools::WorkViewState::workspace())
+            resolve_tool_permission(
+                tool,
+                &args,
+                mode,
+                &cwd,
+                session_id,
+                &crate::tools::WorkViewState::workspace(),
+            )
         };
         // Edit 的 displayArgs 不预计算 diffHunks，
         // 改为额外下发 beforeContent / afterContent（webview 用同一份
@@ -878,10 +884,13 @@ fn detach_escape_ignores_heredoc_body_ampersand() {
         "heredoc 正文的 & 不是逃生"
     );
     assert_eq!(decide("Bash", &args, "risk", CWD), Decision::Allow);
-    assert!(
-        !ask_message("Bash", &args, CWD, &crate::tools::WorkViewState::workspace())
-            .starts_with("⚠️ 请求脱离管理执行：")
-    );
+    assert!(!ask_message(
+        "Bash",
+        &args,
+        CWD,
+        &crate::tools::WorkViewState::workspace()
+    )
+    .starts_with("⚠️ 请求脱离管理执行："));
     // 对照：同样 `detach: true`，真构造仍在 risk 下询问
     let real = json!({ "command": "nohup server", "detach": true });
     assert!(is_operation_risky("Bash", &real));
