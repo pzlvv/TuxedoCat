@@ -48,7 +48,16 @@ import { connectionReadyFileInvalidation } from './connectionReadySidebar.js';
 import { localGitRunner } from './sidebarDocView.js';
 import { localFileContentRunner } from './gitFileContent.js';
 import { buildDiffResult } from './monacoDiff.js';
-import { resolveInitialView, type DiffSource, type InitialView } from './fileOpen.js';
+import {
+  openOverlayWorkspaceFile,
+  resolveInitialView,
+  type DiffSource,
+  type InitialView,
+} from './fileOpen.js';
+import {
+  resolveOverlayOpenTarget,
+  type OverlayOpenTarget,
+} from '../src/host/overlayOpenResolve.js';
 import { DocSentinelManager } from './sidebarDocWatch.js';
 import { createLocalFileWatcher } from './localFileWatch.js';
 import {
@@ -123,6 +132,11 @@ export class ElectronUIHost implements UIHost {
   } | null = null;
   /** 会话 → 工作区根的查询（main 进程注入；main.ts `sessionWorkspaces` 索引的投影） */
   private sessionWorkspaceLookup: ((sessionId: string) => string | null) | null = null;
+  /**
+   * 会话 → 文件存储归属的查询（main 进程注入；Core 的 `meta.json` 经
+   * `ConversationManager` 分发后的投影）。未注入按 `workspace`。
+   */
+  private sessionStorageLookup: ((sessionId: string) => 'workspace' | 'isolated') | null = null;
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
   /**
@@ -159,6 +173,28 @@ export class ElectronUIHost implements UIHost {
   /** 会话 → 工作区根查询接线（specs/030 FR-001：toolResult 相对路径的展开基准） */
   setSessionWorkspaceLookup(lookup: (sessionId: string) => string | null): void {
     this.sessionWorkspaceLookup = lookup;
+  }
+
+  /**
+   * 会话 → 文件存储归属查询接线（specs/045 FR-001）。
+   *
+   * 事实的 owner 是 Core（`meta.json` 的 `storage`，见
+   * `docs/core/conversation-work-view.md` 第 2 节）：main 进程只把
+   * `ConversationManager` 已分发到的那份列表投影进来，本类不缓存、不重算。
+   * 缺省（未注入 / 列表里没有该会话）按 `workspace` 处理——存量会话口径。
+   */
+  setSessionStorageLookup(lookup: (sessionId: string) => 'workspace' | 'isolated'): void {
+    this.sessionStorageLookup = lookup;
+  }
+
+  /**
+   * 该会话的文件存储归属（specs/052 FR-001）。
+   *
+   * 与 `setSessionStorageLookup` 是同一条事实的两面：注入方给查询口，本类只转发结果。
+   * 缺省按 `workspace`——未注入或列表里还没有该会话时，不把普通对话当 Overlay 拦下。
+   */
+  sessionStorageOf(sessionId: string): 'workspace' | 'isolated' {
+    return this.sessionStorageLookup?.(sessionId) ?? 'workspace';
   }
 
   setChatViewManager(m: ChatViewManager): void {
@@ -331,6 +367,15 @@ export class ElectronUIHost implements UIHost {
     target: import('../src/host/UIHost.js').LineSelection | null,
     view: import('../src/host/UIHost.js').WebviewViewHandle | null,
   ): Promise<void> {
+    // Overlay 对话的文件链接（Read / Write / Edit 卡片）：内容在 Core 私有的挂载
+    // 命名空间里，磁盘上没有（对话内新建）或还是旧版（对话内改过）——按该会话的视图取数。
+    // 归属从**来源视图**反查（`meta.json` 的 `storage` 是 Core 的事实），契约签名不变
+    // （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+    const overlay = this.overlayOpenTarget(filePath, view);
+    if (overlay) {
+      await this.openOverlayFile(overlay.sessionId, overlay.root, overlay.rel, target);
+      return;
+    }
     // 远程工作区的文件链接（Read 工具卡片等）：路径是远端机上的 POSIX 绝对路径，
     // 本地盘读不到（ENOENT → 空编辑器）——先按打开集合里的远程工作区做前缀匹配，
     // 命中就走 SFTP 读出内容，进与本地同一套内置窗口；未命中（工作区外路径）按
@@ -399,6 +444,105 @@ export class ElectronUIHost implements UIHost {
       ...(active ? [active] : []),
       ...this.getOpenWorkspaceRefs().filter((ref) => ref !== active),
     ];
+  }
+
+  /**
+   * 文件链接的来源视图是否指向一个 Overlay 对话；是则给出视图取数需要的三元组
+   * （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+   *
+   * 判据三条缺一不可：
+   * 1. 有来源视图（宿主主动调用 / 侧栏 `openLocalFile` 传 `null`——那里没有会话上下文，
+   *    不该按某个 Overlay 会话取数）；
+   * 2. 该视图当前的会话归属是 `isolated`（Core 的 `meta.json` 投影，宿主不猜）；
+   * 3. 路径落在该会话工作区根内（视图取数请求只认相对路径；工作区外文件在 Overlay
+   *    会话里同样读不到，保持既有本地 / SFTP 语义即可）。
+   *
+   * 视图 key 仍是 `new-` 临时 key（新建对话还没收到正式 sessionId）时不算 Overlay：
+   * 那时还没有会话、没有 `meta.json`，也就没有视图可读。
+   */
+  private overlayOpenTarget(
+    filePath: string,
+    view: import('../src/host/UIHost.js').WebviewViewHandle | null,
+  ): OverlayOpenTarget | null {
+    if (!view) return null;
+    const webContents = view.view as WebContents;
+    const sessionId = this.chatViews?.getKeyByWebContents(webContents) ?? null;
+    if (!sessionId) return null;
+    return resolveOverlayOpenTarget({
+      sessionId,
+      storage: this.sessionStorageLookup?.(sessionId) ?? 'workspace',
+      workspaceRoot:
+        this.sessionWorkspaceLookup?.(sessionId) ?? this.getWorkspaceRefForView(view)?.path ?? null,
+      remote: (this.getWorkspaceRefForView(view)?.endpoint ?? null) !== null,
+      filePath,
+    });
+  }
+
+  /**
+   * 经 Core 从叠加视图读文件并进内置窗口（`specs/046 FR-003` / `specs/047 FR-004`）。
+   *
+   * 与侧栏 Overlay 双击打开同一条编排（`openOverlayWorkspaceFile`）：宿主读不到 Core
+   * 私有命名空间里的视图，内容与「视图里的 HEAD 版本」都由
+   * `UiRequest.workViewFileDiffRequested` 一次给出。只支持文本与 Markdown——图片 /
+   * 二进制需要真实路径，Overlay 对话里明确不支持。
+   *
+   * 与 `openRemoteFile` 的差异只在读原语；窗口分流、行号定位、失败兜底同一套。
+   */
+  private async openOverlayFile(
+    sessionId: string,
+    root: string,
+    rel: string,
+    target: import('../src/host/UIHost.js').LineSelection | null,
+  ): Promise<void> {
+    const name = path.posix.basename(rel);
+    try {
+      await openOverlayWorkspaceFile(
+        {
+          openMarkdownViewer: ({ selectedLines, ...init }) =>
+            this.openMarkdownPreviewWindow({
+              ...init,
+              selectedLines: selectedLines ?? undefined,
+              canDiff: init.diffSource !== null,
+            }),
+          openImageViewer: (init) => this.openImagePreviewWindow(init),
+          openTextViewer: ({ selectedLines, ...init }) =>
+            this.openMonacoWindow({
+              mode: 'view',
+              ...init,
+              selectedLines: selectedLines ?? undefined,
+              canDiff: init.diffSource !== null,
+            }),
+          openLocalFile: (filePath) => this.openFile(filePath, null, null),
+          openWithSystemApp: async () => {
+            // Overlay 会话里二进制已在 openOverlayWorkspaceFile 里被拒（视图取数只给文本）
+            throw new Error('overlay binary open is not supported');
+          },
+        },
+        {
+          sessionId,
+          readDiff: (relPath) => requestWorkViewFileDiff(sessionId, relPath),
+        },
+        root,
+        rel,
+        'toolLink',
+        // Read 卡片的部分读取带行号：与本地 / 远程链接同一语义（Markdown 因此初始落
+        // 文本视图，其余落 Monaco 并定位）。Edit 卡片链接不带行号。
+        target,
+      );
+    } catch (err) {
+      // 视图取不到（视图建不起来 / 代理缺失 / 二进制）也保持「点击有响应」：
+      // 与本地 ENOENT、远程读失败同一口径，开内容窗口显示原因
+      this.log(`Failed to open overlay file ${rel} (${sessionId}): ${err}`);
+      await this.openMonacoWindow({
+        mode: 'content',
+        title: name,
+        content: `// 无法读取 Overlay 视图文件: ${err instanceof Error ? err.message : String(err)}`,
+        watchTarget: null,
+        initialView: 'full',
+        diffSource: null,
+        canDiff: false,
+      });
+    }
   }
 
   /** 经 SFTP 读远端文件并进内置窗口（Markdown / 文本 → 预览窗口 / Monaco，图片 → 查看器） */

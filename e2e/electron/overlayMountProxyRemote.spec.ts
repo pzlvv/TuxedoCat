@@ -829,6 +829,131 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
 });
 
 /**
+ * Overlay 会话里「Write 新建 → Edit 同一文件」必须成立
+ * （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+ *
+ * 缺陷形态：权限层（`core-rs/src/permission.rs`）用 `std::fs` 读目标文件判「是否存在 /
+ * 旧内容是什么」，而 Core 不在挂载命名空间里——它读到的是真实磁盘。视图内新建的文件
+ * 因此被判成不存在，`Edit` 在权限阶段就被 deny（文案 `File does not exist: ...`），
+ * 工具根本没执行。
+ *
+ * 判据两条缺一不可：`Edit` 结果不含 `File does not exist`（真的过了权限阶段）+ 新内容
+ * 在后续 `Read` 里读得到（真的改了视图里的那份）；再补一条真实磁盘上没有该文件。
+ */
+test('Overlay 会话：Write 新建的文件必须能被 Edit 继续修改', async () => {
+  await ensureProxyInstalled();
+
+  const targetName = 'overlay-edit-chain.py';
+  const target = `${remoteWs}/${targetName}`;
+  expect(
+    (await sshExec(`test -e ${shQuote(target)} && echo yes || echo no`)).stdout.trim(),
+    '基线：真实磁盘上不得有这个文件',
+  ).toBe('no');
+
+  const chatPage = await launchWithRemoteWorkspace();
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  // 三步：Write 新建 → Edit 同一文件 → Read 读回。Read 是「改动真的落在视图里」的凭据：
+  // 只看 Edit 的成功文案会漏掉「Edit 写了另一份内容」这类假绿。
+  const steps: Array<{ name: string; args: Record<string, unknown> }> = [
+    { name: 'Write', args: { file_path: target, content: 'print("first")\n' } },
+    {
+      name: 'Edit',
+      args: {
+        file_path: target,
+        old_string: 'print("first")',
+        new_string: 'print("second")',
+      },
+    },
+    { name: 'Read', args: { file_path: target } },
+  ];
+  mockLlm!.setHandler((req) => {
+    const done = req.body.messages.filter((message) => message.role === 'tool').length;
+    if (done >= steps.length) return { kind: 'text', text: 'EDIT-CHAIN-DONE' };
+    return { kind: 'tool', name: steps[done].name, args: steps[done].args };
+  });
+
+  await chatPage.fill('textarea.input-textarea', '在 Overlay 里新建再编辑');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('EDIT-CHAIN-DONE').first()).toBeVisible({ timeout: 180_000 });
+
+  const results = mockLlm!.requests
+    .filter((request) => request.body.messages[request.body.messages.length - 1]?.role === 'tool')
+    .map((request) => lastToolResult(request))
+    .slice(-steps.length);
+  expect(results, `应拿到 ${steps.length} 条工具结果`).toHaveLength(steps.length);
+
+  // 判据 1：Edit 不得被权限层拦下（缺陷文案就是这一句）
+  expect(results[1], `Edit 必须真的执行：${results[1]}`).not.toMatch(
+    /File does not exist|Use Write tool to create new files/,
+  );
+  expect(results[1], `Edit 应报告改了一处：${results[1]}`).toMatch(/Made 1 replacement/);
+  // 判据 2：改后的内容在同会话的 Read 里读得到
+  expect(results[2], `Read 必须读到 Edit 后的内容：${results[2]}`).toContain('print("second")');
+  expect(results[2], `Read 不得再看到旧内容：${results[2]}`).not.toContain('print("first")');
+  // 判据 3：整条链都在视图里，真实磁盘上没有该文件
+  expect(
+    (await sshExec(`test -e ${shQuote(target)} && echo yes || echo no`)).stdout.trim(),
+    `Overlay 会话新建的文件不得落到真实磁盘：${target}`,
+  ).toBe('no');
+});
+
+/**
+ * Overlay 会话里点 Edit / Write 卡片的文件链接，打开的必须是**视图内容**
+ * （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+ *
+ * 缺陷形态：`ElectronUIHost.openFile` 只有「SFTP 读真实磁盘」与「本地读盘」两条路，
+ * 于是磁盘上没有的对话内新文件在窗口里显示
+ * `// 无法读取远程文件: SFTP read failed (...): No such file`。
+ *
+ * 判据：内置 Monaco 窗口出现，内容含对话内写出的文本，且不含 `无法读取远程文件`。
+ */
+test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实磁盘', async () => {
+  await ensureProxyInstalled();
+
+  const targetName = 'overlay-card-link.py';
+  const target = `${remoteWs}/${targetName}`;
+  const marker = 'OVERLAY-CARD-LINK-CONTENT';
+  expect(
+    (await sshExec(`test -e ${shQuote(target)} && echo yes || echo no`)).stdout.trim(),
+    '基线：真实磁盘上不得有这个文件',
+  ).toBe('no');
+
+  const chatPage = await launchWithRemoteWorkspace();
+  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
+  await chatPage.locator('input[data-work-view-option]').check();
+
+  mockLlm!.setHandler((req) => {
+    if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'CARD-LINK-DONE' };
+    }
+    return {
+      kind: 'tool',
+      name: 'Write',
+      args: { file_path: target, content: `${marker}\n` },
+    };
+  });
+  await chatPage.fill('textarea.input-textarea', '写一个文件然后点卡片链接');
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('CARD-LINK-DONE').first()).toBeVisible({ timeout: 120_000 });
+
+  // 卡片路径链接：用 title 精确锁定（聊天页里 .hover\:underline 有多处）
+  const pathLink = chatPage.locator(`button[title*="${targetName}"]`);
+  await expect(pathLink).toBeVisible({ timeout: 30_000 });
+  await pathLink.click();
+
+  const monacoPage = await app!.waitForPage('monaco/index.html', 30_000);
+  await expect(monacoPage.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 });
+  await expect(monacoPage.locator('.view-lines')).toContainText(marker, { timeout: 30_000 });
+  // 缺陷文案不得再出现（它是「读真实磁盘失败」的指纹）
+  const shown = await monacoPage.locator('.view-lines').innerText();
+  expect(shown, `链接必须读视图内容，而不是报磁盘读失败：${shown}`).not.toContain(
+    '无法读取远程文件',
+  );
+});
+
+/**
  * 隔离会话里**编译并运行**：`main.c` 预置在真实磁盘，`gcc` 的产物只能落在叠加视图。
  *
  * 与 `AC-31` 的分工：那条只验证 Write 通道写新文件；这条走 Bash 通道，验证「一个真实的
@@ -844,6 +969,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
  * 第 1 条不可缺少：只看磁盘会漏掉「编译失败 + 磁盘本来就没文件」这种假绿，而这正是
  * `specs/defects/mount-proxy-write-file-payload-type.md` 的形态。
  */
+
 test('FR-006 隔离会话里 gcc 编译运行 main.c，产物只在叠加视图、不落真实磁盘', async () => {
   // 前置：代理必须就位。没装就先经界面装（单独 `-g` 跑这条时不会因此静默跳过）
   await ensureProxyInstalled();

@@ -9,12 +9,13 @@
  *    多版本 Core 在同一台远端机器上各占一个槽位、各跑一个 daemon——不同版本
  *    的客户端同时接入同一台机器互不干扰；同版本的多个客户端并发接同一个
  *    daemon 由 daemon 侧的多连接支持（`docs/core/core-remote.md` 第 2.5 节）。
- * 2. **部署**：指纹槽位里缺 Core 可执行文件、或共享位缺自带 `ripgrep` 才上传（客户端
- *    唯一暂存名 + rename 原子换名：对可能仍在执行的旧 inode 安全，两台机器的客户端
- *    并发部署同一槽位也互不交错损坏）；**槽位存在即视为同版本**，不做产物
- *    哈希比对——指纹只由源码内容与编译器身份决定，同一版本不该因字节差异互相
- *    覆盖：新版本天然落在新槽位，旧 daemon 原样留给旧版本的客户端。ripgrep 与指纹
- *    无关，放产品目录根（`share/<core.deployPrefix>/ripgrep`）供全部槽位共享。
+ * 2. **部署**：槽位里的 Core 可执行文件先自报构建指纹（`--version`）与本机比对——
+ *    一致就不上传（不做产物哈希比对：指纹只由源码内容与编译器身份决定，同一版本不该
+ *    因字节差异互相覆盖，新版本天然落在新槽位、旧 daemon 原样留给旧版本客户端）；
+ *    缺失、指纹不符或读不出就用本机产物覆盖（客户端唯一暂存名 + rename 原子换名：
+ *    对可能仍在执行的旧 inode 安全，两台机器的客户端并发部署同一槽位也互不交错损坏）。
+ *    共享位缺自带 `ripgrep` / `fd` 时同样补传：工具与指纹无关，放产品目录根
+ *    （`share/<core.deployPrefix>/<tool.dir>`）供全部槽位共享。
  * 3. **启动**：`start --idle-exit 30`（幂等：已在跑就复用；远端 `start` 自带按
  *    指纹的互斥锁，并发引导同指纹也只拉起一个 daemon），再读状态文件。
  *    daemon 恒绑回环、端口交给内核分配（`docs/core/core-remote.md` 第 2.2 节）：转发连接
@@ -36,6 +37,7 @@ import {
   BUNDLED_TOOLS,
   bundledToolFileName,
   bundledToolPath,
+  CORE_FINGERPRINT_FILE_NAME,
   coreBinaryFileName,
   coreDeployDirPath,
   coreDeployToolPath,
@@ -124,9 +126,11 @@ export async function ensureRemoteDaemon(
   //    本版本的 daemon，无需再做任何版本比对。
   const running = await probeRunningDaemon(ssh, statePath, options.log);
 
-  // 2. 产物齐全：缺了才传。「在跑」不等于产物齐全——指纹目录被外部清掉时进程
-  //    仍在跑（inode 未释放），不在这里补，daemon 一死这份产物就彻底没了。
-  if (await ensureRemoteBinary(ssh, localBinary, remoteBinary)) {
+  // 2. 产物齐全且属于本指纹：槽位里的可执行文件自报指纹与本地比对，一致才复用
+  //    「在跑」不等于产物齐全——指纹目录被外部清掉时进程仍在跑（inode 未释放），
+  //    不在这里补，daemon 一死这份产物就彻底没了。指纹被污染时覆盖重传
+  //    （`specs/defects/remote-slot-binary-fingerprint-unverified.md`）。
+  if (await ensureRemoteBinary(ssh, localBinary, remoteBinary, fingerprint, options.log)) {
     options.log(`[ssh] deployed ${remoteBinary} (${target.platform}-${target.arch})`);
   }
   await ensureRemoteBundledTools(ssh, options, localBinary, home, target);
@@ -159,24 +163,107 @@ export async function ensureRemoteDaemon(
 }
 
 /**
- * 确保远端指纹槽位里有可执行文件：缺失才上传，存在即同版本。
+ * 确保远端指纹槽位里有**本指纹的**可执行文件，并让槽位自带一份 `fingerprint` 文件。
  *
- * 指纹只由源码内容与编译器身份决定（`docs/core/standalone-core.md` 第 3.4 节），同一
- * 指纹的两个构建产物行为一致，因此存在就不再上传——不同构建机 / 不同客户端的
- * 同版本产物互不覆盖。上传走「客户端唯一暂存名 + `mv` 原子换名」：目标可能正被
- * 一个在跑的 daemon 执行（它的指纹槽位被清过、状态文件丢失时我们无从得知它在跑），
- * 对执行中的文件直接覆盖写是 `ETXTBSY`（SFTP 层报 `Failure`）；`mv` 是 rename，
- * 只换目录项，运行中的进程继续用旧 inode。返回是否发生了上传（调用方据此打部署日志）。
+ * 判据不是「文件存在」而是「这个文件自报的指纹等于本地指纹」（`remoteBinaryFingerprint`
+ * 问 `<远端可执行文件> --version`）：文件系统不保证槽位内容来自该指纹的构建——
+ * 历史手工 `cargo build` 的产物（指纹烧成占位值 `manual-build`）一旦落进槽位，daemon
+ * 就按它自己的指纹写状态文件 `core-daemon-manual-build.json`，而宿主按本地指纹读
+ * `core-daemon-<本地指纹>.json`，永远读不到，每次重连都走同一条死路且无自愈路径
+ * （`specs/defects/remote-slot-binary-fingerprint-unverified.md`）。
+ *
+ * 指纹一致就不上传——不同构建机 / 不同客户端的同版本产物互不覆盖，不做字节比对。
+ * 指纹不符（含探测失败：不可执行 / 输出认不出指纹）就用本地产物覆盖。
+ * 上传走「客户端唯一暂存名 + `mv` 原子换名」：目标可能正被一个在跑的 daemon 执行
+ * （它的指纹槽位被清过、状态文件丢失时我们无从得知它在跑），对执行中的文件直接覆盖写
+ * 是 `ETXTBSY`（SFTP 层报 `Failure`）；`mv` 是 rename，只换目录项，运行中的进程继续用
+ * 旧 inode。
+ *
+ * 返回是否发生了上传（调用方据此打部署日志）。
  */
 async function ensureRemoteBinary(
   ssh: RemoteSsh,
   localBinary: string,
   remoteBinary: string,
+  fingerprint: string,
+  log: (...args: unknown[]) => void,
 ): Promise<boolean> {
-  if ((await ssh.stat(remoteBinary)).exists) return false;
+  const existing = await remoteBinaryFingerprint(ssh, remoteBinary);
+  if (existing === fingerprint) {
+    // 槽位内容正确；fingerprint 文件可能因旧版本部署缺失，补一份（幂等，不重传二进制）
+    await writeRemoteFingerprint(ssh, remoteBinary, fingerprint);
+    return false;
+  }
+  if (existing !== null) {
+    // 污染槽位：把两侧指纹写进日志，故障现场不必再去远端 grep
+    log(`[ssh] slot binary reports fingerprint ${existing}, expected ${fingerprint}; redeploying`);
+  }
   await ssh.exec(`mkdir -p ${shellQuote(posixDirname(remoteBinary))}`);
   await uploadAtomically(ssh, localBinary, remoteBinary);
+  await writeRemoteFingerprint(ssh, remoteBinary, fingerprint);
+
+  // 覆盖后再问一次：仍对不上说明产物落错位置或被外部替换，直接报错而不是
+  // 让 daemon 用错误指纹起（那会把故障推迟成一次无从解释的「连不上」）
+  const deployed = await remoteBinaryFingerprint(ssh, remoteBinary);
+  if (deployed !== fingerprint) {
+    throw new Error(
+      `deployed Core binary ${remoteBinary} reports fingerprint `
+        + `${deployed ?? '<unreadable>'} but the local product is ${fingerprint}; `
+        + 'the slot holds a foreign binary that could not be replaced.',
+    );
+  }
   return true;
+}
+
+/**
+ * 问远端槽位里的可执行文件自己的构建指纹（`--version` 的 `(fingerprint <值>)` 段）。
+ *
+ * 二进制带得动这个事实（`core-rs/src/cli.rs::version` 的编译期常量），因此宿主不必
+ * 依赖槽位里的旁挂文件，也不必下载整份产物做哈希。认不出就返回 `null`：调用方按
+ * 「不可复用」处理，不猜。
+ */
+async function remoteBinaryFingerprint(
+  ssh: RemoteSsh,
+  remoteBinary: string,
+): Promise<string | null> {
+  if (!(await ssh.stat(remoteBinary)).exists) return null;
+  let result: SshExecResult;
+  try {
+    result = await ssh.exec(`${shellQuote(remoteBinary)} --version`);
+  } catch {
+    // 不可执行 / 传输中断：同样归入「不可复用」，由调用方重传
+    return null;
+  }
+  if (result.code !== 0) return null;
+  const match = /\(fingerprint ([^)]+)\)/.exec(result.stdout);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * 在槽位的可执行文件同级落一份 `fingerprint` 文件（部署布局的一份自读凭据，
+ * `docs/core/standalone-core.md` 第 3.1 节）。
+ *
+ * 内容未变就不落盘：远端文件与本地指纹比对留给二进制自证，这里只补「文件缺失或内容陈旧」
+ * 两种情形，避免每次引导都写远端磁盘。
+ *
+ * 这份文件是给人看的旁挂凭据，**不参与**复用判定（判定只认二进制自报的指纹）：
+ * 读不出就当缺失、重写失败也不抛错——否则一个只影响可读性的文件会把整次引导拖垮。
+ */
+async function writeRemoteFingerprint(
+  ssh: RemoteSsh,
+  remoteBinary: string,
+  fingerprint: string,
+): Promise<void> {
+  const target = posixJoin(posixDirname(remoteBinary), CORE_FINGERPRINT_FILE_NAME);
+  let current: string | null = null;
+  try {
+    current = (await ssh.stat(target)).exists ? await ssh.readText(target) : null;
+  } catch {
+    // 读不出按「内容陈旧」处理，下面重写
+    current = null;
+  }
+  if (current?.trim() === fingerprint) return;
+  await ssh.exec(`echo ${shellQuote(fingerprint)} > ${shellQuote(target)}`).catch(() => undefined);
 }
 
 /**
@@ -184,8 +271,7 @@ async function ensureRemoteBinary(
  *
  * 暂存名带 pid + 随机数后缀：两台机器的客户端同时首次部署同一台服务器（同指纹
  * 槽位）时，固定暂存名会让两条上传流写同一个文件、交错损坏，`mv` 上去的就成了
- * 坏产物——而「指纹目录存在即视为同版本」不会自愈。各写各的暂存、原子换名，
- * 谁先谁后落地的都是完整文件。
+ * 坏产物。各写各的暂存、原子换名，谁先谁后落地的都是完整文件。
  *
  * 目标可能正被执行（daemon 二进制由远端 systemd/init 拉起、ripgrep 由 Core 的
  * Grep/Glob 每次 spawn——它的部署槽位被外部清过、`stat` 判定不存在时我们无从

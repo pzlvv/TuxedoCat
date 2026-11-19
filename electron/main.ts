@@ -408,6 +408,15 @@ let openWorkspaces: WorkspaceRef[] = [];
 let workspacePath: WorkspaceRef | undefined;
 /** 会话 → 工作目录 索引：按对话解析工作目录（打开某个对话时用它注入 --workspace=） */
 const sessionWorkspaces = new Map<string, string>();
+/**
+ * 会话 → 文件存储归属 索引（specs/045 FR-001）。
+ *
+ * 值来自 Core 写进 `meta.json` 的 `storage`，经 `ConversationManager` 的列表快照投影
+ * 进来（`syncSessionWorkspaceIndex` 同一处写入）。唯一消费者是
+ * `ElectronUIHost.openFile` 的 Overlay 分支：工具卡片链接要读该会话的视图而不是磁盘
+ * （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。缺失即 `workspace`。
+ */
+const sessionStorages = new Map<string, 'workspace' | 'isolated'>();
 /** 宿主实例（initCore 创建后回填；侧栏哨兵启停等工作区生命周期挂点用，specs/030） */
 let electronHost: ElectronUIHost | null = null;
 /** 工作区打开 / 关闭 / 激活的订阅者（ElectronUIHost 的 WorkspaceProvider 契约） */
@@ -3802,14 +3811,26 @@ function registerCoreSessionWorkspace(sessionId: string, workspace: string): voi
  * inactive-tab-completion-light-missing）——非活动目录的定向装载（refreshWorkspace）
  * 到达时活动目录的缓存里没有这些会话，只有条目自带的 `project` 能提供归属，
  * 标签页灯的归属解析（resolveSessionWorkspaceRef）才有据可查。
+ *
+ * 同时刷新「会话 → 文件存储归属」索引（specs/045 FR-001）：同一份列表里的
+ * `storage` 是 Core 写进 `meta.json` 的事实，宿主只读投影。`ElectronUIHost.openFile`
+ * 用它决定工具卡片链接读视图还是读磁盘
+ * （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）——两份索引同源同写法，
+ * 避免一边学到归属、另一边还按陈旧值判定。
  */
 function syncSessionWorkspaceIndex(from?: readonly unknown[]): void {
   const list = from ?? conversations?.getCachedList();
   if (!list) return;
-  for (const c of list as ReadonlyArray<{ sessionId?: string; project?: string }>) {
+  for (const c of list as ReadonlyArray<{
+    sessionId?: string;
+    project?: string;
+    storage?: 'workspace' | 'isolated';
+  }>) {
     if (c && typeof c.sessionId === 'string' && typeof c.project === 'string' && c.project) {
       // 统一规范化：视图按这个值注入 --workspace=，关闭工作目录时按同一表示匹配
       sessionWorkspaces.set(c.sessionId, canonicalWorkspacePath(c.project));
+      // 缺失即 workspace（存量会话口径，与 Core 的 `storage_of_session` 一致）
+      sessionStorages.set(c.sessionId, c.storage === 'isolated' ? 'isolated' : 'workspace');
     }
   }
 }
@@ -4840,6 +4861,9 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
     if (chatViews?.isViewAlive(sid)) webviewUi?.closeConversation(sid);
     // 宿主索引同步清理：会话已删除，避免陈旧 sessionId → 目录 条目长期残留
     sessionWorkspaces.delete(sid);
+    // 归属索引同源同寿命：残留的 `isolated` 会让同 id 的新会话（理论上不会复用，
+    // 但删除后立刻重建的 `new-` 视图会升级成正式 id）被当成 Overlay 会话
+    sessionStorages.delete(sid);
   }
   // 删盘（core 消费方：算闭包已由宿主完成，这里只发 root）
   requireEventBus().emitToCore({ type: 'conversationDeleted', sessionId });
@@ -5741,20 +5765,30 @@ function setupIpc(): void {
   // 图片 → 内置图片查看器（滚轮缩放）、其它二进制 → 系统默认应用。
   // 远程工作区：Markdown / 文本 / 图片走 SFTP 读出进内置窗口；二进制不支持打开。
   const fileOpenBridge: FileOpenBridge = {
-    openMarkdownViewer: (init) => {
+    openMarkdownViewer: ({ selectedLines, ...init }) => {
       if (!uiHost) throw new Error('ui host unavailable');
       // diffSource 有值即可切换变更视图（非 git 工作区在 fileOpen 侧已是 null，AC-9）
-      return uiHost.openMarkdownPreviewWindow({ ...init, canDiff: init.diffSource !== null });
+      return uiHost.openMarkdownPreviewWindow({
+        ...init,
+        selectedLines: selectedLines ?? undefined,
+        canDiff: init.diffSource !== null,
+      });
     },
     openImageViewer: (init) => {
       if (!uiHost) throw new Error('ui host unavailable');
       return uiHost.openImagePreviewWindow(init);
     },
-    openTextViewer: (init) => {
+    openTextViewer: ({ selectedLines, ...init }) => {
       if (!uiHost) throw new Error('ui host unavailable');
       // filePath 传文件名：Monaco 只用它做语法推断，不读盘（内容已在 content 里）
-      return uiHost.openMonacoWindow({ mode: 'view', ...init, canDiff: init.diffSource !== null });
-    },    openLocalFile: (filePath) => {
+      return uiHost.openMonacoWindow({
+        mode: 'view',
+        ...init,
+        selectedLines: selectedLines ?? undefined,
+        canDiff: init.diffSource !== null,
+      });
+    },
+    openLocalFile: (filePath) => {
       if (!uiHost) throw new Error('ui host unavailable');
       // 侧栏双击的是本地工作区文件，没有来源对话视图：不参与远程机器归属解析
       return uiHost.openFile(filePath, null, null);
@@ -5870,6 +5904,8 @@ function setupIpc(): void {
         ref.path,
         p.path,
         source,
+        // 侧栏双击没有行号语义（US-42）：恒全文
+        null,
       );
       return { ok: true };
     } catch (err) {
@@ -5955,6 +5991,9 @@ function initCore(): void {
   });
   // 会话 → 工作目录索引的宿主侧查询口（specs/030 FR-001：toolResult 相对路径解析）
   host.setSessionWorkspaceLookup((sessionId) => sessionWorkspaces.get(sessionId) ?? null);
+  // 会话 → 文件存储归属查询口（specs/045 FR-001）：工具卡片链接据此决定读视图还是读磁盘
+  // （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。缺失即 workspace。
+  host.setSessionStorageLookup((sessionId) => sessionStorages.get(sessionId) ?? 'workspace');
   const spinDesign = new ElectronSpinDesign(host);
   const conversationsMgr = new ElectronConversationManager(
     host,

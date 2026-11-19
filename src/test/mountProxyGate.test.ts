@@ -33,7 +33,7 @@ function makeGate(targetHost: string | null = null): {
 test('拦截一条消息后进入 confirm，载荷带四要素所需的落点与主机', () => {
   const { gate, states } = makeGate('user@remote-host');
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
 
   assert.equal(gate.currentPhase, 'confirm');
   assert.equal(states.length, 1);
@@ -49,7 +49,7 @@ test('拦截一条消息后进入 confirm，载荷带四要素所需的落点与
 test('本机部署时 targetHost 为 null（确认框不显示主机行）', () => {
   const { gate, states } = makeGate(null);
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
 
   assert.equal(states[0].targetHost, null);
 });
@@ -57,7 +57,7 @@ test('本机部署时 targetHost 为 null（确认框不显示主机行）', () 
 test('取消后状态整体清空，被拦消息一并丢弃', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
   gate.cancel();
 
   assert.equal(gate.currentPhase, null);
@@ -73,7 +73,7 @@ test('取消后状态整体清空，被拦消息一并丢弃', () => {
 test('免密不可用进入 needsCredential，默认不给零密码命令', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
   gate.confirmDeploy();
   gate.requireCredential('sudo /path --install');
 
@@ -87,7 +87,7 @@ test('用户选择「显示命令自己执行」后才下发完整命令', () =>
   const { gate, states } = makeGate();
   const command = 'sudo /opt/proxy --install';
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
   gate.confirmDeploy();
   gate.requireCredential(command);
   gate.showManualCommand(command);
@@ -100,7 +100,7 @@ test('用户选择「显示命令自己执行」后才下发完整命令', () =>
 test('失败态带原因，仍可确认重试（不限次数）', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
   gate.confirmDeploy();
   gate.beginCredentialAttempt();
   gate.fail('Sorry, try again.');
@@ -119,7 +119,7 @@ test('失败态带原因，仍可确认重试（不限次数）', () => {
 test('连试多次失败后仍可继续重试，没有次数上限', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
   gate.confirmDeploy();
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -141,14 +141,14 @@ test('连试多次失败后仍可继续重试，没有次数上限', () => {
 test('成功进入 done，被拦消息可被取走重发（只取一次）', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
   gate.confirmDeploy();
   gate.succeed();
 
   assert.equal(states[states.length - 1].phase, 'done');
   const blocked = gate.takeBlocked();
   assert.equal(blocked?.sessionId, 's1');
-  assert.equal(blocked?.content, 'hello');
+  assert.equal(blocked?.kind === 'message' ? blocked.content : null, 'hello');
   // 取走即清空：避免同一条消息被重发两次
   assert.equal(gate.takeBlocked(), null);
 });
@@ -156,14 +156,31 @@ test('成功进入 done，被拦消息可被取走重发（只取一次）', () 
 test('重复拦截新消息时重置手动通道标志', () => {
   const { gate } = makeGate();
 
-  gate.block({ sessionId: 's1', content: 'first' });
+  gate.block({ kind: 'message', sessionId: 's1', content: 'first' });
   gate.confirmDeploy();
   gate.requireCredential('sudo /opt/proxy --install');
   gate.showManualCommand('sudo /opt/proxy --install');
   gate.fail('nope');
 
   // 新的一条消息重新开始（FR-003：每次首条消息各自走一遍确认）
-  gate.block({ sessionId: 's2', content: 'second' });
+  gate.block({ kind: 'message', sessionId: 's2', content: 'second' });
   assert.equal(gate.currentPhase, 'confirm');
-  assert.equal(gate.takeBlocked()?.content, 'second');
+  assert.equal(
+    gate.takeBlocked()?.kind === 'message' ? 'second' : null,
+    'second',
+  );
+});
+
+test('打开对话的拦截项没有消息内容（取消时无可回填）', () => {
+  const { gate } = makeGate();
+
+  gate.block({ kind: 'openConversation', sessionId: 's1' });
+  // 取消路径据此判断是否回填输入框：openConversation 不带 content
+  const blocked = gate.peekBlocked();
+  assert.equal(blocked?.kind, 'openConversation');
+  assert.equal(blocked !== null && 'content' in blocked, false);
+
+  gate.cancel();
+  assert.equal(gate.currentPhase, null);
+  assert.equal(gate.peekBlocked(), null);
 });

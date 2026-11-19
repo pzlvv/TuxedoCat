@@ -2348,6 +2348,10 @@ impl Core {
             "messageUuid": tool_call_uuid,
         }));
         let agent_mode = state.lock().unwrap().agent_mode.clone();
+        // 权限判定要回答「目标文件在这个会话里是否存在 / 内容是什么」——隔离会话里
+        // 那份事实在挂载命名空间里，与工具 IO 同一个读取点
+        // （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+        let files = self.ensure_work_view(session_id);
         match self.resolve_permission(
             session_id,
             &tool_use_id,
@@ -2355,6 +2359,7 @@ impl Core {
             input,
             &agent_mode,
             &project,
+            &files,
         ) {
             PermissionOutcome::Allowed { .. } => {
                 // 执行前再发一次 `toolCall`（卡片转「执行中」）
@@ -3144,6 +3149,10 @@ impl Core {
     ///
     /// `ask` **不等于拒绝**：它表示「需要弹确认框」，因此再发一次
     /// `CoreRequest.userChoice` 拿用户的选择。
+    ///
+    /// `files` 是该会话看到的文件（`WorkViewState`）：权限层要判「`Edit` 的目标文件
+    /// 是否存在 / 旧内容是什么」，隔离会话里那份事实在挂载命名空间里，不能自己读盘
+    /// （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
     fn resolve_permission(
         &self,
         session_id: &str,
@@ -3152,6 +3161,7 @@ impl Core {
         input: &Value,
         agent_mode: &str,
         cwd: &str,
+        files: &crate::tools::WorkViewState,
     ) -> PermissionOutcome {
         // 无论 allow / deny / ask，都先发一次
         // `toolPermissionRequested`（UI 借此上架工具卡片、在 manual 模式下打开宿主 diff）；
@@ -3159,8 +3169,9 @@ impl Core {
         // 不等宿主回包——回包历来是纯回显（决策全部由 PermissionPolicy 本地算出），
         // 阻塞等它只会让孤儿（后台运行，specs/031）期间的会话冻结在权限往返上
         // （specs/defects/orphan-stalls-on-permission-roundtrip.md）。
-        let (perm_result, display_args) =
-            permission::resolve_tool_permission(tool_name, input, agent_mode, cwd, session_id);
+        let (perm_result, display_args) = permission::resolve_tool_permission(
+            tool_name, input, agent_mode, cwd, session_id, files,
+        );
         // 权限决策留痕：allow/ask 不弹任何 UI 之外的可观测信号，宿主日志与 daemon 日志
         // 都看不到「为什么没弹确认框」；排障时这条是唯一锚点（e2e 远程 manual 权限
         // 排查即靠它定位——agent_mode 正确、behavior 却是 allow 的白名单路径）。
@@ -4289,6 +4300,9 @@ fn inject_skill_tool_use(
     // Skill 的 checkPermissions 恒 allow（见 `permission::base_check`），不会弹确认框；
     // 这里的往返只为让 UI 上架卡片，与授权路径同序。
     let agent_mode = state.lock().unwrap().agent_mode.clone();
+    // Skill 的权限判定不读盘（恒 allow），但 `resolve_permission` 的契约要求给出该会话
+    // 看到的文件面：传同一个读取点，避免将来在该分支加文件判定时又退回真实磁盘。
+    let files = core.ensure_work_view(session_id);
     match core.resolve_permission(
         session_id,
         &tool_use_id,
@@ -4296,6 +4310,7 @@ fn inject_skill_tool_use(
         &input,
         &agent_mode,
         project,
+        &files,
     ) {
         PermissionOutcome::Allowed { .. } => {
             // 对齐 `executeSingleItem`：执行前再发一次 `toolCall`（卡片转「执行中」）
@@ -5831,7 +5846,12 @@ fn run_query_loop(
                 // 验证失败时同样先发一次 toolPermissionRequested
                 // （工具实例在场，checkPermissions 会跑；displayArgs 照常展开）。
                 let (perm_result, display_args) = permission::resolve_tool_permission(
-                    &tool_name, &input, agent_mode, project, session_id,
+                    &tool_name,
+                    &input,
+                    agent_mode,
+                    project,
+                    session_id,
+                    &core.ensure_work_view(session_id),
                 );
                 // 同样只是让 UI 上架失败卡片：复用 `request_tool_permission`（发后不等），
                 // 不标记 `waiting`（`docs/core/session-runtime.md` 第 1 节）。
@@ -5876,6 +5896,10 @@ fn run_query_loop(
                 "args": input,
             }));
 
+            // 权限层要读「目标文件在这个会话里是否存在 / 旧内容是什么」：隔离会话的
+            // 答案在挂载命名空间里，必须经与该工具同一个读取点拿
+            // （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+            let perm_files = core.ensure_work_view(session_id);
             let outcome = match core.resolve_permission(
                 session_id,
                 &tool_use_id,
@@ -5883,6 +5907,7 @@ fn run_query_loop(
                 &input,
                 agent_mode,
                 project,
+                &perm_files,
             ) {
                 PermissionOutcome::Allowed { updated_input } => {
                     // 执行前会话已被中止：不执行工具，

@@ -4,8 +4,9 @@
  * 覆盖 `docs/core/core-remote.md` 第 2.8 节按指纹落位后的三条分支与失败路径：
  * - 该指纹的 daemon 在跑 → 直接复用，不重启、不覆盖（缺可执行文件或共享位缺
  *   ripgrep 时仍补传——「在跑」不等于产物齐全）；
- * - 已部署未启动 → 只跑 `start --idle-exit 30`，产物在就不重传（指纹槽位
- *   存在即视为同版本，不做字节比对——「不无脑覆盖」）；
+ * - 已部署未启动 → 只跑 `start --idle-exit 30`，槽位里的可执行文件自报指纹与本机一致
+ *   就不重传（同一指纹不重复上传，不做字节比对——「不无脑覆盖」）；不一致（含读不出）
+ *   则覆盖重传，重传后仍不符即报错；
  * - 未部署 → 上传产物（客户端唯一暂存名 + `mv` 原子换名）+ `start --idle-exit 30`；
  * - `start` 失败 / 状态文件读不出 / 本机产物缺指纹或缺自带 ripgrep → 报错，不静默降级；
  * - 上传失败时清掉自己的暂存文件，不在远端槽位留半截产物。
@@ -30,7 +31,7 @@ import {
   type RemoteSsh,
 } from '../host/standalone/sshDaemonBootstrap';
 import { CORE_FD_DIR, coreBinaryFileName, coreDeployDirPath, coreDeployFdPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
-import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
+import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 
 const HOME = '/home/dev';
@@ -79,6 +80,8 @@ class FakeSsh implements RemoteSsh {
   readonly events: string[] = [];
   /** 远端普通文件：路径 → 内容 */
   readonly files = new Map<string, string>();
+  /** 读内容会失败的路径（模拟权限 / 编码异常；`stat` 仍报存在） */
+  readonly readTextFails = new Set<string>();
   /** 远端存在的可执行文件 */
   readonly executables = new Set<string>();
   /** 可转发的 `host:port` */
@@ -90,6 +93,21 @@ class FakeSsh implements RemoteSsh {
   uploadFails = false;
   /** `start` 之后不落状态文件（模拟 daemon 没起来） */
   skipState = false;
+  /**
+   * 槽位里可执行文件自报的构建指纹（`<二进制> --version` 的输出来源）。
+   *
+   * 缺省等于本地产物指纹——「槽位里的产物就是本版本」的正常形态。设为别的值就模拟
+   * 被污染的槽位（历史上手工 `cargo build` 的产物指纹烧成 `manual-build`）。
+   * `null` 模拟 `--version` 跑不起来（文件损坏 / 不可执行）。
+   */
+  slotFingerprint: string | null = FINGERPRINT;
+  /**
+   * `mv` 换名到槽位路径后，槽位是否开始自报本地产物指纹。
+   *
+   * `true` 是正常形态（重传生效）；`false` 模拟「换名落错位置 / 落位后被外部产物盖回」，
+   * 用来锁定重传后仍不符时的 fail-closed 报错。
+   */
+  adoptRedeploy = true;
   private endpoint = '127.0.0.1:10975';
   /** 每次 `start` 换一个端口：用来区分「复用旧 daemon」与「新起了 daemon」 */
   startCount = 0;
@@ -106,6 +124,7 @@ class FakeSsh implements RemoteSsh {
   }
 
   async readText(target: string): Promise<string> {
+    if (this.readTextFails.has(target)) throw new Error(`permission denied: ${target}`);
     const text = this.files.get(target);
     if (text === undefined) throw new Error(`no such file: ${target}`);
     return text;
@@ -130,9 +149,33 @@ class FakeSsh implements RemoteSsh {
     this.commands.push(command);
     this.events.push(`exec:${command}`);
     if (command === 'uname -sm') return { code: 0, stdout: `${this.uname}\n`, stderr: '' };
+    // 槽位里的可执行文件自报构建指纹：引导在决定复用前先问它（不是文件系统能回答的事）
+    if (command === `'${BINARY_PATH}' --version`) {
+      if (this.slotFingerprint === null) {
+        return { code: 126, stdout: '', stderr: 'Permission denied' };
+      }
+      return {
+        code: 0,
+        stdout: `${CORE_BINARY_NAME} 0.0.1 (fingerprint ${this.slotFingerprint})\n`,
+        stderr: '',
+      };
+    }
     if (command.startsWith('mkdir -p ')) return { code: 0, stdout: '', stderr: '' };
-    if (command.startsWith('mv -f ')) return { code: 0, stdout: '', stderr: '' };
+    // `mv -f '<暂存>' '<目标>'` 是唯一的落位动作：把暂存项改名为目标项，并让槽位
+    // 随后自报本地产物指纹（`adoptRedeploy = false` 时模拟「换名后又被外部产物盖掉」）
+    const moved = /^mv -f '(.+)' '(.+)'$/.exec(command);
+    if (moved) {
+      if (this.executables.delete(moved[1])) this.executables.add(moved[2]);
+      if (moved[2] === BINARY_PATH && this.adoptRedeploy) this.slotFingerprint = FINGERPRINT;
+      return { code: 0, stdout: '', stderr: '' };
+    }
     if (command.startsWith('rm -f ')) return { code: 0, stdout: '', stderr: '' };
+    // 槽位里的 fingerprint 文件（`echo '<指纹>' > '<路径>'`）：内容与真实远端写入一致
+    const written = /^echo '([0-9a-f]{64})' > '(.+)'$/.exec(command);
+    if (written) {
+      this.files.set(written[2], `${written[1]}\n`);
+      return { code: 0, stdout: '', stderr: '' };
+    }
     if (command === START_COMMAND) {
       if (this.startExit === 0 && !this.skipState) {
         this.startCount += 1;
@@ -351,6 +394,101 @@ runTests('sshDaemonBootstrap', async () => {
     check('已部署时执行 start（绑回环）', fake.commands.includes(START_COMMAND));
     // 远端可执行文件名要先问 `uname`，因此这一步一定会发生
     check('先问远端平台', fake.commands.includes('uname -sm'));
+  }
+
+  // ---------- 槽位被污染：可执行文件在，但自报指纹不是本版本 → 重传 ----------
+  //
+  // 「文件存在」不等于「是本指纹的产物」：槽位里的文件可能来自历史手工构建、上一次清理
+  // 留下的半截产物、或另一个客户端的错误上传。这种槽位无自愈路径——文件在，引导就不上传；
+  // daemon 按**自己**的指纹写状态文件，宿主按**本地**指纹去读，永远读不到，重连每次都走同一条
+  // 死路（`specs/defects/remote-slot-binary-fingerprint-unverified.md`）。
+
+  {
+    const fake = new FakeSsh();
+    fake.executables.add(BINARY_PATH);
+    fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(FD_PATH);
+    // 槽位里躺着一份指纹烧成占位值的手工构建产物
+    fake.slotFingerprint = 'manual-build';
+    const daemon = await ensureRemoteDaemon(fake, options);
+    const staged = fake.uploads.find((upload) => upload.local === binary)?.remote;
+    check('槽位指纹不符时重传本地产物（经唯一暂存名 + mv）',
+      isUniqueStagingOf(staged, BINARY_PATH)
+      && fake.commands.includes(`mv -f '${staged}' '${BINARY_PATH}'`));
+    check('槽位指纹不符时只重传 Core 二进制（内置工具与指纹无关）', fake.uploads.length === 1);
+    check('重传后照常启动 daemon', fake.commands.includes(START_COMMAND));
+    check('重传后返回 daemon endpoint', daemon.port === 10976);
+  }
+
+  // ---------- 槽位被污染且 --version 跑不起来：按不可复用处理，重传 ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.executables.add(BINARY_PATH);
+    fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(FD_PATH);
+    fake.slotFingerprint = null;
+    await ensureRemoteDaemon(fake, options);
+    check('--version 探测失败时同样重传（不把读不出指纹当同版本）',
+      fake.uploads.some((upload) => upload.local === binary));
+    check('--version 探测失败后仍继续引导', fake.commands.includes(START_COMMAND));
+  }
+
+  // ---------- 重传后指纹仍不符：报错，不静默降级 ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.executables.add(BINARY_PATH);
+    fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(FD_PATH);
+    fake.slotFingerprint = 'manual-build';
+    // 换名落位后槽位仍自报旧指纹（模拟落错位置 / 落位后被外部产物盖回）
+    fake.adoptRedeploy = false;
+    let message = '';
+    try {
+      await ensureRemoteDaemon(fake, options);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    check('重传后指纹仍不符时报错', message.includes('fingerprint'));
+    check('重传后指纹仍不符时点名期望与实际的指纹',
+      message.includes(FINGERPRINT) && message.includes('manual-build'));
+    check('重传后指纹仍不符时不启动 daemon', !fake.commands.includes(START_COMMAND));
+  }
+
+  // ---------- 槽位里同时落一份 fingerprint 文件 ----------
+
+  {
+    const fake = new FakeSsh();
+    await ensureRemoteDaemon(fake, options);
+    const slotFingerprint = fake.files.get(
+      `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/fingerprint`,
+    );
+    check('槽位里落 fingerprint 文件（部署布局可自读）',
+      slotFingerprint?.trim() === FINGERPRINT);
+  }
+
+  // ---------- fingerprint 文件读不出：不阻塞引导（它只是自读凭据，不参与复用判定） ----------
+
+  {
+    const fake = new FakeSsh();
+    fake.executables.add(BINARY_PATH);
+    fake.executables.add(RIPGREP_PATH);
+    fake.executables.add(FD_PATH);
+    // 槽位里已有内容正确但读不出的 fingerprint 文件（模拟权限 / 编码异常）
+    const slotFingerprintPath = `${HOME}/${REMOTE_DEPLOY_ROOT}/${DEPLOY_DIR}/fingerprint`;
+    fake.files.set(slotFingerprintPath, '\u0000garbled');
+    fake.readTextFails.add(slotFingerprintPath);
+    let failed = '';
+    let port = 0;
+    try {
+      port = (await ensureRemoteDaemon(fake, options)).port;
+    } catch (error) {
+      failed = error instanceof Error ? error.message : String(error);
+    }
+    check('fingerprint 文件读不出时引导仍成功', failed === '' && port === 10976);
+    check('fingerprint 文件读不出时不重传二进制（判定只认二进制自报指纹）',
+      !fake.uploads.some((upload) => upload.local === binary));
   }
 
   // ---------- 未部署：上传 + start ----------

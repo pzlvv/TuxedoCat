@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-19
 ---
 
 # 规格：Overlay 对话工作视图
@@ -26,8 +26,18 @@ last_reviewed: 2026-11-12
 `mountProxy: 'absent'` 的组合不可达：Core 不建命名空间，能力只能由代理提供。
 
 界面在 `isolatedWorkView || deployable` 时渲染入口。两者都不成立时整块入口不出现——不给
-「勾选后静默无效」的形态。入口本身不带任何前置提示：需要部署时由宿主在发第一条消息时弹
-确认。代理的形态、特权阶段与协议见 [docs/core/mount-proxy.md](mount-proxy.md)。
+「勾选后静默无效」的形态。入口本身不带任何前置提示：需要部署时由宿主弹确认。
+
+部署确认有两个入口，判据只有一份（`isolated` 归属 **且** `isolatedWorkView === false`
+**且** `deployable === true`）：
+
+| 入口 | 时机 | 部署成功 | 部署失败 |
+| --- | --- | --- | --- |
+| 新对话勾选 Overlay | 发第一条消息时 | 重发被拦下的那条消息 | 消息留在输入框，会话保持空状态 |
+| 打开已有 Overlay 对话 | 打开时（读盘与切会话之前） | 自动继续打开该对话 | 放弃打开：不加载内容、不降级为磁盘视图、界面停在原位置 |
+
+`deployable === false` 时两个入口都不弹框：装代理解决不了该问题，宿主以 Core 给出的
+`reason` 拒绝并点明原因。代理的形态、特权阶段与协议见 [docs/core/mount-proxy.md](mount-proxy.md)。
 
 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但
 Core 是。
@@ -185,6 +195,18 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 前台的 `toolProgress`、中止（`ctx.cancel`）与后台任务同样走这条通道：Core 不持有工具的
 `Child` 句柄，中止翻译成 `kill` 请求；后台任务的输出由 Core 追加进任务输出文件，退出码
 取自代理的 `exit` 应答。
+
+**权限阶段也是这条通道的一部分。** `Edit` / `Write` 的授权前判定要回答「目标文件在这个
+会话里是否存在、旧内容是什么」，答案必须与工具执行同一份：隔离会话里它来自视图，非隔离
+会话才是真实磁盘。`permission.rs` 因此不直接读盘，而是经 `WorkViewState` 的
+`stat_path` / `read_bytes`——同一处失败语义：视图不可用时授权前就按「视图不可用」拒绝，
+不退回磁盘（specs/defects/overlay-edit-and-card-links-read-real-disk.md）。确认框的
+「创建新文件 / 覆盖现有文件」判据取自同一个读取点。
+
+会话里的文件链接（Read / Write / Edit 卡片的路径）同样按归属取数：宿主看到来源视图的
+会话归属是 `isolated` 时经 `UiRequest.workViewFileDiffRequested` 读视图内容，与侧栏
+Overlay 双击打开同一份编排——磁盘上没有的对话内新文件因此也能打开。归属的 owner 仍是
+Core（`meta.json` 的 `storage`），宿主只读投影、不重算。
 
 ## 6. 生命周期
 
