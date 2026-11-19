@@ -278,4 +278,16 @@ export interface UIHost extends WorkspaceProvider {
    * 因此「Core 说可部署、宿主说没目标」本身就是不一致，必须显式失败。
    */
   resolveMountProxyTarget(sessionId: string): Promise<MountProxyTarget | null>;
+
+  /**
+   * 该会话的文件存储归属（specs/052 FR-001）。
+   *
+   * 打开已有对话时据此判断要不要先过部署闸门：`isolated` 的对话要视图才读得到内容，
+   * 代理未部署时先弹部署。事实由 Core 写在 `meta.json` 的 `storage` 里，宿主只读投影，
+   * 不重算、不缓存（`docs/core/conversation-work-view.md` 第 2 节）。
+   *
+   * 缺失即 `'workspace'`：存量会话与"归属未知"同一口径，不因读不到就把普通对话拦下来。
+   * 没有 Overlay 能力的宿主（VS Code）恒回 `'workspace'`，因此永不进闸门。
+   */
+  sessionStorageOf(sessionId: string): 'workspace' | 'isolated';
 }

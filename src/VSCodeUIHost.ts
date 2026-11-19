@@ -323,6 +323,16 @@ export class VSCodeUIHost implements UIHost {
   }
 
   /**
+   * 该会话的文件存储归属（specs/052 FR-001）。
+   *
+   * VS Code 宿主不提供 Overlay 能力：Core 侧 `work_view_unsupported` 的能力恒不可用，
+   * 因此这里的会话恒为 `workspace`，打开对话永不进部署闸门。
+   */
+  sessionStorageOf(_sessionId: string): 'workspace' | 'isolated' {
+    return 'workspace';
+  }
+
+  /**
    * 会话所属的工作区引用。
    *
    * VS Code 单工作区窗口：直接取当前工作区。会话与工作区的对应关系在 Core 侧，

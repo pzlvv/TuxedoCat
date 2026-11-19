@@ -187,6 +187,16 @@ export class ElectronUIHost implements UIHost {
     this.sessionStorageLookup = lookup;
   }
 
+  /**
+   * 该会话的文件存储归属（specs/052 FR-001）。
+   *
+   * 与 `setSessionStorageLookup` 是同一条事实的两面：注入方给查询口，本类只转发结果。
+   * 缺省按 `workspace`——未注入或列表里还没有该会话时，不把普通对话当 Overlay 拦下。
+   */
+  sessionStorageOf(sessionId: string): 'workspace' | 'isolated' {
+    return this.sessionStorageLookup?.(sessionId) ?? 'workspace';
+  }
+
   setChatViewManager(m: ChatViewManager): void {
     this.chatViews = m;
     // 预热视图被切到前台：宿主组装并直发 activatePrewarmedView

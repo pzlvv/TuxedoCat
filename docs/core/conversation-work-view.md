@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-19
 ---
 
 # 规格：Overlay 对话工作视图
@@ -26,8 +26,18 @@ last_reviewed: 2026-11-12
 `mountProxy: 'absent'` 的组合不可达：Core 不建命名空间，能力只能由代理提供。
 
 界面在 `isolatedWorkView || deployable` 时渲染入口。两者都不成立时整块入口不出现——不给
-「勾选后静默无效」的形态。入口本身不带任何前置提示：需要部署时由宿主在发第一条消息时弹
-确认。代理的形态、特权阶段与协议见 [docs/core/mount-proxy.md](mount-proxy.md)。
+「勾选后静默无效」的形态。入口本身不带任何前置提示：需要部署时由宿主弹确认。
+
+部署确认有两个入口，判据只有一份（`isolated` 归属 **且** `isolatedWorkView === false`
+**且** `deployable === true`）：
+
+| 入口 | 时机 | 部署成功 | 部署失败 |
+| --- | --- | --- | --- |
+| 新对话勾选 Overlay | 发第一条消息时 | 重发被拦下的那条消息 | 消息留在输入框，会话保持空状态 |
+| 打开已有 Overlay 对话 | 打开时（读盘与切会话之前） | 自动继续打开该对话 | 放弃打开：不加载内容、不降级为磁盘视图、界面停在原位置 |
+
+`deployable === false` 时两个入口都不弹框：装代理解决不了该问题，宿主以 Core 给出的
+`reason` 拒绝并点明原因。代理的形态、特权阶段与协议见 [docs/core/mount-proxy.md](mount-proxy.md)。
 
 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但
 Core 是。
