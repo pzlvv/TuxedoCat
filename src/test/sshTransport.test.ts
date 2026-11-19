@@ -21,7 +21,7 @@ import type { SshExecResult, SshFileInfo } from '../host/standalone/sshClient';
 import type { RemoteSsh } from '../host/standalone/sshDaemonBootstrap';
 import { REMOTE_DEPLOY_ROOT } from '../host/standalone/sshDaemonBootstrap';
 import { coreBinaryFileName, coreDeployDirPath, coreDeployFdPath, coreDeployRipgrepPath } from '../host/standalone/coreBinary';
-import { CONFIG_DIR_NAME, CORE_RESOURCE_DIR } from '../config/project';
+import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 
 const HOME = '/home/dev';
 const FINGERPRINT = 'a'.repeat(64);
@@ -78,7 +78,22 @@ class FakeSsh implements RemoteSsh {
 
   async exec(command: string): Promise<SshExecResult> {
     if (command === 'uname -sm') return { code: 0, stdout: 'Linux x86_64\n', stderr: '' };
-    if (command.startsWith('mkdir -p ') || command.startsWith('mv -f ')) {
+    // 槽位里的可执行文件自报构建指纹（引导在复用前先问它，见
+    // `specs/defects/remote-slot-binary-fingerprint-unverified.md`）
+    if (command === `'${BINARY_PATH}' --version`) {
+      return { code: 0, stdout: `${CORE_BINARY_NAME} 0.0.1 (fingerprint ${FINGERPRINT})\n`, stderr: '' };
+    }
+    // 槽位的 fingerprint 文件（`echo '<指纹>' > '<路径>'`）
+    const written = /^echo '([0-9a-f]{64})' > '(.+)'$/.exec(command);
+    if (written) {
+      this.files.set(written[2], `${written[1]}\n`);
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    if (command.startsWith('mkdir -p ')) return { code: 0, stdout: '', stderr: '' };
+    // `mv -f '<暂存>' '<目标>'`：暂存项改名为目标项（与真实远端的原子换名一致）
+    const moved = /^mv -f '(.+)' '(.+)'$/.exec(command);
+    if (moved) {
+      if (this.executables.delete(moved[1])) this.executables.add(moved[2]);
       return { code: 0, stdout: '', stderr: '' };
     }
     if (command === START_COMMAND) {
