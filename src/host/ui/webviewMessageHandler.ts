@@ -468,14 +468,22 @@ export class WebviewMessageHandler {
    * 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，
    * 但 Core 是。不可用时带上原因，界面据此不渲染入口——不出现「勾选后静默无效」。
    *
-   * 投递：`sender` 指定句柄时直发该视图。Electron 多视图下请求方不一定是活动视图
-   * （后台预热视图在挂载时就问，等它被切到前台再答会永远错过），走默认路由会让勾选框
-   * 在该视图里恒不出现。`sender` 为 null 时走默认路由（单视图宿主）。
+   * **问哪个 Core**：能力是逐 Core 的事实，请求带来源视图所属工作区（`ctx.sender` →
+   * `getWorkspaceRefForView`），由 `Client` 路由到那个 Core。不带的话会落到活动连接，
+   * 后台预热视图（属于非活动标签页）因此拿到另一个 Core 的答案，勾选框不出现
+   * （`specs/defects/prewarm-view-capability-query-hits-wrong-core.md`）。
+   *
+   * **答给哪个视图**：`sender` 指定句柄时直发该视图。Electron 多视图下请求方不一定是
+   * 活动视图（后台预热视图在挂载时就问，等它被切到前台再答会永远错过），走默认路由会让
+   * 勾选框在该视图里恒不出现。`sender` 为 null 时走默认路由（单视图宿主）。
    */
   private async handleRequestStorageCapabilities(
     sender: WebviewRequestContext['sender'],
   ): Promise<void> {
-    const capabilities = await requestStorageCapabilities();
+    // 视图所属工作区给不出时（单视图宿主 / 宿主主动推送在 native webview 上无句柄）
+    // 传 null：Client 落到活动连接，与既有单视图语义一致。
+    const viewWorkspacePath = this.host.getWorkspaceRefForView(sender)?.path ?? null;
+    const capabilities = await requestStorageCapabilities({ workspacePath: viewWorkspacePath });
     const message: Extract<HostToWebviewMessage, { type: 'setStorageCapabilities' }> = {
       type: 'setStorageCapabilities',
       isolatedWorkView: capabilities.isolatedWorkView,
@@ -552,7 +560,11 @@ export class WebviewMessageHandler {
   private async shouldBlockForMountProxy(sessionId: string, storage: 'workspace' | 'isolated'): Promise<boolean> {
     // 归属取自**消息本身**，不读跨消息状态：`setConversationStorage` 与 `sendMessage`
     // 是两条独立上行，先后取决于渲染时序，用顺序推归属会让闸门时灵时不灵。
-    const capabilities = await requestStorageCapabilities();
+    //
+    // 能力按**会话**问：这是「该会话所属 Core 能不能建 Overlay 视图」的判断。落到活动
+    // 连接会把别的标签页的能力当成本会话的（本地 Core 恒不可用 → 远端会话被误拦 /
+    // 误判接线错误），见 `specs/defects/prewarm-view-capability-query-hits-wrong-core.md`。
+    const capabilities = await requestStorageCapabilities({ sessionId });
     if (storage !== 'isolated') return false;
     if (capabilities.isolatedWorkView) return false;
     if (!capabilities.deployable) {
@@ -660,8 +672,9 @@ export class WebviewMessageHandler {
         digest: outcome.digest,
         uid: outcome.digest.length > 0 ? (process.getuid?.() ?? null) : null,
       }));
-      // FR-008：装完**不自己判 ready**，交给 Core 重查能力
-      const capabilities = await requestStorageCapabilities();
+      // FR-008：装完**不自己判 ready**，交给 Core 重查能力。按被拦消息的会话问：
+      // 部署目标是该会话所属的 Core，重查的必须是同一台机器的能力。
+      const capabilities = await requestStorageCapabilities({ sessionId: gate.peekBlocked()?.sessionId });
       if (!capabilities.isolatedWorkView) {
         gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
         return;
@@ -706,7 +719,8 @@ export class WebviewMessageHandler {
     const poll = async (): Promise<void> => {
       if (this.mountProxyGate !== gate) return; // 期间被取消 / 换了一轮部署
       if (await target.isInstalled()) {
-        const capabilities = await requestStorageCapabilities();
+        // 同 applyDeployOutcome：按被拦消息的会话问，问的是部署目标那台 Core
+        const capabilities = await requestStorageCapabilities({ sessionId: gate.peekBlocked()?.sessionId });
         if (!capabilities.isolatedWorkView) {
           gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
           return;

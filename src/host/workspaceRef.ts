@@ -181,6 +181,21 @@ export function workspaceRefDisplayPath(ref: WorkspaceRef): string {
 }
 
 /**
+ * 按工作区身份键（`workspaceRefKey`）在打开集合里找引用。
+ *
+ * 多视图宿主的视图登记的是**身份键**而不是路径（`ChatViewManager.viewWorkspaces`）：
+ * 远程同路径不同主机是两个工作区，按路径比较会命中错的或一个都不命中。
+ * 找不到时返回 `undefined`，由调用方决定是否退回活动工作区——**不猜**。
+ */
+export function findWorkspaceRefByKey(
+  refs: readonly WorkspaceRef[],
+  key: string | undefined,
+): WorkspaceRef | undefined {
+  if (!key) return undefined;
+  return refs.find((ref) => workspaceRefKey(ref) === key);
+}
+
+/**
  * 「复制工作区路径」写进剪贴板的值：两种工作区都是**目录本身**。
  *
  * 本地是宿主上的目录绝对路径；远程是目标机器上的目录串（不带 `scheme://user@host`

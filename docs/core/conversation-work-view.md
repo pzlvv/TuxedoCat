@@ -32,6 +32,12 @@ last_reviewed: 2026-11-12
 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但
 Core 是。
 
+能力是**逐 Core** 的事实，因此请求必须点名问哪个 Core：`storageCapabilitiesRequested`
+携带 `sessionId` 与 `workspacePath`（没有对应上下文时为 `null`），宿主侧据它选 Connection
+（漏掉就落到活动连接，后台预热视图会拿到另一个 Core 的答案）。两个字段只参与宿主侧路由，
+Core 忽略它们、只回答自己那份能力。同给时 `sessionId` 优先（会话归属比视图更具体）：
+部署闸门按会话问，webview 按来源视图所属工作区问（预热视图还没有会话）。
+
 ### 1.1 按会话读取视图内容
 
 宿主进程看不到 Core 私有挂载命名空间里的视图（读挂载点得到空目录），直接读 `upper/`

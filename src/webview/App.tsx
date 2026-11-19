@@ -227,9 +227,11 @@ const App = () => {
   const [mountProxyDeployState, setMountProxyDeployState] = useState<MountProxyDeployState | null>(null);
   /**
    * 能力查询在挂载后跑一次：Core 的能力在它的生命周期内不变，不需要重复问。
-   * 应答按来源视图投递（`WebviewMessageHandler` 用 `ctx.sender` 定向），所以预热视图在
-   * 后台发起也能收到，不必等被切到前台再补问。未到达（含查询失败）保持等待态：不猜
-   * false、也不猜 true——不渲染入口，也不给「勾了却静默无效」的形态。
+   *
+   * 预热视图在后台发起也能得到**正确那个 Core** 的答案：宿主按来源视图所属工作区选
+   * Connection（`WebviewMessageHandler` 用 `ctx.sender` 做取数与回包定向），因此不必等
+   * 被切到前台再补问。未到达（含查询失败）保持等待态：不猜 false、也不猜 true——
+   * 不渲染入口，也不给「勾了却静默无效」的形态。
    */
   useEffect(() => {
     postMessage({ type: 'requestStorageCapabilities' });

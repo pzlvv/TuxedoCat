@@ -331,6 +331,63 @@ async function run(): Promise<void> {
     await harness.client.closeAll();
   }
 
+  // ── 5a. 能力查询按工作区路由（specs/defects/prewarm-view-capability-query-hits-wrong-core）──
+  // 后台预热视图属于非活动标签页，它在挂载时就问「本 Core 有没有 Overlay 能力」。
+  // 若请求落到 `currentConnection()`（最近激活的工作区），预热视图会拿到另一个 Core 的
+  // 答案——本地 Windows Core 恒 deployable:false，勾选框因此不出现。
+  {
+    const harness = createClientHarness();
+    harness.client.openWorkspace(WS_A);
+    harness.client.openWorkspace(WS_B);
+    harness.readyAll();
+    // 活动连接 = A（openWorkspace 的顺序把 B 置为当前，这里显式切回 A）
+    harness.client.activateWorkspace(WS_A);
+    check('活动连接先指向 A', harness.client.currentConnection()?.workspaceRef.path === WS_A.path);
+
+    await harness.client.requestCore({
+      type: 'storageCapabilitiesRequested',
+      sessionId: null,
+      workspacePath: WS_B.path,
+    });
+    check(
+      '能力查询按 workspacePath 路由到 B 的 Connection',
+      harness.channels[1].requests.some((r) => r.type === 'storageCapabilitiesRequested'),
+    );
+    check(
+      '能力查询不落到活动连接 A',
+      !harness.channels[0].requests.some((r) => r.type === 'storageCapabilitiesRequested'),
+    );
+
+    await harness.client.requestCore({ type: 'storageCapabilitiesRequested', sessionId: null, workspacePath: null });
+    check(
+      '不带路由载荷时仍落到活动连接（单工作区宿主 / 宿主主动推送）',
+      harness.channels[0].requests.some((r) => r.type === 'storageCapabilitiesRequested'),
+    );
+
+    // 给不出唯一 Connection（工作区未打开）时报错，不退回活动连接：
+    // 退回会让界面拿到另一个 Core 的答案并据此决定是否渲染入口。
+    let rejected = false;
+    await harness.client
+      .requestCore({
+        type: 'storageCapabilitiesRequested',
+        sessionId: null,
+        workspacePath: 'D:/repo/not-open',
+      })
+      .catch(() => {
+        rejected = true;
+      });
+    check('工作区未打开时报错，不退回活动连接', rejected);
+    check(
+      '未打开工作区的请求没有落到任何通道',
+      !harness.channels.some((channel) =>
+        channel.requests.some(
+          (r) => r.type === 'storageCapabilitiesRequested' && (r as { workspacePath?: string }).workspacePath === 'D:/repo/not-open',
+        ),
+      ),
+    );
+    await harness.client.closeAll();
+  }
+
   // ── 5b. 远程工作区：按工作区路径登记归属（file-only 匹配会漏掉远程） ──
   {
     const harness = createClientHarness();

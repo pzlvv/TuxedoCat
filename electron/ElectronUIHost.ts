@@ -15,7 +15,7 @@ import type { ChatViewManager } from './ChatViewManager.js';
 import type { UIHost, WorkspaceChange } from '../src/host/UIHost.js';
 import type { CoreEvent } from '../src/shared/AssistantEventBus.js';
 import { WebviewViewHandle } from '../src/host/UIHost.js';
-import { workspaceRefKey, type WorkspaceRef } from '../src/host/workspaceRef.js';
+import { findWorkspaceRefByKey, workspaceRefKey, type WorkspaceRef } from '../src/host/workspaceRef.js';
 import { resolveRemoteFileWorkspace } from '../src/host/remoteFileResolve.js';
 import type { MountProxyTarget } from '../src/host/mountProxyInstall.js';
 import {
@@ -267,13 +267,17 @@ export class ElectronUIHost implements UIHost {
   /**
    * 视图所属工作区引用（specs/023 FR-007）：按聊天视图登记的归属解析，
    * 解析不出时退回活动工作区。
+   *
+   * 视图登记的是工作区 **id**（`workspaceRefKey`），不是路径：远程同路径不同主机的
+   * 两个工作区是两个身份，按路径比较会命中错的那个（或一个都不命中而退回活动工作区，
+   * 让视图的请求落到别的标签页 Core 上——`specs/defects/prewarm-view-capability-query-hits-wrong-core.md`）。
    */
   getWorkspaceRefForView(view: WebviewViewHandle | null): WorkspaceRef | undefined {
     if (!view) return this.getWorkspaceRef();
     const webContents = view.view as WebContents;
-    const path = this.chatViews?.getWorkspaceForWebContents(webContents);
-    if (!path) return this.getWorkspaceRef();
-    return this.getOpenWorkspaceRefs().find((ref) => ref.path === path) ?? this.getWorkspaceRef();
+    const id = this.chatViews?.getWorkspaceForWebContents(webContents);
+    if (!id) return this.getWorkspaceRef();
+    return findWorkspaceRefByKey(this.getOpenWorkspaceRefs(), id) ?? this.getWorkspaceRef();
   }
 
   /** 订阅工作区打开 / 关闭 / 激活（main 进程经 setWorkspaceSource 注入） */

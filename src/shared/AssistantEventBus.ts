@@ -807,8 +807,14 @@ export type UiRequest =
    *
    * 宿主据此决定是否渲染「Overlay 对话」入口。能力由 Core 判断——宿主平台回答不了
    * 这个问题（Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但 Core 是）。
+   *
+   * 能力是**每个 Core 各一份**的事实，因此请求必须点名问哪个 Core：宿主侧按
+   * `sessionId`（该会话的归属）或 `workspacePath`（视图所属工作区）选 Connection，
+   * 两者都给不出时落到活动连接。Core 侧忽略这两个字段——它只回答自己那份能力
+   * （`docs/core/conversation-work-view.md` 第 1 节）。
+   * 不用 `?` 省略：「没有会话上下文」是 `null`，不是缺字段。
    */
-  | { type: 'storageCapabilitiesRequested' }
+  | { type: 'storageCapabilitiesRequested'; sessionId: string | null; workspacePath: string | null }
   /**
    * 列 Overlay 对话的叠加视图目录（specs/046 FR-002）。
    *
