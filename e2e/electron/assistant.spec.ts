@@ -417,7 +417,11 @@ test('US-75 时间线「从这里继续」：确认后截断消息并回滚文�
   // 还没有节点身份，原因也可能是「不是对话节点」，两种都必须置灰并说明）
   await expect(busyMenuItem).toBeDisabled({ timeout: 10_000 });
   await expect(busyMenuItem).toHaveAttribute('title', /不能回退|不可回退/);
-  await chatPage.keyboard.press('Escape');
+  // 关菜单用点击别处（菜单的关闭手势之一），**不用 Esc**：权限确认框打开时 Esc 的语义
+  // 是「作废这次选择」（specs/050 FR-004），按下去会把待确认的权限框一起取消，
+  // 后面就永远等不到「允许」。
+  await chatPage.locator('.messages-container').click({ position: { x: 5, y: 5 } });
+  await expect(busyMenuItem).toBeHidden({ timeout: 10_000 });
 
   await overlay.getByRole('button', { name: /允许/ }).first().click();
   await expect(chatPage.getByText('改完了。').first()).toBeVisible({ timeout: 30_000 });

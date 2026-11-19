@@ -73,7 +73,7 @@ function installFakeBus(): void {
       }
       throw new Error(`unexpected core request: ${request.type}`);
     }) as never,
-    // 上行 UiEvent 的落点：归属改写（conversationStorageConverted / storageChanged）会经过这里
+    // 上行 UiEvent 的落点：归属改写（storageChanged）会经过这里
     emitToCore: (event: { type: string }) => {
       fakeCore?.uiEvents?.push(event);
     },
@@ -288,9 +288,7 @@ runTests('overlayOpenDeployGate', async () => {
     check('AC-4 部署失败不加载对话', coreLoaded.length === 0);
     check(
       'AC-4 部署失败不写归属（没有归属类 UiEvent 上行）',
-      !(uiEvents ?? []).some(
-        (e) => e.type === 'conversationStorageConverted' || e.type === 'storageChanged',
-      ),
+      !(uiEvents ?? []).some((e) => e.type === 'storageChanged'),
     );
     check('AC-4 部署失败不回填输入框（无内容可回填）',
       !broadcasts.some((m) => m.type === 'userMessageDraftRestored'));

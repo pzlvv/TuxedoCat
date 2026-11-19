@@ -203,7 +203,7 @@ CI 车道**：需要 root 的断言一律走特权车道并按既有 `markSkippe
 | 层 | project | 文件 | 覆盖 | 前置 |
 | --- | --- | --- | --- | --- |
 | webview UI | `webview-ui` | `e2e/webview/overlayMountProxy.spec.ts` | FR-002 入口渲染判据（不带前置提示）、FR-003 部署闸门与取消语义、FR-004 三选一 / 遮蔽 / 不限次数重试 / 模态层、FR-008 成功不弹提示 | 假宿主新增能力注入与 4 条 wire 消息应答 |
-| 整应用（本地） | `electron-app` | `e2e/electron/overlayMountProxyLocal.spec.ts` | FR-001 / FR-008 / FR-010 / FR-011 的能力事实与 fail-closed：非 Linux 宿主不渲染入口、能力 `absent` 时 `isolated` 不落 meta、存量 isolated 会话的显式转换 | 真实 Core（宿主平台二进制）+ mock LLM |
+| 整应用（本地） | `electron-app` | `e2e/electron/overlayMountProxyLocal.spec.ts` | FR-001 / FR-010 的能力事实与 fail-closed：宿主平台无代理时不渲染入口、能力 `absent` 时 `isolated` 不落 meta | 真实 Core（宿主平台二进制）+ mock LLM |
 | 整应用（真实 SSH） | `electron-ssh` | `e2e/electron/overlayMountProxyRemote.spec.ts` | FR-009 / AC-34 / AC-35 / AC-36 / AC-37 的远端全链路：上传 → 提权安装 → 自检 → 能力 ready → 工具改动不落真实磁盘 → 卸载后校验 → 审计行 | `e2e/environments.json` 的 ssh 段 + `npm run build:core:linux-x64` |
 | 特权车道（手工） | 无（`npm run test:e2e:ssh` 的一个文件） | `e2e/electron/overlayMountProxyRemote.spec.ts` 的 `test.describe('privileged')` | FR-005 / FR-006 / AC-15 / AC-19 / AC-21 / AC-22 / AC-23 / AC-26 / AC-26b / AC-26c / AC-27 | 远端 `sudo` 可提权；不满足时 `test.skip(true, 原因)` 单列 |
 
@@ -257,7 +257,6 @@ CI 车道**：需要 root 的断言一律走特权车道并按既有 `markSkippe
 | 密码框 | `input[type="password"][data-mount-proxy-secret]` | 遮蔽输入（AC-13） |
 | 进度 / 失败 | `[data-mount-proxy-phase]` | 取值 `idle` / `running` / `failed` / `done` |
 | 零密码命令 | `pre[data-mount-proxy-command]` | 用户自己执行的那段命令 |
-| 转为真实工作区 | `[data-conversation-storage-convert]` | FR-011 的显式动作 |
 
 **wire 协议契约**（T019 的四个消息，用例按名字驱动假宿主）：
 
@@ -278,7 +277,6 @@ CI 车道**：需要 root 的断言一律走特权车道并按既有 `markSkippe
 | --- | --- | --- |
 | 非 Linux 宿主不渲染入口 | AC-3 / AC-5 | 宿主平台无代理能力时新对话空状态无勾选框；`storageCapabilitiesRequested` 应答 `deployable: false` |
 | 能力不可用时 `isolated` 被拒 | AC-32 | 直接发 `setConversationStorage: isolated` 后建会话，`meta.json` 无 `isolated`，界面回推事实 |
-| 存量 isolated 会话的显式转换 | AC-33 / FR-011 | 预置 `meta.json: isolated` 的会话打开后出现「转为真实工作区」动作；点击后落盘为 `workspace`，工具读写真实磁盘 |
 
 `e2e/electron/overlayMountProxyRemote.spec.ts`（真实 SSH 远端）：
 

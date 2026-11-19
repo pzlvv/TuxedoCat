@@ -665,34 +665,6 @@ impl Core {
         }
     }
 
-    /// 把一条**存量**隔离会话转成真实工作区归属（specs/051 FR-011）。
-    ///
-    /// 与 `set_session_storage` 的分工：那条只服务「新建对话还没有消息」的窗口，已有
-    /// 消息就拒绝改动；本函数专门服务「已经有消息落盘、归属已固定」的存量会话——能力
-    /// 不可用时它是用户唯一的出路，因此**允许**改。
-    ///
-    /// 转换后该会话的工具读写真实磁盘，界面不再标注 Overlay。不做自动转换：这是用户的
-    /// 决定，自动降级会破坏「不过度 fallback」（`docs/architecture/principles.md` 第 1 节）。
-    pub fn convert_session_storage_to_workspace(&self, session_id: &str) -> Result<(), String> {
-        if self.session_storage(session_id) != WorkViewStorage::Isolated {
-            return Err(format!("会话 {session_id} 不是隔离归属，无需转换"));
-        }
-        let state = self.session(session_id);
-        state.lock().unwrap().storage = WorkViewStorage::Workspace;
-        // 落盘：meta.json 存在才写（纯声明性对话没有 meta，也就没有归属要改）
-        if history::metadata_of_session(session_id).is_some() {
-            let project = self.project_of(session_id)?;
-            history::update_metadata(
-                session_id,
-                &project,
-                || json!({ "sessionId": session_id, "project": project }),
-                |metadata| metadata["storage"] = json!("workspace"),
-            )
-            .map_err(|error| format!("写 meta 失败：{error}"))?;
-        }
-        Ok(())
-    }
-
     /// 会话的文件存储归属（specs/045 FR-001）；未知会话按真实工作区处理。
     ///
     /// 内存态优先：`conversationStarted` 在**首条消息落盘之前**到达，此时 meta.json

@@ -60,8 +60,7 @@ Core 不再自己建视图目录（改成代执行后那一步没人接手），
 - 「该会话不是隔离归属」（`Workspace`）与「隔离归属但视图不可用」
   （`ViewUnavailable`）是两件事，前者正常走磁盘；
 - `ViewUnavailable` 下所有工具路径解析返回错误，改动不落真实磁盘；
-- 不把会话自动改成 `workspace` 归属（改归属只经用户显式动作
-  `UiEvent.conversationStorageConverted`）；
+- 不把会话自动改成 `workspace` 归属：归属一次写定，不随能力变化改写；
 - 代理缺失 / 被杀只让能力回 `absent`，Core 照常服务帧通道。
 
 ## 回归测试

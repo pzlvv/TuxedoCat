@@ -1060,22 +1060,6 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
                 engine::work_view_storage_from_text(event.get("storage").and_then(Value::as_str));
             core.set_session_storage(&session_id, storage);
         }
-        // 存量隔离会话的显式出路（specs/051 FR-011）：用户决定把改动落到真实磁盘。
-        //
-        // 与 `storageChanged` 不同，这里**允许**已经有消息落盘的会话改归属——那正是它
-        // 存在的理由。视图随之回收：继续留着挂载只会让下一轮工具调用失败。
-        "conversationStorageConverted" => {
-            match core.convert_session_storage_to_workspace(&session_id) {
-                Ok(()) => {
-                    if let Ok(project) = core.project_of(&session_id) {
-                        crate::work_view::release(&project, &session_id);
-                    }
-                }
-                Err(reason) => {
-                    eprintln!("[core] conversationStorageConverted 失败（{session_id}）：{reason}")
-                }
-            }
-        }
         "conversationOpened" => {
             core.on_conversation_opened(&session_id);
         }
