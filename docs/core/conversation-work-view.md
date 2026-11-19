@@ -186,6 +186,18 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 `Child` 句柄，中止翻译成 `kill` 请求；后台任务的输出由 Core 追加进任务输出文件，退出码
 取自代理的 `exit` 应答。
 
+**权限阶段也是这条通道的一部分。** `Edit` / `Write` 的授权前判定要回答「目标文件在这个
+会话里是否存在、旧内容是什么」，答案必须与工具执行同一份：隔离会话里它来自视图，非隔离
+会话才是真实磁盘。`permission.rs` 因此不直接读盘，而是经 `WorkViewState` 的
+`stat_path` / `read_bytes`——同一处失败语义：视图不可用时授权前就按「视图不可用」拒绝，
+不退回磁盘（specs/defects/overlay-edit-and-card-links-read-real-disk.md）。确认框的
+「创建新文件 / 覆盖现有文件」判据取自同一个读取点。
+
+会话里的文件链接（Read / Write / Edit 卡片的路径）同样按归属取数：宿主看到来源视图的
+会话归属是 `isolated` 时经 `UiRequest.workViewFileDiffRequested` 读视图内容，与侧栏
+Overlay 双击打开同一份编排——磁盘上没有的对话内新文件因此也能打开。归属的 owner 仍是
+Core（`meta.json` 的 `storage`），宿主只读投影、不重算。
+
 ## 6. 生命周期
 
 | 时机 | 动作 |

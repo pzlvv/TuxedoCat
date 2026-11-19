@@ -450,7 +450,19 @@ fn normalize_tool_args(args: &Value) -> Value {
 ///
 /// `cwd` 只在需要读盘的判定里使用（`Edit` / `Write` 的文件检查），
 /// 其余分支与 `cwd` 无关。
-fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> CheckResult {
+///
+/// `files` 是「**这个会话看到的文件**」的读取点（`WorkViewState`）：隔离会话的
+/// `Edit` / `Write` 事实在挂载命名空间里，Core 自己 `std::fs` 读到的是真实磁盘
+/// （`docs/core/conversation-work-view.md` 第 5 节）。权限层因此**不直接读盘**——
+/// 否则对话内新建的文件会被判成「不存在」，`Edit` 在授权前就被拒绝
+/// （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+fn base_check(
+    tool_name: &str,
+    args: &Value,
+    cwd: &str,
+    session_id: &str,
+    files: &crate::tools::WorkViewState,
+) -> CheckResult {
     match tool_name {
         "Read" | "Grep" | "Glob" | "TodoWrite" | "WebSearch" | "WebFetch" => {
             CheckResult::allow_with_input(args)
@@ -527,8 +539,8 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 return CheckResult::allow_with_input(args);
             }
             CheckResult::ask(
-                ask_message(tool_name, args, cwd),
-                ask_choices(tool_name, args, cwd),
+                ask_message(tool_name, args, cwd, files),
+                ask_choices(tool_name, args, cwd, files),
             )
         }
         // specs/028：入参非法直接 deny（不弹确认框）；合法走 ask（确认文案含
@@ -557,8 +569,8 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 }
             }
             CheckResult::ask(
-                ask_message(tool_name, args, cwd),
-                ask_choices(tool_name, args, cwd),
+                ask_message(tool_name, args, cwd, files),
+                ask_choices(tool_name, args, cwd, files),
             )
         }
         // 先校验入参，非法直接 deny
@@ -576,26 +588,31 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
             if args.get("content").map(Value::is_null).unwrap_or(true) {
                 return CheckResult::deny("Invalid content: content is required".to_string());
             }
-            // 文件存在时读旧内容（overwrite），ENOENT 时 beforeContent = null
+            // 文件存在时读旧内容（overwrite），不存在时 beforeContent = null
             // （create）；其它读取错误走 `权限检查失败` 的兜底 deny。
+            //
+            // 经 `files` 读而不是 `std::fs`：隔离会话的「旧内容」是视图里的那份。
             //
             // `afterContent` 原样保留 `args.content` 的类型（不 stringify）：
             // 数字 / 布尔等非字符串入参也会原样进 permResult；displayArgs 侧才用
             // `String(...)` 文本化（见 `diff_texts`）。
             let content_value = args.get("content").cloned().unwrap_or(Value::Null);
             let path = crate::tools::expand_path(cwd, file_path);
-            let before_content = match std::fs::read_to_string(&path) {
-                Ok(text) => Value::String(text),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Value::Null,
-                Err(err) => return CheckResult::deny(format!("权限检查失败: {err}")),
+            let before_content = if write_target_exists(cwd, file_path, files) {
+                match files.read_bytes(&path) {
+                    Ok(bytes) => Value::String(String::from_utf8_lossy(&bytes).to_string()),
+                    Err(err) => return CheckResult::deny(format!("权限检查失败: {err}")),
+                }
+            } else {
+                Value::Null
             };
             let diff = json!({
                 "beforeContent": before_content,
                 "afterContent": content_value,
             });
             CheckResult::ask_with_diff(
-                ask_message(tool_name, args, cwd),
-                ask_choices(tool_name, args, cwd),
+                ask_message(tool_name, args, cwd, files),
+                ask_choices(tool_name, args, cwd, files),
                 diff,
             )
         }
@@ -617,14 +634,24 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                 return CheckResult::deny("Invalid new_string: new_string is required".to_string());
             }
             // 文件不存在（或不可读）时 deny，提示改用 Write。
+            //
+            // 存在性与内容都经 `files`（`WorkViewState`）：隔离会话的待编辑内容在视图里，
+            // 那里新建的文件磁盘上没有——用 `std::fs` 判会把它误拒成「不存在」。
             let path = crate::tools::expand_path(cwd, file_path);
-            let content = match std::fs::read_to_string(&path) {
+            let exists = match files.stat_path(&path) {
+                Ok(facts) => facts.exists,
+                Err(err) => return CheckResult::deny(format!("Failed to read file: {err}")),
+            };
+            if !exists {
+                return CheckResult::deny(format!(
+                    "File does not exist: {file_path}. Use Write tool to create new files."
+                ));
+            }
+            let content = match files
+                .read_bytes(&path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+            {
                 Ok(content) => content,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    return CheckResult::deny(format!(
-                        "File does not exist: {file_path}. Use Write tool to create new files."
-                    ))
-                }
                 Err(err) => return CheckResult::deny(format!("Failed to read file: {err}")),
             };
             let old_string_raw = args.get("old_string").and_then(Value::as_str).unwrap_or("");
@@ -652,8 +679,8 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
                         "endLine": preview.end_line,
                     });
                     CheckResult::ask_with_diff(
-                        ask_message(tool_name, args, cwd),
-                        ask_choices(tool_name, args, cwd),
+                        ask_message(tool_name, args, cwd, files),
+                        ask_choices(tool_name, args, cwd, files),
                         diff,
                     )
                 }
@@ -661,8 +688,8 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
         }
         // 其余写工具与非内置工具：默认询问
         _ => CheckResult::ask(
-            ask_message(tool_name, args, cwd),
-            ask_choices(tool_name, args, cwd),
+            ask_message(tool_name, args, cwd, files),
+            ask_choices(tool_name, args, cwd, files),
         ),
     }
 }
@@ -671,10 +698,19 @@ fn base_check(tool_name: &str, args: &Value, cwd: &str, session_id: &str) -> Che
 ///
 /// 引擎侧现在统一走 `resolve_tool_permission`（拿到加工后的 permResult 与
 /// displayArgs）；这里保留纯决策视图给权限对照表的单测使用。
+///
+/// 单测没有会话上下文，文件事实恒为 `WorkViewState::Workspace`（真实磁盘）。
+/// 隔离会话走 `resolve_tool_permission`，由它传入该会话的工作视图状态。
 #[cfg(test)]
 pub fn decide(tool_name: &str, args: &Value, agent_mode: &str, cwd: &str) -> Decision {
     // 权限对照表单测不涉及会话级判定（Agent 的嵌套调用检查），传空串
-    let check = base_check(tool_name, args, cwd, "");
+    let check = base_check(
+        tool_name,
+        args,
+        cwd,
+        "",
+        &crate::tools::WorkViewState::workspace(),
+    );
     // auto 模式下 AskUserQuestion 不可用：不弹提问框，直接返回不可用结果
     // （对齐 PermissionPolicy.ts 的 auto 分支：覆盖工具自身的 checkPermissions，
     // 先于 auto 的 ask→allow 加工，因此 manual / risk 不受影响）。
@@ -723,7 +759,12 @@ fn is_detach_escape(tool_name: &str, args: &Value) -> bool {
 }
 
 /// 询问时的提示文案（对齐各工具 `checkPermissions` 返回的 message）
-pub fn ask_message(tool_name: &str, args: &Value, cwd: &str) -> String {
+pub fn ask_message(
+    tool_name: &str,
+    args: &Value,
+    cwd: &str,
+    files: &crate::tools::WorkViewState,
+) -> String {
     match tool_name {
         "Bash" => {
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");
@@ -740,7 +781,7 @@ pub fn ask_message(tool_name: &str, args: &Value, cwd: &str) -> String {
         }
         "Write" => {
             let file_path = args.get("file_path").and_then(Value::as_str).unwrap_or("");
-            let action = if write_target_exists(cwd, file_path) {
+            let action = if write_target_exists(cwd, file_path, files) {
                 "覆盖现有文件"
             } else {
                 "创建新文件"
@@ -762,7 +803,12 @@ pub fn ask_message(tool_name: &str, args: &Value, cwd: &str) -> String {
 }
 
 /// 询问时的选项（对齐各工具 `checkPermissions` 返回的 choices）
-pub fn ask_choices(tool_name: &str, args: &Value, cwd: &str) -> Value {
+pub fn ask_choices(
+    tool_name: &str,
+    args: &Value,
+    cwd: &str,
+    files: &crate::tools::WorkViewState,
+) -> Value {
     match tool_name {
         "Bash" => {
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");
@@ -780,7 +826,7 @@ pub fn ask_choices(tool_name: &str, args: &Value, cwd: &str) -> Value {
         }
         "Write" => {
             let file_path = args.get("file_path").and_then(Value::as_str).unwrap_or("");
-            let description = if write_target_exists(cwd, file_path) {
+            let description = if write_target_exists(cwd, file_path, files) {
                 "覆盖文件"
             } else {
                 "创建文件"
@@ -804,6 +850,10 @@ pub fn ask_choices(tool_name: &str, args: &Value, cwd: &str) -> Value {
 /// `PermissionPolicy.resolveToolPermission` 的等价物：
 /// 工具自身判定 → 按 agentMode 加工 → 展开展示用参数。
 ///
+/// `files` 是「这个会话看到的文件」的读取点（`WorkViewState`）：隔离会话的
+/// `Edit` / `Write` 事实在挂载命名空间里，权限层因此不直接读盘
+/// （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+///
 /// 返回 `(permResult, displayArgs)`，形状即下发给
 /// `CoreRequest.toolPermissionRequested` 的载荷形状。
 pub fn resolve_tool_permission(
@@ -812,9 +862,10 @@ pub fn resolve_tool_permission(
     agent_mode: &str,
     cwd: &str,
     session_id: &str,
+    files: &crate::tools::WorkViewState,
 ) -> (Value, Value) {
     let args = normalize_tool_args(raw_args);
-    let check = base_check(tool_name, &args, cwd, session_id);
+    let check = base_check(tool_name, &args, cwd, session_id, files);
 
     // 改动内容（展示用）取自**工具自己的**权限结果，与下面按 agentMode 做的决策加工无关：
     // auto / risk 把 ask 自动放行为 allow 时，改动内容仍要保留，用户才看得到这次修改。
@@ -1073,11 +1124,18 @@ fn build_display_args(
 }
 
 /// Write 的目标文件是否已存在（决定「创建新文件」还是「覆盖现有文件」）
-fn write_target_exists(cwd: &str, file_path: &str) -> bool {
+///
+/// 经 `files` 问：隔离会话里「已存在」的含义是「视图里能看到它」（磁盘下层可能有、
+/// 也可能只有本对话的上层写过）。`stat_path` 失败（视图不可用 / 越界）按「不存在」
+/// 展示——真正的执行会在工具侧 fail-closed 报错，权限文案不该抢在它前面下结论。
+fn write_target_exists(cwd: &str, file_path: &str, files: &crate::tools::WorkViewState) -> bool {
     if file_path.is_empty() {
         return false;
     }
-    crate::tools::expand_path(cwd, file_path).exists()
+    files
+        .stat_path(&crate::tools::expand_path(cwd, file_path))
+        .map(|facts| facts.exists)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

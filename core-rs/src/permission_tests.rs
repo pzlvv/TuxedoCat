@@ -358,7 +358,14 @@ fn ask_user_question_denied_in_auto_mode() {
     // `resolve_tool_permission`（引擎实际路径）下发的形状一致：
     // permResult 只有 behavior + message，displayArgs 原样透传入参
     let (perm_result, display_args) =
-        resolve_tool_permission("AskUserQuestion", &args, "auto", CWD, "session-1");
+        resolve_tool_permission(
+            "AskUserQuestion",
+            &args,
+            "auto",
+            CWD,
+            "session-1",
+            &crate::tools::WorkViewState::workspace(),
+        );
     assert_eq!(
         perm_result,
         json!({ "behavior": "deny", "message": ASK_USER_QUESTION_AUTO_DENY_MESSAGE })
@@ -725,7 +732,7 @@ fn permission_policy_matches_the_fixture() {
                 .get("sessionId")
                 .and_then(Value::as_str)
                 .unwrap_or(SESSION);
-            resolve_tool_permission(tool, &args, mode, &cwd, session_id)
+            resolve_tool_permission(tool, &args, mode, &cwd, session_id, &crate::tools::WorkViewState::workspace())
         };
         // Edit 的 displayArgs 不预计算 diffHunks，
         // 改为额外下发 beforeContent / afterContent（webview 用同一份
@@ -871,7 +878,10 @@ fn detach_escape_ignores_heredoc_body_ampersand() {
         "heredoc 正文的 & 不是逃生"
     );
     assert_eq!(decide("Bash", &args, "risk", CWD), Decision::Allow);
-    assert!(!ask_message("Bash", &args, CWD).starts_with("⚠️ 请求脱离管理执行："));
+    assert!(
+        !ask_message("Bash", &args, CWD, &crate::tools::WorkViewState::workspace())
+            .starts_with("⚠️ 请求脱离管理执行：")
+    );
     // 对照：同样 `detach: true`，真构造仍在 risk 下询问
     let real = json!({ "command": "nohup server", "detach": true });
     assert!(is_operation_risky("Bash", &real));
@@ -893,7 +903,8 @@ fn detach_default_command_is_not_permission_business() {
 #[test]
 fn detach_escape_ask_message_and_choices() {
     let args = json!({ "command": "nohup server", "detach": true });
-    let message = ask_message("Bash", &args, CWD);
+    let files = crate::tools::WorkViewState::workspace();
+    let message = ask_message("Bash", &args, CWD, &files);
     assert!(
         message.starts_with("⚠️ 请求脱离管理执行：nohup server\n"),
         "got {message}"
@@ -902,9 +913,72 @@ fn detach_escape_ask_message_and_choices() {
         message.contains("无完成通知、中止会话不会杀掉它、会话结束后继续运行"),
         "got {message}"
     );
-    let choices = ask_choices("Bash", &args, CWD);
+    let choices = ask_choices("Bash", &args, CWD, &files);
     assert_eq!(choices[0]["label"], "允许执行");
 
-    let plain = ask_message("Bash", &bash("sleep 1"), CWD);
+    let plain = ask_message("Bash", &bash("sleep 1"), CWD, &files);
     assert_eq!(plain, "请求执行：sleep 1");
+}
+
+/// 权限层不得自己读真实磁盘（specs/defects/overlay-edit-and-card-links-read-real-disk.md）。
+///
+/// Overlay 对话的改动只落该对话私有的叠加视图里，Core 不在挂载命名空间里——它自己
+/// `std::fs` 看到的永远是真实磁盘。权限阶段（`base_check` / `write_target_exists`）此前
+/// 用 `std::fs::read_to_string` 取「旧内容」、用 `Path::exists` 判「文件是否存在」，于是
+/// 对话内新建的文件被判成不存在：`Edit` 在权限阶段就被 deny，提示改用 `Write`。
+///
+/// 目标文件的事实必须与工具 IO 走同一条通道（`ToolContext::read_bytes` / `stat_path`，
+/// 隔离会话由常驻挂载代理代执行）。本用例锁源码面：`permission.rs` 里不允许出现
+/// `std::fs::`——那是「权限层另读一份磁盘事实」的唯一入口。
+#[test]
+fn permission_layer_does_not_read_the_real_disk() {
+    let source = include_str!("permission.rs");
+    let offenders: Vec<&str> = source
+        .lines()
+        .filter(|line| line.contains("std::fs::"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "权限层不得直接读盘（Overlay 会话里那是真实磁盘，不是对话视图）：{offenders:?}"
+    );
+}
+
+/// 权限层对文件的判定必须走 `WorkViewState`：视图不可用时报错，而不是退回磁盘。
+///
+/// 上半条锁源码面（没有 `std::fs::`），这一条锁行为面：`ViewUnavailable` 下 `Edit` 的
+/// 文件判定不成立，必须按读失败拒绝；偷读真实磁盘上的同名文件会让它变成 ask / allow，
+/// 那是 FR-010 明令禁止的 fail-open（`docs/core/conversation-work-view.md` 第 7 节）。
+#[test]
+fn permission_edit_fails_closed_when_view_is_unavailable() {
+    let dir = std::env::temp_dir().join(format!(
+        "permission-view-unavailable-{}",
+        crate::util::random_suffix()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 真实磁盘上有这个文件：权限层若偷读磁盘，`Edit` 会照常进入 ask
+    std::fs::write(dir.join("existing.txt"), "hello world\n").unwrap();
+    let cwd = dir.to_string_lossy().to_string();
+    let files = crate::tools::WorkViewState::ViewUnavailable("代理缺失".to_string());
+
+    let (perm_result, _) = resolve_tool_permission(
+        "Edit",
+        &json!({
+            "file_path": "existing.txt",
+            "old_string": "hello",
+            "new_string": "hi",
+        }),
+        "auto",
+        &cwd,
+        "session-view-unavailable",
+        &files,
+    );
+    assert_eq!(
+        perm_result["behavior"], "deny",
+        "视图不可用时 Edit 必须 fail-closed（不读真实磁盘）：{perm_result}"
+    );
+    let message = perm_result["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("Overlay 视图不可用"),
+        "拒绝原因要点名视图不可用，而不是「文件不存在」：{message}"
+    );
 }

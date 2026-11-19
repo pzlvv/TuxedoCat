@@ -75,11 +75,16 @@ export function resolveInitialView(source: OpenSource, isNewFile: boolean): Init
 
 /** 宿主能力注入口：窗口打开与系统调用都由 main.ts 提供（本模块不 import electron） */
 export interface FileOpenBridge {
-  /** 内置 Markdown 预览窗口（渲染后的只读 HTML，`src/host/markdownHtml.ts` 生成） */
+  /** 内置 Markdown 预览窗口（渲染后的只读 HTML，`src/host/markdownHtml.js` 生成） */
   openMarkdownViewer(init: {
     title: string;
     content: string;
     watchTarget: ViewerWatchTarget | null;
+    /**
+     * 行号定位（聊天链接的来源信息）：`null` = 不定位。与 `UIHost.openFile` 的
+     * `LineSelection` 同一语义（1-based 含端点）——Read 卡片点开的链接要落在读到的那几行。
+     */
+    selectedLines: { start: number; end: number } | null;
     /** 初始视图（specs/040 FR-003 / AC-8）：`full` 落渲染，`changes` 落变更视图 */
     initialView: InitialView;
     /** 变更视图的取数来源（`changes` 时用）：工作区根 + 相对路径 */
@@ -97,6 +102,8 @@ export interface FileOpenBridge {
     content?: string;
     filePath?: string;
     watchTarget: ViewerWatchTarget | null;
+    /** 行号定位（同 `openMarkdownViewer`）：`null` = 不定位 */
+    selectedLines: { start: number; end: number } | null;
     /** 初始视图（specs/040 FR-003 / AC-1 / AC-5 ～ AC-7） */
     initialView: InitialView;
     /** 变更视图的取数来源（`changes` 时用） */
@@ -184,6 +191,7 @@ export async function openLocalWorkspaceFile(
       title: path.posix.basename(rel),
       content: await fs.promises.readFile(abs, 'utf-8'),
       watchTarget: { kind: 'local', filePath: abs },
+      selectedLines: null,
       initialView,
       diffSource,
     });
@@ -194,6 +202,7 @@ export async function openLocalWorkspaceFile(
       filePath: abs,
       title: path.posix.basename(rel),
       watchTarget: { kind: 'local', filePath: abs },
+      selectedLines: null,
       initialView,
       diffSource,
     });
@@ -209,6 +218,7 @@ export async function openLocalWorkspaceFile(
     filePath: abs,
     title: path.posix.basename(rel),
     watchTarget: { kind: 'local', filePath: abs },
+    selectedLines: null,
     initialView,
     diffSource,
   });
@@ -257,6 +267,7 @@ export async function openRemoteWorkspaceFile(
       title: name,
       content: await reader.readText(abs),
       watchTarget,
+      selectedLines: null,
       initialView,
       diffSource: diffSource,
     });
@@ -268,6 +279,7 @@ export async function openRemoteWorkspaceFile(
       content: await reader.readText(abs),
       filePath: name,
       watchTarget,
+      selectedLines: null,
       initialView,
       diffSource: diffSource,
     });
@@ -283,6 +295,7 @@ export async function openRemoteWorkspaceFile(
     content: await reader.readText(abs),
     filePath: name,
     watchTarget,
+    selectedLines: null,
     initialView,
     diffSource: diffSource,
   });
@@ -321,6 +334,12 @@ export async function openOverlayWorkspaceFile(
   root: string,
   rel: string,
   source: OpenSource,
+  /**
+   * 行号定位（聊天链接的来源信息）：`null` = 不定位。侧栏双击打开没有行号语义；
+   * Read 卡片的链接带读到的那几行，`selectedLines` 同时让 Markdown 初始落文本视图
+   * （渲染视图对不上源行号，US-38 验收 1 的同一口径）。
+   */
+  selectedLines: { start: number; end: number } | null,
 ): Promise<void> {
   // 越界校验与本地路径同一份实现：真实工作区路径的包含关系对视图同样成立
   const abs = resolveWithinRoot(root, rel);
@@ -344,6 +363,7 @@ export async function openOverlayWorkspaceFile(
       title: name,
       content: diff.after,
       watchTarget: null,
+      selectedLines,
       initialView,
       diffSource,
     });
@@ -357,6 +377,7 @@ export async function openOverlayWorkspaceFile(
     content: diff.after,
     filePath: name,
     watchTarget: null,
+    selectedLines,
     initialView,
     diffSource,
   });
