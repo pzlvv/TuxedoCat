@@ -1,0 +1,26 @@
+[package]
+name = "mount-proxy"
+version = "0.0.1"
+edition = "2021"
+description = "Overlay 挂载代理（setuid root，代 Core 建立用户 + 挂载命名空间）"
+license = "Apache-2.0"
+build = "build.rs"
+
+# 包名与二进制名保持中性的 `mount-proxy`：对外可执行文件名由
+# `src/config/project.json` 的 `core.mountProxyName` 决定，构建脚本按它落位，
+# 产品名不出现在 Rust 侧（与 core-rs 同一口径）。
+#
+# **零第三方依赖**：这是要带 setuid 位运行的进程，依赖面每多一层就多一份被劫持的
+# 面；JSON 帧也自己解析（协议极窄，见 protocol.rs），不引 serde。
+[[bin]]
+name = "mount-proxy"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# 崩溃诊断：setuid 程序排障需要行号（线上没有 debugger 可挂）
+debug = "line-tables-only"

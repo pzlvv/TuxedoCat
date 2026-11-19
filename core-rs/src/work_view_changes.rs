@@ -32,9 +32,8 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// 取数临时索引的序号：清单与两侧原文可能并发请求，共用一份索引会让两个 git 写同一个文件。
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -101,8 +100,11 @@ pub enum FileDiffOutcome {
 /// `workspace` 是真实工作区路径（bind 的目标）、`mount` 是视图挂载点。内容差异全部来自
 /// 视图，`workspace` 只是路径字符串。
 pub struct GitView<'a> {
+    /// 真实工作区路径。视图已 bind 到它上面（specs/051），因此 git 在代理里用这条路径
+    /// 就能看到叠加结果。
     pub workspace: &'a Path,
-    pub mount: &'a Path,
+    /// 该会话的常驻挂载代理：所有 git 命令与文件读取都由它代执行。
+    pub proxy: &'a std::sync::Arc<crate::mount_proxy::SessionProxy>,
     /// 视图外的临时目录（放索引副本），保证取数不写进视图
     pub scratch: &'a Path,
 }
@@ -163,12 +165,12 @@ impl<'a> GitView<'a> {
             .join(format!("index-{}-{seq}", std::process::id()));
         let mut probe = Runner {
             workspace: self.workspace,
-            mount: self.mount,
+            proxy: self.proxy,
             index: None,
         };
         // 索引候选：视图里那份优先（工作区既可以是仓库根也可以是子目录，子目录时只有
         // 磁盘那份存在）。真正的分歧由 `sync_index_to_head` 抹平。
-        let candidates = [self.mount.join(".git").join("index"), {
+        let candidates = [self.workspace.join(".git").join("index"), {
             match probe.git_path_index()? {
                 Some(relative) if relative.is_absolute() => relative,
                 Some(relative) => self.workspace.join(relative),
@@ -184,7 +186,7 @@ impl<'a> GitView<'a> {
         }
         Ok(Runner {
             workspace: self.workspace,
-            mount: self.mount,
+            proxy: self.proxy,
             index: Some(index),
         })
     }
@@ -193,93 +195,50 @@ impl<'a> GitView<'a> {
 /// 一次取数过程中共享的执行上下文（临时索引与 bind 目标）。
 struct Runner<'a> {
     workspace: &'a Path,
-    mount: &'a Path,
+    proxy: &'a std::sync::Arc<crate::mount_proxy::SessionProxy>,
     /// 视图外的索引副本；`None` = 只跑不改索引的探测命令（解析索引位置时）
     index: Option<PathBuf>,
 }
 
 impl<'a> Runner<'a> {
-    /// 跑一条 git 命令（在 bind 后的工作区里）。返回 (退出码, stdout, stderr)。
+    /// 跑一条 git 命令（在视图里，经代理代执行）。返回 (退出码, stdout, stderr)。
+    ///
+    /// **不能在 Core 里 spawn**：Core 不在命名空间里（ADR-0018），它起的 git 看到的是
+    /// 真实磁盘；视图的 bind 只有代理的子孙进程站在上面。
     fn git(&mut self, args: &[&str]) -> Result<(i32, String, String), String> {
-        let mut command = Command::new("git");
-        command
-            .args([
-                "--no-optional-locks",
-                "-c",
-                "core.quotepath=false",
-                "-c",
-                "core.untrackedCache=false",
-                "-c",
-                "core.fsmonitor=false",
-            ])
-            .args(args)
-            .current_dir(self.workspace)
-            // 子目录工作区：bind 之后挂载点与仓库祖先不再同一条设备，跨文件系统发现要显式开
-            .env("GIT_DISCOVERY_ACROSS_FILESYSTEM", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut argv: Vec<String> = vec![
+            "git".to_string(),
+            "--no-optional-locks".to_string(),
+            "-c".to_string(),
+            "core.quotepath=false".to_string(),
+            "-c".to_string(),
+            "core.untrackedCache=false".to_string(),
+            "-c".to_string(),
+            "core.fsmonitor=false".to_string(),
+        ];
+        argv.extend(args.iter().map(|item| item.to_string()));
+        let mut env = crate::shell_env::child_env()?;
+        // 子目录工作区：bind 之后挂载点与仓库祖先不再同一条设备，跨文件系统发现要显式开
+        env.push("GIT_DISCOVERY_ACROSS_FILESYSTEM=1".to_string());
+        // 视图里的 git 不该被系统级配置改变行为（与代理侧 `gitShow` 同一要求）
+        env.push("GIT_CONFIG_NOSYSTEM=1".to_string());
         if let Some(index) = &self.index {
-            command.env("GIT_INDEX_FILE", index);
+            env.push(format!("GIT_INDEX_FILE={}", index.display()));
         }
-        crate::util::hide_console(&mut command);
-        crate::shell_env::apply_native(&mut command)?;
-
-        // 必须在**子进程**里取一份私有挂载命名空间副本再 bind：unshare 只影响调用者及其
-        // 子孙，放在 Core 进程里会污染它自己的挂载表。
-        #[cfg(target_os = "linux")]
-        {
-            let mount = self.mount.to_path_buf();
-            let workspace = self.workspace.to_path_buf();
-            unsafe {
-                use std::os::unix::process::CommandExt;
-                command.pre_exec(move || {
-                    crate::work_view::bind_view_onto_workspace(&mount, &workspace)
-                        .map_err(|reason| std::io::Error::other(reason))
-                });
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            return Err("Overlay 对话只在 Linux Core 上可用".to_string());
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let mut child = command
-                .spawn()
-                .map_err(|error| format!("启动 git 失败：{error}"))?;
-            let stdout_handle = child.stdout.take().map(read_async);
-            let stderr_handle = child.stderr.take().map(read_async);
-            let deadline = Instant::now() + GIT_TIMEOUT;
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => {
-                        if Instant::now() >= deadline {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            return Err(format!(
-                                "git {} 超时（{}s）",
-                                args.join(" "),
-                                GIT_TIMEOUT.as_secs()
-                            ));
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => {
-                        let _ = child.kill();
-                        return Err(format!("等待 git 失败：{error}"));
-                    }
-                }
-            }
-            let code = child
-                .wait()
-                .ok()
-                .and_then(|status| status.code())
-                .unwrap_or(-1);
-            Ok((code, join_reader(stdout_handle), join_reader(stderr_handle)))
-        }
+        let id = self.proxy.start_spawn(crate::mount_proxy::SpawnSpec {
+            argv,
+            cwd: self.workspace.to_path_buf(),
+            env,
+            stdin: None,
+        })?;
+        let outcome = self
+            .proxy
+            .wait_spawn(id, GIT_TIMEOUT, None, |_out, _err| {})?;
+        Ok((
+            outcome.code,
+            String::from_utf8_lossy(&outcome.stdout).to_string(),
+            String::from_utf8_lossy(&outcome.stderr).to_string(),
+        ))
     }
 
     /// `git rev-parse --git-path index`：索引的实际位置（相对 cwd 或绝对）。
@@ -449,15 +408,23 @@ impl<'a> Runner<'a> {
         Err(format!("git show 失败：{}", stderr.trim()))
     }
 
-    /// 视图里的文件内容与存在性都经挂载点读——`workspace` 路径在 Core 进程内仍指向磁盘。
+    /// 视图里的文件内容经代理读——`workspace` 路径在 Core 进程内仍指向磁盘，
+    /// 只有代理的命名空间里它才是叠加结果。
     fn read_view_file(&self, rel: &str) -> Result<String, String> {
-        let target = self.mount.join(rel);
-        std::fs::read_to_string(&target)
-            .map_err(|error| format!("读取视图文件 {} 失败：{error}", target.display()))
+        let target = self.workspace.join(rel);
+        let bytes = self
+            .proxy
+            .read_file(&target, None)
+            .map_err(|error| format!("读取视图文件 {} 失败：{error}", target.display()))?;
+        Ok(String::from_utf8_lossy(&bytes).to_string())
     }
 
     fn view_path_exists(&self, rel: &str) -> bool {
-        self.mount.join(rel).is_file()
+        let target = self.workspace.join(rel);
+        self.proxy
+            .stat(&target)
+            .map(|facts| facts.is_file)
+            .unwrap_or(false)
     }
 }
 

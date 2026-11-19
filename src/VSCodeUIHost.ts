@@ -12,6 +12,7 @@
 
 
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
 import type { UIHost, WebviewViewHandle, WorkspaceChange } from './host/UIHost.js';
 import type { CoreEvent } from './shared/AssistantEventBus.js';
 import type { WebviewMessage } from './host/webviewMessages.js';
@@ -22,6 +23,13 @@ import { DocumentManager } from './VSCodeUIHost/documentManager.js';
 import type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent } from './host/ui/types.js';
 import { isImageFile } from './host/imageFiles.js';
 import { writeSettingsJson } from './host/settingsFile.js';
+import type { MountProxyTarget } from './host/mountProxyInstall.js';
+import { bundledProxyPathFor, isLocalMountProxyInstalled, resolveTarget } from './host/mountProxyTarget.js';
+import {
+  coreDeployDirPath,
+  readCoreFingerprint,
+  resolveCoreBinary,
+} from './host/standalone/coreBinary.js';
 
 export type { ShowVirtualDocumentEvent, ShowContentInVirtualDocumentEvent, ShowDiffInVirtualDocumentEvent };
 
@@ -280,6 +288,58 @@ export class VSCodeUIHost implements UIHost {
   // settings.json 的写入口（core 只读不写；两个宿主共用同一份实现）
   updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void> {
     return writeSettingsJson(mutator);
+  }
+
+  // ===================== 挂载代理部署（specs/051）=====================
+
+  /**
+   * 解析该会话的部署目标（FR-004 / FR-009）。
+   *
+   * VS Code 扩展只服务本机工作区，没有远端工作区，因此目标要么是本地、要么不存在。
+   * 「不存在」只应发生在非 Linux 宿主上——那种平台 Core 本就不会报 `deployable`
+   * （`work_view_unsupported.rs` 的能力恒不可用），走到这里说明接线不一致。
+   */
+  async resolveMountProxyTarget(sessionId: string): Promise<MountProxyTarget | null> {
+    const ref = this.workspaceRefForSession(sessionId);
+    if (!ref) return null;
+    return resolveTarget({
+      workspaceRef: ref,
+      extensionPath: this.extensionUri.fsPath,
+      // 按目标平台定位产物：VS Code 只服务本机，因此入参就是宿主平台
+      resolveBundledProxy: (platform, arch) => {
+        if (platform !== process.platform || arch !== process.arch) return null;
+        return bundledProxyPathFor(resolveCoreBinary(this.extensionUri.fsPath));
+      },
+      readBundledBytes: async (bundledPath) => new Uint8Array(await fs.promises.readFile(bundledPath)),
+      isInstalledLocally: () => isLocalMountProxyInstalled(),
+      // VS Code 侧没有远端工作区：给 null 让远端分支报错而不是猜一台机器
+      remoteExec: async () => null,
+      detectRemoteTarget: async () => ({ platform: process.platform, arch: process.arch }),
+      // 远端槽位：VS Code 侧没有远端目标（`remoteExec` 恒给 null），走不到这里；
+      // 仍按契约必选给出，派生逻辑与远端同一份（`coreBinary.ts`），不留猜测。
+      remoteCoreDeployDir: (platform, arch) =>
+        coreDeployDirPath(readCoreFingerprint(this.extensionUri.fsPath, platform, arch)),
+    });
+  }
+
+  /**
+   * 会话所属的工作区引用。
+   *
+   * VS Code 单工作区窗口：直接取当前工作区。会话与工作区的对应关系在 Core 侧，
+   * 宿主只按「这个窗口开的是哪个目录」回答——一个窗口只有一个工作区。
+   */
+  private workspaceRefForSession(_sessionId: string): WorkspaceRef | undefined {
+    return this.getWorkspaceRef();
+  }
+
+  /** 随包代理与 Core 产物同目录（FR-005「分发形态」） */
+  private bundledMountProxyPath(): string {
+    return bundledProxyPathFor(resolveCoreBinary(this.extensionUri.fsPath));
+  }
+
+  /** 读随包代理字节：内容经 stdin 进 root 侧（FR-005 第 1 条） */
+  private async readBundledMountProxyBytes(): Promise<Uint8Array> {
+    return new Uint8Array(await fs.promises.readFile(this.bundledMountProxyPath()));
   }
 
   // ===================== VS Code 专有：Mermaid 预览面板 =====================

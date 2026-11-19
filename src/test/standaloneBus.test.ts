@@ -478,7 +478,7 @@ async function run(): Promise<void> {
     await core.bus.whenReady();
     const handlers = {
       conversationListRequested: async () => [],
-      storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, reason: "测试桩" }),
+      storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, mountProxy: "absent" as const, deployable: false, reason: "测试桩" }),
       workViewFilesRequested: async () => ({ ok: false as const, error: "测试桩" }),
       workViewChangesRequested: async () => ({ ok: false as const, kind: 'error' as const, error: "测试桩" }),
     workViewFileDiffRequested: async () => ({ ok: false as const, error: "测试桩" }),
@@ -529,6 +529,7 @@ async function run(): Promise<void> {
       sessionId: 's1',
       content: '你好',
       uuid: 'user_1',
+      storage: 'workspace',
       agentMode: 'manual',
       workspacePath: 'D:/repo',
     });

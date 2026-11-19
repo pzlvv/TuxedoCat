@@ -24,6 +24,7 @@
 //!
 //! 平台：只在 Linux 上提供能力。其它平台编译出同签名类型，能力恒回不可用。
 
+#[allow(unused_imports)]
 pub use imp::{
     bind_view_onto_workspace, capabilities, changes, enter, file_diff, list_view_dir, release,
     remove, WorkView, WorkViewHandle,
@@ -39,26 +40,100 @@ mod git_view;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub use git_view::{ChangeEntry, ChangeScope, ChangesOutcome, FileDiffOutcome, GitView};
 
+/// 取数请求里的相对路径校验（`dir` / `path`）：`'/'` 分隔，不允许绝对路径、`..` 分量
+/// 与反斜杠。
+///
+/// 平台无关且无副作用，因此放在这里：请求分支要在**建立视图之前**先拒掉越界路径
+/// （非法请求不该触发拉起代理这种副作用），而建立视图是平台实现的事。
+pub fn check_view_relative(text: &str) -> Result<(), String> {
+    // 绝对路径拒掉而不是「去掉开头的斜杠当相对路径」：渲染层约定只传工作区相对路径，
+    // 出现开头的 '/' 说明调用方拼错了（同 .gitignore 风格的静默归一化会让越界请求
+    // 看起来成功，而返回的是另一个位置的内容）。
+    if text.starts_with('/') {
+        return Err(format!("路径 {text} 越界：不允许绝对路径"));
+    }
+    for segment in text.split('/') {
+        match segment {
+            // 空串来自中间的 '//'；'.' 是无操作
+            "" | "." => continue,
+            ".." => return Err(format!("路径 {text} 越界：不允许 '..' 分量")),
+            other => {
+                if other.contains('\\') {
+                    // 反斜杠在 POSIX 上是合法文件名字符，但渲染层约定 '/' 分隔——
+                    // 出现反斜杠说明调用方拼错了，拒绝而不是猜它想表达什么
+                    return Err(format!("路径 {text} 含反斜杠：约定用 '/' 分隔"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 本能力的应答（`UiRequest.storageCapabilitiesRequested`，specs/045 FR-001）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     /// 能否为对话建立隔离工作视图。
+    ///
+    /// 判据 = 常驻代理就绪**且**它报回 overlay 实测可挂（specs/051 FR-001）。Core 自身
+    /// 不进命名空间，因此本字段为 true 必然意味着 `mount_proxy == Ready`。
     pub isolated_work_view: bool,
+    /// 挂载代理的状态（specs/051 FR-001 的根字段）。
+    pub mount_proxy: MountProxyState,
+    /// `isolated_work_view` 为 false 时，「装代理」是否**可能**解决它（派生字段）。
+    ///
+    /// 推导点只有 Core 一处：平台是 Linux + 内核支持 overlayfs + 代理尚未就绪。宿主不重算、
+    /// 不缓存，每次需要都问 Core。
+    pub deployable: bool,
     /// 不可用的原因；可用时为空串（契约成员全必选，「没有」用空串而非 `null`）。
     pub reason: String,
+}
+
+/// 挂载代理的就位状态（`UiRequest.storageCapabilitiesRequested` 的 `mountProxy`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MountProxyState {
+    /// 已安装、协议版本匹配、且它报回 overlay 实测可挂。
+    Ready,
+    /// 未安装 / 版本不匹配 / 自检未通过 / 未拉起——三者对界面的含义都是「需要部署」。
+    Absent,
+}
+
+impl MountProxyState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MountProxyState::Ready => "ready",
+            MountProxyState::Absent => "absent",
+        }
+    }
 }
 
 impl Capabilities {
     pub fn available() -> Self {
         Self {
             isolated_work_view: true,
+            mount_proxy: MountProxyState::Ready,
+            deployable: false,
             reason: String::new(),
         }
     }
 
     pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self::with_mount_proxy(MountProxyState::Absent, false, reason)
+    }
+
+    /// 代理未就绪，但**部署它可能解决问题**（Linux + 有 overlayfs）。
+    pub fn deployable(reason: impl Into<String>) -> Self {
+        Self::with_mount_proxy(MountProxyState::Absent, true, reason)
+    }
+
+    pub fn with_mount_proxy(
+        mount_proxy: MountProxyState,
+        deployable: bool,
+        reason: impl Into<String>,
+    ) -> Self {
         Self {
             isolated_work_view: false,
+            mount_proxy,
+            deployable,
             reason: reason.into(),
         }
     }

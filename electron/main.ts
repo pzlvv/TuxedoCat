@@ -4852,6 +4852,10 @@ async function deleteConversationWithViews(sessionId: string): Promise<void> {
  */
 function handleWebviewMessageFromSource(sender: Electron.WebContents, message: WebviewToHostMessage): void {
   if (!message || typeof message.type !== 'string') return;
+  if (message.type === 'sendMessage' || message.type === 'setConversationStorage') {
+    // 临时探针（跑完删除）：直接进 stdout，Playwright 能转发主进程输出
+    console.log(`PROBE ${message.type} storage=${String((message as { storage?: unknown }).storage)} sid=${String((message as { sessionId?: unknown }).sessionId)}`);
+  }
 
   const ui = webviewUi;
   if (!ui) return;

@@ -530,15 +530,39 @@ pub fn build_running_tasks_section(tasks: &[RunningTask]) -> Option<String> {
 
 // ==================== 进程 ====================
 
-/// 启动后台命令（对齐 `Exec.execBackground`）：
+/// 启动后台命令（对齐 `Exec.execBackground`）：**仅测试用**。
+///
 /// stdout/stderr 直接重定向到输出文件，立即返回 `taskId`；完成后由等待线程
 /// 经 `hooks.notify` 注入通知。
+///
+/// 生产调用点是 [`spawn_background_with_view`]：视图状态必须由调用方（工具层）显式给出。
+/// 这里默认 `None` 等于「该会话不是隔离归属」——那个前提只有测试能保证，生产代码用它会
+/// 让隔离会话静默落到本机 spawn（把命令写到真实磁盘，fail-open）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn spawn_background(
     command: &str,
     cwd: &str,
     description: &str,
     session_id: &str,
     hooks: Option<Hooks>,
+) -> Result<String, String> {
+    // 走 `spawn_background_with_view`，视图状态由调用方（工具层）给出——
+    // 这里不能自己用 `WorkViewHandle::of` 猜：那个函数在代理缺失时回 `None`，
+    // 于是隔离会话会静默落到本机 spawn，把命令写到真实磁盘（fail-open）。
+    spawn_background_with_view(command, cwd, description, session_id, hooks, None)
+}
+
+/// 带视图状态的后台命令入口（工具层用这个）。
+///
+/// `view` 为 `Some(...)` 时命令经代理代执行；隔离归属但视图不可用时回错误，
+/// **不**退回本机 spawn。
+pub fn spawn_background_with_view(
+    command: &str,
+    cwd: &str,
+    description: &str,
+    session_id: &str,
+    hooks: Option<Hooks>,
+    view: Option<&crate::work_view::WorkViewHandle>,
 ) -> Result<String, String> {
     let task_id = generate_task_id();
     let path = task_output_path(&task_id);
@@ -568,23 +592,23 @@ pub fn spawn_background(
     // 后台命令与前台命令看同一份 PATH：都经 `$SHELL` 起，用 shell 自己的形式
     // （`docs/core/standalone-core.md` 第 3.2 节）
     crate::shell_env::apply(&mut cmd)?;
-    // 隔离视图对话（specs/045）：后台命令同样在私有挂载命名空间里执行，
+    // 隔离视图对话（specs/051 FR-007）：后台命令同样由常驻挂载代理代执行，
     // 否则同一条对话的前台 / 后台 Bash 会看到一个在视图、一个在磁盘。
-    if let Some(handle) = crate::work_view::WorkViewHandle::of(session_id) {
-        let mount_point = handle.mount_point();
-        let workspace = std::path::PathBuf::from(cwd);
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(move || {
-                crate::work_view::bind_view_onto_workspace(&mount_point, &workspace)
-                    .map_err(|reason| std::io::Error::other(reason))
-            });
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (mount_point, workspace);
-        }
+    //
+    // 后台任务需要「进程句柄 + 增量输出」，而代执行是全异步的：代理在**它的**命名空间里
+    // 跑命令并把输出写进同一个任务输出文件，Core 只负责收事件。因此后台任务走
+    // `spawn_background_through_proxy` 这条独立路径。
+    if let Some(handle) = view {
+        return spawn_background_through_proxy(
+            command,
+            cwd,
+            description,
+            session_id,
+            hooks,
+            task_id,
+            path,
+            handle,
+        );
     }
 
     let child = cmd.spawn().map_err(|err| err.to_string())?;
@@ -605,6 +629,91 @@ pub fn spawn_background(
         (hooks.sync_background)(session_id);
     }
     watch(child, task_id.clone(), pid, kill, hooks);
+    Ok(task_id)
+}
+
+/// 隔离会话的后台命令：由常驻挂载代理代执行，输出写进同一个任务输出文件。
+///
+/// 与本地分支的差别只有「谁 fork」：
+/// - 本地分支 Core 自己 `Command::spawn`，拿到 `Child` 直接 `try_wait` / `kill_tree`；
+/// - 这里 Core **没有** `Child`（工具进程是代理的孙子），因此中止翻译成 `kill` 请求，
+///   退出码由代理的 `exit` 帧回答。
+///
+/// 输出落点仍是 `task_output_path`：代理不回写文件（它是零依赖的纯 std 程序），Core 把
+/// 收到的块追加进去。这样既保持「后台任务的 stdout 就是文件内容」的既有契约，也不要求
+/// 代理会开文件写。
+#[allow(clippy::too_many_arguments)]
+fn spawn_background_through_proxy(
+    command: &str,
+    cwd: &str,
+    description: &str,
+    session_id: &str,
+    hooks: Option<Hooks>,
+    task_id: String,
+    path: std::path::PathBuf,
+    handle: &crate::work_view::WorkViewHandle,
+) -> Result<String, String> {
+    // 先建空文件：任务已登记就必须有可读的输出文件（否则前端读输出会 404）
+    std::fs::File::create(&path)
+        .map_err(|err| format!("Failed to open output file for background command: {err}"))?;
+    let proxy = std::sync::Arc::clone(handle.proxy());
+    let shell = crate::shell::shell();
+    let mut argv = vec![shell.path.clone()];
+    argv.extend(shell.args.iter().cloned());
+    argv.push(command.to_string());
+    let env = crate::shell_env::child_env()?;
+    let id = proxy.start_spawn(crate::mount_proxy::SpawnSpec {
+        argv,
+        cwd: std::path::PathBuf::from(cwd),
+        env,
+        stdin: None,
+    })?;
+
+    let kill = Arc::new(AtomicBool::new(false));
+    TASKS.lock().unwrap().push(TaskRecord {
+        task_id: task_id.clone(),
+        description: description.to_string(),
+        command: command.to_string(),
+        session_id: session_id.to_string(),
+        // 代理侧的工具 pid 由它自己管；这里登记 0，表示「Core 没有直接子进程」
+        pid: 0,
+        start_time: util::now_millis(),
+        status: TaskStatus::Running,
+        exit_code: None,
+        kill: Arc::clone(&kill),
+    });
+    if let Some(hooks) = &hooks {
+        (hooks.sync_background)(session_id);
+    }
+
+    // 等任务结束：输出追加进文件，中止时发 `kill` 请求
+    let thread_task_id = task_id.clone();
+    std::thread::spawn(move || {
+        let file = Arc::new(Mutex::new(
+            std::fs::OpenOptions::new().append(true).open(&path).ok(),
+        ));
+        let sink = Arc::clone(&file);
+        // 没有死线：后台任务本来就允许长跑，中止由 `kill` 标记驱动
+        let outcome = proxy.wait_spawn(
+            id,
+            Duration::from_secs(7 * 24 * 60 * 60),
+            Some(kill.as_ref()),
+            move |stdout_chunk, stderr_chunk| {
+                if let Ok(mut guard) = sink.lock() {
+                    if let Some(file) = guard.as_mut() {
+                        use std::io::Write;
+                        let _ = file.write_all(stdout_chunk);
+                        let _ = file.write_all(stderr_chunk);
+                    }
+                }
+            },
+        );
+        handle_finish(
+            &thread_task_id,
+            outcome.map(|result| result.code).unwrap_or(-1),
+            &hooks,
+        );
+    });
     Ok(task_id)
 }
 

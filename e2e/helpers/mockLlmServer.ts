@@ -1,5 +1,7 @@
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
+import { Client } from 'ssh2';
 
 /**
  * Electron 整应用测试的假 LLM：一个 OpenAI Chat Completions 兼容的 SSE 服务器。
@@ -71,6 +73,53 @@ function hasToolResult(messages: Array<{ role: string; content: unknown }>): boo
   return messages.length > 0 && messages[messages.length - 1].role === 'tool';
 }
 
+/**
+ * 把本机端口经 SSH 反向隧道暴露到远端的 `127.0.0.1:<远端端口>`。
+ *
+ * **为什么需要它**：远端车道里 Core 跑在测试机上，要主动回连本机的 mock LLM
+ * （`settings.json` 的 `baseURL`）。本机若在 NAT 后面，远端访问不到
+ * `detectLlmAdvertiseHost()` 拿到的内网地址（实测：本机 `192.168.x.x`，远端
+ * 公网机 → 连接超时）。症状极具迷惑性——0 个模型请求、界面无限转圈，看起来
+ * 像工具链缺陷，其实是 mock 根本不可达。
+ *
+ * 端口用 0 让**远端**分配：mock 的监听端口是动态的，写死会与并行用例撞车。
+ * `sshd` 的 `GatewayPorts no` 只允许绑回环，而 Core 与隧道同在测试机上，
+ * `127.0.0.1` 足够。
+ */
+async function openReverseTunnel(
+  ssh: { host: string; port: number; user: string; password: string },
+  localPort: number,
+): Promise<{ host: string; port: number; close(): void }> {
+  const client = new Client();
+  await new Promise<void>((resolve, reject) => {
+    client.once('ready', resolve).once('error', reject);
+    client.connect({
+      host: ssh.host,
+      port: ssh.port,
+      username: ssh.user,
+      password: ssh.password,
+      readyTimeout: 20_000,
+    });
+  });
+  // 每条反向连接都短接到本机 mock；长连接（SSE）靠 pipe 双向透传
+  client.on('tcp connection', (_info, accept) => {
+    const channel = accept();
+    const target = net.connect(localPort, '127.0.0.1');
+    channel.pipe(target).pipe(channel);
+    target.on('error', () => channel.end());
+    channel.on('error', () => target.destroy());
+  });
+  const remotePort = await new Promise<number>((resolve, reject) => {
+    client.forwardIn('127.0.0.1', 0, (error, port) => (error ? reject(error) : resolve(port)));
+  });
+  return {
+    host: '127.0.0.1',
+    port: remotePort,
+    // 远端监听不单独释放：整条 SSH 连接关闭时随之消失
+    close: () => client.end(),
+  };
+}
+
 export async function startMockLlm(options: {
   workspaceDir: string;
   /**
@@ -83,6 +132,14 @@ export async function startMockLlm(options: {
    * （远端 Core 要从这里回连 mock）。端口以实际监听端口为准。
    */
   advertiseHost?: string;
+  /**
+   * 经 SSH 反向隧道把 mock 暴露到远端回环（`{ ssh: { host, port, user, password } }`）。
+   *
+   * 给了就走隧道，`advertiseHost` 被忽略——两者是互斥的两种可达性方案：隧道适用于
+   * 本机在 NAT 后、远端连不进来的情形（绝大多数开发机），直连适用于本机有对远端可达
+   * 的公网 / 同网段地址。缺省不建隧道，本地车道的原有行为不变。
+   */
+  reverseTunnel?: { host: string; port: number; user: string; password: string };
 }): Promise<MockLlm> {
   const requests: RecordedRequest[] = [];
   let handler: ((req: RecordedRequest) => ScriptDecision) | null = null;
@@ -263,8 +320,16 @@ export async function startMockLlm(options: {
   });
   const port = (server.address() as AddressInfo).port;
 
+  // 可达性：隧道优先，其次直连广播地址。隧道建在监听之后——它要把真实 port 透传出去
+  const tunnel = options.reverseTunnel
+    ? await openReverseTunnel(options.reverseTunnel, port)
+    : null;
+  const baseURL = tunnel
+    ? `http://${tunnel.host}:${tunnel.port}/v1`
+    : `http://${options.advertiseHost ?? '127.0.0.1'}:${port}/v1`;
+
   return {
-    baseURL: `http://${options.advertiseHost ?? '127.0.0.1'}:${port}/v1`,
+    baseURL,
     requests,
     setHandler(h) { handler = h; },
     close() {
@@ -272,6 +337,7 @@ export async function startMockLlm(options: {
       for (const res of hangingResponses) res.destroy();
       hangingResponses.clear();
       server.close();
+      tunnel?.close();
     },
   };
 }

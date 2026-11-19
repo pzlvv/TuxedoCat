@@ -61,6 +61,10 @@ import {
   readLlmConfigPanelPayload,
   resolveModelRef,
 } from '../settingsRead.js';
+// 挂载代理部署（specs/051 FR-003 / FR-004）：编排与闸门都在 host 侧，webview 只渲染状态
+import { MountProxyGate } from '../mountProxyGate.js';
+import { auditLine, beginDeploy, deployWithCredential, type MountProxyTarget } from '../mountProxyInstall.js';
+import { CORE_MOUNT_PROXY_DIR, CORE_MOUNT_PROXY_NAME } from '../../config/project.js';
 
 /**
  * 自动获取模型时，协议探测的并发上限（按「模型」计，每个模型内部再并发 3 个协议）。
@@ -189,6 +193,22 @@ export class WebviewMessageHandler {
 
   /** 消息类型 -> 处理器分发表（构造函数中构建一次） */
   private messageHandlers: Map<string, (msg: WebviewToHostMessage, ctx: WebviewRequestContext) => Promise<void> | void>;
+
+  /**
+   * Overlay 部署闸门（specs/051 FR-003 / FR-004）。
+   *
+   * 懒建：只在第一次真的需要部署时构造（闸门要绑当前安装落点与目标主机）。
+   * `null` 表示从未触发过部署。
+   */
+  private mountProxyGate: MountProxyGate | null = null;
+
+  /**
+   * 本次部署的目标（拦截消息时解析，见 `blockMessageForMountProxyAsync`）。
+   *
+   * 缓存而不是每次重解析：确认框显示的主机名与实际安装的机器必须是同一台。
+   */
+  private mountProxyTarget: MountProxyTarget | null = null;
+
 
   constructor(deps: {
     host: UIHost;
@@ -338,6 +358,13 @@ export class WebviewMessageHandler {
       entry('backgroundBashTool', (msg) => this.emitUiEvent({ type: 'bashBackgroundRequested', sessionId: msg.sessionId, toolUseId: msg.toolUseId })),
       entry('discardQueuedMessage', (msg) => this.emitUiEvent({ type: 'queuedMessageDiscarded', sessionId: msg.sessionId, uuid: msg.uuid })),
 
+      // ===== 挂载代理部署（specs/051 FR-003 / FR-004 / FR-008）=====
+      // 闸门拦下的消息在 `handleUserMessage` 里，不在这里——这几条只推进部署状态机。
+      entry('requestMountProxyDeploy', () => this.handleMountProxyDeployRequest()),
+      entry('submitMountProxyCredential', (msg) => this.handleMountProxyCredential(msg)),
+      entry('showMountProxyManualCommand', () => this.handleMountProxyManualCommand()),
+      entry('cancelMountProxyDeploy', () => this.handleMountProxyCancel()),
+
       // ===== 会话生命周期（UiEvent 翻译）=====
       entry('loadConversation', (msg) => this.handleLoadConversation(msg)),
       entry('startNewConversation', (msg) => this.handleStartNewConversation(msg)),
@@ -391,9 +418,18 @@ export class WebviewMessageHandler {
    * 需要「按来源回包」的消息（requestTheme / requestContextLimit）依赖它定向投递。
    */
   async handleWebviewMessage(message: unknown, ctx: WebviewRequestContext = DEFAULT_REQUEST_CONTEXT): Promise<void> {
+    // 凭据消息在**任何**分支都不记录内容（specs/051 FR-004 第 3 条）：下面 malformed
+    // 分支会把 `String(message)` 整条拼进日志，而 `submitMountProxyCredential` 携带明文
+    // `secret`。先按 type 判一次，命中就整体替换成占位符——判 type 本身不看 secret。
+    const carriesSecret =
+      !!message && typeof message === 'object' &&
+      (message as { type?: unknown }).type === 'submitMountProxyCredential';
     // wire 数据在运行时无类型：先验「有字符串 type」再按协议窄化（过窄化交分发表）
     if (!message || typeof message !== 'object' || typeof (message as { type?: unknown }).type !== 'string') {
-      this.log(`[WebviewMessageHandler] Malformed webview message: ${String(message)}`);
+      this.log(
+        `[WebviewMessageHandler] Malformed webview message: ` +
+          (carriesSecret ? '[redacted: submitMountProxyCredential]' : String(message)),
+      );
       return;
     }
     const messageType = (message as { type: string }).type;
@@ -404,7 +440,11 @@ export class WebviewMessageHandler {
       // VS Code 会打印 "rejected promise not handled within 1 second"，
       // 且整条消息链路静默失败、难以定位。
       const detail = err instanceof Error ? (err.stack || err.message) : String(err);
-      this.log(`[WebviewMessageHandler] handleWebviewMessage failed for type=${messageType}: ${detail}`);
+      this.log(
+        `[WebviewMessageHandler] handleWebviewMessage failed for type=${messageType}: ` +
+          // 凭据消息的异常文本可能被调用栈带出参数值，这里只报「失败 + 错误类名」
+          (carriesSecret ? `[redacted: ${err instanceof Error ? err.name : typeof err}]` : detail),
+      );
     }
   }
 
@@ -428,17 +468,29 @@ export class WebviewMessageHandler {
    * 能力由 Core 判断而不是宿主猜平台：Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，
    * 但 Core 是。不可用时带上原因，界面据此不渲染入口——不出现「勾选后静默无效」。
    *
-   * 投递：`sender` 指定句柄时直发该视图。Electron 多视图下请求方不一定是活动视图
-   * （后台预热视图在挂载时就问，等它被切到前台再答会永远错过），走默认路由会让勾选框
-   * 在该视图里恒不出现。`sender` 为 null 时走默认路由（单视图宿主）。
+   * **问哪个 Core**：能力是逐 Core 的事实，请求带来源视图所属工作区（`ctx.sender` →
+   * `getWorkspaceRefForView`），由 `Client` 路由到那个 Core。不带的话会落到活动连接，
+   * 后台预热视图（属于非活动标签页）因此拿到另一个 Core 的答案，勾选框不出现
+   * （`specs/defects/prewarm-view-capability-query-hits-wrong-core.md`）。
+   *
+   * **答给哪个视图**：`sender` 指定句柄时直发该视图。Electron 多视图下请求方不一定是
+   * 活动视图（后台预热视图在挂载时就问，等它被切到前台再答会永远错过），走默认路由会让
+   * 勾选框在该视图里恒不出现。`sender` 为 null 时走默认路由（单视图宿主）。
    */
   private async handleRequestStorageCapabilities(
     sender: WebviewRequestContext['sender'],
   ): Promise<void> {
-    const capabilities = await requestStorageCapabilities();
+    // 视图所属工作区给不出时（单视图宿主 / 宿主主动推送在 native webview 上无句柄）
+    // 传 null：Client 落到活动连接，与既有单视图语义一致。
+    const viewWorkspacePath = this.host.getWorkspaceRefForView(sender)?.path ?? null;
+    const capabilities = await requestStorageCapabilities({ workspacePath: viewWorkspacePath });
     const message: Extract<HostToWebviewMessage, { type: 'setStorageCapabilities' }> = {
       type: 'setStorageCapabilities',
       isolatedWorkView: capabilities.isolatedWorkView,
+      // specs/051 FR-001：`mountProxy` 与 `deployable` 是 Core 的事实，宿主原样透传，
+      // 不重算、不缓存（重算会让「界面认为可部署、Core 认为不可」两套判据并存）。
+      mountProxy: capabilities.mountProxy,
+      deployable: capabilities.deployable,
       reason: capabilities.reason,
     };
     if (sender) {
@@ -493,6 +545,221 @@ export class WebviewMessageHandler {
     }
   }
 
+  // ===== Overlay 部署闸门（specs/051 FR-003 / FR-004 / FR-008）=====
+
+  /**
+   * 这条消息是否该被部署闸门拦下（FR-003 的判据）。
+   *
+   * 两道条件缺一不可：
+   * 1. 该会话的归属是 `isolated`——**关键的收窄**：`sendMessage` 不携带归属，若只看能力
+   *    就会把每个普通会话的首条消息也拦下，那就成了「不勾 Overlay 也要装代理」；
+   * 2. `isolatedWorkView === false && deployable === true`——能力当下不可用，但装代理
+   *    可能解决它。`deployable === false` 说明入口本就不该渲染（FR-002），走到这里
+   *    是接线错误：直接报错，不静默放行（铁律 1「不过度 fallback」）。
+   */
+  private async shouldBlockForMountProxy(sessionId: string, storage: 'workspace' | 'isolated'): Promise<boolean> {
+    // 归属取自**消息本身**，不读跨消息状态：`setConversationStorage` 与 `sendMessage`
+    // 是两条独立上行，先后取决于渲染时序，用顺序推归属会让闸门时灵时不灵。
+    //
+    // 能力按**会话**问：这是「该会话所属 Core 能不能建 Overlay 视图」的判断。落到活动
+    // 连接会把别的标签页的能力当成本会话的（本地 Core 恒不可用 → 远端会话被误拦 /
+    // 误判接线错误），见 `specs/defects/prewarm-view-capability-query-hits-wrong-core.md`。
+    const capabilities = await requestStorageCapabilities({ sessionId });
+    if (storage !== 'isolated') return false;
+    if (capabilities.isolatedWorkView) return false;
+    if (!capabilities.deployable) {
+      throw new Error(
+        `会话 ${sessionId} 是 isolated 归属，但 Core 报「不可用且不可部署」（${capabilities.reason}）：` +
+          '这是接线错误——入口不应渲染（specs/051 FR-002）',
+      );
+    }
+    return true;
+  }
+
+  /**
+   * 拦下消息时同时解析部署目标（FR-003 / FR-009）。
+   *
+   * 目标必须在**拦截时**就确定：确认框要显示目标主机名（四要素之一），而那时用户还
+   * 没点「部署」。解析结果缓存在 `mountProxyTarget` 上，后续确认 / 提交凭据复用同一
+   * 个目标——中途重新解析会让「确认框显示 A 机、实际装到 B 机」。
+   */
+  private async blockMessageForMountProxyAsync(sessionId: string, content: string): Promise<void> {
+    const target = await this.host.resolveMountProxyTarget(sessionId);
+    if (!target) {
+      // Core 说可部署、宿主却给不出目标：接线不一致，直接报错不静默降级（铁律 1）
+      throw new Error(
+        `会话 ${sessionId} 需要部署挂载代理，但宿主解析不出部署目标` +
+          '（远端连接不可用，或会话工作区既非本地 Linux 也非 SSH）',
+      );
+    }
+    this.mountProxyTarget = target;
+    const gate = this.ensureMountProxyGate(target.host);
+    gate.block({ sessionId, content });
+    this.log(`[WebviewMessageHandler] 消息被部署闸门拦下（session=${sessionId}, host=${target.host ?? 'localhost'}）`);
+  }
+
+  /**
+   * 取或建闸门。
+   *
+   * 确认框的目标主机名由调用方给（远端场景点名真实主机，FR-009「确认对话框必须点名
+   * 主机名」）；本机为 `null`，界面按「不显示该行」处理。
+   */
+  private ensureMountProxyGate(targetHost: string | null): MountProxyGate {
+    if (this.mountProxyGate) return this.mountProxyGate;
+    const gate = new MountProxyGate({
+      installPath: CORE_MOUNT_PROXY_DIR + '/' + CORE_MOUNT_PROXY_NAME,
+      targetHost,
+      emit: (state) => this.host.broadcastToWebviews({ type: 'mountProxyDeployState', ...state }),
+    });
+    this.mountProxyGate = gate;
+    return gate;
+  }
+
+  /** 用户确认部署（FR-003 → FR-004 第 1 条：先试免密 `sudo -n`） */
+  private async handleMountProxyDeployRequest(): Promise<void> {
+    const gate = this.mountProxyGate;
+    if (!gate) return;
+    gate.confirmDeploy();
+    const target = this.mountProxyTarget;
+    if (!target) {
+      // 拦截时已解析并缓存；走到这里说明状态被清过（取消后又点了部署）——报错不猜
+      gate.fail('部署目标已失效，请重新发送消息');
+      return;
+    }
+    try {
+      const outcome = await beginDeploy({ target });
+      await this.applyDeployOutcome(gate, target, outcome);
+    } catch (error) {
+      gate.fail(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** 用户提交一次凭据（FR-004 第 3 条：本方法任何日志都不引用 `msg.secret`） */
+  private async handleMountProxyCredential(
+    message: Extract<WebviewToHostMessage, { type: 'submitMountProxyCredential' }>,
+  ): Promise<void> {
+    // 本方法**不记录**消息内容（FR-004 第 3 条）。任何断言失败也不得把 secret 拼进错误。
+    const gate = this.mountProxyGate;
+    if (!gate) return;
+    const target = this.mountProxyTarget;
+    if (!target) {
+      gate.fail('部署目标已失效，请重新发送消息');
+      return;
+    }
+    gate.beginCredentialAttempt();
+    try {
+      const outcome = await deployWithCredential({ target }, message.method, message.secret);
+      await this.applyDeployOutcome(gate, target, outcome);
+    } catch (error) {
+      // 异常文本可能含命令回显 → 经过一层剔除再进状态（防御性，与 install 层同口径）
+      const detail = error instanceof Error ? error.message : String(error);
+      gate.fail(detail.includes(message.secret) ? '认证失败' : detail);
+    }
+  }
+
+  /** 把安装编排的结果翻成闸门状态（FR-004 / FR-008） */
+  private async applyDeployOutcome(
+    gate: MountProxyGate,
+    target: MountProxyTarget,
+    outcome: Awaited<ReturnType<typeof beginDeploy>>,
+  ): Promise<void> {
+    if (outcome.kind === 'installed') {
+      // FR-012 审计行：主机名 / 落点 / sha256 / 安装者 uid。写进宿主日志，
+      // 不含密码、不含代理内容的其它元数据。
+      this.log(auditLine({
+        targetHost: target.host,
+        installPath: `${CORE_MOUNT_PROXY_DIR}/${CORE_MOUNT_PROXY_NAME}`,
+        digest: outcome.digest,
+        uid: outcome.digest.length > 0 ? (process.getuid?.() ?? null) : null,
+      }));
+      // FR-008：装完**不自己判 ready**，交给 Core 重查能力。按被拦消息的会话问：
+      // 部署目标是该会话所属的 Core，重查的必须是同一台机器的能力。
+      const capabilities = await requestStorageCapabilities({ sessionId: gate.peekBlocked()?.sessionId });
+      if (!capabilities.isolatedWorkView) {
+        gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
+        return;
+      }
+      gate.succeed();
+      const blocked = gate.takeBlocked();
+      if (blocked) {
+        // 重发被拦消息（用户不需要重发，FR-008）；走同一条上行链路
+        await this.handleUserMessage({
+          type: 'sendMessage',
+          sessionId: blocked.sessionId,
+          content: blocked.content,
+          // 被拦下的消息必然来自 Overlay 会话（闸门判据），重发时归属不变
+          storage: 'isolated',
+        });
+      }
+      return;
+    }
+    if (outcome.kind === 'needsCredential') {
+      gate.requireCredential(outcome.manualCommand);
+      return;
+    }
+    gate.fail(outcome.failure);
+  }
+
+  /**
+   * 用户选择「显示命令自己执行」（FR-004 第 2 条的零密码通道）。
+   *
+   * 只把命令推给界面、然后轮询落点是否就位：密码全程不经过宿主进程（AC-12），也天然
+   * 兼容 `doas` / `pkexec` / 各种 sudo 时间戳策略。
+   */
+  private async handleMountProxyManualCommand(): Promise<void> {
+    const gate = this.mountProxyGate;
+    if (!gate) return;
+    const target = this.mountProxyTarget;
+    if (!target) {
+      gate.fail('部署目标已失效，请重新发送消息');
+      return;
+    }
+    gate.showManualCommand(target.manualCommand());
+    // 轮询就位：用户在终端跑完后，宿主自己发现并接着重发被拦消息（FR-008）
+    const poll = async (): Promise<void> => {
+      if (this.mountProxyGate !== gate) return; // 期间被取消 / 换了一轮部署
+      if (await target.isInstalled()) {
+        // 同 applyDeployOutcome：按被拦消息的会话问，问的是部署目标那台 Core
+        const capabilities = await requestStorageCapabilities({ sessionId: gate.peekBlocked()?.sessionId });
+        if (!capabilities.isolatedWorkView) {
+          gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
+          return;
+        }
+        gate.succeed();
+        const blocked = gate.takeBlocked();
+        if (blocked) {
+          await this.handleUserMessage({
+            type: 'sendMessage',
+            sessionId: blocked.sessionId,
+            content: blocked.content,
+            // 被拦下的消息必然来自 Overlay 会话（闸门判据），重发时归属不变
+            storage: 'isolated',
+          });
+        }
+        return;
+      }
+      // 每 2 秒看一眼；用户在别的终端里跑命令，宿主没有完成事件可订阅
+      setTimeout(() => void poll(), 2_000);
+    };
+    void poll();
+  }
+
+  /** 用户取消部署（FR-003：窗口关闭、会话保持空状态、消息留在输入框） */
+  private async handleMountProxyCancel(): Promise<void> {
+    const gate = this.mountProxyGate;
+    if (!gate) return;
+    // AC-9：webview 在发送时已经清空了输入框，取消必须把内容送回去，否则文字丢失
+    const blocked = gate.peekBlocked();
+    gate.cancel();
+    this.mountProxyGate = null;
+    if (blocked) {
+      this.host.broadcastToWebviews({
+        type: 'userMessageDraftRestored',
+        sessionId: blocked.sessionId,
+        content: blocked.content,
+      });
+    }
+  }
   /**
    * 用户消息的唯一处理入口：取 / 建会话引擎，登记会话覆盖，入队到引擎待处理队列。
    *
@@ -508,6 +775,16 @@ export class WebviewMessageHandler {
     if (!sessionId || typeof content !== 'string' || (!content.trim() && (!images || images.length === 0))) {
       return;
     }
+
+    // ── 部署闸门（specs/051 FR-003）──
+    // 闸门必须在**上行之前**：放到 webview 只会变成「前端不调」，wire 上仍会出现这条
+    // sendMessage，Core 照样建会话、照样落盘（FR-003 的 AC-7 断言的正是「消息没有进入
+    // Core」）。判据读 Core 的能力事实，不在这里重算 deployable。
+    if (await this.shouldBlockForMountProxy(sessionId, message.storage)) {
+      await this.blockMessageForMountProxyAsync(sessionId, content);
+      return;
+    }
+
     logger.info('WebviewMessageHandler', `User message received for session ${sessionId} (queue path)`);
 
     // 用户主动发消息：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
@@ -579,6 +856,8 @@ export class WebviewMessageHandler {
       sessionId,
       content,
       uuid,
+      // 归属随第一条消息生效（specs/045 FR-001）：勾选只是本地意图，这里才是写入时机
+      storage: message.storage,
       images,
       filePath,
       fileSelectedLines: selectedLines,

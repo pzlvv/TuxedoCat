@@ -23,7 +23,8 @@ Core 的 overlay 挂在它私有的挂载命名空间里（`docs/core/conversati
 新增 `core-rs/src/work_view_linux.rs` 的 `list_view_dir(session_id, dir) -> Result<Vec<Value>, String>`：
 
 1. `WorkViewHandle::of(session_id)` 取句柄；`None` 说明该会话没有已挂载的视图——回
-   `Err("会话 <id> 没有已挂载的 Overlay 视图")`，由宿主决定显示磁盘基线（FR-004）还是报错。
+   `Err("会话 <id> 没有已挂载的 Overlay 视图")`；请求分支在取数前经 `ensure_work_view`
+   把视图备好（FR-004），建不起来回失败侧。
    不在这里偷偷退回磁盘：Core 只描述事实（`docs/architecture/principles.md` 第 3 节）。
 2. `dir` 按 `'/'` 分隔的相对路径解析：`Path::new(dir)`，拒绝 `is_absolute()`、含 `..`
    分量的输入（与 `electron/sidebarFiles.ts::resolveWithinRoot` 同一口径）。
@@ -157,4 +158,4 @@ overlaySessionId: string | null;
 | `nsenter` 进 Core 的命名空间再列目录 | 需要 Core 暴露 PID + 提权；每次列目录起一个进程；SSH 远端完全不可行 |
 | 给既有 `sidebar:files-list` 加 `sessionId` 参数 | 把「取数来源」这个事实藏进可选参数里，违反铁律「不让参数可选」；两条通道各自的失败语义也不同（磁盘失败 vs 视图未建立） |
 | 只做标题标注、不显示 overlay 内容 | 用户明确要求「要显示当前 Overlay 的视图」；标注而不改内容会让人以为看到的是叠加结果 |
-| 视图未建立时由 Core 自动建 | 视图是惰性建立的（`docs/core/conversation-work-view.md` 第 6 节），打开侧栏不该触发挂载；FR-004 定的是回基线 |
+| 视图未建立时由 Core 自动建 | ~~否决~~ 已改为采用：资源管理器可以在任何时刻展开（包括刚进对话、还没让工具跑过），那里必须看到叠加视图；惰性建立保留原意——只在第一次真正需要视图时才拉起代理（工具调用或视图取数） |

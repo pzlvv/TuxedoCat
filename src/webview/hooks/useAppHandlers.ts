@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import type React from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
 import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
@@ -14,6 +15,13 @@ import type { CompactArchiveView } from '../compactExpand';
 const profileTag = '[Profile]';
 
 export interface UseAppHandlersProps {
+  /**
+   * 当前会话的文件存储归属（同步真相，specs/051 FR-003）。
+   *
+   * 用 ref 而不是 state：`sendMessage` 在用户按下发送的**同一次事件**里构造载荷，
+   * 那时 `setWorkViewSelected` 还没提交，读 state 会拿到旧值。
+   */
+  workViewStorageRef: React.MutableRefObject<'workspace' | 'isolated'>;
   // state values
   currentFile: string;
   selectedLines: { start: number; end: number } | null;
@@ -349,6 +357,10 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       // 排队项由宿主回推 queuedMessage 建立（见 docs/architecture/host-ui-modules.md 第 3 节）。
       type: 'sendMessage',
       sessionId,
+      // 归属随消息一起带上（specs/051 FR-003）：部署闸门判据读它，不依赖
+      // `setConversationStorage` 的到达顺序。读 ref 而不是 state——同一次事件里
+      // state 还是旧值。
+      storage: props.workViewStorageRef.current,
       content: inputValue,
       images: pastedImages.length > 0 ? pastedImages : undefined,
       filePath: props.currentFile,

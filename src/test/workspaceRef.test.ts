@@ -7,6 +7,7 @@
 
 import {
   emptyWorkspaceRef,
+  findWorkspaceRefByKey,
   isEmptyWorkspaceRef,
   localWorkspaceRef,
   remoteWorkspaceRef,
@@ -74,6 +75,18 @@ async function run(): Promise<void> {
     workspaceRefKey(emptyWorkspaceRef()) !== workspaceRefKey(localWorkspaceRef(process.cwd())),
   );
   check('空引用键稳定', workspaceRefKey(emptyWorkspaceRef()) === workspaceRefKey(emptyWorkspaceRef()));
+
+  // 按身份键找引用（宿主按视图登记的工作区 id 就是它）：远程同路径不同主机必须区分
+  const sameLocalPath = localWorkspaceRef('D:/repo');
+  const otherRemote = remoteWorkspaceRef(endpoint('172.20.1.6', 22), '/dev/repo');
+  const openRefs = [sameLocalPath, remote, otherRemote];
+  check('按身份键命中对应工作区', findWorkspaceRefByKey(openRefs, workspaceRefKey(remote)) === remote);
+  check(
+    '同路径不同主机按身份键区分（不串到另一台）',
+    findWorkspaceRefByKey(openRefs, workspaceRefKey(otherRemote)) === otherRemote,
+  );
+  check('身份键缺失时不猜', findWorkspaceRefByKey(openRefs, undefined) === undefined);
+  check('身份键未打开时返回 undefined', findWorkspaceRefByKey(openRefs, 'file//localD:/nope') === undefined);
 
   finish();
 }

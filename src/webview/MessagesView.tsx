@@ -23,6 +23,7 @@ import { StreamStatsLabel } from './StreamStatsLabel';
 import { uiFontSizePx } from './fontSize';
 import { isAutoMessageOrigin as isAutoOrigin } from '../shared/utils/messageOrigin';
 import { firstLineSummary, parseBackgroundCompletion } from './autoMessageCard';
+import { isToolCardRunning } from './toolCardStatus';
 
 /**
  * Pre-computed stable tool component map — created once outside the component
@@ -1675,8 +1676,10 @@ interface MessagesViewProps {
   /** App 模式（Electron）下正在加载对话：空状态显示 loading 动画替代静态 Logo */
   isLoadingConversation?: boolean;
   /**
-   * 新对话空状态是否渲染「Overlay 对话」勾选框（specs/045 FR-001）。
-   * 由 App 按 Core 的能力应答决定：能力不可用时为 false，勾选框整体不出现。
+   * 新对话空状态是否渲染「Overlay 对话」勾选框（specs/051 FR-002）。
+   *
+   * 由 App 按 Core 的能力应答决定：判据是 `isolatedWorkView || deployable`——当下可用、
+   * 或可经部署变得可用，都渲染；两者都不成立时整块入口不出现。
    */
   showWorkViewOption?: boolean;
   /** 勾选框当前状态与回调（只在 `showWorkViewOption` 为 true 时有意义） */
@@ -1842,11 +1845,11 @@ const SegmentTimeline = memo(function SegmentTimeline({
         color: statusColor,
         // 状态点类型：普通圆点与运行中风扇由 CSS 伪元素绘制（不占 DOM 节点），
         // 只有 thinking 涟漪动画需要真实 DOM（见 buildThinkingItem）。
-        // 'normal'（等待用户授权）与 'running'（执行中）都属于「工具还没结束」，
-        // 都显示旋转的 loading 风扇：否则从历史恢复的待确认工具（restore 时标成
-        // 'normal'）会显示普通圆点，与实时确认时的表现不一致。
-        dotKind: message.role === 'toolcall'
-          && (message.status === 'running' || message.status === 'normal')
+        // 判据与卡片内容的渲染口径一致（`isToolCardRunning`）：`'normal'`（等待用户
+        // 授权）与 `'running'`（执行中）都算「还没结束」，状态尚未到达（`undefined`）
+        // 也算——卡片内容此时按 `status || 'running'` 显示执行中，时间线若还是普通圆点，
+        // thinking 让位后界面上就没有任何进行中的指示了。
+        dotKind: message.role === 'toolcall' && isToolCardRunning(message.status)
           ? 'running'
           : 'plain',
         children: <MessageItem message={message} colors={colors} isDark={isDark} onNavigate={onNavigate} onRetryQuery={onRetryQuery} onThinkingToggle={onThinkingToggle} onExpandToggle={onExpandToggle} onBeforePreviewRender={onBeforePreviewRender} />,
@@ -2772,9 +2775,11 @@ const MessagesView = memo(({
           ) : (
             <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
           )}
-          {/* Overlay 对话入口（specs/045 FR-001）：只在**新对话、还没发过消息**时出现，
-              位置固定在 logo 正下方。能力不可用时整块不渲染——不给「勾了却静默无效」的
-              形态。 */}
+          {/* Overlay 对话入口（specs/051 FR-002）：只在**新对话、还没发过消息**时出现，
+              位置固定在 logo 正下方。渲染判据是 `isolatedWorkView || deployable`——当下
+              可用、或可经部署变得可用；两者都不成立时整块不渲染（不给「勾了却静默无效」
+              的形态）。入口本身不带任何前置提示：需要部署时由宿主在发第一条消息时弹确认
+              （FR-003），知情同意在那一刻给出。 */}
           {showWorkViewOption ? (
             <label
               className="flex items-center gap-2 cursor-pointer select-none"
@@ -2782,6 +2787,7 @@ const MessagesView = memo(({
             >
               <input
                 type="checkbox"
+                data-work-view-option
                 checked={workViewSelected === true}
                 onChange={(event) => onWorkViewChange?.(event.target.checked)}
               />

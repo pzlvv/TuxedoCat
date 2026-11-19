@@ -22,6 +22,7 @@ import {
   requestSkills,
   requestSmartNaming,
   requestSpinDesign,
+  requestStorageCapabilities,
   saveSpinDesign,
 } from '../host/coreFacts';
 
@@ -32,7 +33,10 @@ async function run(): Promise<void> {
   /** 收到的 UiRequest（按到达顺序），按类型回一个可识别的应答 */
   const sent: UiRequest[] = [];
   const handlers: UiRequestHandlers = {
-    storageCapabilitiesRequested: async () => ({ isolatedWorkView: false, reason: '测试桩' }),
+    storageCapabilitiesRequested: async (req) => {
+      sent.push(req);
+      return { isolatedWorkView: false, mountProxy: 'absent' as const, deployable: false, reason: '测试桩' };
+    },
     workViewFilesRequested: async () => ({ ok: false as const, error: '测试桩' }),
     workViewChangesRequested: async () => ({ ok: false as const, kind: 'error' as const, error: '测试桩' }),
     workViewFileDiffRequested: async () => ({ ok: false as const, error: '测试桩' }),
@@ -141,9 +145,27 @@ async function run(): Promise<void> {
   check('Spin 保存走 spinDesignSaveRequested', saved.status === 'ok');
   check('Spin 保存请求带会话', (sent.at(-1) as { sessionId?: string })?.sessionId === 's1');
 
+  // 能力是逐 Core 的事实：路由载荷必须随请求上行（否则落到活动连接）
+  await requestStorageCapabilities({ workspacePath: '/ws' });
+  check('能力查询走 storageCapabilitiesRequested', sent.at(-1)?.type === 'storageCapabilitiesRequested');
   check(
-    '路由契约齐全（11 类请求各到一次）',
-    new Set(sent.map((req) => req.type)).size === 11,
+    '能力查询带工作区路由载荷',
+    (sent.at(-1) as { workspacePath?: string | null })?.workspacePath === '/ws',
+  );
+  await requestStorageCapabilities({ sessionId: 's1' });
+  check(
+    '能力查询带会话路由载荷',
+    (sent.at(-1) as { sessionId?: string | null })?.sessionId === 's1',
+  );
+  await requestStorageCapabilities({});
+  {
+    const last = sent.at(-1) as { sessionId?: string | null; workspacePath?: string | null } | undefined;
+    check('无路由上下文时两个字段都是 null（不是缺字段）', last?.sessionId === null && last?.workspacePath === null);
+  }
+
+  check(
+    '路由契约齐全（12 类请求各到一次）',
+    new Set(sent.map((req) => req.type)).size === 12,
   );
 
   finish();

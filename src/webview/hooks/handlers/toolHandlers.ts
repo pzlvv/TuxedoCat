@@ -4,6 +4,35 @@ import { profileLog } from '../../debug';
 import { accumulateUsageToState, ensureSessionStateWithUsage } from '../../sessionState';
 import { Message, UserChoiceRequest } from '../../types';
 import { TOOL_STATUS_PRIORITY, stripOnce, toToolStatusEntry, toUiMessage } from './shared';
+import {
+  applyBufferedToolStatus,
+  shouldKeepThinkingForToolCard,
+} from '../../toolCardStatus';
+
+/**
+ * 把 `bufferedToolStatusRef` 里「卡片还没上架」的状态更新补应用一次。
+ *
+ * 为什么需要它：`addMessage`（上架卡片）与 `updateToolStatus`（推进状态）是两条独立
+ * 推送，同会话内不保证状态晚于卡片到达（实测 Overlay 下首次工具要现挂视图，
+ * 两条消息间隔被放大，`success` 会先于卡片被消费）。落到 buffered 原本只在
+ * `conversationLoaded` 回放，实时会话等不到那次回放——卡片就永久停在 running。
+ *
+ * 判定在 `src/webview/toolCardStatus.ts`（纯函数、可单测）；这里只负责驱动。
+ */
+export function flushBufferedToolStatus(props: HandlerContext['props']): void {
+  const buffered = props.bufferedToolStatusRef.current;
+  if (buffered.size === 0) return;
+  props.setMessages((prev) => {
+    let changed = false;
+    const next = prev.map((m) => {
+      const applied = applyBufferedToolStatus(m, buffered);
+      if (applied === null) return m;
+      changed = true;
+      return applied;
+    });
+    return changed ? next : prev;
+  });
+}
 
 /**
  * webview 消息处理的 tool 域 handler。
@@ -104,13 +133,22 @@ export function handleToolAddMessage(
           // 例外：WebSearch（模型内置联网搜索）搜索发生在 LLM 流内且耗时较长，
           // 工具卡片本身没有动态反馈，若关闭动画界面会显得"卡死"，
           // 因此搜索期间保留（甚至重新打开）thinking 动画，待 onAIEnd 时再统一隐藏。
+          //
+          // 另一个例外：卡片上架时状态还不是 running/normal（真正的执行中/等待授权）。
+          // `addMessage`（上架卡片）与 `updateToolStatus`（推进状态）是两条独立推送，
+          // 后者可能晚到；此时立刻关掉 thinking 会留下一段「既没有 thinking、也没有
+          // running 风车」的空窗，看起来像卡死（`specs/defects/overlay-thinking-gap-before-tool-card.md`）。
+          // 因此只在卡片确实进入执行态时才让出动画。
           if (msg.role === 'toolcall') {
-            const toolNameNorm = (msg.toolName || '').toLowerCase().replace(/[-_]/g, '');
-            if (toolNameNorm === 'websearch') {
+            if (shouldKeepThinkingForToolCard(msg.toolName || '', msg.status)) {
               props.setShowThinkingAnimation(true);
             } else {
               props.setShowThinkingAnimation(false);
             }
+            // 卡片刚上架：把「先于卡片到达」的状态更新（running / success / fail）
+            // 直接消费掉，不等 conversationLoaded 回放——否则实时会话的卡片会永久停在
+            // running（`specs/defects/overlay-tool-card-stuck-running.md`）。
+            flushBufferedToolStatus(props);
           }
 
           // 更新 context length（仅对 thinking 和 assistant 消息，它们携带 token 数据）
@@ -269,7 +307,13 @@ export function handleToolUpdateToolStatus(
                   if (update.toolStartTimestamp) (updated as any).toolStartTimestamp = update.toolStartTimestamp;
                   next[i] = updated;
                 }
-                // 未匹配的更新（toolCallId 不在当前 messages 中）重新导向 buffered 备用
+                // 未匹配的更新（toolCallId 不在当前 messages 中）重新导向 buffered 备用。
+                // 没有卡片可更新不等于可以丢：`addMessage`（上架卡片）与
+                // `updateToolStatus`（推进状态）是两条独立推送，同会话内**不保证**
+                // 状态晚于卡片到达。落到 buffered 原本只在 `conversationLoaded` 回放，
+                // 实时会话等不到那次回放——卡片就永久停在 running。
+                // Overlay 下首次工具要现挂视图，两条消息的间隔被放大，因此更容易踩中
+                // （`specs/defects/overlay-tool-card-stuck-running.md`）。
                 for (const [toolCallId, update] of pending) {
                   if (!next.some(m => m.role === 'toolcall' && m.toolCallId === toolCallId)) {
                     props.bufferedToolStatusRef.current.set(toolCallId, { ...update });

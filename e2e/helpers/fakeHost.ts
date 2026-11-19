@@ -20,12 +20,32 @@ export interface FakeHostInfo {
   conversationListOwner: 'host' | 'webview';
 }
 
+/** 文件存储能力应答（`storageCapabilitiesRequested` 的四字段，specs/051 FR-001） */
+export interface FakeStorageCapabilities {
+  isolatedWorkView: boolean;
+  mountProxy: 'ready' | 'absent';
+  deployable: boolean;
+  reason: string;
+}
+
+/**
+ * 注入期可预置的状态（在页面脚本执行前就绪）。
+ *
+ * 与 `FakeHostDriver` 上的 setter 分工：能改「下一次应答」的用 setter，**必须在这一轮
+ * 启动前就位**的用这里。实例：`requestStorageCapabilities` 在挂载时只问一次，webview
+ * 不重复问（能力在 Core 生命周期内不变），挂载后再改 state 永远赶不上——只能注入期给。
+ */
+export interface FakeHostInitOptions {
+  /** 文件存储能力应答；缺省 `null` = 宿主不应答（复现能力未到达的等待态） */
+  storageCapabilities?: FakeStorageCapabilities | null;
+}
+
 /**
  * 按宿主能力生成注入脚本。默认形态（FAKE_HOST_INIT）是 VS Code 单视图；
  * Electron 浮窗（多视图 + 列表在顶栏，顶栏多出「关闭」按钮）等非默认形态
  * 用例传入对应能力。
  */
-export function fakeHostInit(hostInfo: FakeHostInfo): string {
+export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions = {}): string {
   return `
 (() => {
   // —— 宿主注入（preload / 扩展 HTML 注入的等价物）——
@@ -76,7 +96,21 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     mcpPinFailed: false,
     // 按会话的 Todo 清单（requestSessionTodos 的应答；core 侧事实的假实现）
     sessionTodos: {},
+    // ── Overlay 挂载代理（specs/051）──
+    // 能力应答（requestStorageCapabilities）：三个字段都是 Core 的事实，宿主只透传。
+    // null = 宿主不应答（复现「能力始终未到达」的等待态，webview 不渲染勾选框）。
+    // 缺省 null：入口渲染的用例必须显式推一次能力，等待态因此是默认基线。
+    mountProxyCapabilities: null,
+    // 部署编排的脚本：宿主收到 requestMountProxyDeploy 后按此推 mountProxyDeployState 序列。
+    mountProxyDeployScript: ['needsCredential'],
+    // 判定凭据对错的期望值（null = 任何凭据都对）
+    mountProxyExpectedSecret: null,
+    mountProxyExpectedMethod: null,
+    // 部署脚本回推给对话框的安装落点 / 目标主机 / 零密码命令
+    mountProxyFacts: { installPath: '/usr/libexec/mount-proxy', targetHost: 'this-host', manualCommand: '' },
   };
+  // 注入期预置：挂载时只问一次的请求（能力查询）必须在启动前就位
+  state.mountProxyCapabilities = ${JSON.stringify(init.storageCapabilities ?? null)};
 
   // webview → 宿主 的全部上行消息（追加写，测试轮询断言）
   const sent = [];
@@ -180,6 +214,126 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
     return chunks.length > 0 ? chunks : [''];
   }
 
+  // ── Overlay 挂载代理的部署编排（specs/051 FR-003 / FR-004） ──
+  // 真实宿主的状态机在 src/host/mountProxyGate.ts + mountProxyInstall.ts；假宿主只复现
+  // webview 能看见的那一半：按脚本推 mountProxyDeployState，凭据提交由用例决定对错。
+  // 重试不设次数上限（能试几次由服务端策略决定），因此这里也没有剩余次数。
+  let deployScriptIndex = 0;
+  // 每轮部署的开始序号：宿主回推的人机等待点在 deployContinue 的 resolve 处
+  let deployResolve = null;
+  let deployCancelled = false;
+  /** 被闸门拦下的消息（取消时回填输入框，FR-003 的 AC-9） */
+  let blockedMessage = null;
+  let deployCredentialOk = false;
+  /** 上一次认证失败的原因（失败态回显，FR-004 第 5 条） */
+  let deployFailure = null;
+  /** 用户在失败态点了「重试」（重新走一遍部署，不设次数上限） */
+  let deployRestart = false;
+
+  function pushDeployState(extra) {
+    send({
+      type: 'mountProxyDeployState',
+      phase: 'running',
+      failure: null,
+      manualCommand: null,
+      targetHost: state.mountProxyFacts.targetHost,
+      installPath: state.mountProxyFacts.installPath,
+      ...extra,
+    });
+  }
+
+  /** 等 webview 对当前人机步骤作答（提交凭据 / 取消），或脚本自动前进 */
+  function waitForHuman() {
+    deployCancelled = false;
+    deployCredentialOk = false;
+    deployRestart = false;
+    return new Promise((resolve) => { deployResolve = resolve; });
+  }
+
+  function deployContinue() {
+    const resolve = deployResolve;
+    deployResolve = null;
+    if (resolve) resolve();
+  }
+
+  async function playMountProxyDeploy() {
+    deployScriptIndex = 0;
+    deployFailure = null;
+    pushDeployState({
+      phase: 'running',
+      failure: null,
+      manualCommand: null,
+      installPath: state.mountProxyFacts.installPath,
+      targetHost: state.mountProxyFacts.targetHost,
+    });
+
+    while (deployScriptIndex < state.mountProxyDeployScript.length) {
+      const step = state.mountProxyDeployScript[deployScriptIndex];
+      deployScriptIndex += 1;
+      if (step === 'needsCredential') {
+        // 真实宿主的 gate.fail() 把失败原因推成 failed，用户换一条来源或点「重试」
+        // 都能继续——不设次数上限（FR-004 第 4 / 5 条）。
+        for (;;) {
+          pushDeployState({
+            phase: deployFailure === null ? 'needsCredential' : 'failed',
+            failure: deployFailure,
+            manualCommand: null,
+            installPath: state.mountProxyFacts.installPath,
+            targetHost: state.mountProxyFacts.targetHost,
+          });
+          await waitForHuman();
+          if (deployCancelled) return;
+          if (deployCredentialOk) {
+            deployFailure = null;
+            break;
+          }
+          // 重试 = 重新走一遍（免密通道 + 三选一），失败原因清空
+          if (deployRestart) {
+            deployFailure = null;
+            continue;
+          }
+          // 判错：进失败态回显原因，仍可换来源或再点重试
+          deployFailure = 'authentication failed';
+        }
+      } else if (step === 'manualCommand') {
+        pushDeployState({
+          phase: 'needsCredential',
+          failure: null,
+          manualCommand: state.mountProxyFacts.manualCommand,
+          installPath: state.mountProxyFacts.installPath,
+          targetHost: state.mountProxyFacts.targetHost,
+        });
+        await waitForHuman();
+        if (deployCancelled) return;
+      } else if (step === 'failed') {
+        // 脚本显式给出的失败步骤：失败态留在界面上说明原因（成功才自动收起）
+        pushDeployState({
+          phase: 'failed',
+          failure: 'installation failed',
+          manualCommand: null,
+          installPath: state.mountProxyFacts.installPath,
+          targetHost: state.mountProxyFacts.targetHost,
+        });
+        return;
+      }
+    }
+
+    // 部署成功：能力转为可用（FR-008 的重查结果由用例侧决定，这里给「已就位」）
+    state.mountProxyCapabilities = {
+      isolatedWorkView: true,
+      mountProxy: 'ready',
+      deployable: false,
+      reason: '',
+    };
+    pushDeployState({
+      phase: 'done',
+      failure: null,
+      manualCommand: null,
+      installPath: state.mountProxyFacts.installPath,
+      targetHost: state.mountProxyFacts.targetHost,
+    });
+  }
+
   // —— 自动应答：覆盖 webview 启动序列的全部请求 ——
   window.addEventListener('towhost', (event) => {
     const msg = event.detail;
@@ -189,6 +343,60 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
         break;
       case 'requestContextLimit':
         send({ type: 'contextLimitUpdated', maxContextTokens: 128000 });
+        break;
+      case 'requestStorageCapabilities':
+        // specs/051 FR-001：能力是 Core 的事实，宿主只透传。null = 不应答（等待态）。
+        if (state.mountProxyCapabilities) {
+          send({ type: 'setStorageCapabilities', ...state.mountProxyCapabilities });
+        }
+        break;
+      case 'requestMountProxyDeploy':
+        // specs/051 FR-003：宿主侧的部署闸门在真实链路里会先弹确认再编排提权；
+        // 假宿主把编排脚本化，webview 只负责呈现 mountProxyDeployState。
+        // 已经在等人机作答时（失败态点「重试」）= 继续这一轮，不重开脚本。
+        if (deployResolve !== null) {
+          deployRestart = true;
+          deployContinue();
+        } else {
+          void playMountProxyDeploy();
+        }
+        break;
+      case 'submitMountProxyCredential': {
+        // specs/051 FR-004 AC-13：凭据只进内存，判对错后丢弃；不进 state（假宿主也不留）。
+        const ok = (state.mountProxyExpectedMethod === null || state.mountProxyExpectedMethod === msg.method)
+          && (state.mountProxyExpectedSecret === null || state.mountProxyExpectedSecret === msg.secret);
+        deployCredentialOk = ok;
+        // 次数只在真正判定一次失败时递增（见 needsCredential 之后的 failed 分支），
+        // 这里不递增——两处都加会让第 1 次失败就扣掉 2 次。
+        deployContinue();
+        break;
+      }
+      case 'showMountProxyManualCommand':
+        // specs/051 FR-004 第 2 条的零密码通道：真实宿主把完整命令推回去等用户自己跑。
+        // 假宿主直接用它预置的命令（用例经 setMountProxyDeploy 的 facts 给出）。
+        pushDeployState({
+          phase: 'needsCredential',
+          failure: null,
+          manualCommand: state.mountProxyFacts.manualCommand,
+        });
+        break;
+      case 'cancelMountProxyDeploy':
+        // 真实宿主的 gate.cancel() 会推 cancelled 让界面收起，并把被拦消息回填输入框
+        // （FR-003 的 AC-9）。
+        deployCancelled = true;
+        if (blockedMessage !== null) {
+          send({ type: 'userMessageDraftRestored', sessionId: blockedMessage.sessionId, content: blockedMessage.content });
+          blockedMessage = null;
+        }
+        send({
+          type: 'mountProxyDeployState',
+          phase: 'cancelled',
+          failure: null,
+          manualCommand: null,
+          targetHost: state.mountProxyFacts.targetHost,
+          installPath: state.mountProxyFacts.installPath,
+        });
+        deployContinue();
         break;
       case 'requestSkills':
         send({
@@ -346,7 +554,35 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
           thinkingMode: 'high', agentMode: 'risk', webSearch: false,
         });
         break;
+      case 'setConversationStorage':
+        // 勾选后补发的归属（specs/045 FR-001）：只改 Core 侧的归属，闸门判据取自
+        // sendMessage 自带的 storage（跨消息先后顺序不可靠）
+        break;
       case 'sendMessage':
+        // specs/051 FR-003：真实宿主的部署闸门在这里拦下消息。假宿主复现同一判据——
+        // 归属是 isolated、能力不可用且可部署时，**不上行**，先推 confirm 等用户确认
+        // （用例断言的正是「上行消息里没有 sendMessage」）。
+        if (
+          state.mountProxyCapabilities !== null &&
+          !state.mountProxyCapabilities.isolatedWorkView &&
+          state.mountProxyCapabilities.deployable &&
+          // 归属取自消息本身（specs/051 FR-003）：setConversationStorage 与 sendMessage
+          // 是两条独立上行，先后取决于渲染时序
+          msg.storage === 'isolated'
+        ) {
+          // 闸门拦下：这条消息不进 sent（= 不进 Core），FR-003 的 AC-7
+          window.__fakeHostGateBlocked = true;
+          blockedMessage = { sessionId: msg.sessionId, content: msg.content };
+          send({
+            type: 'mountProxyDeployState',
+            phase: 'confirm',
+            failure: null,
+            manualCommand: null,
+            targetHost: state.mountProxyFacts.targetHost,
+            installPath: state.mountProxyFacts.installPath,
+          });
+          break;
+        }
         if (active.has(msg.sessionId) && state.queueWhileBusy) {
           // 引擎忙碌：真实链路由 core 排队，宿主回 queuedMessage 横幅
           send({ type: 'queuedMessage', sessionId: msg.sessionId, content: msg.content, uuid: 'q-' + Date.now() });
@@ -416,8 +652,13 @@ export function fakeHostInit(hostInfo: FakeHostInfo): string {
 
   window.vscode = {
     postMessage(message) {
-      sent.push(message);
-      window.dispatchEvent(new CustomEvent('towhost', { detail: message }));
+      // sent 记录的是**真正到达宿主、会进入 Core** 的上行消息（specs/051 FR-003：
+      // E2E 断言的是「上行消息里没有 sendMessage」，而不是「前端没有调用」）。
+      // 监听器把消息拦下（部署闸门）时置 gateBlocked，这条就不进 sent。
+      const event = new CustomEvent('towhost', { detail: message });
+      window.dispatchEvent(event);
+      if (!window.__fakeHostGateBlocked) sent.push(message);
+      window.__fakeHostGateBlocked = false;
     },
   };
 
@@ -573,6 +814,43 @@ export class FakeHostDriver {
       (list) => { (window as any).__fakeHost.state.abortRuntimeStates = list; },
       states,
     );
+  }
+
+  /**
+   * 设定文件存储能力应答（specs/051 FR-001）：`null` 表示宿主不应答，
+   * 复现「能力始终未到达」的等待态。
+   */
+  async setMountProxyCapabilities(capabilities: {
+    isolatedWorkView: boolean;
+    mountProxy: 'ready' | 'absent';
+    deployable: boolean;
+    reason: string;
+  } | null): Promise<void> {
+    await this.page.evaluate(
+      (cap) => { (window as any).__fakeHost.state.mountProxyCapabilities = cap; },
+      capabilities,
+    );
+  }
+
+  /**
+   * 设定部署编排脚本（specs/051 FR-003 / FR-004）。
+   *
+   * `script` 逐条推进：`needsCredential` 停下等人提交凭据（对错由 `expected` 判定），
+   * `manualCommand` 停下等零密码通道走完，`failed` 记一次失败并停手。`facts` 是回推给
+   * 对话框的安装落点 / 目标主机 / 零密码命令。
+   */
+  async setMountProxyDeploy(options: {
+    script?: Array<'needsCredential' | 'manualCommand' | 'failed'>;
+    expected?: { method?: 'sudoPassword' | 'rootPassword'; secret?: string } | null;
+    facts?: { installPath?: string; targetHost?: string; manualCommand?: string };
+  }): Promise<void> {
+    await this.page.evaluate((opts) => {
+      const host = (window as any).__fakeHost;
+      if (opts.script) host.state.mountProxyDeployScript = opts.script;
+      host.state.mountProxyExpectedMethod = opts.expected?.method ?? null;
+      host.state.mountProxyExpectedSecret = opts.expected?.secret ?? null;
+      if (opts.facts) Object.assign(host.state.mountProxyFacts, opts.facts);
+    }, options);
   }
 
   /**

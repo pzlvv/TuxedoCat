@@ -127,9 +127,24 @@ export async function requestMcpServers(sessionId: string | undefined): Promise<
  *
  * 界面据此决定是否渲染「Overlay 对话」入口；不满足时 `reason` 写明缺哪项前提，
  * 由 Core 判断——宿主平台回答不了这个问题。
+ *
+ * **必须点名问哪个 Core**：能力和「代理装在哪台机器」一样是逐 Core 的事实。多工作区
+ * 宿主里不携带路由载荷就会落到活动连接（`Client.connectionForRequest`），后台预热视图
+ * 因此拿到另一个 Core 的答案——本地 Windows Core 恒 `deployable: false`，勾选框不出现
+ * （`specs/defects/prewarm-view-capability-query-hits-wrong-core.md`）。
+ *
+ * 两个路由载荷各有适用面，同给时 `sessionId` 优先（会话归属比视图更具体）：
+ * - `sessionId`：部署闸门读该会话所属 Core 的能力；
+ * - `workspacePath`：webview 按来源视图所属工作区问（预热视图还没有会话）。
  */
-export async function requestStorageCapabilities(): Promise<StorageCapabilities> {
-  return requireEventBus().requestCore({ type: 'storageCapabilitiesRequested' });
+export async function requestStorageCapabilities(
+  route: { sessionId?: string | null; workspacePath?: string | null },
+): Promise<StorageCapabilities> {
+  return requireEventBus().requestCore({
+    type: 'storageCapabilitiesRequested',
+    sessionId: route.sessionId ?? null,
+    workspacePath: route.workspacePath ?? null,
+  });
 }
 
 /**

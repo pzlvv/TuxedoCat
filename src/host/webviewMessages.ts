@@ -464,10 +464,61 @@ export type HostToWebviewMessage = {
   type: 'clearQueuedMessage';
   sessionId: string;
 } | {
-  /** 文件存储能力（specs/045 FR-001）：`isolatedWorkView` 为 false 时不渲染入口。 */
+  /**
+   * 文件存储能力（specs/051 FR-001）。
+   *
+   * 入口渲染判据是 `isolatedWorkView || deployable`（FR-002）：当下可用、或可经部署变得
+   * 可用，都渲染；两者都不成立时整块入口不渲染。
+   */
   type: 'setStorageCapabilities';
   isolatedWorkView: boolean;
+  /** 挂载代理是否就位（`'ready'` / `'absent'`） */
+  mountProxy: 'ready' | 'absent';
+  /** 部署代理是否可能解决当下的不可用（Core 推导，宿主透传） */
+  deployable: boolean;
   reason: string;
+} | {
+  /**
+   * 挂载代理部署的进行状态（specs/051 FR-003 / FR-004 / FR-008）。
+   *
+   * 唯一的「部署走到哪一步」事实来源：webview 只渲染这里给的值，不自己推断进度、
+   * 不自己判 ready（FR-005「自检归属唯一」）。`phase` 是判别字段，其余字段全必选——
+   * 不适用时用 `null`，不用可选成员（铁律 4.2）。
+   *
+   * - `confirm`：闸门拦下了一条消息，等用户确认（四要素文案用 `targetHost` /
+   *   `installPath`）；
+   * - `running`：正在提权 / 安装；
+   * - `needsCredential`：免密 `sudo` 不可用，等用户三选一；`manualCommand` 非
+   *   `null` 时表示「显示命令自己执行」通道，此时不渲染密码框；
+   * - `failed`：本轮失败，`failure` 是可行动的原因；换一条来源可继续重试，不设次数上限；
+   * - `done`：代理就位且能力已重查可用，宿主接着发原来那条消息（FR-008）；
+   * - `cancelled`：用户取消，界面收起对话框（FR-003 的 AC-9）。必须有这一态：webview
+   *   只在收到本消息时改变对话框，取消若不下发，界面会一直停在 `confirm`。
+   */
+  type: 'mountProxyDeployState';
+  phase: 'confirm' | 'running' | 'needsCredential' | 'failed' | 'done' | 'cancelled';
+  /** 失败原因；非 `failed` 时为 `null` */
+  failure: string | null;
+  /** 零密码通道的完整命令；只在 `needsCredential` 的另一条通道里有值 */
+  manualCommand: string | null;
+  /** 目标主机（远端场景点名真实主机，null 表示本机） */
+  targetHost: string | null;
+  /** 完整安装落点 */
+  installPath: string;
+} | {
+  /**
+   * 把一条被拦下的用户消息回填到输入框（specs/051 FR-003 的 AC-9）。
+   *
+   * 为什么必须有这一条：webview 在发送时已经清空了输入框（`buildUserMessageFromInput`
+   * 里 `clear()`），如果取消时宿主不把内容送回来，用户点「取消」后那段文字就丢了——
+   * 而 FR-003 明确要求「消息留在输入框」。
+   *
+   * 只用于「消息根本没进 Core」的情形（部署闸门拦下后取消）；已进入 Core 的排队消息
+   * 另有 `queuedMessage` 的编辑回填链路。
+   */
+  type: 'userMessageDraftRestored';
+  sessionId: string;
+  content: string;
 } | {
   type: 'setSkills';
   /** Skill 列表 */
@@ -711,6 +762,14 @@ export type WebviewToHostMessage = {
   /** 本次发送携带的模型身份（model + provider 一起表征；缺省沿用会话已选模型） */
   model?: string;
   provider?: string;
+  /**
+   * 该会话的文件存储归属（specs/045 FR-001）。
+   *
+   * 必选：部署闸门（specs/051 FR-003）只在 Overlay 归属上生效，而 `setConversationStorage`
+   * 与 `sendMessage` 是两条独立的上行，到达顺序取决于渲染时序——用先后顺序推归属会让闸门
+   * 时灵时不灵。归属随消息一起带，判据就不依赖任何跨消息状态。
+   */
+  storage: 'workspace' | 'isolated';
 } | {
   /**
    * 失败 once 通知上的「重试」（specs/036 FR-003）：宿主翻译成
@@ -764,6 +823,39 @@ export type WebviewToHostMessage = {
   type: 'setConversationStorage';
   sessionId: string;
   storage: 'workspace' | 'isolated';
+} | {
+  /**
+   * 用户在部署确认框点了「部署」（specs/051 FR-003 / FR-004）。
+   *
+   * 闸门在宿主侧：`sendMessage` 被拦下后宿主推 `mountProxyDeployState{phase:'confirm'}`，
+   * 本消息是用户对那一问的「确认」。宿主收到后按 FR-004 的顺序取提权（先试免密
+   * `sudo -n`），需要密码时再推 `needsCredential` 让用户三选一。
+   */
+  type: 'requestMountProxyDeploy';
+} | {
+  /**
+   * 提交一次提权凭据（specs/051 FR-004）。
+   *
+   * **本消息的 handler 第一条语句必须声明不记录**（`docs/architecture/hosts.md`
+   * 的日志口径）：`secret` 是明文密码，只允许写进提权子进程的标准输入，绝不进 argv /
+   * 环境变量 / 日志 / 诊断输出。`method` 决定它交给 `sudo -S` 还是 `su -c`。
+   */
+  type: 'submitMountProxyCredential';
+  method: 'sudoPassword' | 'rootPassword';
+  /** 明文密码（一次性；宿主侧收到后转成可清零的字节缓冲，用后清零） */
+  secret: string;
+} | {
+  /** 用户取消部署（确认框的取消 / Escape / 点遮罩，specs/051 FR-003） */
+  type: 'cancelMountProxyDeploy';
+} | {
+  /**
+   * 用户在提权三选一里选了「显示命令自己执行」（specs/051 FR-004 第 2 条）。
+   *
+   * 零密码通道：宿主把完整安装命令推回去（`mountProxyDeployState{phase:'needsCredential',
+   * manualCommand}`），然后轮询落点是否就位；全程没有密码经过宿主进程（AC-12）。
+   * 单独一条消息而不是复用 `requestMountProxyDeploy`——后者会重新跑一遍免密安装。
+   */
+  type: 'showMountProxyManualCommand';
 } | {
   type: 'deleteConversation';
   sessionId: string;

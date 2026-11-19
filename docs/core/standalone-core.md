@@ -448,7 +448,7 @@ Linux 两份均取 `unknown-linux-musl` 静态链接目标。
 | 就绪前 | UI 侧 `CoreEvent` 处理器已注册；`uiEvent` 帧在 Client 侧排队，不投递 |
 | 就绪 | Core 处理完 `hostEnvironmentProvided` 后发 `CoreEvent.coreReady`；Client 解除门禁 |
 | 运行 | UI 把 `emitToCore` 写为 `uiEvent` 帧；Core 把 `emitToUi` / `request` 写为帧；`request` 的响应回带 `id` |
-| 实例边界 | 一个工作区拥有一个 Core 进程；连接结束即标准输入关闭；父进程消失即退出（看门狗） |
+| 实例边界 | 一个工作区拥有一个 Core 进程；连接结束即标准输入关闭；父进程消失即退出（看门狗）。Overlay 会话另按需拉起常驻挂载代理，链见 [docs/core/mount-proxy.md 第 5 节](mount-proxy.md#5-进程链与生命周期) |
 | 终止 | 关闭工作区时，Client 发 `shutdown`，等待 Core 退出；超时后由宿主（本地 `stdio`）或 daemon（远程）强制结束 |
 | 崩溃 | 未决 `request` 全部 reject；daemon 重启 Core 进程并恢复接线（第 6.1 节） |
 

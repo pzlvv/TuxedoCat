@@ -22,6 +22,7 @@ import type { CoreEvent } from '../shared/AssistantEventBus.js';
 import type { HostToWebviewMessage } from './webviewMessages.js';
 import type { CoreChannelCloseMode } from './Client.js';
 import type { WorkspaceRef } from './workspaceRef.js';
+import type { MountProxyTarget } from './mountProxyInstall.js';
 
 /** 极简日志通道（兼容 vscode.OutputChannel 的形状） */
 export interface LogChannel {
@@ -263,4 +264,18 @@ export interface UIHost extends WorkspaceProvider {
    * 两个宿主共用 `src/host/settingsFile.ts` 的实现（串行队列 + 写后清 core 读缓存）。
    */
   updateSettingsJson(mutator: (cfg: Record<string, any>) => void | Record<string, any>): Promise<void>;
+
+  // ===================== 挂载代理部署（specs/051）=====================
+
+  /**
+   * 解析该会话的部署目标（FR-004 / FR-009）。
+   *
+   * **按会话给**，不按宿主平台猜：宿主跑在 Windows、会话工作区是远端 Linux 时，
+   * 目标就是远端——这正是本地实现的 `process.platform` 判断会误判的场景
+   * （specs/defects/mount-proxy-local-host-platform-gated.md）。
+   *
+   * 调用方拿到 `null` 时按 FR-010 报错，不静默降级；`deployable` 由 Core 给出，
+   * 因此「Core 说可部署、宿主说没目标」本身就是不一致，必须显式失败。
+   */
+  resolveMountProxyTarget(sessionId: string): Promise<MountProxyTarget | null>;
 }

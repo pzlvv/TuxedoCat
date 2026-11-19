@@ -38,6 +38,27 @@ fn json_string_field(text: &str, key: &str) -> String {
     after[value_start..value_start + value_len].to_string()
 }
 
+/// 从 `src/config/project.json` 里取数字字段的值（`"key": 42`）。
+///
+/// 与 `json_string_field` 同一手法（零第三方依赖，取不到直接 panic）：代理协议版本是
+/// 数字而不是字符串，字符串辅助函数在这里会把值读成空串。
+fn json_number_field(text: &str, key: &str) -> String {
+    let needle = format!("\"{key}\"");
+    let start = text.find(&needle).unwrap_or_else(|| {
+        panic!("src/config/project.json 缺字段 {needle}");
+    });
+    let rest = &text[start + needle.len()..];
+    let colon = rest
+        .find(':')
+        .unwrap_or_else(|| panic!("{needle} 后没有冒号"));
+    let after = rest[colon + 1..].trim_start();
+    let value: String = after.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    if value.is_empty() {
+        panic!("{needle} 的值不是数字");
+    }
+    value
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=CORE_FINGERPRINT");
     let fingerprint = std::env::var("CORE_FINGERPRINT").unwrap_or_default();
@@ -52,11 +73,22 @@ fn main() {
         ("TC_CONFIG_DIR", "configDir"),
         ("TC_TMP_TASK_DIR_NAME", "tmpTaskDirName"),
         ("TC_ENV_MAX_OUTPUT_TOKENS", "envMaxOutputTokens"),
+        // Overlay 挂载代理（specs/051 FR-005）：产物名与安装落点的唯一来源是
+        // `project.json`，Core 侧定位代理时经这两个常量取值，不写产品字面量。
+        ("TC_MOUNT_PROXY_NAME", "mountProxyName"),
+        ("TC_MOUNT_PROXY_DIR", "mountProxyDir"),
     ] {
         println!(
             "cargo:rustc-env={env_key}={}",
             json_string_field(&project_text, field)
         );
     }
+    // 代理的**安装握手协议版本**（specs/051 FR-005「协议版本握手」）：与运行期 IPC 版本
+    // 分开——前者回答「装的那份代理能不能被这个 Core 用」，后者回答「运行期帧语义是否
+    // 兼容」。唯一来源是 `project.json`，代理侧也在它自己的 build.rs 里读同一个键。
+    println!(
+        "cargo:rustc-env=TC_MOUNT_PROXY_PROTOCOL_VERSION={}",
+        json_number_field(&project_text, "mountProxyProtocolVersion")
+    );
     println!("cargo:rerun-if-changed=../src/config/project.json");
 }

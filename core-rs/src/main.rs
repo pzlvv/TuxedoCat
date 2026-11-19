@@ -37,6 +37,7 @@ mod llm;
 mod mcp;
 mod mcp_config;
 mod mcp_http;
+mod mount_proxy;
 mod parent_watchdog;
 mod permission;
 mod power;
@@ -105,11 +106,13 @@ fn main() {
 
 /// 单进程 Core 模式：读 `hello` → 回 `ready` → 进入帧循环。
 fn run_core() {
-    // 对话工作视图的命名空间（specs/045）：`unshare(CLONE_NEWUSER)` 要求调用者
-    // `mm_users == 1`，进程一旦有第二个线程就必然 EINVAL，所以位置必须在**一切线程启动
-    // 之前**——包括下面的父进程看门狗。失败不阻塞启动：能力探测据此回不可用，隔离视图
-    // 对话退回真实磁盘执行（FR-007）。
-    crate::work_view::enter();
+    // **Core 自身不建命名空间、不 unshare**（specs/051 FR-007）：隔离视图由常驻挂载代理
+    // 提供，Core 只经 socketpair 请求它。这里不再有 `work_view::enter()`——旧形态靠
+    // `exec` 进代理的命名空间，会因代理拒绝而让 Core 以代理的退出码退出、触发 daemon
+    // 重启风暴（docs/adr/0018-resident-mount-proxy.md）。
+    //
+    // 代理**按需**拉起：能力查询或首次使用 Overlay 时才 `spawn`，用户从不使用 Overlay
+    // 对话时不拉起任何代理进程（specs/051 边界表）。
 
     // 父进程（宿主）消失后自行退出：扩展升级替换 / 崩溃时 `deactivate` 可能不执行，
     // 标准输入 EOF 也可能因主线程卡在同步处理而迟到。看门狗只按「父进程不存在」判定，
@@ -132,6 +135,9 @@ fn run_core() {
 
     // 宿主退出：结束全部 MCP 子进程，避免留下孤儿进程
     crate::mcp::shutdown();
+    // 断开常驻挂载代理：关闭 socketpair → 代理读到 EOF → B 退 → A 收尸
+    //（specs/051 FR-007b 的回收主路径，不依赖信号）。
+    crate::mount_proxy::shutdown();
 
     {
         let bus = shared_bus.lock().unwrap();
@@ -307,10 +313,15 @@ fn handle_orphan_completions(control: Value) {
 /// 帧循环是顺序处理的：任何一条阻塞几十毫秒以上的请求都会把后续帧压在队列里
 /// （余额查询曾把整个循环挂住，见 `specs/defects/balance-fetch-blocks-frame-loop.md`）。
 /// 视图取数要起 `git` 子进程、等它退出，量级同型，因此走同一条异步应答通道。
+///
+/// 列目录同样在列：视图未建立时它会先拉起代理（建命名空间 + 挂 overlay + bind，量级
+/// 与一次工具调用相同，`specs/046` FR-004）。留在帧循环里，用户一展开资源管理器就会把
+/// 后续帧全压在后面。
 fn is_slow_ui_request(request: &Value) -> bool {
     matches!(
         request.get("type").and_then(Value::as_str),
         Some("balanceRequested")
+            | Some("workViewFilesRequested")
             | Some("workViewChangesRequested")
             | Some("workViewFileDiffRequested")
     )
@@ -332,6 +343,27 @@ fn spawn_slow_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64, r
             eprintln!("[core] slow request response dropped: frame channel closed");
         }
     });
+}
+
+/// 取数请求的前置：确保某会话的叠加视图已就位（specs/046 FR-004）。
+///
+/// 三个 `workView*` 只读请求共用这一个入口，判据与工具调用完全相同（`ensure_work_view`）：
+/// 「用户正在看这个对话的文件」就是「这个对话需要视图」。视图惰性建立
+/// （`docs/core/conversation-work-view.md` 第 6 节），资源管理器却可以在任何时刻展开，
+/// 因此这里必须能把它建起来，而不是回一条「没有已挂载的视图」让用户以为文件都没了。
+///
+/// 三态映射：`Workspace`（非隔离归属）与 `ViewUnavailable`（隔离归属但建不起来）都回
+/// `Err` —— 前者是「不该问这个对话」，后者是「问了但坏了」，两者对调用方都是失败；
+/// 偷偷列磁盘会把两个不同的事实混成一个（`docs/architecture/principles.md` 铁律 4.1）。
+fn ensure_view_ready(core: &Core, session_id: &str) -> Result<(), String> {
+    use crate::tools::WorkViewState;
+    match core.ensure_work_view(session_id) {
+        WorkViewState::View(_) => Ok(()),
+        WorkViewState::Workspace => {
+            Err(format!("会话 {session_id} 不是 Overlay 归属，没有叠加视图"))
+        }
+        WorkViewState::ViewUnavailable(reason) => Err(reason),
+    }
 }
 
 /// UI → core 请求的分发（对齐 `UiRequest`，见 `src/core/AssistantEventBus.ts`）。
@@ -356,12 +388,20 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             let capabilities = crate::work_view::capabilities();
             Ok(json!({
                 "isolatedWorkView": capabilities.isolated_work_view,
+                // 代理是否就位（specs/051 FR-001 根字段）
+                "mountProxy": capabilities.mount_proxy.as_str(),
+                // 派生字段：装代理是否**可能**解决当下的不可用（推导点只在 Core）
+                "deployable": capabilities.deployable,
                 // 不可用的原因；可用时为空串（契约成员全必选，「没有」用空串而非 null）
                 "reason": capabilities.reason,
             }))
         }
         // 列 Overlay 对话的叠加视图目录（specs/046 FR-002）：宿主看不到 Core 私有挂载
         // 命名空间里的视图，文件资源管理器只能经这里取。缺参数时报错，不静默取默认值。
+        //
+        // 取数前先经 `ensure_work_view` 把视图备好（specs/046 FR-004）：资源管理器可以在
+        // 任何时刻展开，包括用户进对话就点开、还没让工具干过任何事的时候——那里必须看到
+        // 叠加视图，而不是一条「没有已挂载的视图」错误行。
         "workViewFilesRequested" => {
             let session_id = request
                 .get("sessionId")
@@ -371,6 +411,14 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("dir")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "workViewFilesRequested without dir".to_string())?;
+            // 越界路径先拒（specs/046 FR-002）：非法请求不该触发建立视图这种副作用
+            if let Err(reason) = crate::work_view::check_view_relative(dir) {
+                return Ok(json!({ "ok": false, "error": reason }));
+            }
+            if let Err(reason) = ensure_view_ready(core, session_id) {
+                // 视图备不起来是业务失败（宿主显示错误行），不是请求非法（FR-006）
+                return Ok(json!({ "ok": false, "error": reason }));
+            }
             match crate::work_view::list_view_dir(session_id, dir) {
                 Ok(entries) => Ok(json!({ "ok": true, "entries": entries })),
                 // 失败回判别联合的失败侧而不是 Err：宿主据此显示错误行（FR-006），
@@ -389,6 +437,9 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("scope")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "workViewChangesRequested without scope".to_string())?;
+            if let Err(reason) = ensure_view_ready(core, session_id) {
+                return Ok(json!({ "ok": false, "kind": "error", "error": reason }));
+            }
             match crate::work_view::changes(session_id, scope) {
                 Ok(crate::work_view::ChangesOutcome::Ready(entries)) => Ok(json!({
                     "ok": true,
@@ -421,6 +472,9 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "workViewFileDiffRequested without path".to_string())?;
+            if let Err(reason) = ensure_view_ready(core, session_id) {
+                return Ok(json!({ "ok": false, "error": reason }));
+            }
             match crate::work_view::file_diff(session_id, path) {
                 Ok(crate::work_view::FileDiffOutcome::NotAGitWorkspace { after }) => Ok(json!({
                     "ok": true,
@@ -1005,6 +1059,22 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             let storage =
                 engine::work_view_storage_from_text(event.get("storage").and_then(Value::as_str));
             core.set_session_storage(&session_id, storage);
+        }
+        // 存量隔离会话的显式出路（specs/051 FR-011）：用户决定把改动落到真实磁盘。
+        //
+        // 与 `storageChanged` 不同，这里**允许**已经有消息落盘的会话改归属——那正是它
+        // 存在的理由。视图随之回收：继续留着挂载只会让下一轮工具调用失败。
+        "conversationStorageConverted" => {
+            match core.convert_session_storage_to_workspace(&session_id) {
+                Ok(()) => {
+                    if let Ok(project) = core.project_of(&session_id) {
+                        crate::work_view::release(&project, &session_id);
+                    }
+                }
+                Err(reason) => {
+                    eprintln!("[core] conversationStorageConverted 失败（{session_id}）：{reason}")
+                }
+            }
         }
         "conversationOpened" => {
             core.on_conversation_opened(&session_id);

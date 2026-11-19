@@ -1,350 +1,64 @@
-//! 对话级 overlay 工作视图的 Linux 实现（specs/045）。
+//! 对话级 overlay 工作视图的 Linux 实现（specs/045 + specs/051）。
 //!
-//! 命名空间结构与 specs/045 的 plan 一致：
+//! ## 视图由常驻代理持有
 //!
-//! ```text
-//! run_core() 最早（单线程）
-//!   unshare(CLONE_NEWUSER) + 写 id 映射     ← 拿到命名空间内的 CAP_SYS_ADMIN
-//!   unshare(CLONE_NEWNS) + / 设为私有传播    ← 此后本进程的挂载不泄漏给宿主
+//! Core 自身**不**进命名空间、不 `unshare`、不 `mount`（ADR-0018）。一个隔离会话对应
+//! 一个常驻挂载代理：它在降权之前建好挂载命名空间、挂上 overlay、把视图 bind 到真实
+//! 工作区路径上，之后持有这份命名空间并 `fork` 出工具进程（
+//! `docs/core/mount-proxy.md`）。
 //!
-//! 每次工具 / Bash 子进程
-//!   unshare(CLONE_NEWNS)                    ← 取一份私有挂载副本
-//!   bind <视图挂载点> → <真实工作区路径>      ← 路径字符串不变，内容换成叠加结果
-//!   exec
-//! ```
+//! 因此本模块只剩三件事：
 //!
-//! `CLONE_NEWUSER` 必须在单线程时执行：内核要求调用者 `mm_users == 1`，进程一旦有第二个
-//! 线程就必然 `EINVAL`。
-
-/// 本模块用到的内核接口：直接声明 FFI，不引 `libc` 依赖。
-///
-/// 理由：新增一个**直接**依赖会改变 cargo 的依赖图指纹，让 Windows 目标上的 C 依赖
-/// （`ring`）重新编译，而本机没有 MSVC 的 `lib.exe`——一个纯 Linux 的 syscall 封装
-/// 不该让 Windows 出包失败。`libc` 本身仍是传递依赖，但那是别的 crate 的事。
-///
-/// 常量值与 Linux 内核 ABI 一致（`include/uapi/linux/sched.h` /
-/// `include/uapi/linux/mount.h`）。
-mod sys {
-    pub type CInt = i32;
-    pub type CUInt = u32;
-    pub type CULong = u64;
-
-    pub const CLONE_NEWNS: CInt = 0x0002_0000;
-    pub const CLONE_NEWUSER: CInt = 0x1000_0000;
-    pub const MS_REC: CULong = 16384;
-    pub const MS_PRIVATE: CULong = 1 << 18;
-    pub const MS_BIND: CULong = 4096;
-
-    extern "C" {
-        pub fn unshare(flags: CInt) -> CInt;
-        pub fn mount(
-            source: *const std::os::raw::c_char,
-            target: *const std::os::raw::c_char,
-            fstype: *const std::os::raw::c_char,
-            flags: CULong,
-            data: *const std::os::raw::c_void,
-        ) -> CInt;
-        pub fn umount(target: *const std::os::raw::c_char) -> CInt;
-        pub fn getuid() -> CUInt;
-        pub fn getgid() -> CUInt;
-    }
-}
+//! 1. **登记**会话 → 视图目录（`upper` / `work` / `mount` 落在真实磁盘，跨重启保留）；
+//! 2. **拉起**该会话的代理（`mount_proxy::session_proxy`）并在登记表里持有句柄；
+//! 3. 把工具与视图取数的 IO **转发**给代理（`ToolContext` 与三个 `workView*` 请求）。
+//!
+//! 路径不做任何映射：代理已经把视图 bind 到真实工作区路径上，工具看到真实路径就是
+//! 叠加结果（specs/045「视图对工具透明」）。这比旧的 `mount/` 路径映射更强——脚本里
+//! 写死的绝对路径、`$PWD`、`cd` 全部照常工作。
+//!
+//! ## 失败是 fail-closed
+//!
+//! 代理拉不起来时，隔离会话的工具调用**报错**而不是退回真实磁盘（FR-010）。「该会话
+//! 不是隔离归属」与「隔离归属但视图不可用」是两件事，前者正常走磁盘，后者必须暴露。
 
 use super::Capabilities;
+use crate::mount_proxy;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// 已登记的工作视图：`sessionId` → 视图（会话删除 / 关闭按 id 回收）。
+/// 已登记的工作视图：`sessionId` → 视图。
 fn views() -> &'static Mutex<HashMap<String, WorkView>> {
     static VIEWS: OnceLock<Mutex<HashMap<String, WorkView>>> = OnceLock::new();
     VIEWS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 进入命名空间的结果，供能力探测读取。
-fn enter_result() -> &'static Mutex<Option<Result<(), String>>> {
-    static RESULT: OnceLock<Mutex<Option<Result<(), String>>>> = OnceLock::new();
-    RESULT.get_or_init(|| Mutex::new(None))
-}
-
-/// 本进程的挂载命名空间是否已建立（`enter` 成功过）。
-pub fn entered() -> bool {
-    matches!(
-        enter_result().lock().map(|guard| guard.clone()),
-        Ok(Some(Ok(())))
-    )
-}
-
-/// 进入用户 + 挂载命名空间。`run_core()` 最早处调用一次；重复调用是 no-op。
+/// 能力探测（specs/051 FR-001）。
 ///
-/// 失败时记录原因而不 panic：能力探测据此回「不可用」，隔离视图对话退回真实磁盘执行
-/// （specs/045 FR-007——这是设计允许的降级，必须留痕，不是静默降级）。
-pub fn enter() {
-    let mut slot = match enter_result().lock() {
-        Ok(guard) => guard,
-        Err(poison) => poison.into_inner(),
-    };
-    if slot.is_some() {
-        return;
-    }
-    let result = enter_in_place();
-    if let Err(reason) = &result {
-        eprintln!("[core] 对话工作视图不可用：{reason}");
-    }
-    *slot = Some(result);
-}
-
-fn enter_in_place() -> Result<(), String> {
-    if has_cap_sys_admin() {
-        // 已在特权命名空间里（特权容器 / 已有 capabilities）：只补挂载命名空间
-        return finish_mount_namespace();
-    }
-    // 身份必须在 unshare 之前取：进新用户命名空间、映射还没写的窗口里 getuid() 返回
-    // 溢出值（65534），拿它写映射会被内核拒为 EPERM。
-    let uid = unsafe { sys::getuid() };
-    let gid = unsafe { sys::getgid() };
-    unshare(sys::CLONE_NEWUSER).map_err(|error| format!("无法创建用户命名空间（{error}）"))?;
-    write_id_maps(uid, gid)?;
-    finish_mount_namespace()
-}
-
-fn finish_mount_namespace() -> Result<(), String> {
-    unshare(sys::CLONE_NEWNS).map_err(|error| format!("无法创建挂载命名空间（{error}）"))?;
-    // MS_REC | MS_PRIVATE：把 / 设为私有传播，本进程的挂载不会泄漏给宿主
-    make_private(Path::new("/")).map_err(|error| format!("无法把 / 设为私有挂载（{error}）"))
-}
-
-/// 把当前用户映射成命名空间内的 root。
-///
-/// 命名空间内 id 取 **0** 才是 `unshare -r` 的等价形态：只有映射成 0，进程在命名空间内
-/// 才拿到完整能力集（含挂载所需的 `CAP_SYS_ADMIN`）。
-fn write_id_maps(uid: u32, gid: u32) -> Result<(), String> {
-    // setgroups 必须在 gid_map 之前禁用，否则写 gid_map 会被内核拒绝；老内核没有该文件
-    if let Err(error) = std::fs::write("/proc/self/setgroups", "deny") {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(format!("写 /proc/self/setgroups 失败：{error}"));
-        }
-    }
-    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1"))
-        .map_err(|error| format!("写 uid_map 失败：{error}"))?;
-    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))
-        .map_err(|error| format!("写 gid_map 失败：{error}"))
-}
-
-/// `unshare(2)` 的薄封装：把 errno 转成可读错误。
-fn unshare(flags: sys::CInt) -> Result<(), String> {
-    if unsafe { sys::unshare(flags) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().to_string())
-    }
-}
-
-/// `mount(2)` 的薄封装。`source` / `fstype` / `data` 用 `CString` 传，路径按字节原样给内核。
-fn mount_fs(
-    source: Option<&Path>,
-    target: &Path,
-    fstype: Option<&str>,
-    flags: sys::CULong,
-    data: Option<&str>,
-) -> Result<(), String> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let to_cstring = |text: &str| CString::new(text).map_err(|error| error.to_string());
-    let source_c = match source {
-        Some(path) => Some(CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?),
-        None => None,
-    };
-    let target_c = CString::new(target.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-    let fstype_c = match fstype {
-        Some(name) => Some(to_cstring(name)?),
-        None => None,
-    };
-    let data_c = match data {
-        Some(options) => Some(to_cstring(options)?),
-        None => None,
-    };
-    let result = unsafe {
-        sys::mount(
-            source_c
-                .as_ref()
-                .map_or(std::ptr::null(), |value| value.as_ptr()),
-            target_c.as_ptr(),
-            fstype_c
-                .as_ref()
-                .map_or(std::ptr::null(), |value| value.as_ptr()),
-            flags,
-            data_c.as_ref().map_or(std::ptr::null(), |value| {
-                value.as_ptr() as *const std::os::raw::c_void
-            }),
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().to_string())
-    }
-}
-
-/// 把某个挂载点设为私有传播（`MS_REC | MS_PRIVATE`）。
-fn make_private(target: &Path) -> Result<(), String> {
-    mount_fs(None, target, None, sys::MS_REC | sys::MS_PRIVATE, None)
-}
-
-/// `umount(2)` 的薄封装。
-fn umount(target: &Path) -> Result<(), String> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let target_c = CString::new(target.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-    if unsafe { sys::umount(target_c.as_ptr()) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().to_string())
-    }
-}
-
-/// 某个挂载点当前在 `/proc/self/mountinfo` 里是否出现。
-///
-/// `mount()` 返回 0 不等于挂载生效（命名空间或传播属性不对时它会静默无效），也无法从
-/// 返回值看出同一挂载点被叠了几层——两件事都只能读这份表判断。
-fn mounted_at(mount: &Path) -> bool {
-    let text = mount.to_string_lossy();
-    std::fs::read_to_string("/proc/self/mountinfo")
-        .unwrap_or_default()
-        .lines()
-        .any(|line| line.split_whitespace().nth(4) == Some(text.as_ref()))
-}
-
-/// 把一个挂载点卸干净。
-///
-/// `mount(2)` 允许在同一挂载点叠加挂载，而 `umount(2)` 一次只撤一层。正常形态下每个视图
-/// 只挂一层（`ensure_mounted` 在登记表的锁内建立），但层数一旦与登记表不一致，单次
-/// `umount` 就会留下一层谁也回收不到的挂载：`remove` 随后 `remove_dir_all` 一个仍有挂载
-/// 的目录直接 `EBUSY`，视图目录与挂载双双残留
-/// （`specs/defects/work-view-concurrent-first-use-double-mounts.md`）。这里循环到表里不再
-/// 出现该挂载点为止，让注销 / 回收对层数不敏感。
-fn umount_all(mount: &Path) {
-    // 上限只为防异常情况下死循环：真实形态最多一层，8 层远超任何可能。
-    for _ in 0..8 {
-        if !mounted_at(mount) {
-            return;
-        }
-        if umount(mount).is_err() {
-            break;
-        }
-    }
-    if mounted_at(mount) {
-        eprintln!(
-            "[core] 挂载点 {} 卸载后仍在 /proc/self/mountinfo 里",
-            mount.display()
-        );
-    }
-}
-
-/// `CapEff` 的 bit 21 是 `CAP_SYS_ADMIN`。
-fn has_cap_sys_admin() -> bool {
-    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
-        return false;
-    };
-    let Some(line) = status.lines().find(|line| line.starts_with("CapEff:")) else {
-        return false;
-    };
-    let Some(value) = line.split(':').nth(1) else {
-        return false;
-    };
-    u64::from_str_radix(value.trim(), 16)
-        .map(|bits| bits & (1 << 21) != 0)
-        .unwrap_or(false)
-}
-
-/// 能力探测：本机能否为对话建立隔离工作视图（specs/045 FR-001）。
+/// 能力的唯一 owner 是 Core，判据来自**常驻代理**：Core 自身不 `unshare`、不进任何
+/// 命名空间，因此「代理能挂起一个视图」是唯一可能的 true 来源。失败只回 `absent` 并
+/// 带上原因，不 panic、不影响帧通道（AC-28）。
 pub fn capabilities() -> Capabilities {
-    if !entered() {
-        let reason = enter_result()
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or(None)
-            .and_then(|result| result.err())
-            .unwrap_or_else(|| "Core 尚未建立用户命名空间".to_string());
-        return Capabilities::unavailable(reason);
-    }
-    // overlay 是否真的可挂：用一次性目录实测一次，失败把内核原因带出去——比只判
-    // 命名空间更能解释「为什么勾选框不出现」。
-    match probe_overlay() {
-        Ok(()) => Capabilities::available(),
-        Err(reason) => Capabilities::unavailable(reason),
-    }
-}
-
-/// 用临时目录实测一次 overlay 挂载（含 `userxattr`）。
-fn probe_overlay() -> Result<(), String> {
-    let root = std::env::temp_dir().join(format!("tuxedo-overlay-probe-{}", std::process::id()));
-    let lower = root.join("lower");
-    let upper = root.join("upper");
-    let work = root.join("work");
-    let mount = root.join("mount");
-    for dir in [&lower, &upper, &work, &mount] {
-        std::fs::create_dir_all(dir).map_err(|error| format!("建探测目录失败：{error}"))?;
-    }
-    let result = mount_overlay(&lower, &upper, &work, &mount);
-    if result.is_ok() {
-        umount(mount.as_path()).ok();
-    }
-    let _ = std::fs::remove_dir_all(&root);
-    result
-}
-
-fn mount_overlay(lower: &Path, upper: &Path, work: &Path, mount: &Path) -> Result<(), String> {
-    // `userxattr` 不可省：非特权用户命名空间里不启用它时，删除**目录**会 EIO
-    // （overlay 需要写 trusted.overlay.* 而当前用户没有该命名空间的 CAP_SYS_ADMIN）。
-    let options = format!(
-        "lowerdir={},upperdir={},workdir={},userxattr",
-        lower.display(),
-        upper.display(),
-        work.display()
-    );
-    mount_fs(
-        Some(Path::new("overlay")),
-        mount,
-        Some("overlay"),
-        0,
-        Some(options.as_str()),
-    )
-    .map_err(|error| format!("overlayfs 不可用（{error}）"))?;
-    // `mount()` 返回 0 不等于挂载生效：命名空间或传播属性不对时它会静默无效，而
-    // 调用方随后把工具路径映射到这个**空目录**上——工具看到的是空工作区，写入落到
-    // 一个谁也读不到的地方，全程没有任何报错。读 mountinfo 确认挂载点真的出现在表里，
-    // 不在就当作失败（`docs/architecture/principles.md` 铁律 4.1：不静默降级）。
-    if mounted_at(mount) {
-        Ok(())
-    } else {
-        let ns = std::fs::read_link("/proc/self/ns/mnt")
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| "?".to_string());
-        Err(format!(
-            "overlay 挂载未生效（{} 不在 /proc/self/mountinfo 里，ns={ns}）",
-            mount.display()
-        ))
-    }
+    crate::mount_proxy::capabilities_from(&crate::mount_proxy::probe_capabilities())
 }
 
 /// 一个对话的工作视图。
-#[derive(Clone)]
 pub struct WorkView {
     /// 会话 id（登记表的键）。
     session_id: String,
-    /// 视图的稳定标识（会话 id + 工作区派生的目录名）。
-    key: String,
-    /// 真实工作区路径（lowerdir，也是对外可见的路径）。
+    /// 真实工作区路径（lowerdir，也是工具看到的路径）。
     workspace: PathBuf,
     /// 视图根目录（`upper` / `work` / `mount` 的父目录）。
     root: PathBuf,
-    /// 挂载点（merged）。
+    /// 挂载点（merged）。Core 读它是空的——真正的挂载在代理的命名空间里；
+    /// 它只作为代理的挂载目标与诊断信息存在。
     mount: PathBuf,
-    /// 是否已挂载（惰性建立：登记 ≠ 已挂）。
-    mounted: bool,
+    /// 该会话的常驻代理；`None` = 还没拉起。
+    ///
+    /// 惰性：登记发生在会话创建时，而「用户真的让工具读文件」可能永远不发生。用户从不
+    /// 使用 Overlay 对话时不产生任何代理进程（FR-007「代理按需拉起」）。
+    proxy: Option<Arc<mount_proxy::SessionProxy>>,
 }
 
 impl WorkView {
@@ -355,13 +69,10 @@ impl WorkView {
             .join(session_key(workspace, session_id)))
     }
 
-    /// 登记一个对话的视图（不挂载，首次使用时才建目录并挂）。
+    /// 登记一个对话的视图（不拉起代理，首次使用时才拉）。
     ///
-    /// 重复登记返回已有视图（会话重开时不该重建挂载）。
+    /// 重复登记报错：调用方要么取回已有视图（`reopen`），要么说明接线错了。
     pub fn register(workspace: &str, session_id: &str) -> Result<Self, String> {
-        if !entered() {
-            return Err("Core 尚未建立用户命名空间".to_string());
-        }
         let mut views = views()
             .lock()
             .map_err(|error| format!("视图登记表损坏：{error}"))?;
@@ -371,254 +82,231 @@ impl WorkView {
         let root = Self::root_of(workspace, session_id)?;
         let view = WorkView {
             session_id: session_id.to_string(),
-            key: session_key(workspace, session_id),
             workspace: PathBuf::from(workspace),
             mount: root.join("mount"),
             root,
-            mounted: false,
+            proxy: None,
         };
-        views.insert(session_id.to_string(), view.clone());
+        views.insert(session_id.to_string(), view.snapshot());
         Ok(view)
     }
 
     /// 取回已登记的视图（会话重开时用；未登记则报错）。
-    ///
-    /// 与 `register` 的分工：`register` 只登记一次，`reopen` 在建视图失败后重试时用——
-    /// 登记表里已有条目，但仍需要（重新）挂载。
     pub fn reopen(workspace: &str, session_id: &str) -> Result<Self, String> {
-        let _ = workspace;
-        views()
-            .lock()
-            .map_err(|error| format!("视图登记表损坏：{error}"))?
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| format!("会话 {session_id} 没有登记工作视图"))
-    }
-
-    /// 确保视图已挂载（首次调用时建目录并挂 overlay）。
-    ///
-    /// 惰性：登记本身不碰磁盘，纯声明性对话（只发一条消息就关）不会留下视图目录。
-    ///
-    /// **建立过程在登记表的锁内完成**：并行工具批里 `Read` / `Grep` / `Glob` 各占一个
-    /// 线程，都会首次走到这里，而它们手里是各自 `mounted == false` 的克隆。锁外做
-    /// 「检查 + 挂载」时每个线程都认为视图尚未建立，`mount(2)` 又允许在同一挂载点叠加
-    /// 挂载，于是同一份 `upper` 被挂两层而登记表只记一层——`release` 只卸得掉一层，
-    /// 残留的那层让 `remove` 的 `remove_dir_all` 报 `EBUSY`
-    /// （`specs/defects/work-view-concurrent-first-use-double-mounts.md`）。
-    /// 锁内重读登记表条目后只有一个线程真正挂载，其余采纳结果。
-    ///
-    /// 注销与建立竞争时（对话在首次工具调用之前就关闭）条目已不在表里，直接报错：
-    /// 否则会挂出一个登记表里没有、谁也回收不到的视图。
-    pub fn ensure_mounted(&mut self) -> Result<(), String> {
-        if self.mounted {
-            return Ok(());
-        }
-        // 建目录不共享状态且幂等，放锁外——挂载调用本身才是要串行化的那段。
-        for name in ["upper", "work", "mount"] {
-            std::fs::create_dir_all(self.root.join(name))
-                .map_err(|error| format!("建视图目录 {} 失败：{error}", name))?;
-        }
-        // 挂载点必须可进入
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            self.root.join("mount"),
-            std::fs::Permissions::from_mode(0o755),
-        );
-
-        let mut views = views()
+        let views = views()
             .lock()
             .map_err(|error| format!("视图登记表损坏：{error}"))?;
-        let entry = views
-            .get_mut(&self.session_id)
-            .ok_or_else(|| format!("会话 {} 的工作视图已注销，不能再挂载", self.session_id))?;
-        if !entry.mounted {
-            mount_overlay(
-                &self.workspace,
-                &self.root.join("upper"),
-                &self.root.join("work"),
-                &self.mount,
-            )?;
-            entry.mounted = true;
+        let view = views
+            .get(session_id)
+            .ok_or_else(|| format!("会话 {session_id} 尚未登记工作视图"))?;
+        let _ = workspace;
+        Ok(view.snapshot())
+    }
+
+    /// 供登记表存一份快照（`WorkView` 不实现 Clone：它持有代理句柄，复制句柄会误导）
+    fn snapshot(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            workspace: self.workspace.clone(),
+            root: self.root.clone(),
+            mount: self.mount.clone(),
+            proxy: self.proxy.as_ref().map(Arc::clone),
         }
-        // `WorkViewHandle::of` 读的是表，`mount_point()` 读的是这份克隆，两处都要置位
-        self.mounted = true;
+    }
+
+    /// 确保该会话的代理已拉起（幂等）。
+    ///
+    /// 这是「需要视图」的唯一入口：工具批与三个 `workView*` 请求都先调它。并发首次调用
+    /// 由登记表的锁串行——`mount_proxy::session_proxy` 自己按会话去重（
+    /// `specs/defects/work-view-concurrent-first-use-double-mounts.md` 的形态不会出现）。
+    pub fn ensure_mounted(&mut self) -> Result<(), String> {
+        // 视图根目录的父链由 Core 建：代理的 `make_dir` 只做单层 `mkdir(2)`（它要精确
+        // 报 errno，不做递归），`<configHome>/work-views/<key>/` 这串在首次使用时不
+        // 存在。旧形态由 Core 在挂载前自己 `create_dir_all`，改成代执行后这一步没人做，
+        // 代理会以「父目录不存在」失败——随后工具侧 fail-closed 报错（或更早的版本直接
+        // 退回真实磁盘，那正是「overlay 里创建的文件磁盘上也能看到」）。
+        for dir in [
+            &self.root,
+            &self.root.join("upper"),
+            &self.root.join("work"),
+            &self.mount,
+        ] {
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("建视图目录 {} 失败：{error}", dir.display()))?;
+        }
+        let paths = mount_proxy::View {
+            lower: self.workspace.clone(),
+            upper: self.root.join("upper"),
+            work: self.root.join("work"),
+            merged: self.mount.clone(),
+            // bind 的目标就是真实工作区路径：工具不需要任何路径映射
+            workspace: self.workspace.clone(),
+        };
+        let proxy = mount_proxy::session_proxy(&self.session_id, paths)?;
+        self.proxy = Some(proxy);
+        // 登记表里也更新一份，`WorkViewHandle::of` 才能拿到代理
+        if let Ok(mut views) = views().lock() {
+            if let Some(entry) = views.get_mut(&self.session_id) {
+                entry.proxy = self.proxy.as_ref().map(Arc::clone);
+            }
+        }
         Ok(())
     }
 
-    /// 视图挂载点（已挂载时可用）；`None` = 尚未建立。
-    ///
-    /// 只在测试与 `ensure_mounted` 之后确认挂载结果时用：工具层拿的是 `WorkViewHandle`
-    /// （它的 `mount_point` 返回 `PathBuf`），不读这个内部记录。
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// 视图挂载点（诊断与文档用）
     pub fn mount_point(&self) -> Option<PathBuf> {
-        self.mounted.then(|| self.mount.clone())
+        self.proxy.as_ref().map(|_| self.mount.clone())
+    }
+
+    /// 真实工作区路径
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// 视图根目录（`upper` / `work` 的父目录）
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 }
 
-/// 工具执行时持有的视图句柄（`ToolContext.work_view`）。
+/// 工具与视图取数持有的句柄（`ToolContext.work_view`）。
 ///
-/// 只做路径映射与挂载状态查询：文件工具按它的 `to_view_path` 读写，对外仍报真实路径。
-/// 路径映射只在这里实现一份——`WorkView` 是登记 / 挂载的内部记录，工具层不碰它。
+/// 只暴露「代理是谁」与「工作区是哪」：文件读写一律经代理代执行（`ToolContext` 的
+/// `read_file` / `write_file` / …），Core 自己**不** `open()` 视图里的路径——它看不到
+/// 那些挂载。
 #[derive(Clone)]
 pub struct WorkViewHandle {
-    key: String,
+    /// 会话 id（诊断用）
+    session_id: String,
+    /// 真实工作区路径
     workspace: PathBuf,
-    mount: PathBuf,
+    /// 视图根目录（`<configHome>/work-views/<key>`；scratch 放在它的兄弟位置）
+    root: PathBuf,
+    /// 该会话的常驻代理
+    proxy: Arc<mount_proxy::SessionProxy>,
 }
 
 impl WorkViewHandle {
-    /// 取某会话的句柄；没有视图（或尚未挂载）时 `None`，工具按真实磁盘执行。
+    /// 取某会话的句柄；没有已拉起的代理时 `None`。
+    ///
+    /// 调用前应经 `Engine::ensure_work_view` 拉起代理：`None` 在这里的含义是「该会话
+    /// 没有视图」，而不是「视图坏了」。
     pub fn of(session_id: &str) -> Option<Self> {
         let views = views().lock().ok()?;
         let view = views.get(session_id)?;
-        if !view.mounted {
-            return None;
-        }
+        let proxy = view.proxy.as_ref()?;
         Some(Self {
-            key: view.key.clone(),
+            session_id: session_id.to_string(),
             workspace: view.workspace.clone(),
-            mount: view.mount.clone(),
+            root: view.root.clone(),
+            proxy: Arc::clone(proxy),
         })
     }
 
-    pub fn to_view_path(&self, real: &Path) -> Result<PathBuf, String> {
-        let relative = real.strip_prefix(&self.workspace).map_err(|_| {
-            format!(
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// 该会话的常驻代理（工具代执行的唯一通道）
+    pub fn proxy(&self) -> &Arc<mount_proxy::SessionProxy> {
+        &self.proxy
+    }
+
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// 把真实路径映射成「工具该用的路径」。
+    ///
+    /// 代理已把视图 bind 到真实工作区路径上，因此映射是恒等——但它仍然校验路径在
+    /// 工作区内：越界说明接线错了（`cwd` 与视图的工作区不一致），静默放行会让工具
+    /// 读到视图之外的东西。
+    pub fn map_into_view(&self, real: &Path) -> Result<PathBuf, String> {
+        if !real.starts_with(&self.workspace) {
+            return Err(format!(
                 "路径 {} 不在工作区 {} 内",
                 real.display(),
                 self.workspace.display()
-            )
-        })?;
-        Ok(self.mount.join(relative))
-    }
-
-    pub fn to_real_path(&self, view: &Path) -> Result<PathBuf, String> {
-        let relative = view.strip_prefix(&self.mount).map_err(|_| {
-            format!(
-                "路径 {} 不在视图 {} 内",
-                view.display(),
-                self.mount.display()
-            )
-        })?;
-        Ok(self.workspace.join(relative))
-    }
-
-    /// 视图挂载点（Bash 在私有命名空间里把工作区 bind 到它上面）。
-    pub fn mount_point(&self) -> PathBuf {
-        self.mount.clone()
+            ));
+        }
+        Ok(real.to_path_buf())
     }
 
     /// 视图外的临时目录（git 取数的索引副本放这里，保证取数不写视图）。
     ///
-    /// 放在视图根下、挂载点的**兄弟**位置：既不在 overlay 上层里，也不在挂载结果里。
-    fn scratch_dir(&self) -> Result<PathBuf, String> {
-        let dir = self
-            .mount
-            .parent()
-            .ok_or_else(|| format!("视图挂载点 {} 没有父目录", self.mount.display()))?
-            .join("git-scratch");
+    /// 落在视图根目录的**兄弟**位置（`<configHome>/work-views/.scratch/<session>`）：
+    /// 既不在 overlay 的 upper 里（否则会被当成对话改动），也不在工作区里（旧实现写成
+    /// `<工作区>/../.tc-view-scratch`，会往用户的目录外层丢文件）。
+    pub fn scratch_dir(&self) -> Result<PathBuf, String> {
+        let dir = match self.root.parent() {
+            Some(views) => views.join(".scratch").join(&self.session_id),
+            None => self.root.join(".scratch"),
+        };
         std::fs::create_dir_all(&dir)
             .map_err(|error| format!("建取数临时目录 {} 失败：{error}", dir.display()))?;
         Ok(dir)
-    }
-
-    /// 把真实路径换成视图路径；路径不在工作区内时报错。
-    ///
-    /// 工具层经 `ToolContext::io_path` 调用它：所有「该读哪个文件」都从这里过，视图因此
-    /// 对工具透明——路径字符串对用户仍是真实工作区路径。
-    ///
-    /// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：越界时若静默退回真实
-    /// 路径，隔离对话就会绕过视图直接写磁盘，而工具仍报成功——用户看到的是「勾了隔离，
-    /// 改动照样落磁盘」且毫无线索。越界只可能来自接线错误（`cwd` 与视图的工作区不一致），
-    /// 必须暴露。
-    pub fn map_into_view(&self, real: &Path) -> Result<PathBuf, String> {
-        self.to_view_path(real)
     }
 }
 
 /// 列某个 Overlay 对话的叠加视图目录（specs/046 FR-002）。
 ///
-/// 宿主侧的文件资源管理器用它在自己进程里拿不到的结果：视图挂在 Core 私有的挂载命名空间
-/// 里（`docs/core/conversation-work-view.md` 第 4 节），宿主读挂载点是空目录；直接读
-/// `upper/` 也不成立（whiteout 让删掉的文件仍可见、未改动的文件在 `lowerdir` 看不到）。
+/// 经代理代执行：视图挂载在代理的命名空间里，Core 自己 `read_dir` 只能看到空目录
+/// （`docs/core/conversation-work-view.md` 第 4 节）。
 ///
-/// 返回未排序的条目：排序由调用方按自己的比较器做，与远程 SFTP 的 `listDirectory`
-/// 同一分工（`src/host/standalone/sshClient.ts`）。
+/// 调用前必须经 `Core::ensure_work_view` 把视图备好：本函数只做取数，`None` 在这里
+/// 的含义是「该会话没有视图」，不替调用方决定怎么补救。
 ///
-/// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：视图未建立时回 `Err` 而不是
-/// 偷偷列磁盘——那是两个不同的事实，由宿主决定怎么呈现（FR-004 定的是回基线，FR-006 定的
-/// 是失败明确，选择权在调用方）。
+/// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：视图取不到时回 `Err` 而不是
+/// 偷偷列磁盘——那是两个不同的事实，由宿主决定怎么呈现。
 pub fn list_view_dir(session_id: &str, dir: &str) -> Result<Vec<serde_json::Value>, String> {
     let handle = WorkViewHandle::of(session_id)
         .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
     let relative = sanitize_view_relative(dir)?;
-    let target = handle.mount_point().join(&relative);
-    let entries = std::fs::read_dir(&target)
-        .map_err(|error| format!("读取视图目录 {} 失败：{error}", target.display()))?;
+    let target = handle.workspace().join(&relative);
+    let entries = handle.proxy.list_dir(&target)?;
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let path = entry.path();
-        // 符号链接按目标归类、断链跳过——与本地 listDirectory 和 SFTP listDirectory
-        // 同一语义（渲染层没有「未知类型」的图标位）
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
+    for (name, is_dir) in entries {
         out.push(serde_json::json!({
             "name": name,
-            "kind": if metadata.is_dir() { "directory" } else { "file" },
-            // 取不到时间用 null（不猜值），与本地 stat 失败的条目同形
-            "mtimeMs": metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|since| since.as_millis() as u64),
+            "kind": if is_dir { "directory" } else { "file" },
+            // 代理不回 stat 的 mtime（列表不做它需要的额外系统调用），界面按缺省处理
+            "mtimeMs": serde_json::Value::Null,
         }));
     }
     Ok(out)
 }
 
-/// 把 `'/'` 分隔的相对路径解析成可安全拼到挂载点上的相对路径。
+/// 把 `'/'` 分隔的相对路径解析成可安全拼到工作区上的相对路径。
 ///
-/// 拒绝绝对路径与 `..` 分量：渲染层传来的字符串不可信，越界会读到视图之外
-/// （与 `electron/sidebarFiles.ts::resolveWithinRoot` 同一口径，那边用
-/// `path.relative` 的回跳结果判，这里按分量判——Core 侧不引路径库的平台差异）。
+/// 判据只有一份：`super::check_view_relative`（请求分支在建立视图之前也调它）。
+/// 这里只把校验过的字符串转成 `PathBuf` 并丢掉空段与 `.`。
 fn sanitize_view_relative(dir: &str) -> Result<PathBuf, String> {
+    super::check_view_relative(dir)?;
     let mut relative = PathBuf::new();
     for segment in dir.split('/') {
-        match segment {
-            // 空串来自开头的 '/' 或 '//'；'.' 是无操作
-            "" | "." => continue,
-            ".." => return Err(format!("路径 {dir} 越界：不允许 '..' 分量")),
-            other => {
-                if other.contains('\\') {
-                    // 反斜杠在 POSIX 上是合法文件名字符，但渲染层约定 '/' 分隔——
-                    // 出现反斜杠说明调用方拼错了，拒绝而不是猜它想表达什么
-                    return Err(format!("路径 {dir} 含反斜杠：约定用 '/' 分隔"));
-                }
-                relative.push(other);
-            }
+        // 空串来自 '//'；'.' 是无操作
+        if segment.is_empty() || segment == "." {
+            continue;
         }
+        relative.push(segment);
     }
     Ok(relative)
 }
 
-/// 释放某会话的视图（会话关闭时调用）：卸载挂载，**保留**上层目录——改动要跨 Core 重启
-/// 保留（specs/045 FR-006）。
-pub fn release(workspace: &str, session_id: &str) {
-    let _ = workspace;
+/// 释放某会话的视图（会话关闭时调用）：丢弃代理，**保留**上层目录——改动要跨 Core
+/// 重启保留（specs/045 FR-006）。
+pub fn release(_workspace: &str, session_id: &str) {
     let removed = views()
         .lock()
         .map(|mut views| views.remove(session_id))
         .ok()
         .flatten();
-    if let Some(view) = removed {
-        // 不看 `view.mounted`：它是登记时的克隆，层数对不对由 mountinfo 说了算
-        umount_all(view.mount.as_path());
-    }
+    // 丢弃句柄 = 关闭 socketpair = 代理读到 EOF 自行退出
+    drop(removed);
+    crate::mount_proxy::release_session(session_id);
 }
 
-/// 回收某会话的视图（会话删除时调用）：卸载并删掉整个视图目录。
+/// 回收某会话的视图（会话删除时调用）：丢弃代理并删掉整个视图目录。
 ///
 /// 失败只记日志不阻塞删除——残留目录可以事后清理，但删除对话本身不能因此失败。
 pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
@@ -626,13 +314,9 @@ pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
         .lock()
         .map_err(|error| format!("视图登记表损坏：{error}"))?
         .remove(session_id);
+    drop(removed);
+    crate::mount_proxy::release_session(session_id);
     let root = WorkView::root_of(workspace, session_id)?;
-    // 登记表里没有条目时也要卸：`release` 之后残留的挂载不会随条目一起消失，而
-    // `remove_dir_all` 对仍有挂载的目录报 `EBUSY`。
-    match &removed {
-        Some(view) => umount_all(view.mount.as_path()),
-        None => umount_all(&root.join("mount")),
-    }
     if root.exists() {
         std::fs::remove_dir_all(&root)
             .map_err(|error| format!("回收视图目录 {} 失败：{error}", root.display()))?;
@@ -642,16 +326,19 @@ pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
 
 /// 视图里的 git 取数（specs/047 FR-001 / FR-004）。
 ///
-/// 走与 Bash 同一条通路：子进程私有命名空间里把视图 bind 到真实工作区路径上再跑 git
-/// （理由与临时索引见 `work_view_changes.rs` 的模块注释）。
+/// 命令由代理代执行：git 必须在视图里跑（`changes` 用 `--work-tree` 指向真实工作区，
+/// 而真实工作区在 Core 侧就是磁盘）。临时索引放在视图外的 scratch 目录，避免取数污染
+/// `upper`（理由见 `work_view_changes.rs`）。
+///
+/// 与 `list_view_dir` 同一前提：调用前经 `Core::ensure_work_view` 备好视图。
 pub fn changes(session_id: &str, scope: &str) -> Result<super::ChangesOutcome, String> {
     let handle = WorkViewHandle::of(session_id)
         .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
     let scope = super::ChangeScope::parse(scope)?;
     let scratch = handle.scratch_dir()?;
     let view = super::GitView {
-        workspace: handle.workspace.as_path(),
-        mount: handle.mount.as_path(),
+        workspace: handle.workspace(),
+        proxy: &handle.proxy,
         scratch: scratch.as_path(),
     };
     view.changes(scope)
@@ -668,8 +355,8 @@ pub fn file_diff(session_id: &str, path: &str) -> Result<super::FileDiffOutcome,
     let rel = relative.to_string_lossy().to_string();
     let scratch = handle.scratch_dir()?;
     let view = super::GitView {
-        workspace: handle.workspace.as_path(),
-        mount: handle.mount.as_path(),
+        workspace: handle.workspace(),
+        proxy: &handle.proxy,
         scratch: scratch.as_path(),
     };
     view.file_diff(&rel)
@@ -703,32 +390,13 @@ fn session_key(workspace: &str, session_id: &str) -> String {
     format!("{hash}-{}", &safe[..safe.len().min(48)])
 }
 
-/// 给 Bash 用：把一个视图挂到 `workspace` 上的私有命名空间里。
+/// 历史遗留符号：旧形态由 Core 在子进程里 `unshare` + bind，新形态由代理在特权阶段
+/// 完成（见 `mount-proxy-rs/src/privilege.rs`），因此这里没有对应实现。
 ///
-/// 调用方必须已经在**子进程**里（`fork` 之后），因为 `unshare(CLONE_NEWNS)` 只影响调用进程
-/// 及其子孙，且这个 bind 不应影响 Core 自身。
-pub fn bind_view_onto_workspace(mount_point: &Path, workspace: &Path) -> Result<(), String> {
-    unshare(sys::CLONE_NEWNS).map_err(|error| format!("无法创建挂载命名空间副本（{error}）"))?;
-    make_private(Path::new("/")).map_err(|error| format!("无法把 / 设为私有挂载（{error}）"))?;
-    mount_fs(
-        Some(mount_point),
-        workspace,
-        None,
-        sys::MS_BIND | sys::MS_REC,
-        None,
-    )
-    .map_err(|error| {
-        format!(
-            "无法把视图 {} 挂到工作区 {}（{error}）",
-            mount_point.display(),
-            workspace.display()
-        )
-    })?;
-    // **必须重设 cwd**：`Command::current_dir` 在 fork 之后、`pre_exec` 之前就已 chdir，
-    // 那时工作区还是真实磁盘的 inode。bind 只是给路径换了层，进程的 cwd 仍指向旧
-    // inode——脚本里所有相对路径（`gcc -o main main.c` 正是如此）都会落回真实磁盘，
-    // 而视图 `upper` 始终为空。重新 chdir 到同一个路径字符串，让 cwd 指向新挂载。
-    std::env::set_current_dir(workspace)
-        .map_err(|error| format!("bind 后无法进入工作区 {}（{error}）", workspace.display()))?;
-    Ok(())
+/// 保留常量式的文档说明而不是空实现，避免调用点悄悄编译通过后又静默不生效。
+pub fn bind_view_onto_workspace(_mount_point: &Path, _workspace: &Path) -> Result<(), String> {
+    Err("Core 不再自己 bind 视图：视图的 bind 由常驻挂载代理在特权阶段完成".to_string())
 }
+
+/// 历史遗留符号：旧形态由 Core 在启动早期 `unshare`，新形态不存在这一步。
+pub fn enter() {}

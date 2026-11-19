@@ -85,9 +85,9 @@
     "build:core:linux-x64": "node scripts/build-core.mjs --target x86_64-unknown-linux-musl",
     "build:core:linux-arm64": "node scripts/build-core.mjs --target aarch64-unknown-linux-musl",
     "build:core:win32-arm64": "node scripts/build-core.mjs --target aarch64-pc-windows-msvc",
-    "test:core": "cargo test --manifest-path core-rs/Cargo.toml",
-    "fmt:rust": "cargo fmt --manifest-path core-rs/Cargo.toml && cargo fmt --manifest-path tui-rs/Cargo.toml && cargo fmt --manifest-path installer-rs/Cargo.toml",
-    "fmt:rust:check": "cargo fmt --manifest-path core-rs/Cargo.toml --check && cargo fmt --manifest-path tui-rs/Cargo.toml --check && cargo fmt --manifest-path installer-rs/Cargo.toml --check",
+    "test:core": "cargo test --manifest-path core-rs/Cargo.toml && cargo test --manifest-path mount-proxy-rs/Cargo.toml",
+    "fmt:rust": "cargo fmt --manifest-path core-rs/Cargo.toml && cargo fmt --manifest-path mount-proxy-rs/Cargo.toml && cargo fmt --manifest-path tui-rs/Cargo.toml && cargo fmt --manifest-path installer-rs/Cargo.toml",
+    "fmt:rust:check": "cargo fmt --manifest-path core-rs/Cargo.toml --check && cargo fmt --manifest-path mount-proxy-rs/Cargo.toml --check && cargo fmt --manifest-path tui-rs/Cargo.toml --check && cargo fmt --manifest-path installer-rs/Cargo.toml --check",
     "docs:freshness": "node scripts/docs-freshness.mjs",
     "coverage:core": "node scripts/coverage-core.mjs",
     "coverage:core:html": "node scripts/coverage-core.mjs --html",
@@ -129,7 +129,9 @@
     "package:tui": "npm run build:tui && node scripts/build-tui-installer.mjs",
     "package:tui:x64": "npm run build:tui && node scripts/build-tui-installer.mjs --arch x64",
     "package:pycharm": "node scripts/build-pycharm.mjs",
-    "test:e2e:tui": "playwright test -c e2e/playwright.config.ts --project=tui-installer"
+    "test:e2e:tui": "playwright test -c e2e/playwright.config.ts --project=tui-installer",
+    "test:mount-proxy": "cargo test --manifest-path mount-proxy-rs/Cargo.toml",
+    "verify:mount-proxy": "node scripts/verify-mount-proxy-remote.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

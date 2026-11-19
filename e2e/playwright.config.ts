@@ -28,7 +28,8 @@ const repoRoot = path.resolve(__dirname, '..');
  * 若各写一遍，新增一条真实 SSH 用例时必然只改一处——漏了 `testIgnore` 这条车道会在
  * 没有远端机器的开发机与 CI 上收集它的用例，漏了 `testMatch` 则是新用例永远不跑。
  */
-const REMOTE_SSH_SPECS = /electron[\\/](remoteSshExecution|remoteTaskSurvival|remoteChangeList)\.spec\.ts/;
+const REMOTE_SSH_SPECS =
+  /electron[\\/](remoteSshExecution|remoteTaskSurvival|remoteChangeList|overlayMountProxyRemote)\.spec\.ts/;
 
 function assertArtifact(rel: string): void {
   const p = path.join(repoRoot, rel);

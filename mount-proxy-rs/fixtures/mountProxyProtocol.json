@@ -1,0 +1,99 @@
+{
+  "note": [
+    "Core ↔ 常驻挂载代理的运行期帧契约（specs/051 FR-007「代执行协议」）。",
+    "两侧各有一个测试读本文件：core-rs/src/mount_proxy/linux/client.rs（用 serde_json）",
+    "与 mount-proxy-rs/src/protocol.rs（零依赖手写解析）。字段名或编码任一改动都会让",
+    "另一侧的用例红——这正是 specs/defects/mount-proxy-write-file-payload-type.md 的",
+    "形态：Core 发十六进制字符串，代理只认进程内枚举，单侧自测全绿而真实链路全红。",
+    "request 是 Core 实际发出的形状；expect 是代理必须回给 Core 的形状。"
+  ],
+  "ipcProtocolVersion": 1,
+  "cases": [
+    {
+      "op": "ping",
+      "request": { "op": "ping", "id": 1 },
+      "expect": { "op": "pong", "id": 1 }
+    },
+    {
+      "op": "version",
+      "request": { "op": "version", "id": 2 },
+      "expect": { "op": "version", "id": 2, "ipcVersion": 1 }
+    },
+    {
+      "op": "probeOverlay",
+      "request": { "op": "probeOverlay", "id": 3 },
+      "expect": { "op": "ok", "id": 3 }
+    },
+    {
+      "op": "readFile",
+      "request": { "op": "readFile", "id": 4, "path": "/w/a.txt", "maxBytes": 4 },
+      "expect": { "op": "file", "id": 4, "bytes": "30313233" },
+      "note": "bytes 是十六进制字符串（不是 JSON 数组 / 不是 base64）"
+    },
+    {
+      "op": "writeFile",
+      "request": { "op": "writeFile", "id": 5, "path": "/w/a.txt", "bytes": "68656c6c6f" },
+      "expect": { "op": "ok", "id": 5 },
+      "note": "请求侧同样是十六进制字符串：Core 用 encode_hex 编码。回归点见 specs/defects/mount-proxy-write-file-payload-type.md"
+    },
+    {
+      "op": "listDir",
+      "request": { "op": "listDir", "id": 6, "dir": "/w" },
+      "expect": {
+        "op": "dir",
+        "id": 6,
+        "entries": [{ "name": "a.txt", "isDir": false, "size": 5, "isSymlink": false }]
+      }
+    },
+    {
+      "op": "stat",
+      "request": { "op": "stat", "id": 7, "path": "/w/a.txt" },
+      "expect": {
+        "op": "stat",
+        "id": 7,
+        "exists": true,
+        "isFile": true,
+        "isDir": false,
+        "isSymlink": false,
+        "size": 5
+      }
+    },
+    {
+      "op": "mkdirAll",
+      "request": { "op": "mkdirAll", "id": 8, "path": "/w/sub" },
+      "expect": { "op": "ok", "id": 8 }
+    },
+    {
+      "op": "gitShow",
+      "request": { "op": "gitShow", "id": 9, "repo": "/w", "rev": "HEAD", "path": "a.txt" },
+      "expect": { "op": "file", "id": 9, "bytes": "68656164" }
+    },
+    {
+      "op": "spawn",
+      "request": {
+        "op": "spawn",
+        "id": 10,
+        "argv": ["/bin/sh", "-c", "echo hi"],
+        "cwd": "/w",
+        "env": ["PATH=/usr/bin:/bin"],
+        "stdin": "6869"
+      },
+      "expect": {
+        "op": "exit",
+        "id": 10,
+        "code": 0,
+        "streams": [
+          { "op": "stdout", "id": 10, "bytes": "6869" },
+          { "op": "stderr", "id": 10, "bytes": "" }
+        ]
+      },
+      "note": "stdout / stderr 是流式片段，最后一条 exit 收尾；所有帧都带同一个 id"
+    },
+    {
+      "op": "kill",
+      "request": { "op": "kill", "id": 11, "target": 10 },
+      "expect": { "op": "ok", "id": 11 },
+      "note": "target 是被中止那条 spawn 的 id，不是本条请求自己的 id"
+    }
+  ]
+}

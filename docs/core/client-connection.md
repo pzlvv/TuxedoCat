@@ -188,6 +188,18 @@ Connection 持有：
   `D:\home\pz\proj` 这种错误值，两个 Connection 并存时会直接路由失败）。
 - 删除 / 重命名 / 会话配置变更等按 `sessionId` 路由到对应 Connection。
 
+`requestCore` 的选路（与 `UiEvent` 同一张路由表）：
+
+| 载荷 | 落点 |
+| --- | --- |
+| 带 `sessionId` | 该会话归属的 Connection；查不到归属时只在「唯一存活 Connection」下登记退路，否则报错 |
+| 带 `workspacePath`（`conversationListRequested` / `storageCapabilitiesRequested` / watch / unwatch） | 该工作区的 Connection；工作区未打开时**报错**，不退回活动连接 |
+| 两者都没有 | 当前活动 Connection |
+
+能力应答（`storageCapabilitiesRequested`）与对话列表、文件监听同属「事实带工作区归属」的一类：
+能力是逐 Core 的，退回活动连接会让非活动标签页的视图拿到另一个 Core 的答案
+（`specs/defects/prewarm-view-capability-query-hits-wrong-core.md`）。
+
 ---
 
 ## 7. 就绪状态机

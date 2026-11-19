@@ -364,14 +364,30 @@ export type CoreRequest =
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
 /**
- * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/045 FR-001）。
+ * 本 Core 的文件存储能力（`UiRequest.storageCapabilitiesRequested`，specs/051 FR-001）。
  *
- * 两个字段都必选：`reason` 在能力可用时为空串（不是 `null`——「没有原因」用空串表达，
+ * 四个字段全必选：`reason` 在能力可用时为空串（不是 `null`——「没有原因」用空串表达，
  * 与其它能力应答同一口径）。
  */
 export interface StorageCapabilities {
   /** 能否为对话建立隔离工作视图（overlay：磁盘为基线 + 对话私有上层）。 */
   isolatedWorkView: boolean;
+  /**
+   * 挂载代理的就位状态（specs/051 FR-001 根字段）。
+   *
+   * `'ready'` = 已安装、协议版本匹配、且它报回 overlay 实测可挂；`'absent'` = 未安装 /
+   * 版本不匹配 / 自检未通过——三者对界面的含义都是「需要部署」。`isolatedWorkView` 为
+   * true 时本字段必然是 `'ready'`：Core 不再自己建命名空间，能力只能由代理提供。
+   */
+  mountProxy: 'ready' | 'absent';
+  /**
+   * 部署代理是否**可能**解决当下的不可用（派生字段，推导点只有 Core 一处）。
+   *
+   * 判据：平台是 Linux 且内核有 overlayfs 且代理尚未就位。宿主不重算、不缓存，每次需要
+   * 都问 Core。`isolatedWorkView` 与 `deployable` 都为 false 时界面整块入口不渲染
+   * （specs/051 FR-002）。
+   */
+  deployable: boolean;
   /** 不可用的原因；可用时为空串。 */
   reason: string;
 }
@@ -486,6 +502,14 @@ export type UiEvent =
       content: string;
       /** 消息 uuid（宿主生成；core 落盘时沿用） */
       uuid: string;
+      /**
+       * 该会话的文件存储归属（specs/045 FR-001，specs/051 FR-003）。
+       *
+       * 归属在**第一条消息**这一刻定下：勾选只是 webview 的本地意图，随本事件一起
+       * 下发才是真的生效。Core 按它决定是否建隔离工作视图；能力不可用时拒绝写入
+       * `isolated`（FR-010：不落永久失败的归属）。
+       */
+      storage: 'workspace' | 'isolated';
       /** 图片（dataUrl 形式，随消息进入 LLM content blocks） */
       images?: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }>;
       /** 引用的文件路径（展示与持久化用，是否发给 LLM 由 fileHidden 决定） */
@@ -575,6 +599,17 @@ export type UiEvent =
       sessionId: string;
       storage: 'workspace' | 'isolated';
     }
+  /**
+   * 把一条**存量**隔离会话转成真实工作区归属（specs/051 FR-011）。
+   *
+   * 只有能力不可用时的存量 `isolated` 会话需要它：视图建立不起来，那个对话会变成
+   * 「只能看不能动」。转换是**用户显式触发**的动作，不是自动降级——因此这条事件存在
+   * 的意义就是「用户决定把改动落到真实磁盘」。
+   *
+   * 与 `storageChanged` 的分工：后者只服务「新建对话还没有消息」这个窗口，本事件服务
+   * 「已经有消息落盘、归属已固定」的存量会话，两者的前置校验因此不同。
+   */
+  | { type: 'conversationStorageConverted'; sessionId: string }
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。
@@ -772,8 +807,14 @@ export type UiRequest =
    *
    * 宿主据此决定是否渲染「Overlay 对话」入口。能力由 Core 判断——宿主平台回答不了
    * 这个问题（Windows 宿主连 Linux 远端 Core 时宿主不是 Linux，但 Core 是）。
+   *
+   * 能力是**每个 Core 各一份**的事实，因此请求必须点名问哪个 Core：宿主侧按
+   * `sessionId`（该会话的归属）或 `workspacePath`（视图所属工作区）选 Connection，
+   * 两者都给不出时落到活动连接。Core 侧忽略这两个字段——它只回答自己那份能力
+   * （`docs/core/conversation-work-view.md` 第 1 节）。
+   * 不用 `?` 省略：「没有会话上下文」是 `null`，不是缺字段。
    */
-  | { type: 'storageCapabilitiesRequested' }
+  | { type: 'storageCapabilitiesRequested'; sessionId: string | null; workspacePath: string | null }
   /**
    * 列 Overlay 对话的叠加视图目录（specs/046 FR-002）。
    *

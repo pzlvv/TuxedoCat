@@ -546,6 +546,16 @@ export class Client implements AssistantEventBus {
         return this.connectionForWorkspacePath(workspacePath) ?? null;
       }
     }
+    // 能力应答按工作区路由（specs/045 FR-001）：能力是逐 Core 的事实，后台预热视图
+    // 属于非活动标签页，落到 `currentConnection()` 就会拿到另一个 Core 的答案
+    // （specs/defects/prewarm-view-capability-query-hits-wrong-core.md）。给不出归属时
+    // 回 `null`（调用方报错），不退回活动连接——那正是本缺陷的形态。
+    if (request.type === 'storageCapabilitiesRequested') {
+      const workspacePath = request.workspacePath;
+      if (workspacePath) {
+        return this.connectionForWorkspacePath(workspacePath) ?? null;
+      }
+    }
     // 远程文件监听按工作区路由（specs/018 FR-003）：watch / unwatch 都带 workspacePath。
     if (
       request.type === 'watchWorkspaceFileRequested'

@@ -22,6 +22,10 @@ export const CORE_BINARY_NAME = projectConfig.core.binaryName;
 export const CORE_RESOURCE_DIR = projectConfig.core.resourceDir;
 /** Core 部署产品目录名（部署槽位 = `~/.local/share/<CORE_DEPLOY_PREFIX>/<指纹>/`） */
 export const CORE_DEPLOY_PREFIX = projectConfig.core.deployPrefix;
+/** Overlay 挂载代理可执行文件名（随 Core 同目录分发，specs/051 FR-005） */
+export const CORE_MOUNT_PROXY_NAME = projectConfig.core.mountProxyName;
+/** Overlay 挂载代理的安装落点目录（root 属主 + setuid 位，specs/051 FR-005） */
+export const CORE_MOUNT_PROXY_DIR = projectConfig.core.mountProxyDir;
 export const OUTPUT_CHANNEL_NAME = projectConfig.outputChannelName;
 export const APP_ID = projectConfig.appId;
 export const VIEW_CONTAINER_ID = projectConfig.viewContainerId;

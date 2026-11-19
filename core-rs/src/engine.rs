@@ -607,23 +607,27 @@ impl Core {
 
     // ==================== 会话 ====================
 
-    /// 确保某会话的隔离工作视图已挂载，返回工具该用的句柄（specs/045 FR-002）。
+    /// 确保某会话的隔离工作视图已就绪，返回工具该用的状态（specs/045 FR-002 /
+    /// specs/051 FR-010）。
     ///
-    /// 只在归属为隔离视图时有效；挂载失败记日志并返回 `None`，工具按真实磁盘执行
-    /// （FR-007 的设计允许降级，但必须留痕，不能静默）。
+    /// **三态而不是 `Option`**：「该会话不是隔离归属」（正常走真实磁盘）与「隔离归属但
+    /// 视图不可用」（必须让工具报错）是两件事。把后者压成 `None` 会让视图建立失败悄悄
+    /// 退回磁盘——正是 FR-010 要禁止的 fail-open。
     ///
     /// Core 重启后登记表是空的，因此这里按需补登记：会话归属存在 `meta.json` 里，
     /// 与「第一次工具调用」之间没有任何别的时机能重建它。
-    pub fn ensure_work_view(&self, session_id: &str) -> Option<crate::work_view::WorkViewHandle> {
+    pub fn ensure_work_view(&self, session_id: &str) -> crate::tools::WorkViewState {
+        use crate::tools::WorkViewState;
         if self.session_storage(session_id) != WorkViewStorage::Isolated {
-            return None;
+            return WorkViewState::Workspace;
         }
         if let Some(handle) = crate::work_view::WorkViewHandle::of(session_id) {
-            return Some(handle);
+            return WorkViewState::View(handle);
         }
         let Some(project) = self.project_of(session_id).ok() else {
-            eprintln!("[core] 会话 {session_id} 的隔离工作视图没有工作目录，无法建立");
-            return None;
+            let reason = "会话没有工作目录，无法建立隔离视图".to_string();
+            eprintln!("[core] 会话 {session_id} 的隔离工作视图不可用：{reason}");
+            return WorkViewState::ViewUnavailable(reason);
         };
         let view = match crate::work_view::WorkView::register(&project, session_id) {
             Ok(view) => view,
@@ -632,21 +636,20 @@ impl Core {
                     Ok(view) => view,
                     Err(reason) => {
                         eprintln!("[core] 会话 {session_id} 的隔离工作视图取回失败：{reason}");
-                        return None;
+                        return WorkViewState::ViewUnavailable(reason);
                     }
                 }
             }
             Err(reason) => {
                 eprintln!("[core] 会话 {session_id} 的隔离工作视图登记失败：{reason}");
-                return None;
+                return WorkViewState::ViewUnavailable(reason);
             }
         };
         let mut view = view;
         if let Err(reason) = view.ensure_mounted() {
-            eprintln!(
-                "[core] 会话 {session_id} 的隔离工作视图建立失败：{reason}（工具按真实工作区执行）"
-            );
-            return None;
+            // 不退回真实磁盘：隔离会话的工具必须报错（FR-010），改动不落磁盘
+            eprintln!("[core] 会话 {session_id} 的隔离工作视图建立失败：{reason}");
+            return WorkViewState::ViewUnavailable(reason);
         }
         eprintln!(
             "[core] 会话 {session_id} 的隔离工作视图已就绪：{}",
@@ -654,7 +657,40 @@ impl Core {
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<无挂载点>".to_string())
         );
-        crate::work_view::WorkViewHandle::of(session_id)
+        match crate::work_view::WorkViewHandle::of(session_id) {
+            Some(handle) => WorkViewState::View(handle),
+            None => WorkViewState::ViewUnavailable(
+                "视图已建立但句柄取不到（登记表可能被并发清理）".to_string(),
+            ),
+        }
+    }
+
+    /// 把一条**存量**隔离会话转成真实工作区归属（specs/051 FR-011）。
+    ///
+    /// 与 `set_session_storage` 的分工：那条只服务「新建对话还没有消息」的窗口，已有
+    /// 消息就拒绝改动；本函数专门服务「已经有消息落盘、归属已固定」的存量会话——能力
+    /// 不可用时它是用户唯一的出路，因此**允许**改。
+    ///
+    /// 转换后该会话的工具读写真实磁盘，界面不再标注 Overlay。不做自动转换：这是用户的
+    /// 决定，自动降级会破坏「不过度 fallback」（`docs/architecture/principles.md` 第 1 节）。
+    pub fn convert_session_storage_to_workspace(&self, session_id: &str) -> Result<(), String> {
+        if self.session_storage(session_id) != WorkViewStorage::Isolated {
+            return Err(format!("会话 {session_id} 不是隔离归属，无需转换"));
+        }
+        let state = self.session(session_id);
+        state.lock().unwrap().storage = WorkViewStorage::Workspace;
+        // 落盘：meta.json 存在才写（纯声明性对话没有 meta，也就没有归属要改）
+        if history::metadata_of_session(session_id).is_some() {
+            let project = self.project_of(session_id)?;
+            history::update_metadata(
+                session_id,
+                &project,
+                || json!({ "sessionId": session_id, "project": project }),
+                |metadata| metadata["storage"] = json!("workspace"),
+            )
+            .map_err(|error| format!("写 meta 失败：{error}"))?;
+        }
+        Ok(())
     }
 
     /// 会话的文件存储归属（specs/045 FR-001）；未知会话按真实工作区处理。
@@ -2703,6 +2739,29 @@ impl Core {
         // model 应用到引擎——否则 payload 覆盖会被 meta.json 的旧值反向覆盖。
         let _ = self.ensure_loaded(&session_id);
 
+        // 归属在**第一条消息**这一刻生效（specs/045 FR-001，specs/051 FR-003）。
+        //
+        // webview 的勾选只是本地意图，不上行；归属随本事件带来，这里才是唯一写入点。
+        // `set_session_storage` 自己拒绝「已有消息落盘」的改动，因此重复投递同一条
+        // 消息（如失败重发）不会把归属改回去。
+        //
+        // 能力不可用时拒绝 `isolated`（FR-010：不把永久失败的归属写进 meta.json）。
+        if let Some(storage) = payload.get("storage").and_then(Value::as_str) {
+            if storage == "isolated" {
+                let capabilities = crate::work_view::capabilities();
+                if capabilities.isolated_work_view {
+                    self.set_session_storage(&session_id, WorkViewStorage::Isolated);
+                } else {
+                    // 不静默改成 workspace：宿主闸门已经保证能力可用才会放行，
+                    // 走到这里说明接线不一致——回推事实并丢弃这条消息。
+                    self.log(&format!(
+                        "userMessageSubmitted with isolated storage but view unavailable: {}",
+                        capabilities.reason
+                    ));
+                }
+            }
+        }
+
         // spin 期间父对话完全由 SpinLoop 程序控制，禁止用户输入：UI 已禁用输入框，
         // 这里在 Core 侧兜底，丢弃任何到达的 `userMessageSubmitted`——不入队、不拉起
         // 消费循环，避免 Spin 结束后把这条消息当成下一轮 LLM 输入
@@ -3907,14 +3966,16 @@ fn execute_tool(
             options,
         ))
     });
-    // 隔离工作视图句柄（specs/045）：只有归属为隔离视图的会话才有。挂载失败时为
-    // `None`，工具按真实磁盘执行（FR-007 的设计允许降级，原因已由建立处记日志）。
+    // 隔离工作视图（specs/045 + specs/051 FR-010）：三态，`ViewUnavailable` 时工具
+    // 一律报错而不是退回真实磁盘。
     let work_view = core.ensure_work_view(session_id);
     let mode = core.session_storage(session_id);
-    eprintln!(
-        "[core] 工具 {tool_name} 会话 {session_id} 归属={mode:?} 视图句柄={}",
-        if work_view.is_some() { "Some" } else { "None" }
-    );
+    let view_state = match &work_view {
+        crate::tools::WorkViewState::Workspace => "workspace",
+        crate::tools::WorkViewState::View(_) => "view",
+        crate::tools::WorkViewState::ViewUnavailable(_) => "viewUnavailable",
+    };
+    eprintln!("[core] 工具 {tool_name} 会话 {session_id} 归属={mode:?} 视图={view_state}");
     // 取共享句柄必须在字面量之外：字段表达式产生的临时 guard 存活到整条
     // let 语句结束，两个字段各写一次 state.lock() 会让第二个与第一个尚未
     // 释放的 guard 互斥，自死锁。

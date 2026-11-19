@@ -60,8 +60,26 @@ export interface UseMessageHandlerProps {
   setConversationTitle: (v: string) => void;
   setMaxContextTokens: (v: number | null) => void;
   setSkills: (v: Array<{ name: string; description: string; isBuiltin?: boolean }>) => void;
-  /** 文件存储能力（specs/045 FR-001）；false 时新建对话空状态不渲染隔离视图入口 */
+  /**
+   * 是否渲染「Overlay 对话」入口（specs/051 FR-002：`isolatedWorkView || deployable`）。
+   * `false` 时新建对话空状态不渲染该入口。
+   */
   setWorkViewCapable: (capable: boolean) => void;
+  /**
+   * 当前会话的文件存储归属（同步真相，specs/051 FR-003）。
+   *
+   * 排队消息重发时要带上它——那是另一次独立的 `sendMessage`，宿主侧闸门仍按归属判定。
+   */
+  workViewStorageRef: React.MutableRefObject<'workspace' | 'isolated'>;
+  /**
+   * 挂载代理部署的进行状态（specs/051 FR-003 / FR-004 / FR-008）。
+   *
+   * `null` 表示没有进行中的部署（不渲染对话框）。值全部来自宿主的
+   * `mountProxyDeployState`：webview 不推断进度、不判 ready。
+   */
+  setMountProxyDeployState: (
+    state: import('../components/MountProxyDialog.js').MountProxyDeployState | null,
+  ) => void;
   /** `@` 工作区候选（宿主已排除本工作区；specs/023 FR-007） */
   setWorkspaces: (v: Array<{ id: string; path: string; displayName: string }>) => void;
   /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节） */
@@ -429,9 +447,36 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           handleConfigSetSkills(msg, ctx);
           break;
         case 'setStorageCapabilities':
-          // 能力应答（specs/045 FR-001）：能力不可用时整块入口不渲染，不给「勾了却
-          // 静默无效」的形态。
-          ctx.props.setWorkViewCapable(msg.isolatedWorkView);
+          // 入口渲染判据（specs/051 FR-002）：`isolatedWorkView || deployable`。
+          // 当下可用、或可经部署变得可用，都渲染；两者都不成立时整块入口不渲染——不给
+          // 「勾了却静默无效」的形态。`deployable` 只参与渲染判据，入口不显示任何提示
+          // （FR-003：需要部署时由宿主在发第一条消息时弹确认）。
+          ctx.props.setWorkViewCapable(msg.isolatedWorkView || msg.deployable);
+          break;
+        case 'userMessageDraftRestored':
+          // 部署闸门取消后把被拦消息送回输入框（specs/051 FR-003 的 AC-9）。
+          // 发送时输入框已被清空，不送回来那段文字就丢了。
+          ctx.props.inputAreaRef.current?.setValue(msg.content);
+          break;
+        case 'mountProxyDeployState':
+          // 部署状态是宿主的事实（FR-003 / FR-004）：webview 只存下来交给对话框渲染，
+          // 不推断进度、不判 ready、不在收到 `done` 时自己重发消息——重发是宿主的事
+          // （FR-008：宿主重查能力后重发被拦消息）。
+          //
+          // `done` 与 `cancelled` 一样收起对话框：成功不打断用户（宿主接着发被拦消息），
+          // 只有失败才留着界面说明原因。
+          if (msg.phase === 'cancelled' || msg.phase === 'done') {
+            // 取消（FR-003 的 AC-9）：收起对话框，会话保持空状态、消息留在输入框
+            ctx.props.setMountProxyDeployState(null);
+            break;
+          }
+          ctx.props.setMountProxyDeployState({
+            phase: msg.phase,
+            failure: msg.failure,
+            manualCommand: msg.manualCommand,
+            targetHost: msg.targetHost,
+            installPath: msg.installPath,
+          });
           break;
         case 'setWorkspaces':
           handleConfigSetWorkspaces(msg, ctx);

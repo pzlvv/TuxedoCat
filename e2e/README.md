@@ -40,6 +40,14 @@ npm run build:core:linux-x64
 npx playwright test -c e2e/playwright.config.ts --project=electron-ssh remoteChangeList
 ```
 
+远端车道里 Core 跑在测试机上，要回连本机的 mock LLM。mock 经 **SSH 反向隧道**暴露到
+测试机回环（`startMockLlm` 的 `reverseTunnel`，端口由远端分配），因此本机在 NAT 后也能跑，
+`environments.json` 不需要额外配地址。
+
+早期版本让远端直连本机内网地址（`llmAdvertiseHost`），本机在 NAT 后时那条路不通，
+症状是**0 个模型请求、界面一直转圈**——看起来像工具链缺陷，其实是 mock 不可达。
+需要直连时仍可配 `llmAdvertiseHost`（隧道优先，两者不冲突）。
+
 Electron 用例不需要 Playwright 的 Chromium，用项目自带的 `node_modules/electron`。
 
 Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道会被本机安全策略
@@ -119,7 +127,8 @@ e2e/
 │   └── electronApp.ts          # Electron 启动器：沙箱隔离 + CDP 直连 + 活动视图解析
 ├── webview/                    # webview UI 级场景用例（覆盖的 US 见 user-stories 附录）
 ├── electron/                   # Electron 整应用场景用例（同上）；remoteSshExecution /
-│                               #   remoteTaskSurvival / remoteChangeList 三条跑真实 SSH 远端
+│                               #   remoteTaskSurvival / remoteChangeList /
+│                               #   overlayMountProxyRemote 四条跑真实 SSH 远端
 ├── remoteWorkspace/            # 远端目录选择器页面（路径框编辑 / 选中项 / Tab 补全 / 焦点常驻）
 ├── terminal/                   # 远程终端页面（标签 / 断开态与重连 / 主题跟随 / 复制粘贴）
 └── tui/                        # TUI 安装程序 e2e（构建 / 自解压 / 载荷可执行 / 启动守卫，docs/features/tui-installer.md）

@@ -820,7 +820,7 @@ fn todo_ctx(sandbox: &Sandbox, session_id: &str) -> crate::tools::ToolContext {
         background: None,
         subagent: None,
         transfer: None,
-        work_view: None,
+        work_view: crate::tools::WorkViewState::Workspace,
     }
 }
 

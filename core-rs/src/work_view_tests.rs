@@ -190,15 +190,24 @@ fn work_view_handle_maps_paths() {
         let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
         assert!(
             crate::work_view::WorkViewHandle::of(session).is_none(),
-            "登记但未挂载时不该给出句柄"
+            "登记但未拉起代理时不该给出句柄"
         );
         view.ensure_mounted().expect("挂载");
         let handle = crate::work_view::WorkViewHandle::of(session).expect("句柄");
 
+        // specs/051：视图已 bind 到**真实工作区路径**上，因此映射是恒等——
+        // 脚本里写死的绝对路径、`$PWD`、`cd` 全部照常工作。
         let real = sandbox.workspace.join("existing.txt");
-        let in_view = handle.to_view_path(&real).expect("映射进视图");
-        assert!(in_view.starts_with(&sandbox.root));
-        assert_eq!(handle.to_real_path(&in_view).expect("映射回真实"), real);
+        let in_view = handle.map_into_view(&real).expect("工作区内路径必须放行");
+        assert_eq!(in_view, real, "路径不做映射（视图 bind 在真实路径上）");
+        // 但越界仍然报错：静默放行会让隔离对话读到视图之外的东西
+        assert!(
+            handle
+                .map_into_view(std::path::Path::new("/tmp/outside.txt"))
+                .is_err(),
+            "工作区外的路径必须报错"
+        );
+        // 视图里读得到磁盘基线（overlay 的 lowerdir 就是工作区）
         assert_eq!(
             std::fs::read_to_string(&in_view).unwrap(),
             "from-workspace\n"
@@ -230,7 +239,7 @@ fn work_view_tools_and_bash_share_the_overlay() {
             background: None,
             subagent: None,
             transfer: None,
-            work_view: Some(handle),
+            work_view: crate::tools::WorkViewState::View(handle),
         };
 
         // Write 一个磁盘上不存在的新文件
@@ -319,7 +328,7 @@ fn work_view_bash_writes_stay_in_the_upper_layer() {
             background: None,
             subagent: None,
             transfer: None,
-            work_view: Some(handle),
+            work_view: crate::tools::WorkViewState::View(handle),
         };
 
         let bash = crate::tools::execute(

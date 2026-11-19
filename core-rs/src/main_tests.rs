@@ -1767,21 +1767,22 @@ fn work_view_file_diff_request_reports_missing_arguments_and_unmounted_view() {
     );
 }
 
-/// 慢请求清单与帧循环的分流口径一致（specs/047）：视图取数要起 git 子进程，
-/// 留在帧循环里会把后续帧全部压在队列后面（`specs/defects/balance-fetch-blocks-frame-loop`
-/// 是同一类问题的先例）。
+/// 慢请求清单与帧循环的分流口径一致（specs/046 FR-004 / specs/047）：视图取数要起 git
+/// 子进程，列目录还可能在视图未建立时拉起代理，留在帧循环里会把后续帧全部压在队列后面
+/// （`specs/defects/balance-fetch-blocks-frame-loop` 是同一类问题的先例）。
 #[test]
 fn slow_ui_requests_run_off_the_frame_loop() {
-    for request_type in ["workViewChangesRequested", "workViewFileDiffRequested"] {
+    for request_type in [
+        "workViewFilesRequested",
+        "workViewChangesRequested",
+        "workViewFileDiffRequested",
+    ] {
         assert!(
             is_slow_ui_request(&json!({ "type": request_type })),
             "{request_type} 必须走独立线程"
         );
     }
     assert!(is_slow_ui_request(&json!({ "type": "balanceRequested" })));
-    assert!(!is_slow_ui_request(
-        &json!({ "type": "workViewFilesRequested" })
-    ));
     assert!(!is_slow_ui_request(
         &json!({ "type": "conversationListRequested" })
     ));
@@ -2304,10 +2305,11 @@ fn conversation_load_clears_unread_completions() {
     );
 }
 
-/// `workViewFilesRequested` 的请求分支（specs/046 FR-002 / FR-006）。
+/// `workViewFilesRequested` 的请求分支（specs/046 FR-002 / FR-004 / FR-006）。
 ///
-/// 真实列目录在 `work_view_tests` 里跑（要进命名空间）。这里覆盖请求分支的两条通道：
-/// 缺参数是「请求非法」（Err），没有已挂载视图是「业务失败」（回判别联合的失败侧）。
+/// 真实列目录在 `work_view_tests` 里跑（要进命名空间）。这里覆盖请求分支的三条通道：
+/// 缺参数是「请求非法」（Err），非 Overlay 归属回「不是 Overlay 归属」（业务失败侧），
+/// 隔离归属但视图建不起来同样回失败侧——两者都不得偷偷列磁盘。
 #[test]
 fn work_view_files_request_reports_missing_arguments_and_unmounted_view() {
     // 缺 sessionId / dir：请求本身非法，走 Err 而不是回失败侧
@@ -2322,27 +2324,55 @@ fn work_view_files_request_reports_missing_arguments_and_unmounted_view() {
     )
     .is_err());
 
-    // 会话存在但没有已挂载的视图：回 { ok: false, error }，宿主据此显示错误行
-    let response = dispatch_ui_request(
+    // 非 Overlay 归属的会话：回 { ok: false, error }，不回磁盘内容
+    let workspace_response = dispatch_ui_request(
         &test_core(),
         &json!({
             "type": "workViewFilesRequested",
-            "sessionId": "sess-no-view",
+            "sessionId": "sess-not-isolated",
             "dir": "",
         }),
     )
     .expect("请求合法时必须回响应而不是 Err");
     assert_eq!(
-        response.get("ok").and_then(Value::as_bool),
+        workspace_response.get("ok").and_then(Value::as_bool),
         Some(false),
-        "{response:?}"
+        "{workspace_response:?}"
     );
     assert!(
-        response
+        workspace_response
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("不是 Overlay 归属")),
+        "非 Overlay 归属要如实说明：{workspace_response:?}"
+    );
+
+    // 隔离归属但视图建不起来（无工作目录）：同样回失败侧，不退回磁盘
+    let core = test_core();
+    core.set_session_storage(
+        "sess-isolated-no-view",
+        crate::engine::WorkViewStorage::Isolated,
+    );
+    let unmounted = dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "workViewFilesRequested",
+            "sessionId": "sess-isolated-no-view",
+            "dir": "",
+        }),
+    )
+    .expect("请求合法时必须回响应而不是 Err");
+    assert_eq!(
+        unmounted.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "{unmounted:?}"
+    );
+    assert!(
+        unmounted
             .get("error")
             .and_then(Value::as_str)
             .is_some_and(|text| !text.is_empty()),
-        "失败侧必须带非空 error：{response:?}"
+        "失败侧必须带非空 error：{unmounted:?}"
     );
 }
 

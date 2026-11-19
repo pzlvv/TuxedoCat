@@ -21,6 +21,33 @@ export const enDict: Record<string, string> = {
   'app.openWorkspaceHint': 'Open a workspace to continue',
   'app.workViewOption': 'Overlay conversation',
 
+  /* ── MountProxyDialog.tsx（specs/051 FR-003 / FR-004）──────── */
+  'mountProxyDialog.title': 'Deploy mount proxy',
+  'mountProxyDialog.factRootSetuid':
+    'It installs a program that runs as root and carries the setuid bit.',
+  'mountProxyDialog.factInstallPath': 'Install location: {path}',
+  'mountProxyDialog.factTargetHost': 'Target host: {host}',
+  'mountProxyDialog.factUserns':
+    'It lets your account create user namespaces that this system currently restricts.',
+  'mountProxyDialog.cancel': 'Cancel',
+  'mountProxyDialog.deploy': 'Deploy',
+  'mountProxyDialog.retry': 'Retry',
+  'mountProxyDialog.close': 'Close',
+  'mountProxyDialog.running': 'Deploying...',
+  'mountProxyDialog.failed': 'Deployment failed: {reason}',
+  'mountProxyDialog.needCredential':
+    'Passwordless sudo is not available. Choose how to proceed:',
+  'mountProxyDialog.useSudoPassword': 'Provide sudo password',
+  'mountProxyDialog.useRootPassword': 'Provide root password',
+  'mountProxyDialog.showCommand': 'Show command to run myself',
+  'mountProxyDialog.sudoPasswordPlaceholder': 'sudo password',
+  'mountProxyDialog.rootPasswordPlaceholder': 'root password',
+  'mountProxyDialog.submitSecret': 'Submit',
+  'mountProxyDialog.manualHint':
+    'Run this command in your own terminal. Your password never passes through the host:',
+  'mountProxyDialog.copyCommand': 'Copy',
+  'mountProxyDialog.copied': 'Copied',
+
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': 'Are you sure you want to delete "{title}"?',
   'deleteConfirm.cancel': 'Cancel',
