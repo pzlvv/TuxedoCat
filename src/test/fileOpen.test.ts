@@ -324,9 +324,14 @@ runTests('fileOpen + markdown 预览', async () => {
     '远程根内绝对路径 → 视图相对路径',
     workViewRelForOpen('/home/pz/ws', '/home/pz/ws/sub/sum.py', { posix: true }) === 'sub/sum.py',
   );
+  // 本地工作区根按**宿主平台**语义解析（`path`）：Windows 上 `D:\…` 是绝对路径，
+  // Linux / macOS 上是 POSIX。因此这里用 `path.join` 按当前平台造路径——写死
+  // `D:\work\demo` 会让 Linux CI 把反斜杠当普通字符（本地通过、CI 红）。
+  const localRoot = path.join(path.sep === '/' ? '/work/demo' : 'D:\\work\\demo');
+  const localFile = path.join(localRoot, 'src', 'main.ts');
   check(
     '本地根内绝对路径 → 视图相对路径',
-    workViewRelForOpen('D:\\work\\demo', 'D:\\work\\demo\\src\\main.ts') === 'src/main.ts',
+    workViewRelForOpen(localRoot, localFile) === 'src/main.ts',
   );
   check(
     '根自身不算可打开的文件',
