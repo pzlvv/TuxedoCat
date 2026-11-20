@@ -49,6 +49,7 @@ last_reviewed: 2026-11-16
 | `e2e/webview/bashOutputCollapse.spec.ts` | US-14（Bash 输出折叠） | webview UI |
 | `e2e/electron/assistant.spec.ts` | US-1、US-2、US-14、US-15、US-18、US-28、US-74（读后失效的编辑被拒 → 重读 → 成功）、US-75（时间线「从这里继续」回退对话并回滚文件） | Electron 整应用 |
 | `e2e/electron/smartNaming.spec.ts` | US-21 | Electron 整应用 |
+| `e2e/electron/streamStatsRate.spec.ts` | US-4（流式统计的解码速率口径：分母取思考段 token 到达跨度，不被正文与空档稀释） | Electron 整应用 |
 | `e2e/electron/sessions.spec.ts` | US-19、US-20、US-21、US-22 | Electron 整应用 |
 | `e2e/electron/workspace.spec.ts` | US-30、US-35、US-36、US-53（标签页快捷键切换与环绕） | Electron 整应用 |
 | `e2e/electron/remoteWorkspace.spec.ts` | US-36（SSH 连接表单与历史） | Electron 整应用 |
