@@ -28,16 +28,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use socket2::{SockRef, TcpKeepalive};
 
 use crate::daemon::{
     self, ChannelExit, ConnectionContext, CoreSpawner, DaemonEvent, DaemonOptions, FrameOutput,
-    OrphanRegistry, HEARTBEAT_TIMEOUT, ORPHAN_IDLE_TTL,
+    OrphanRegistry, HEARTBEAT_TIMEOUT, ORPHAN_IDLE_TTL, OUTBOX_WARN_THRESHOLD,
 };
 use crate::daemon_protocol::DirectoryEntry;
 use crate::util::diag;
@@ -253,30 +254,114 @@ pub fn delete_directory(path: &str, recursive: bool) -> Result<String, DeleteDir
 
 // ==================== 控制通道 ====================
 
-/// TCP 控制通道出站口：一把锁串行化整帧写入。
+/// TCP 控制通道出站口：有序队列 + 独立写线程（`docs/core/core-daemon.md` 第 7.4 节）。
+///
+/// `write_line` 只入队、立刻返回——真正的 `write_all` + `flush` 在写线程上。
+///
+/// 为什么要这样：这条 TCP 连接没有写超时，对端不读把发送缓冲写满时 `write_all` 会
+/// 一直挡着。调用方是 daemon 主循环（`daemon::send_to_host` 的全部调用点）与各 Core
+/// 的 stdout 读线程；同步写会把它们一起拖住——主循环停摆期间 `ping` 收不到、
+/// `closeWorkspace` 处理不了、心跳死线判定不了，整条连接上所有 channel 一起失效
+/// （specs/defects/daemon-outbound-write-blocks-main-loop.md）。
+///
+/// 顺序：写线程是唯一写者，按队列顺序写出（`mpsc` 保序）。
+/// 队列长度本身不设上限（帧不可丢、不可合并），越软水位只记录诊断。
 struct SocketOutput {
-    stream: Mutex<TcpStream>,
+    /// 出站队列的发送端；写线程退出后 `send` 失败，`write_line` 退化为丢弃并记录诊断
+    queue: Mutex<Option<Sender<String>>>,
+    /// 写线程句柄：`dispose` 时 join，保证连接结尾不留孤儿线程
+    writer: Mutex<Option<thread::JoinHandle<()>>>,
+    /// 已入队但未写出的帧数（软水位诊断用）
+    queued: Arc<AtomicUsize>,
 }
 
 impl SocketOutput {
-    fn new(stream: TcpStream) -> Self {
-        Self {
-            stream: Mutex::new(stream),
+    fn new(stream: TcpStream) -> SocketOutput {
+        let (tx, rx) = mpsc::channel::<String>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let queued_for_writer = Arc::clone(&queued);
+        let writer = thread::spawn(move || {
+            let mut stream = stream;
+            // 按序写出：`recv` 保序，一次一帧
+            while let Ok(line) = rx.recv() {
+                queued_for_writer.fetch_sub(1, Ordering::SeqCst);
+                if let Err(error) = stream
+                    .write_all(line.as_bytes())
+                    .and_then(|()| stream.flush())
+                {
+                    // 写失败后链路已不可用：停止写出线程（与既有口径一致，只记录诊断）
+                    diag!("[core] remote control write failed: {error}");
+                    return;
+                }
+            }
+        });
+        SocketOutput {
+            queue: Mutex::new(Some(tx)),
+            writer: Mutex::new(Some(writer)),
+            queued,
         }
+    }
+
+    /// 关闭出站口：丢弃队列发送端，等写线程收尾。
+    ///
+    /// **不 join 到底**：写线程可能正阻塞在 `write_all` 上（对端已死、发送缓冲写满，
+    /// 这条连接没有写超时），无界 join 会让 `serve_connection` 永不返回——比原缺陷
+    /// 更糟。这里只等一个宽限（`shutdown_timeout` 同量级），超时就放弃等待：
+    /// 线程随后随 socket 关闭自然退出，连接收尾不被它拖住。
+    ///
+    /// 幂等。
+    fn dispose(&self, grace: Duration) {
+        let sender = {
+            let mut queue = match self.queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            queue.take()
+        };
+        // 丢掉发送端：写线程把队列里剩下的帧写完后 `recv` 返回 Err 自然退出
+        drop(sender);
+        let writer = {
+            let mut writer = match self.writer.lock() {
+                Ok(writer) => writer,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            writer.take()
+        };
+        let Some(writer) = writer else { return };
+        // 轮询 `is_finished` 而不是 join：join 没有超时
+        let deadline = Instant::now() + grace;
+        while !writer.is_finished() {
+            if Instant::now() >= deadline {
+                diag!(
+                    "[core] remote control writer still blocked after {:?}; detaching it",
+                    grace
+                );
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let _ = writer.join();
     }
 }
 
 impl FrameOutput for SocketOutput {
     fn write_line(&self, line: String) {
-        let mut stream = match self.stream.lock() {
-            Ok(stream) => stream,
+        let queue = match self.queue.lock() {
+            Ok(queue) => queue,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Err(error) = stream
-            .write_all(line.as_bytes())
-            .and_then(|_| stream.flush())
-        {
-            diag!("[core] remote control write failed: {error}");
+        let Some(sender) = queue.as_ref() else {
+            // 出站口已关闭（连接收尾）：与控制帧到达已关闭链路的既有口径一致
+            diag!("[core] remote control write after shutdown; frame dropped");
+            return;
+        };
+        let backlog = self.queued.fetch_add(1, Ordering::SeqCst) + 1;
+        if backlog == OUTBOX_WARN_THRESHOLD + 1 {
+            diag!("[core] remote control outbound backlog {backlog}; peer is not draining");
+        }
+        if sender.send(line).is_err() {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+            diag!("[core] remote control writer is gone; frame dropped");
         }
     }
 }
@@ -325,6 +410,11 @@ pub fn serve_connection(
         }
     };
     let out = Arc::new(SocketOutput::new(write_stream));
+    // 出站写线程的收尾句柄：`out` 会被 move 进 `run_control_channel`，
+    // 这里留一份 clone 供返回前收尾（连接结束不留悬挂线程）
+    let out_for_dispose = Arc::clone(&out);
+    // 收尾宽限：与 shutdown 收尾同一量级（后面的 `options` 已被 move 走）
+    let dispose_grace = options.shutdown_timeout;
     // 心跳超时 / 停机广播提前返回时，读线程仍阻塞在这条 socket 上：留一个句柄，
     // 返回前 shutdown 强制它的 read 失败退出，连接与线程都不悬挂
     let shutdown = stream.try_clone().ok();
@@ -343,6 +433,9 @@ pub fn serve_connection(
     if let Some(handle) = shutdown {
         let _ = handle.shutdown(Shutdown::Both);
     }
+    // 先收掉写线程再返回：它可能还阻塞在 `write_all` 里（对端已死），
+    // 发送端已丢弃，队列写完即退出；等不到就放弃（不拖住连接收尾）
+    out_for_dispose.dispose(dispose_grace);
     exit
 }
 

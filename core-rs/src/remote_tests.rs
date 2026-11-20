@@ -9,9 +9,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 // ==================== 工具 ====================
 
@@ -285,6 +285,85 @@ fn system_spawner() -> Arc<dyn CoreSpawner> {
 /// 单连接用例的空事件源：调用方拿到 `Sender` 后直接丢弃（不需要停机广播注入）
 fn detached_events() -> (Sender<DaemonEvent>, Receiver<DaemonEvent>) {
     mpsc::channel()
+}
+
+// ==================== 出站写不阻塞调用方（docs/core/core-daemon.md 第 7.4 节）====================
+
+/// RT-1：`SocketOutput::write_line` 必须立刻返回，真正的 socket 写发生在别的线程。
+///
+/// 修复前：`write_line` 在锁内 `write_all` + `flush`，对端不读把发送缓冲写满时
+/// 调用方（daemon 主循环）就卡死——`ping` 收不到、`closeWorkspace` 处理不了、
+/// 心跳死线判定不了，整条连接上所有 channel 一起停摆。
+///
+/// 判据：对端**从不读**（`shutdown(Read)` 让内核对端收缓冲照常累积但不消费），
+/// 灌入远超内核缓冲的数据；所有 `write_line` 调用必须在秒级内返回。
+/// 修复前总量超过发送缓冲后就会永久阻塞（用例超时），修复后立即返回。
+#[test]
+fn outbound_write_returns_without_blocking_on_a_stalled_peer() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let address = listener.local_addr().expect("addr");
+    // 客户端连上后立刻停读：不在 socket 上做任何 recv
+    let client = thread::spawn(move || {
+        let stream = TcpStream::connect(address).expect("connect");
+        // 保持连接存在（daemon 侧要能写），但永不读取
+        thread::sleep(Duration::from_secs(5));
+        drop(stream);
+    });
+    let (server_stream, _) = listener.accept().expect("accept");
+    let out = SocketOutput::new(server_stream.try_clone().expect("clone"));
+
+    // 每帧 256KB，共 64 帧 = 16MB：远大于任何 socket 发送缓冲。
+    // 每帧写成一行（与真实帧形态一致：结尾换行）。
+    let payload = "x".repeat(256 * 1024);
+    let frame = format!("{{\"kind\":\"pong\",\"pad\":\"{payload}\"}}\n");
+
+    let started = Instant::now();
+    for _ in 0..64 {
+        out.write_line(frame.clone());
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "16MB 出站写必须立即返回（不阻塞调用方），实际耗时 {elapsed:?}——\
+         同步写会把 daemon 主循环拖住，pong / closeWorkspace / 心跳死线全部失效"
+    );
+
+    client.join().expect("client thread");
+}
+
+/// RT-2：出站帧保持调用顺序（唯一写者按序写出）。
+#[test]
+fn outbound_write_preserves_call_order() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let client = thread::spawn(move || {
+        let stream = TcpStream::connect(address).expect("connect");
+        let mut reader = BufReader::new(stream);
+        let mut lines = Vec::new();
+        for _ in 0..3 {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read frame");
+            lines.push(line.trim_end().to_string());
+        }
+        lines
+    });
+    let (server_stream, _) = listener.accept().expect("accept");
+    let out = SocketOutput::new(server_stream);
+
+    for index in 0..3 {
+        out.write_line(format!("{{\"kind\":\"pong\",\"seq\":{index}}}\n"));
+    }
+
+    let lines = client.join().expect("client thread");
+    assert_eq!(lines.len(), 3, "三帧都应写出");
+    for (index, line) in lines.iter().enumerate() {
+        let value: Value = serde_json::from_str(line).expect("valid frame");
+        assert_eq!(
+            value["seq"],
+            json!(index),
+            "出站顺序必须等于调用顺序，实际 {lines:?}"
+        );
+    }
 }
 
 fn start_server() -> (std::net::SocketAddr, thread::JoinHandle<ChannelExit>) {
