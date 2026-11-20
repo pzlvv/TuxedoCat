@@ -300,9 +300,16 @@ test('Read 读远端文件：内容来自目标机器', async () => {
 
 // ==================== 冷启动 / 生命周期 ====================
 
-/** 远端还活着的 Core 进程（daemon 与 workspace Core 都算） */
+/**
+ * 远端还活着的 Core 进程（daemon 与 workspace Core 都算）。
+ *
+ * 按 SSH 用户自己的 uid 收敛（`pgrep -u`）：裸 `pgrep -af` 是全机口径，会把**别的用户**
+ * 正在用的 Core 也算成「本车道残留」——本机自测（远端就是开发机）时尤其致命：断言
+ * 「workspace Core 已退出」会永远看到开发机会话的进程，判定必然超时。车道只对自己部署
+ * 的进程负责（部署槽位在 `~/.<configDir>/`，属同一 uid）。
+ */
 function remoteCoreProcesses(): Promise<Array<{ pid: string; cmd: string }>> {
-  return sshExec(`pgrep -af '${CORE_PROCESS_PATTERN}' || true`).then(({ stdout }) =>
+  return sshExec(`pgrep -u "$(id -u)" -af '${CORE_PROCESS_PATTERN}' || true`).then(({ stdout }) =>
     stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => {
       const space = line.indexOf(' ');
       return { pid: line.slice(0, space), cmd: line.slice(space + 1) };
@@ -340,9 +347,16 @@ test('冷部署：槽位与共享 ripgrep 全部缺失时首次连接完成部�
   const fingerprint = localFingerprint();
   // 清场：杀残留 daemon / 删本指纹槽位与共享 ripgrep / 删状态文件——模拟「第一次连这台机器」
   // pkill 模式带 []：不匹配执行这条命令的远端 shell 自身（否则 pkill 杀掉自己的父 shell，清场半途而废）
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`);
+  // 等进程真的退出而不是等固定时长（e2e/README.md 已知坑 11）：半死的 daemon 会在冷部署
+  // 之后抢走新状态文件，本用例要的恰恰是「一台什么都没跑的机器」
+  await pollRemote(
+    async () => (await remoteCoreProcesses()).length === 0,
+    15_000,
+    '冷部署清场：残留 Core / daemon 全部退出',
+  ).catch(() => undefined);
   await sshExec(
-    `pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`
-      + ` && rm -rf ${REMOTE_DEPLOY_DIR}/${fingerprint} ${REMOTE_DEPLOY_DIR}/ripgrep`
+    `rm -rf ${REMOTE_DEPLOY_DIR}/${fingerprint} ${REMOTE_DEPLOY_DIR}/ripgrep`
       + ` ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`,
   );
 
@@ -404,14 +418,14 @@ test('客户端强杀后远端清理：workspace Core 秒级退出、daemon 30s 
 
 test('陈旧状态文件：daemon 被强杀后按「没有 daemon」重新引导', async () => {
   const fingerprint = localFingerprint();
-  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
   // 手工拉起 daemon 再 kill -9：留下指向死端口的状态文件
   const started = await sshExec(
     `${REMOTE_DEPLOY_DIR}/${fingerprint}/${CORE_BINARY_NAME} start --idle-exit 30 >/dev/null 2>&1; true`,
     60_000,
   );
   expect(started.code ?? 0, `手工 start 失败: ${started.stderr}`).toBe(0);
-  await sshExec('pkill -9 -f "start-daemo[n]" || true; sleep 1');
+  await sshExec('pkill -u "$(id -u)" -9 -f "start-daemo[n]" || true; sleep 1');
 
   const chatPage = await launchWithRemoteWorkspace();
   mockLlm!.setHandler((req) => {
@@ -794,7 +808,7 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
   const localDirB = await fs.promises.mkdtemp(pathMod.join(os.tmpdir(), 'e2e-ws-local-b-'));
   // 清场：杀残留 daemon / 删状态文件——上一轮用例的 daemon 可能还在空闲退出倒计时里，
   // 复用半死的 daemon 会让本轮建链挂起（对齐冷部署用例的清场做法）
-  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
   const fingerprint = localFingerprint();
   await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`);
   mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
@@ -833,13 +847,13 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
     .toBeGreaterThan(1);
 
   // 3) SIGSTOP 远端 daemon → Host 沉默判死（≤10s）→ 远程标签标红
-  await sshExec(`pkill -STOP -f 'start-daemo[n]' || true`);
+  await sshExec(`pkill -u "$(id -u)" -STOP -f 'start-daemo[n]' || true`);
   const titlebar0 = await app!.titlebarPage();
   const remoteTab0 = titlebar0.locator('#workspaceTabs [role="tab"]').filter({ hasText: 'tuxedo-e2e-ssh' });
   await expect(remoteTab0.locator('.ws-tab-dot')).toBeVisible({ timeout: 60_000 });
 
   // 4) SIGCONT 复活 daemon（避免 30s 空闲退出）；点红标签激活 → 占位页「重新连接」
-  await sshExec(`pkill -CONT -f 'start-daemo[n]' || true`);
+  await sshExec(`pkill -u "$(id -u)" -CONT -f 'start-daemo[n]' || true`);
   await remoteTab0.click();
   const placeholder = await app!.waitForPage('data:text/html', 60_000);
   await expect(placeholder.locator('#reconnectBtn')).toBeVisible({ timeout: 30_000 });

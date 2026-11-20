@@ -15,7 +15,7 @@ import { fakeHostInit, type FakeStorageCapabilities } from '../helpers/fakeHost'
  * 能力查询在 webview 挂载时只问一次（Core 的能力在生命周期内不变，webview 不重复问），
  * 因此每条用例用**注入期预置**给能力而不是在挂载后改 state——后者永远赶不上那一问。
  *
- * 运行：`<envPrefix>_E2E_MOUNT_PROXY=1 npm run test:e2e:webview -- overlayMountProxy`
+ * 运行：`npm run test:e2e:webview -- overlayMountProxy`
  */
 
 

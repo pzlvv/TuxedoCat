@@ -201,7 +201,30 @@ e2e/
     标识符从 `src/config/project.ts` 取、不写字面量（`remoteSshExecution.spec.ts` 的
     `CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`，`remoteChangeList.spec.ts` 的
     `afterAll` 同一套）。
-12. **链路抖动会以「产品错误态」的形式出现在界面里**：已知坑 10 那 3% 的瞬时失败若落在
+    清场与探测都按 **SSH 用户自己的 uid** 收口（`pkill -u "$(id -u)"` / `pgrep -u "$(id -u)"`）：
+    裸 `pgrep -af` 是全机口径，把远端当本机自测时会把开发机正在用的 Core 数成残留——
+    「Core 已退出」这类断言永远不满足。车道只对自己部署的进程负责（槽位与状态文件都在
+    `~/.<configDir>/` 下，属同一 uid）。
+    代理进程的归属只能按**父子链**判，不能数全机个数：每个隔离会话一个代理，Agent A 是
+    该会话 Core 的直接子进程、Agent B 是 A 的子进程（B 以 setuid root 运行，所以还要看
+    euid）。「代理是否全部退出」若写成全机计数，别的会话（同轮上一条用例的收尾、本机自测
+    时开发机自己的会话）会让断言永远不成立——`overlayMountProxyRemote.spec.ts` 的
+    AC-31 / AC-26 因此改为先记下本会话 Core 的 pid，再用 `sessionProxyGoneFor(corePid)`
+    沿 ppid 串后代判断。
+    清场不能靠固定 `sleep`：`pkill` 只负责发信号，SIGTERM 到进程真正退出之间还有 Core 的
+    收尾写盘，负载高时 1s 不够——留下半死的 daemon 正是这条坑的成因。用轮询等进程真的
+    消失（`pollRemote` / `waitForNoCore`，超时上限 15s）。
+13. **自己准备得了的前置不要用 `test.skip` 跳过**：`test.skip(!installed, ...)` 只适合
+    「远端缺少某种本文件装不出来的能力」。若前置本文件有办法建立（装代理、起 workspace、
+    删状态文件），就必须自己建——否则用例间产生顺序耦合：`overlayMountProxyRemote.spec.ts`
+    的 FR-010 故意卸载代理验证「能力消失」，排在它后面的 6 条用例全部因 `!installed` 跳过，
+    等于永不验证。正确做法是各自调 `ensureProxyInstalled()`（幂等）自备前置。
+14. **宿主侧产物不进远端日志**：审计行一类由**宿主**写的日志（`webviewMessageHandler.ts`
+    的 `this.log(auditLine(...))`）落在 `launchApp` 为该实例建的沙箱 HOME
+    （`<home>/<configDir>/logs/<logFileName>`），远端只有 Core 的日志。断言这类日志必须在
+    **同一次实例**内读：`launchApp` 默认每条用例一个新 HOME，装完就关的旧 HOME 随实例销毁。
+    要验证「安装动作写了审计行」，用例得自己走一次真实部署并在同一个 `homeDir` 里读。
+15. **链路抖动会以「产品错误态」的形式出现在界面里**：已知坑 10 那 3% 的瞬时失败若落在
     **被测代码**发起的那次 exec 上（不是用例脚手架），侧栏会进入既定的错误态「读取失败，
     点击重试」——这是产品应有的行为（不静默空列表，见
     [「全部变更」视图规格](../docs/archive/specs/041-sidebar-all-changes-view/spec.md) 的 FR-003），
@@ -210,12 +233,12 @@ e2e/
     红在 `keep.md` 不出现，单跑与复跑都绿）。等待助手因此替用户点掉 `[data-retry-doc]`
     的重试，并在判定「取数不得报错」时按日志把传输层失败与非传输层失败分开计数：只有后者
     算红。判据不因此放宽——持续报错的真失败仍然红。
-13. **点「重试」会真的重发一次远端取数，必须限次退避**：错误态的重试不是幂等的空操作，
+16. **点「重试」会真的重发一次远端取数，必须限次退避**：错误态的重试不是幂等的空操作，
     它重跑整条取数链路。按固定间隔轮询点击会自己造一场往返风暴——`remoteChangeList.spec.ts`
     的等待助手上一版每 250ms 点一次，链路持续抖动时 120 秒里点了 324 次（诊断日志
     `runBatch: 324`），既拖长用例又把后续用例的取数计数基线搅乱。现在最多重试 3 次、
     间隔 1s / 2s / 4s 指数退避，且只在错误态出现时点（加载中点没用，还会作废在途回包）。
-14. **启动阶段失败必须自己收尸，否则会自我放大**：`launchApp` 的 CDP 握手（3 次 × 60s）
+17. **启动阶段失败必须自己收尸，否则会自我放大**：`launchApp` 的 CDP 握手（3 次 × 60s）
     全超时时，`AppHandle` 还没返回、`close` 也不存在——早前没有任何人负责杀进程与清沙箱，
     实测留下过完整的 Electron 进程树（主进程 + GPU + 网络 + 两个渲染进程）与
     `tuxedo-e2e-home-*`。而垂死的 Electron 进程与下一个实例争 CPU 正是「时序敏感断言偶发
