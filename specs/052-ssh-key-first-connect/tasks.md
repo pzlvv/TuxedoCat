@@ -39,7 +39,7 @@
   失败分类 + 身份描述）与 `src/host/sshConnectChain.ts`（编排），单测为 `sshAuth.test.ts` /
   `sshConnectChain.test.ts`；spec 的追溯矩阵已同步为这两个文件名。
 - **口令浮层提交不走认证链**：用户已经给出答案时只试这一次口令，不再退回私钥 / agent——
-  这写进了 plan 的技术方案第 6 节，spec 的 AC-9 / AC-10 语义不变（成功进选目录、失败留在浮层）。
+  这写进了 [plan.md 的技术方案第 6 节](plan.md#6-两段式连接electronmaints)，spec 的 AC-9 / AC-10 语义不变（成功进选目录、失败留在浮层）。
 - **`sshHistoryEntry` 通道整体删除**：页面不再有任何「按去重键取含口令整条」的能力，
   `electron/remoteWorkspace/types.ts` 的 re-export 也一并收窄到 `SshHistoryCandidate`。
 - **未执行（本机无 node）**：`npm run compile` / `test:unit` / `build:remoteWorkspace` /

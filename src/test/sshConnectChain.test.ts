@@ -141,7 +141,7 @@ runTests('sshConnectChain', async () => {
 
   {
     const dir = sshDir([]);
-    const fx = recorder(() => new Error('All configured authentication methods failed'));
+    const fx = recorder(() => 'ok');
     const outcome = await runSshAuthChain({
       sshDir: dir, env: {}, savedPassword: 'saved-pw', attempt: fx.attempt, log,
     });

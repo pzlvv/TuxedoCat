@@ -13,7 +13,7 @@
 
 `src/host/workspaceRef.ts`：
 
-```ts
+```ts src=src/host/workspaceRef.ts
 export type WorkspaceAuth =
   | { kind: 'sshPassword'; password: string }
   | { kind: 'sshKey'; keyPath: string | null };   // null = ssh-agent
@@ -53,7 +53,7 @@ export type WorkspaceAuth =
 
 `src/host/sshConnectChain.ts`——**只编排，不连接**：
 
-```ts
+```ts src=src/host/sshConnectChain.ts
 export type SshAuthOutcome<R> =
   | { ok: true; auth: WorkspaceAuth; result: R }
   | { ok: false; reason: 'needPassword'; cause: string }
@@ -123,7 +123,7 @@ export async function runSshAuthChain<R>(options: {
 渲染进程据此分叉：`reason === 'needPassword'` 弹浮层，否则在表单上报红字。
 IPC 结果类型放进 `electron/remoteWorkspace/types.ts`（判别联合，成员全必选）：
 
-```ts
+```ts src=electron/remoteWorkspace/types.ts
 export type RemoteConnectResult =
   | { ok: true; listing: DirectoryListing; endpoint: { host: string; port: number; user: string | null } }
   | { ok: false; reason: 'needPassword'; error: string }
