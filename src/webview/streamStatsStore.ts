@@ -37,6 +37,15 @@ interface Entry {
   streamId: string;
   sessionId: string;
   firstTokenAt: number | null;
+  /**
+   * 最后一个 delta 的到达时刻。
+   *
+   * 为什么不用 `streamEnd` 的时刻作分母：思考块的结束由 Core 的「角色切换」合成
+   * ——首个正文 delta 到达时才发 `BlockStop`，所以 `BlockStop` 与最后一个 thinking
+   * token 之间隔着整段空档（网关排队、正文预填充）。用 token 到达跨度才等于真实
+   * 解码速率（见 specs/defects/stream-stats-decode-window-diluted.md）。
+   */
+  lastTokenAt: number | null;
   thinkingStartAt: number | null;
   chars: number;
   isStreaming: boolean;
@@ -66,8 +75,10 @@ function computeStats(entry: Entry): StreamStats | null {
     ? Math.max(0, entry.firstTokenAt - entry.thinkingStartAt)
     : null;
 
+  // 分母用「首 token → 末 token」的到达跨度，而不是到 streamEnd 的时长：
+  // 后者含思考块结束后的空档与正文预填充，会把速率算低。
   const decodeMs = entry.isStreaming
-    ? Math.max(1, Date.now() - (entry.firstTokenAt ?? Date.now()))
+    ? Math.max(1, (entry.lastTokenAt ?? entry.firstTokenAt ?? Date.now()) - (entry.firstTokenAt ?? Date.now()))
     : Math.max(1, entry.frozenDecodeMs ?? 1);
 
   return {
@@ -115,11 +126,22 @@ function stopTicker(): void {
   tickerId = null;
 }
 
-/** 冻结一个 entry 的 decode 耗时（流结束 / abort 时调用） */
+/**
+ * 冻结一个 entry 的 decode 耗时（流结束 / abort 时调用）。
+ *
+ * 幂等：只在**首次**冻结时落分母。Core 对同一个 thinking 块会发两条
+ * `streamEnd` —— `BlockStop`（思考块真正结束，不带 usage）与 `MessageDelta`
+ * （整轮结束，带 usage），两者 streamId 相同。第二条的职责只是把 usage 的
+ * token 数补齐，不能把分母顺延到整轮末尾，否则正文输出与思考/正文间的空档
+ * 会被算进 thinking 的分母（见 specs/defects/stream-stats-decode-window-diluted.md）。
+ */
 function freeze(entry: Entry): void {
+  if (entry.frozenDecodeMs !== null) return;
   entry.isStreaming = false;
-  entry.frozenDecodeMs = entry.firstTokenAt !== null
-    ? Math.max(1, Date.now() - entry.firstTokenAt)
+  const start = entry.firstTokenAt;
+  const end = entry.lastTokenAt;
+  entry.frozenDecodeMs = start !== null && end !== null
+    ? Math.max(1, end - start)
     : 1;
 }
 
@@ -142,6 +164,7 @@ export function beginThinkingStream(params: {
       streamId,
       sessionId,
       firstTokenAt,
+      lastTokenAt: firstTokenAt,
       thinkingStartAt: thinkingStartAt ?? null,
       chars: 0,
       isStreaming: true,
@@ -152,6 +175,7 @@ export function beginThinkingStream(params: {
   } else {
     entry.sessionId = sessionId;
     if (entry.firstTokenAt === null) entry.firstTokenAt = firstTokenAt;
+    if (entry.lastTokenAt === null) entry.lastTokenAt = firstTokenAt;
     if (entry.thinkingStartAt === null && thinkingStartAt != null) entry.thinkingStartAt = thinkingStartAt;
     entry.isStreaming = true;
     entry.frozenDecodeMs = null;
@@ -160,11 +184,17 @@ export function beginThinkingStream(params: {
   startTicker();
 }
 
-/** 累积文本更新：只更新字符数，由每秒 ticker 统一刷新（避免每个 delta 都重渲染） */
+/**
+ * 累积文本更新：更新字符数与末 token 到达时刻。
+ *
+ * 末 token 时刻是解码速率的分母终点——它必须是**最后一个 delta 到达**的时刻，
+ * 不能用 `streamEnd` 的时刻（中间隔着空档，见 `Entry.lastTokenAt` 的说明）。
+ */
 export function updateStreamChars(streamId: string, chars: number): void {
   const entry = entries.get(streamId);
   if (!entry) return;
   entry.chars = chars;
+  entry.lastTokenAt = Date.now();
 }
 
 /** 流结束：冻结 decode 耗时，并记录服务端返回的 token 数 */

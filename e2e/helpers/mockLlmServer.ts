@@ -36,6 +36,24 @@ export interface RecordedRequest {
 /** 一轮应答的脚本：text 终轮 / tool 工具轮 / tools 多工具轮 / slow 慢速流 / hang 不回响应头 */
 export type ScriptDecision =
   | { kind: 'text'; text: string; thinking?: string; delayMs?: number }
+  | {
+      kind: 'timed';
+      /**
+       * 定时脚本：thinking 与正文各按固定节奏产出，用来构造**已知速率**的场景。
+       *
+       * 为什么需要它：流式统计的 decode 速率只有在「每个 delta 携带固定 token 数、
+       * 间隔固定」时才可断言（`e2e/electron/streamStatsRate.spec.ts`）。
+       */
+      thinkingChunks: number;
+      /** 每个 thinking delta 的间隔（ms） */
+      thinkingDelayMs: number;
+      thinkingTokensPerChunk: number;
+      /** thinking 结束后到正文首帧的间隔（ms），模拟思考块与正文之间的空档 */
+      gapMs: number;
+      textChunks: number;
+      textDelayMs: number;
+      textTokensPerChunk: number;
+    }
   | { kind: 'tool'; name: string; args: Record<string, unknown>; preamble?: string; delayMs?: number }
   | { kind: 'tools'; calls: Array<{ name: string; args: Record<string, unknown> }>; preamble?: string; delayMs?: number }
   | { kind: 'slow'; text: string; chunkDelayMs: number }
@@ -171,6 +189,21 @@ export async function startMockLlm(options: {
     if (text.startsWith('慢速回答')) {
       return { kind: 'slow', text: '这是一段慢速流式输出，逐字到达，适合验证中止操作。'.repeat(3), chunkDelayMs: 700 };
     }
+    if (text.startsWith('固定速率')) {
+      // 已知速率场景：thinking 20 帧 × 5 token / 每帧 100ms → 思考段 50 tok/s；
+      // 之后空档 1s + 正文 10 帧 × 5 token / 每帧 50ms。
+      // 若分母错用整轮时长（~4.6s），速率会掉到 ~22 tok/s（缺陷症状）。
+      return {
+        kind: 'timed',
+        thinkingChunks: 20,
+        thinkingDelayMs: 100,
+        thinkingTokensPerChunk: 5,
+        gapMs: 1000,
+        textChunks: 10,
+        textDelayMs: 50,
+        textTokensPerChunk: 5,
+      };
+    }
     if (text.startsWith('无响应')) {
       // 静默挂住的网关：接受连接、读完请求后连响应头都不回
       return { kind: 'hang' };
@@ -233,13 +266,72 @@ export async function startMockLlm(options: {
       const write = (payload: unknown) => res.write(sseFrame(payload));
       write({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
 
-      const finish = (reason: string) => {
+      const finish = (reason: string, usageOverride?: { prompt_tokens: number; completion_tokens: number; reasoning_tokens?: number }) => {
         write({ choices: [{ index: 0, delta: {}, finish_reason: reason }] });
-        write({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } });
+        const completion = usageOverride?.completion_tokens ?? 20;
+        write({
+          choices: [],
+          usage: {
+            prompt_tokens: usageOverride?.prompt_tokens ?? 100,
+            completion_tokens: completion,
+            total_tokens: (usageOverride?.prompt_tokens ?? 100) + completion,
+            ...(usageOverride?.reasoning_tokens !== undefined
+              ? { completion_tokens_details: { reasoning_tokens: usageOverride.reasoning_tokens } }
+              : {}),
+          },
+        });
         res.write('data: [DONE]\n\n');
         res.end();
         recorded.finishedAt = Date.now();
       };
+
+      // 定时脚本：thinking / 正文各按固定间隔产出固定 token 数，
+      // 用于断言「思考速率不被正文与空档稀释」（e2e/electron/streamStatsRate.spec.ts）。
+      if (decision.kind === 'timed') {
+        const totalThinkingTokens = decision.thinkingChunks * decision.thinkingTokensPerChunk;
+        const totalTextTokens = decision.textChunks * decision.textTokensPerChunk;
+        // 每 chunk 的字符数按 4 字符 ≈ 1 token 反推，使 UI 的字符计数与 token 口径可对账
+        const thinkingPiece = 'x'.repeat(decision.thinkingTokensPerChunk * 4);
+        const textPiece = 'y'.repeat(decision.textTokensPerChunk * 4);
+        let thinkingSent = 0;
+        let textSent = 0;
+
+        const tickThinking = (): void => {
+          if (res.destroyed) {
+            res.end();
+            return;
+          }
+          if (thinkingSent >= decision.thinkingChunks) {
+            // thinking 结束 → 空档 → 正文
+            setTimeout(tickText, decision.gapMs);
+            return;
+          }
+          write({ choices: [{ index: 0, delta: { reasoning_content: thinkingPiece }, finish_reason: null }] });
+          thinkingSent += 1;
+          setTimeout(tickThinking, decision.thinkingDelayMs);
+        };
+
+        const tickText = (): void => {
+          if (res.destroyed) {
+            res.end();
+            return;
+          }
+          if (textSent >= decision.textChunks) {
+            finish('stop', {
+              prompt_tokens: 100,
+              completion_tokens: totalThinkingTokens + totalTextTokens,
+              reasoning_tokens: totalThinkingTokens,
+            });
+            return;
+          }
+          write({ choices: [{ index: 0, delta: { content: textPiece }, finish_reason: null }] });
+          textSent += 1;
+          setTimeout(tickText, decision.textDelayMs);
+        };
+
+        tickThinking();
+        return;
+      }
 
       if (decision.kind === 'text' || decision.kind === 'slow') {
         if (decision.kind === 'text' && decision.thinking) {
