@@ -57,7 +57,7 @@ status: 已修
 - 增长阶数实测：1MB → 354ms，8MB → 8376ms，比值 23.7x。体积 8 倍的线性预期是 8x，
   平方预期是 64x；实测落在两者之间（两种拷贝成本叠加），确认存在平方项。
 
-- 生产证据（本机 `~/.tuxedo-cat/logs/tuxedo-cat.log`，指向 `122.51.248.34` 上的远端工作区）：
+- 生产证据（宿主日志 `~/<configDir>/logs/<logFileName>`，指向 `122.51.248.34` 上的远端工作区）：
 
   ```
   11:20:25.693  loadConversation requested: session_1795152705008_xl9ulb6

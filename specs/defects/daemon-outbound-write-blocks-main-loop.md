@@ -22,7 +22,7 @@ status: 已修
 
 ## 现状
 
-- `SocketOutput::write_line`（`core-rs/src/remote.rs:269`）：
+- `SocketOutput::write_line`（`core-rs/src/remote.rs`）：
 
   ```rust
   impl FrameOutput for SocketOutput {
