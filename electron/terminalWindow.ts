@@ -79,7 +79,7 @@ export function applyTerminalShortcuts(nextTab: string, prevTab: string): void {
  * 打开（或聚焦）该工作区的终端窗口。
  *
  * 入口已按 `canOpenRemoteTerminal` 把关；endpoint / 凭证缺失在这里直接抛错
- * （不过度 fallback，架构铁律 4.1）。凭证种类不限：口令与私钥身份都可用（specs/052 FR-007）。
+ * （不过度 fallback，架构铁律 4.1）。凭证种类不限：口令与私钥身份都可用（specs/053 FR-007）。
  */
 export function openTerminalWindow(options: TerminalWindowOptions): void {
   const { ref } = options;

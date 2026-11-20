@@ -82,7 +82,7 @@ export function parseSerializedEndpoint(value: unknown): WorkspaceEndpoint | nul
 /**
  * 校验落盘的凭证；认不出的 `kind` 一律丢弃（不做「有就用」的降级）。
  *
- * 两种形态（specs/052 FR-008）：
+ * 两种形态（specs/053 FR-008）：
  * - `sshPassword`：必须带非空口令；
  * - `sshKey`：`keyPath` 必须**显式存在**——非空字符串是私钥文件路径，`null` 表示 ssh-agent；
  *   缺字段不是「走 agent」，按整项丢弃处理（不猜）。

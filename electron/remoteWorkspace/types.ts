@@ -20,7 +20,7 @@ export type { SshHistoryCandidate };
  *
  * `needPassword` 是认证链耗尽后的正常分支：私钥 / agent / 保存的口令都走不通，页面据此
  * 弹出**模态口令浮层**；`error` 是终止性失败（不可达 / 超时 / 主机密钥变更），页面直接在
- * 表单上报错、不弹浮层（specs/052 FR-004 / FR-009）。
+ * 表单上报错、不弹浮层（specs/053 FR-004 / FR-009）。
  *
  * 成功时带回远端主机（**不含任何凭证**，只用于标题展示）。
  */
@@ -44,7 +44,7 @@ export type RemoteConnectResult =
  *
  * 形状定义在 host 层（`src/host/remoteConnect.ts`）：主进程用同一份类型做校验，
  * 页面只负责收集输入，不自己解释格式。`password` 为 `null` 表示走认证链；
- * 非 `null` 表示用户刚在口令浮层里提交，只试这一条（specs/052 FR-002 / FR-004）。
+ * 非 `null` 表示用户刚在口令浮层里提交，只试这一条（specs/053 FR-002 / FR-004）。
  */
 export type { RemoteConnectRequest };
 
@@ -73,7 +73,7 @@ export interface RemoteWorkspaceAPI {
    * 经 SSH 连远端 daemon，成功即返回主目录列表。
    *
    * `request.password` 为 `null` 时走认证链（私钥 → agent → 保存的口令）；非 `null` 表示
-   * 用户刚在口令浮层里提交，只试这一条口令（specs/052 FR-002 / FR-004）。
+   * 用户刚在口令浮层里提交，只试这一条口令（specs/053 FR-002 / FR-004）。
    */
   connect(request: RemoteConnectRequest): Promise<RemoteConnectResult>;
   /**

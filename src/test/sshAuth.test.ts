@@ -1,5 +1,5 @@
 /**
- * 单测：SSH 认证来源推导与凭证身份（`src/host/sshAuth.ts`，specs/052 FR-002 / FR-003 / FR-007）。
+ * 单测：SSH 认证来源推导与凭证身份（`src/host/sshAuth.ts`，specs/053 FR-002 / FR-003 / FR-007）。
  *
  * 锁住四件事：
  * - `sshAuthChain` 的顺序是唯一口径：私钥（按 `DEFAULT_PRIVATE_KEY_NAMES`）→ agent → 保存的口令；

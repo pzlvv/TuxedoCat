@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 日期：2026-11-19
-- 规格：[specs/052-ssh-key-first-connect](../../specs/052-ssh-key-first-connect/spec.md)
+- 规格：[specs/053-ssh-key-first-connect](../../specs/053-ssh-key-first-connect/spec.md)
 
 ## 背景（Context）
 

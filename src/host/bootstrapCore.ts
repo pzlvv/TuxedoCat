@@ -351,7 +351,7 @@ function daemonOpenerFor(
 /**
  * 远程 daemon 注册表键：SSH 连接目标的唯一身份键（`sshTargetKey`——端口缺省归一、
  * 凭证身份参与）。换一个凭证必须换一条连接（否则「第一次输错口令，改对后重试」会复用
- * 旧连接、继续用错的凭证鉴权）；口令、私钥文件、agent 各算不同身份（specs/052），
+ * 旧连接、继续用错的凭证鉴权）；口令、私钥文件、agent 各算不同身份（specs/053），
  * 身份只以公开描述进键、不进日志。
  */
 function daemonRegistryKey(endpoint: WorkspaceEndpoint): string {

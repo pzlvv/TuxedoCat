@@ -7,7 +7,7 @@
  * （换凭证必须换连接），否则会出现「一处视为同一目标复用连接、另一处视为不同
  * 目标再建一条」的分叉。全仓的连接目标键一律走 `sshTargetFor` + `sshTargetKey`。
  *
- * 凭证有两种形态（specs/052）：口令与私钥身份。两者都参与身份键，且都只以公开描述
+ * 凭证有两种形态（specs/053）：口令与私钥身份。两者都参与身份键，且都只以公开描述
  * （哈希 / 固定串）进键——口令明文与私钥正文都不留在键字符串里。
  */
 
@@ -19,7 +19,7 @@ import type { WorkspaceAuth, WorkspaceEndpoint } from './workspaceRef.js';
  * 落盘凭证 → 本次建链要用的认证来源。
  *
  * 私钥正文不在这里读：这里只把「哪个文件 / 走 agent」翻成来源描述，读盘发生在建链那一刻
- * （`SshClient` 的 `authOptions`，specs/052 FR-007）。
+ * （`SshClient` 的 `authOptions`，specs/053 FR-007）。
  */
 export function authSourceFor(auth: WorkspaceAuth): SshAuthSource {
   if (auth.kind === 'sshPassword') return { kind: 'password', password: auth.password };

@@ -172,7 +172,7 @@ Moves files or directories between open workspaces, only after a cross-workspace
   兼容口径，`core-rs/src/main.rs` 的 `unwrap_or(false)`）。
 - 远程端非 `ssh` scheme 或没有可用凭证（`WorkspaceEndpoint.auth` 为 `null`）：
   拒绝执行并报错。凭证种类不限——口令与私钥身份（`sshKey`）都能建传输连接
-  （`authSourceFor` 翻成建链来源；specs/052 FR-007）。
+  （`authSourceFor` 翻成建链来源；specs/053 FR-007）。
 - 宿主结果文本含文件数、字节数、跳过符号链接数与两端身份。
 
 ## 5. 非目标

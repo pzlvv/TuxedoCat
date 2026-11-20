@@ -26,7 +26,7 @@ export interface SshTarget {
   /** SSH 端口（默认 22） */
   port: number;
   user: string;
-  /** 认证来源（口令 / 私钥文件 / ssh-agent），见 `../sshAuth.ts`（specs/052） */
+  /** 认证来源（口令 / 私钥文件 / ssh-agent），见 `../sshAuth.ts`（specs/053） */
   auth: SshAuthSource;
 }
 
@@ -168,7 +168,7 @@ export class SshClient {
     if (this.connected) return;
     if (this.client) throw new SshDisconnectedError('SSH client is connecting or closed.');
     const { host, port, user } = this.target;
-    // 认证材料只在「建链这一刻」准备：凭证对象里只有来源描述，私钥正文不常驻（specs/052 FR-007）
+    // 认证材料只在「建链这一刻」准备：凭证对象里只有来源描述，私钥正文不常驻（specs/053 FR-007）
     const authOptions = this.authOptions();
     const client = new Client();
     this.client = client;
@@ -220,7 +220,7 @@ export class SshClient {
   }
 
   /**
-   * 认证来源 → ssh2 的 connect 选项（`docs/core/core-remote.md` 第 2.8 节，specs/052）。
+   * 认证来源 → ssh2 的 connect 选项（`docs/core/core-remote.md` 第 2.8 节，specs/053）。
    *
    * 三种来源的准备失败都**直接抛错**，由认证链按 `classifySshFailure` 判为「认证不成立」
    * 并推进到下一个来源（FR-003）：这里不做「跳过」的决定——跳过属于认证链。

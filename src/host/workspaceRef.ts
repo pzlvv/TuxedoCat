@@ -20,7 +20,7 @@ import { normalizeWorkspacePath, sameWorkspace } from './workspacePaths.js';
  * 使用。`kind` 判别字段区分两种形态：
  * - `sshPassword`：口令本身，建链时直接用作 password 认证；
  * - `sshKey`：私钥**身份**描述。`keyPath` 是本机私钥文件路径，`null` 表示走 ssh-agent。
- *   形态里不含私钥正文、不含 passphrase——私钥只在建链那一刻从磁盘读（specs/052 FR-007）。
+ *   形态里不含私钥正文、不含 passphrase——私钥只在建链那一刻从磁盘读（specs/053 FR-007）。
  *
  * 判等与身份键口径见 `src/host/sshTarget.ts`；落盘与恢复见 `workspaceState.ts`。
  * 凭证不进总线载荷、不下发 Core。

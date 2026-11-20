@@ -113,7 +113,7 @@ runTests('workspaceState', () => {
     parseSerializedAuth({ kind: 'sshPassword', password: 'p', extra: 1 })?.kind === 'sshPassword',
   );
 
-  // ---------- 私钥身份凭证（specs/052 FR-008） ----------
+  // ---------- 私钥身份凭证（specs/053 FR-008） ----------
 
   const keyFile = parseSerializedAuth({ kind: 'sshKey', keyPath: '/home/pz/.ssh/id_ed25519' });
   check(

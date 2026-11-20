@@ -1,5 +1,5 @@
 /**
- * 单测：SSH 认证链编排（`src/host/sshConnectChain.ts`，specs/052 FR-002 / FR-009）。
+ * 单测：SSH 认证链编排（`src/host/sshConnectChain.ts`，specs/053 FR-002 / FR-009）。
  *
  * 用注入的 `attempt` 记录调用顺序，锁定五条语义：
  * - 首条成功即停止尝试，后续来源零调用；

@@ -3626,7 +3626,7 @@ function openRemoteWorkspaceDialog(): void {
 
   /**
    * 建链一次（含远端引导）：成功回目录列举，失败把异常抛给认证链分类
-   * （`docs/core/core-remote.md` 第 2.8 节，specs/052 FR-002 / FR-009）。
+   * （`docs/core/core-remote.md` 第 2.8 节，specs/053 FR-002 / FR-009）。
    */
   const tryConnect = async (
     base: WorkspaceEndpoint,
@@ -3769,7 +3769,7 @@ function openRemoteWorkspaceDialog(): void {
 
   // SSH 连接历史：候选只带 host / 端口 / 用户（展示与筛选不需要口令）。
   // 保存的口令由主进程在认证链里取用（`savedPasswordFor`），页面任何时刻都不持有它
-  // （specs/052 FR-006）。
+  // （specs/053 FR-006）。
   ipcMain.handle('remote-workspace:ssh-history', (event) => {
     if (!isSender(event.sender)) return [];
     return readSshHistory().map(toSshHistoryCandidate);
@@ -4774,7 +4774,7 @@ function rememberSshConnection(entry: SshHistoryEntry): void {
 }
 
 /**
- * 该目标在连接历史里的口令（认证链的「已保存口令」来源，specs/052 FR-002）。
+ * 该目标在连接历史里的口令（认证链的「已保存口令」来源，specs/053 FR-002）。
  *
  * 按 `sshHistoryKey` 的去重键取最新一条；没有就返回 `null`——「没有保存的口令」是认证链
  * 的一个正常状态，不是错误。口令仍只在主进程内使用，不下发页面（FR-006）。

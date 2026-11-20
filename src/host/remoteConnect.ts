@@ -4,7 +4,7 @@
  * 接入方式只有 SSH（`docs/core/core-remote.md` 第 2.8 节）：目标只开放 SSH 端口时，填 SSH 的
  * IP / 端口 / 用户，部署、启动与后续全部通信都走这条 SSH 连接。
  *
- * 口令**不是表单必填项**（specs/052 FR-001）：用哪种凭证由认证链（`sshAuth.ts`）在连接时
+ * 口令**不是表单必填项**（specs/053 FR-001）：用哪种凭证由认证链（`sshAuth.ts`）在连接时
  * 决定，本模块只校验「形状填全了」并把用户显式输入的口令原样带出。
  * 不依赖 electron：可在单测里直接使用。
  */
@@ -55,7 +55,7 @@ export function parseSshConnectionInput(raw: {
  * 远程工作区接入请求（`docs/core/core-remote.md` 第 2.8 节）：SSH 表单。
  *
  * `port` 原样带表单里的字符串，校验在本模块；`password` 只在用户经「口令浮层」显式提交时
- * 有值，表单「连接」恒传 `null`（specs/052 FR-001 / FR-004）。
+ * 有值，表单「连接」恒传 `null`（specs/053 FR-001 / FR-004）。
  */
 export interface RemoteConnectRequest {
   host: string;

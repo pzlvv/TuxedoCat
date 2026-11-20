@@ -4,7 +4,7 @@ import { openStaticPage } from '../helpers/webviewHarness';
 
 /**
  * 「打开远程工作区」接入面板：认证链与口令浮层（`electron/remoteWorkspace/`，
- * 规格 specs/052 / `docs/core/core-remote.md` 第 2.8 节）。
+ * 规格 specs/053 / `docs/core/core-remote.md` 第 2.8 节）。
  *
  * 这一步要连真实 SSH 才走得到，整应用 e2e（`e2e/electron/remoteWorkspace.spec.ts`）
  * 覆盖不到；这里按 webview-ui 同一手法直接伺服构建产物 `dist/remoteWorkspace/`，

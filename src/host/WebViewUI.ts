@@ -598,7 +598,7 @@ export class WebViewUI implements WebViewUiPort {
         return { error: `unsupported workspace scheme for transfer (${label}): ${ref.scheme}` };
       }
       const { host, port, user, auth } = ref.endpoint;
-      // 只看「有没有凭证」：口令与私钥身份都能建传输连接（specs/052 FR-007 / AC-18）
+      // 只看「有没有凭证」：口令与私钥身份都能建传输连接（specs/053 FR-007 / AC-18）
       if (user === null || auth === null) {
         return { error: `workspace credentials are unavailable (${label}): ${workspaceAgentId(ref, machineName)}` };
       }

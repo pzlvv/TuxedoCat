@@ -163,7 +163,7 @@ function main(): void {
    * 组装接入请求；形状校验在主进程（`buildRemoteEndpoint`）。
    *
    * `password` 为 `null` 表示走认证链（私钥 → agent → 保存的口令）——表单上的「连接」
-   * 恒走这条路径；只有口令浮层里的提交才带上用户刚输入的口令（specs/052 FR-002 / FR-004）。
+   * 恒走这条路径；只有口令浮层里的提交才带上用户刚输入的口令（specs/053 FR-002 / FR-004）。
    */
   function currentRequest(password: string | null): RemoteConnectRequest {
     return {
@@ -242,7 +242,7 @@ function main(): void {
       });
   }
 
-  // ---------- 口令浮层（specs/052 FR-004） ----------
+  // ---------- 口令浮层（specs/053 FR-004） ----------
 
   /**
    * 弹出模态口令浮层。
@@ -355,7 +355,7 @@ function main(): void {
       });
       row.append(text, remove);
       // 选定只回填 host / 端口 / 用户：口令不随候选下发，由主进程在认证链里取用
-      // （specs/052 FR-006 / AC-16）
+      // （specs/053 FR-006 / AC-16）
       row.addEventListener('click', () => {
         sshHostInput.value = entry.host;
         sshPortInput.value = String(entry.port);

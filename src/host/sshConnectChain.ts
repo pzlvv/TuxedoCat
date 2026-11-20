@@ -1,5 +1,5 @@
 /**
- * SSH 认证链的执行（`docs/core/core-remote.md` 第 2.8 节，specs/052 FR-002 / FR-009）。
+ * SSH 认证链的执行（`docs/core/core-remote.md` 第 2.8 节，specs/053 FR-002 / FR-009）。
  *
  * 纯编排：来源清单与失败分类来自 `sshAuth.ts`，真正建链由调用方注入的 `attempt` 完成。
  * 这样「先私钥、再 agent、再保存的口令、最后问用户」的顺序，以及「只有认证不成立才兜底」

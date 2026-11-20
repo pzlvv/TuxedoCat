@@ -306,7 +306,7 @@ runTests('terminalShells', async () => {
 
   check('canOpenRemoteTerminal：远程带口令凭证可用', canOpenRemoteTerminal(sshRef({ kind: 'sshPassword', password: 'pw' })));
   check(
-    'canOpenRemoteTerminal：私钥身份凭证同样可用（specs/052 FR-007）',
+    'canOpenRemoteTerminal：私钥身份凭证同样可用（specs/053 FR-007）',
     canOpenRemoteTerminal(sshRef({ kind: 'sshKey', keyPath: '/home/pz/.ssh/id_ed25519' })),
   );
   check(
