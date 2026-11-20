@@ -64,8 +64,8 @@
  * 22. **specs/ 改动规格结构**：`specs/<NNN>-<slug>/` 的 H1 前缀、必填章节、FR / AC / T
  *     编号与覆盖（tasks 覆盖全部 FR、追溯矩阵逐 FR 一行、AC 回指 FR 且为 GIVEN / WHEN /
  *     THEN 一行式）、plan 宪章检查四项义务、status 取值合法、`[待澄清]` 标记必须带去向
- *     链接且落定后清零（口径见 `specs/README.md`）；**三件套按 status 递进**（起草只要求
- *     spec.md，待评审加 plan.md，实施中 / 已收敛要求齐）；编号与 `docs/archive/specs/`
+ *     链接且落定后清零（口径见 `specs/README.md`）；**三件套按 status 递进**（起草 / 待评审
+ *     只要求 spec.md，实施中 / 已收敛要求三件套齐）；编号与 `docs/archive/specs/`
  *     已归档编号不复用。
  * 23. **主题规格 frontmatter**：`docs/` 全部规格（各级 README.md 地图除外）必须带 owner /
  *     last_reviewed（YYYY-MM-DD）——规格所有权与新鲜度的可执行下限；引用源码的时间
@@ -78,7 +78,7 @@
  *     存在性检查（组 9 / 13 / 15 / 19 经 `FUTURE_WORK_DOC` 分档放行）——追溯矩阵测试落点、
  *     验证记录的用例落点、行内代码路径 / 常量 / 标识符 / npm 脚本必须在代码里真实存在
  *     （起草 / 待评审 / 实施中，以及「待修」的缺陷仍豁免，描述尚未落地的改动）；
- *     /converge 在 status 改「已收敛」后、归档前跑 docsLint 验证。
+ *     /implement 在 status 改「已收敛」后、归档前跑 docsLint 验证。
  * 26. **specs/defects/ 缺陷规格**：`specs/defects/<slug>.md` 的文件名 slug 格式、H1 前缀、
  *     status 取值（待修 / 已修 / 已放弃）、五节齐全、RT 编号唯一、验证记录四列表与结果
  *     取值合法且含修复前的红与修复后的绿（口径见 `specs/README.md` 第 8 节）。
@@ -126,7 +126,7 @@ const SCAN_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.md', '.mjs', '.cjs', '.
  * 的路径、脚本、常量尚未存在是常态；落地后由 docs/ 的全量对照兜底。
  *
  * 分档例外（落点转为受检）：
- * - status「已收敛」的改动规格：已过 /converge 逐条核对，矩阵测试路径、标识符、脚本
+ * - status「已收敛」的改动规格：已过 /implement 的收敛核对，矩阵测试路径、标识符、脚本
  *   必须在代码里真实存在；
  * - status「已修」的缺陷规格：验证记录里的回归用例落点同理。
  * 起草 / 待评审 / 实施中，以及「待修」的缺陷仍豁免。
@@ -1576,10 +1576,11 @@ function main(): void {
           specProblems.push(`${specRel}: frontmatter status 非法「${status}」（起草 / 待评审 / 实施中 / 已收敛）`);
         }
         // 三件套按 status 递进（specs/README.md 第 5 节）：/spec 产出 spec.md 即停，
-        // /plan 加 plan.md，/tasks 加 tasks.md——起草与评审期间不该因为「还没写 tasks」而红。
+        // 评审闸门只卡 spec.md；plan.md 与 tasks.md 由 /implement 一次产出，因此「待评审」
+        // 不要求 plan.md（ADR-0020：spec 唯一评审面，plan / tasks 跟着一轮做完）。
         const REQUIRED_BY_STATUS: Record<string, string[]> = {
           '起草': [],
-          '待评审': ['plan.md'],
+          '待评审': [],
           '实施中': ['plan.md', 'tasks.md'],
           '已收敛': ['plan.md', 'tasks.md'],
         };
@@ -1621,7 +1622,7 @@ function main(): void {
         }
         for (const fr of frSet) {
           if (!acLines.some((m) => m[2] === fr)) specProblems.push(`${specRel}: ${fr} 无验收标准`);
-          // tasks 覆盖只在 tasks.md 已产出后强制（/spec 与 /plan 阶段还没有它）
+          // tasks 覆盖只在 tasks.md 已产出后强制（/spec 的出 spec 阶段还没有它）
           if (dirFiles.has('tasks.md') && !taskFrs.has(fr)) {
             specProblems.push(`specs/${name}/tasks.md: 未覆盖 ${fr}`);
           }

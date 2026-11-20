@@ -11,7 +11,8 @@ user-invocable: true
   不出现「变成」「现在是」「不再是」等描述修改过程的用语。
 - **`specs/`**：改动规格，描述尚未落地的意图与验收（AGENTS.md 第 0 节的显式例外）；
   目录约定、生命周期与闸门见 `specs/README.md`，模板在 `specs/_templates/`，
-  入口是 /spec /plan /tasks /implement /converge，每个产出即停等人评审。
+  入口是 /spec 与 /implement——spec 是唯一评审面，评审通过后 /implement 一次做完
+  plan → tasks → 实施 → 收敛归档。
 - 一次改动收敛后 delta 并入 `docs/`、spec 归档——`docs/` 里不出现「正在做的改动」。
 
 写作规则（全文见 AGENTS.md 第 0 节，要点）：

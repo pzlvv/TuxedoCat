@@ -15,8 +15,9 @@
   `specs/defects/<slug>.md` 描述缺陷的现状与期望，两者是「只写现状」的例外（目录约定、
   生命周期与闸门见 [specs/README.md](specs/README.md)）；实施完成后 delta 并入
   `docs/<topic>.md`，改动规格整目录归档进 `docs/archive/specs/`，缺陷规格常驻仓库不归档。
-  spec 内未决问题用 `[待澄清]` 标记（必须带去向链接），实施前清零；其存在性类对照（路径 /
-  常量 / 标识符 / npm 脚本）与 TODO.md 同口径豁免。
+  spec 内未决问题用 `[待澄清]` 标记（必须带去向链接），实施前清零；评审闸门只卡
+  `spec.md`，`plan.md` 与 `tasks.md` 随实施一轮产出（[ADR-0020](docs/adr/0020-spec-only-review-gate.md)）；
+  其存在性类对照（路径 / 常量 / 标识符 / npm 脚本）与 TODO.md 同口径豁免。
 - **章节引用对应**：文档侧跨文档章节引用一律写成相对链接 + 标题锚点（如
   `[第 9 节](docs/architecture/principles.md#9-同一字段的默认值只有一处)`），不写「某文件第 N 节」的文字形式；
   裸「第 N 节」只允许同文件自引用；区间引用（如「第 1–3 节」）两端都要落在本文件。锚点按
@@ -133,8 +134,9 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
 
   判不清取较高档；档位可升不可降（实施中发现越档即停、重新定档）。L0 允许新增文件——判据只看
   效果，不看文件数。merge 提交与纯文档提交不要求档位；`--no-verify` 仍能跳过一切，但那是例外
-  而不是出口。入口：L1 走 `/fix`，L3 走 `/spec` → `/plan` → `/tasks` → `/implement` →
-  `/converge`（每个 skill 产出即停等人评审），L2 就地改，L0 直接改。技能入库在
+  而不是出口。入口：L1 走 `/fix`，L3 走 `/spec` → `/implement`——`/spec` 产出 spec.md 即停
+  等人评审（唯一评审面），评审通过后 `/implement` 一轮做完 plan、tasks、实施与收敛归档，
+  中途不停；L2 就地改，L0 直接改。技能入库在
   `.agents/skills/`（跨工具共享目录，产品运行时也优先读它）；ZCode 会话的技能入口是
   `.zcode/skills`，它是**本机**指向 `.agents/skills` 的 junction，不入库——克隆后自行建一次
   （Windows `cmd /c mklink /J .zcode\skills .agents\skills`，POSIX `ln -s ../../.agents/skills

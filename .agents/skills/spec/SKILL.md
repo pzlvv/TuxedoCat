@@ -6,7 +6,10 @@ user-invocable: true
 ---
 
 产物：`specs/<NNN>-<slug>/spec.md`。只做这一件事，产出即停，等人评审；评审通过前不得
-进入 /plan。
+进入 /implement。
+
+本流程只有这一个评审闸门：spec 通过后由 /implement 一次性完成 plan → tasks → 实施 →
+收敛归档，中间不再停等人评审（口径见 [ADR-0020](../../../docs/adr/0020-spec-only-review-gate.md)）。
 
 步骤：
 
@@ -27,20 +30,22 @@ user-invocable: true
    之外，错误路径、竞态、中止、边界置灰是重点——FR / AC 逐条对照该清单：实现里有的
    行为必须有对应条目，也不写实现里没有的承诺。补记模式禁止双头表述（「若 plan 采用
    X 则…」）：现状已定，按实现写；待澄清只留真正未决的问题。
-4. 复制 `specs/_templates/spec.md` 到 `specs/<NNN>-<slug>/`，frontmatter 的 status 保持
-   「起草」。
+4. 复制 `specs/_templates/spec.md` 到 `specs/<NNN>-<slug>/`，frontmatter 的 status 从
+   「起草」开始填。
 5. 影响基线：逐条声明改动落在哪些 as-built 规格的哪些章节（只链接**已存在**的文档与
    锚点），标注新增 / 修改 / 删除；新增文档在落地前写行内代码、落地后改链接。
 6. 用户场景与验收标准：每条验收标准一行式 GIVEN / WHEN / THEN，写作
    `- **AC-n**（FR-nnn）：GIVEN … WHEN … THEN …`，回指功能需求条目；不写
    「支持 / 优化 / 合理 / 尽量」这类不可判定的词。
 7. 功能需求：`### FR-nnn：<标题>`（nnn 三位、不重复），只写「应该是什么样」，
-   不写实现方案（那是 /plan 的事）。
+   不写实现方案（那是 /implement 里 plan.md 的事）。
 8. 补齐边界与错误路径、非目标、对 docs/features/user-stories.md 的影响（新增 US 必须登记 e2e
    用例或按既有口径登记豁免；流程类改动写「无新增 US」+ 理由）。
 9. 未决问题写入「待澄清」节：`[待澄清]` 必须同行带去向链接（转 ADR / 转
    [docs/architecture/open-questions.md](../../../docs/architecture/open-questions.md) / 写成非目标）；实施前必须清零。
-10. 停：把 spec.md 交给用户评审，等明确反馈；提交信息写 `Flow: L3` + `Spec: <NNN>`。
+10. 停：把 status 改「待评审」，把 spec.md 交给用户评审，等明确反馈；评审意见回本步改
+    spec（次数不限），通过后由 /implement 一次做完 plan → tasks → 实施 → 收敛归档。
+    提交信息写 `Flow: L3` + `Spec: <NNN>`。
 
 规则出处：`specs/README.md`（工作流与守卫口径）、`AGENTS.md` 第 0 节（specs/ 例外与
 写作规则）、`AGENTS.md` 第 5 节（四档判据与闸门）。

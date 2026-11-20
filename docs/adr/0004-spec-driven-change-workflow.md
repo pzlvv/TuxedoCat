@@ -1,6 +1,6 @@
 # ADR-0004：SPEC 驱动开发的改动规格层（`specs/`）
 
-- 状态：已采纳
+- 状态：已采纳（评审节奏——「每个入口产出即停等人评审」——由 [ADR-0020](0020-spec-only-review-gate.md) 取代）
 - 日期：2026-10
 - 规格：`specs/README.md`（工作流约定）、`docs/README.md`（分类法与地图登记）
 
