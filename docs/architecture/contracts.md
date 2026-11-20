@@ -51,7 +51,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 24 个：`UIHost` 自身 19 个 + 继承 `WorkspaceProvider` 的 5 个）：
+成员清单（全部必选，共 25 个：`UIHost` 自身 20 个 + 继承 `WorkspaceProvider` 的 5 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -144,7 +144,7 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 与 `UIHost` 分开的理由：
 
 1. 独立面板 / 窗口，生命周期与消息协议都与对话 webview 无关；
-2. `UIHost` 已承载 19 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
+2. `UIHost` 已承载 20 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
 3. 拆出后 Spin 的整块（HTML 生成 + 导出 + 面板管理）可整体替换或搬走。
 
 接口只有两个成员：

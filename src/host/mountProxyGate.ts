@@ -42,20 +42,25 @@ export interface MountProxyGateState {
   installPath: string;
 }
 
-/** 被闸门拦下的那条消息（部署成功后原样重发，FR-008「用户不需要重发」） */
-export interface BlockedMessage {
-  sessionId: string;
-  content: string;
-}
+/**
+ * 被闸门拦下的**待续动作**：部署成功后原样继续（FR-008「用户不需要重发」）。
+ *
+ * 两种入口共用一个状态机，但成功后要做的事不同：发消息的入口重发那条消息，打开对话的
+ * 入口继续加载那个对话（specs/052 FR-002）。用判别联合而不是可选字段——`content` 与
+ * 「打开对话」互斥，可选字段会让两者同时成立、分派点无法穷尽（AGENTS.md 铁律 4.2）。
+ */
+export type BlockedAction =
+  | { kind: 'message'; sessionId: string; content: string }
+  | { kind: 'openConversation'; sessionId: string };
 
 /**
  * 闸门持有的一次部署会话。
  *
- * 生命周期与「一条被拦消息」绑定：取消或重发完成后整体清空，不跨消息复用。
+ * 生命周期与「一个待续动作」绑定：取消或继续完成后整体清空，不跨动作复用。
  */
 export class MountProxyGate {
   private phase: MountProxyGatePhase | null = null;
-  private blocked: BlockedMessage | null = null;
+  private blocked: BlockedAction | null = null;
   private manualCommandShown = false;
 
   constructor(
@@ -74,30 +79,30 @@ export class MountProxyGate {
     return this.phase;
   }
 
-  /** 被拦下的消息（部署成功后由调用方取出重发） */
-  takeBlocked(): BlockedMessage | null {
+  /** 被拦下的待续动作（部署成功后由调用方取出继续） */
+  takeBlocked(): BlockedAction | null {
     const blocked = this.blocked;
     this.blocked = null;
     return blocked;
   }
 
   /**
-   * 读被拦下的消息但**不清空**（取消时回填输入框用）。
+   * 读被拦下的待续动作但**不清空**（取消时回填输入框用）。
    *
    * 与 `takeBlocked` 分开：取消路径要先把内容送回界面、再让 `cancel()` 清状态，
    * 用 `takeBlocked` 会提前拿走、`cancel()` 里就什么都不剩了。
    */
-  peekBlocked(): BlockedMessage | null {
+  peekBlocked(): BlockedAction | null {
     return this.blocked;
   }
 
   /**
-   * 拦截一条消息并进入确认态（FR-003）。
+   * 拦下一个待续动作并进入确认态（FR-003）。
    *
    * 调用方已判定「能力不可用且 deployable」，因此这里不再接收能力参数——判据只有一处
    * （`WebviewMessageHandler` 读 Core 事实的地方），不在这里重算。
    */
-  block(blocked: BlockedMessage): void {
+  block(blocked: BlockedAction): void {
     this.blocked = blocked;
     this.manualCommandShown = false;
     this.phase = 'confirm';
@@ -137,7 +142,7 @@ export class MountProxyGate {
     this.emitState({ failure });
   }
 
-  /** 部署成功（FR-008）：状态推 `done`，被拦消息由调用方 `takeBlocked()` 取走重发 */
+  /** 部署成功（FR-008）：状态推 `done`，待续动作由调用方 `takeBlocked()` 取走继续 */
   succeed(): void {
     this.phase = 'done';
     this.emitState({});

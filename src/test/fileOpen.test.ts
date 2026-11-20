@@ -13,6 +13,7 @@ import {
   type RemoteFileReader,
 } from '../../electron/fileOpen';
 import { getMarkdownPreviewBodyHtml } from '../host/markdownHtml';
+import { resolveOverlayOpenTarget, workViewRelForOpen } from '../host/overlayOpenResolve';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
@@ -173,7 +174,7 @@ runTests('fileOpen + markdown 预览', async () => {
     await openOverlayWorkspaceFile(
       recordingBridge(mdCalls),
       overlayReader({ ok: true, kind: 'git', before: 'a\nb\n', after: 'a\nB\n' }),
-      overlayRoot, 'doc.md', 'changes',
+      overlayRoot, 'doc.md', 'changes', null,
     );
     check('Overlay md → Markdown 预览出口', mdCalls.length === 1 && mdCalls[0].method === 'markdown');
     check('Overlay md 内容来自 Core 而非磁盘',
@@ -191,7 +192,7 @@ runTests('fileOpen + markdown 预览', async () => {
     await openOverlayWorkspaceFile(
       recordingBridge(txtCalls),
       overlayReader({ ok: true, kind: 'git', before: null, after: 'brand new\n' }),
-      overlayRoot, 'note.txt', 'changes',
+      overlayRoot, 'note.txt', 'changes', null,
     );
     check('Overlay 文本 → 文本查看器出口', txtCalls.length === 1 && txtCalls[0].method === 'text');
     check('Overlay 新增文件初始落全文（没有可对比的旧版本）',
@@ -205,7 +206,7 @@ runTests('fileOpen + markdown 预览', async () => {
     await openOverlayWorkspaceFile(
       recordingBridge(nonGitCalls),
       overlayReader({ ok: true, kind: 'not-a-git-workspace', after: 'plain\n' }),
-      overlayRoot, 'note.txt', 'changes',
+      overlayRoot, 'note.txt', 'changes', null,
     );
     check('Overlay 非 git 工作区落全文',
       (nonGitCalls[0]?.init as { initialView: string }).initialView === 'full');
@@ -218,7 +219,7 @@ runTests('fileOpen + markdown 预览', async () => {
       await openOverlayWorkspaceFile(
         recordingBridge([]),
         { sessionId: 'sess-overlay', readDiff: async () => ({ ok: false as const, error: '视图未建立' }) },
-        overlayRoot, 'note.txt', 'tree',
+        overlayRoot, 'note.txt', 'tree', null,
       );
     } catch (err) {
       failed = err instanceof Error ? err.message : String(err);
@@ -231,7 +232,7 @@ runTests('fileOpen + markdown 预览', async () => {
     for (const name of ['logo.png', 'a.zip']) {
       let rejected = '';
       try {
-        await openOverlayWorkspaceFile(recordingBridge([]), okReader, overlayRoot, name, 'tree');
+        await openOverlayWorkspaceFile(recordingBridge([]), okReader, overlayRoot, name, 'tree', null);
       } catch (err) {
         rejected = err instanceof Error ? err.message : String(err);
       }
@@ -241,7 +242,7 @@ runTests('fileOpen + markdown 预览', async () => {
     // 越界路径与本地同一份校验
     let escaped = '';
     try {
-      await openOverlayWorkspaceFile(recordingBridge([]), okReader, overlayRoot, '../etc/passwd', 'tree');
+      await openOverlayWorkspaceFile(recordingBridge([]), okReader, overlayRoot, '../etc/passwd', 'tree', null);
     } catch (err) {
       escaped = err instanceof Error ? err.message : String(err);
     }
@@ -313,6 +314,81 @@ runTests('fileOpen + markdown 预览', async () => {
   check('内联原生 HTML 被转义', html.includes('&lt;b&gt;raw&lt;/b&gt;'));
   check('javascript: 链接降级为纯文本', !html.includes('href="javascript:'));
   check('https 链接带 noopener 新窗口', html.includes('href="https://example.com/a"') && html.includes('rel="noopener noreferrer"'));
+
+  // ── 工具卡片链接 → 视图相对路径（specs/defects/overlay-edit-and-card-links-read-real-disk.md）──
+  // 卡片的 `file_path` 是真实工作区绝对路径；Overlay 视图的取数请求只认 '/' 分隔的相对
+  // 路径（`UiRequest.workViewFileDiffRequested`），因此打开前要做一次根内解析。
+  // 远程工作区根是 POSIX 串，必须按 posix 语义解析（Windows 上 `path.relative` 会把
+  // `/home/pz` 当成盘符相对路径）。
+  check(
+    '远程根内绝对路径 → 视图相对路径',
+    workViewRelForOpen('/home/pz/ws', '/home/pz/ws/sub/sum.py', { posix: true }) === 'sub/sum.py',
+  );
+  // 本地工作区根按**宿主平台**语义解析（`path`）：Windows 上 `D:\…` 是绝对路径，
+  // Linux / macOS 上是 POSIX。因此这里用 `path.join` 按当前平台造路径——写死
+  // `D:\work\demo` 会让 Linux CI 把反斜杠当普通字符（本地通过、CI 红）。
+  const localRoot = path.join(path.sep === '/' ? '/work/demo' : 'D:\\work\\demo');
+  const localFile = path.join(localRoot, 'src', 'main.ts');
+  check(
+    '本地根内绝对路径 → 视图相对路径',
+    workViewRelForOpen(localRoot, localFile) === 'src/main.ts',
+  );
+  check(
+    '根自身不算可打开的文件',
+    workViewRelForOpen('/home/pz/ws', '/home/pz/ws', { posix: true }) === null,
+  );
+  check(
+    '越界路径不给相对路径',
+    workViewRelForOpen('/home/pz/ws', '/home/pz/ws/../etc/passwd', { posix: true }) === null,
+  );
+  check(
+    '另一个根的绝对路径不给相对路径',
+    workViewRelForOpen('/home/pz/ws', '/home/pz/other/a.py', { posix: true }) === null,
+  );
+  check(
+    '相对路径不判为视图内文件',
+    workViewRelForOpen('/home/pz/ws', 'sum.py', { posix: true }) === null,
+  );
+
+  // 归属判定：只有「正式会话 id + isolated + 根内路径」三条同时成立才走视图取数。
+  // 任一不成立都必须回 null——那是「维持既有本地 / SFTP 语义」的判据，判错会让普通
+  // 会话的链接去问 Core 要视图（必然失败），或让 Overlay 会话的链接继续读磁盘。
+  const overlayBase = {
+    sessionId: 'session_1',
+    storage: 'isolated' as const,
+    workspaceRoot: '/home/pz/ws',
+    remote: true,
+    filePath: '/home/pz/ws/sum.py',
+  };
+  const overlayHit = resolveOverlayOpenTarget(overlayBase);
+  check(
+    'Overlay 会话 + 根内路径 → 走视图取数',
+    overlayHit !== null && overlayHit.sessionId === 'session_1' && overlayHit.rel === 'sum.py',
+  );
+  check(
+    'Overlay 会话的根也在结果里（视图已 bind 到真实路径）',
+    overlayHit?.root === '/home/pz/ws',
+  );
+  check(
+    'workspace 归属不走视图（维持磁盘语义）',
+    resolveOverlayOpenTarget({ ...overlayBase, storage: 'workspace' }) === null,
+  );
+  check(
+    '根外路径不走视图（交给既有本地 / SFTP 语义）',
+    resolveOverlayOpenTarget({ ...overlayBase, filePath: '/etc/hosts' }) === null,
+  );
+  check(
+    'new- 临时视图 key 不走视图（还没有会话与 meta）',
+    resolveOverlayOpenTarget({ ...overlayBase, sessionId: 'new-1730000000' }) === null,
+  );
+  check(
+    '没有来源视图（sessionId 为 null）不走视图',
+    resolveOverlayOpenTarget({ ...overlayBase, sessionId: null }) === null,
+  );
+  check(
+    '查不到工作区根时不走视图',
+    resolveOverlayOpenTarget({ ...overlayBase, workspaceRoot: null }) === null,
+  );
 
   finish();
 });

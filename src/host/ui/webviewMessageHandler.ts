@@ -62,7 +62,7 @@ import {
   resolveModelRef,
 } from '../settingsRead.js';
 // 挂载代理部署（specs/051 FR-003 / FR-004）：编排与闸门都在 host 侧，webview 只渲染状态
-import { MountProxyGate } from '../mountProxyGate.js';
+import { MountProxyGate, type BlockedAction } from '../mountProxyGate.js';
 import { auditLine, beginDeploy, deployWithCredential, type MountProxyTarget } from '../mountProxyInstall.js';
 import { CORE_MOUNT_PROXY_DIR, CORE_MOUNT_PROXY_NAME } from '../../config/project.js';
 
@@ -568,6 +568,7 @@ export class WebviewMessageHandler {
     if (storage !== 'isolated') return false;
     if (capabilities.isolatedWorkView) return false;
     if (!capabilities.deployable) {
+      // 两个入口（发消息 / 打开对话）共用这条判据，措辞保持中性不点名入口
       throw new Error(
         `会话 ${sessionId} 是 isolated 归属，但 Core 报「不可用且不可部署」（${capabilities.reason}）：` +
           '这是接线错误——入口不应渲染（specs/051 FR-002）',
@@ -594,7 +595,7 @@ export class WebviewMessageHandler {
     }
     this.mountProxyTarget = target;
     const gate = this.ensureMountProxyGate(target.host);
-    gate.block({ sessionId, content });
+    gate.block({ kind: 'message', sessionId, content });
     this.log(`[WebviewMessageHandler] 消息被部署闸门拦下（session=${sessionId}, host=${target.host ?? 'localhost'}）`);
   }
 
@@ -680,17 +681,7 @@ export class WebviewMessageHandler {
         return;
       }
       gate.succeed();
-      const blocked = gate.takeBlocked();
-      if (blocked) {
-        // 重发被拦消息（用户不需要重发，FR-008）；走同一条上行链路
-        await this.handleUserMessage({
-          type: 'sendMessage',
-          sessionId: blocked.sessionId,
-          content: blocked.content,
-          // 被拦下的消息必然来自 Overlay 会话（闸门判据），重发时归属不变
-          storage: 'isolated',
-        });
-      }
+      await this.continueBlockedAction(gate.takeBlocked());
       return;
     }
     if (outcome.kind === 'needsCredential') {
@@ -698,6 +689,28 @@ export class WebviewMessageHandler {
       return;
     }
     gate.fail(outcome.failure);
+  }
+
+  /**
+   * 部署成功后继续被拦下的动作（FR-008「用户不需要重发」）。
+   *
+   * 两个入口（发消息 / 打开对话）共用这一处：成功后要做什么由 `kind` 决定，两条部署通道
+   * （免密与凭据、手动命令轮询）都走到这里。分开实现会让两条通道的行为各自漂移。
+   */
+  private async continueBlockedAction(action: BlockedAction | null): Promise<void> {
+    if (!action) return;
+    if (action.kind === 'message') {
+      // 走同一条上行链路重发；被拦下的消息必然来自 Overlay 会话（闸门判据），归属不变
+      await this.handleUserMessage({
+        type: 'sendMessage',
+        sessionId: action.sessionId,
+        content: action.content,
+        storage: 'isolated',
+      });
+      return;
+    }
+    // 打开对话：继续走原加载流程。此时闸门会重查能力，必然已就绪（FR-002）
+    await this.handleLoadConversation({ type: 'loadConversation', sessionId: action.sessionId });
   }
 
   /**
@@ -726,16 +739,7 @@ export class WebviewMessageHandler {
           return;
         }
         gate.succeed();
-        const blocked = gate.takeBlocked();
-        if (blocked) {
-          await this.handleUserMessage({
-            type: 'sendMessage',
-            sessionId: blocked.sessionId,
-            content: blocked.content,
-            // 被拦下的消息必然来自 Overlay 会话（闸门判据），重发时归属不变
-            storage: 'isolated',
-          });
-        }
+        await this.continueBlockedAction(gate.takeBlocked());
         return;
       }
       // 每 2 秒看一眼；用户在别的终端里跑命令，宿主没有完成事件可订阅
@@ -744,7 +748,50 @@ export class WebviewMessageHandler {
     void poll();
   }
 
-  /** 用户取消部署（FR-003：窗口关闭、会话保持空状态、消息留在输入框） */
+  /**
+   * 打开已有对话是否要先过部署闸门（specs/052 FR-001）。
+   *
+   * 与 `shouldBlockForMountProxy` 同一组判据（`isolated` + 不可用 + 可部署），只是归属来源
+   * 不同：`sendMessage` 自带 `storage`，打开对话读宿主的 Core 投影。判据表达式仍只有
+   * `shouldBlockForMountProxy` 一处——这里只补「非 Overlay 不查能力」这一层收窄。
+   */
+  private async shouldBlockOpenConversation(sessionId: string): Promise<boolean> {
+    const storage = this.host.sessionStorageOf(sessionId);
+    // 非 Overlay 对话不查能力：既省一次往返，也保证普通对话的打开路径与改动前一致
+    if (storage !== 'isolated') return false;
+    return this.shouldBlockForMountProxy(sessionId, storage);
+  }
+
+  /**
+   * 拦下「打开对话」并进入部署确认（specs/052 FR-001 / FR-002）。
+   *
+   * 目标在拦截时就解析：确认框要显示主机名，中途重新解析会出现「确认框显示 A 机、实际
+   * 装到 B 机」（与既有入口同一理由）。
+   */
+  private async blockOpenConversation(sessionId: string): Promise<void> {
+    const target = await this.host.resolveMountProxyTarget(sessionId);
+    if (!target) {
+      // Core 说可部署、宿主却给不出目标：接线不一致，直接报错不静默降级（铁律 1）
+      throw new Error(
+        `会话 ${sessionId} 是 Overlay 对话且需要部署挂载代理，但宿主解析不出部署目标`
+          + '（远端连接不可用，或会话工作区既非本地 Linux 也非 SSH）',
+      );
+    }
+    this.mountProxyTarget = target;
+    const gate = this.ensureMountProxyGate(target.host);
+    gate.block({ kind: 'openConversation', sessionId });
+    this.log(
+      `[WebviewMessageHandler] 打开对话被部署闸门拦下（session=${sessionId}, `
+        + `host=${target.host ?? 'localhost'}）`,
+    );
+  }
+
+  /**
+   * 用户取消部署（FR-003：窗口关闭、会话保持空状态、消息留在输入框）。
+   *
+   * 「打开对话」入口没有输入框内容可回填，因此回填只对 `kind: 'message'` 发：两种入口
+   * 都不打开对话，界面停在原位置（specs/052 FR-003「失败的打开动作无副作用」）。
+   */
   private async handleMountProxyCancel(): Promise<void> {
     const gate = this.mountProxyGate;
     if (!gate) return;
@@ -752,7 +799,7 @@ export class WebviewMessageHandler {
     const blocked = gate.peekBlocked();
     gate.cancel();
     this.mountProxyGate = null;
-    if (blocked) {
+    if (blocked && blocked.kind === 'message') {
       this.host.broadcastToWebviews({
         type: 'userMessageDraftRestored',
         sessionId: blocked.sessionId,
@@ -1065,6 +1112,14 @@ export class WebviewMessageHandler {
     this.log(`[WebviewMessageHandler] loadConversation requested: ${message.sessionId}`);
     // 打开对话：刷新该会话的空闲关闭计时（空闲回收只在 VS Code 生效）
     this.uiPort?.noteSessionActivity(message.sessionId);
+
+    // 第二个部署入口（specs/052 FR-001）：Overlay 对话的内容在挂载命名空间里，代理未部署
+    // 时打开它只能得到空视图。闸门必须在**读盘与切会话之前**判：放弃打开时没有任何副作用，
+    // 界面停在原位置（FR-003）。判据与「发第一条消息」入口共用同一份实现。
+    if (await this.shouldBlockOpenConversation(message.sessionId)) {
+      await this.blockOpenConversation(message.sessionId);
+      return;
+    }
 
     // 并发切换会话竞态防护：用户快速连点两个对话时，两个 handler 会交错执行
     // （后发的 loadConversation 可能先完成）。这里登记本次加载的序号，

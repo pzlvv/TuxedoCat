@@ -599,17 +599,6 @@ export type UiEvent =
       sessionId: string;
       storage: 'workspace' | 'isolated';
     }
-  /**
-   * 把一条**存量**隔离会话转成真实工作区归属（specs/051 FR-011）。
-   *
-   * 只有能力不可用时的存量 `isolated` 会话需要它：视图建立不起来，那个对话会变成
-   * 「只能看不能动」。转换是**用户显式触发**的动作，不是自动降级——因此这条事件存在
-   * 的意义就是「用户决定把改动落到真实磁盘」。
-   *
-   * 与 `storageChanged` 的分工：后者只服务「新建对话还没有消息」这个窗口，本事件服务
-   * 「已经有消息落盘、归属已固定」的存量会话，两者的前置校验因此不同。
-   */
-  | { type: 'conversationStorageConverted'; sessionId: string }
   | { type: 'conversationOpened'; sessionId: string }
   /**
    * 会话被关闭：释放该会话的运行时内存，磁盘数据不动。

@@ -102,6 +102,15 @@ export interface ConversationMetadata {
    * 会话恒为 0——在线完成不经过该路径，重启后不翻旧账）。宿主只读，不写 meta.json。
    */
   unreadCompletions?: number;
+  /**
+   * 文件存储归属（specs/045 FR-001，`docs/core/conversation-work-view.md` 第 2 节）：
+   * `workspace` = 工具与 Bash 直接操作真实工作区；`isolated` = 改动只落本对话私有的
+   * 叠加视图。Core 是唯一写入点，宿主只读；缺失即 `workspace`（存量会话口径）。
+   *
+   * 宿主用它决定「这个会话的文件事实在哪」（工具卡片链接读视图还是读磁盘）——
+   * `specs/defects/overlay-edit-and-card-links-read-real-disk.md`。
+   */
+  storage?: 'workspace' | 'isolated';
 }
 
 /**

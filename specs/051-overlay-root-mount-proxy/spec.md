@@ -111,7 +111,6 @@ Core 执行；Core 进程自身不 `exec`、不 `unshare`、不进入任何命�
 - 场景 8：fail-closed
   - **AC-31**（FR-010）：GIVEN 会话归属 `isolated` 但视图不可用 WHEN 调用 Read / Write / Edit / Grep / Glob THEN 返回明确错误，**不退回真实磁盘读写**
   - **AC-32**（FR-010）：GIVEN 能力不可用 WHEN 宿主尝试以 `storage: isolated` 建会话 THEN Core 拒绝该归属并回推事实，不在 `meta.json` 里留下永久的 isolated
-  - **AC-33**（FR-011）：GIVEN 存量 `isolated` 会话在能力不可用时打开 WHEN 用户选择「转为真实工作区」 THEN 该会话的后续工具读写真实磁盘，界面不再标注 Overlay，且转换由用户显式触发
 - 场景 9：远端、卸载与审计
   - **AC-34**（FR-009）：GIVEN SSH 远端 Linux 工作区且远端未部署代理 WHEN 用户在 Overlay 对话里发第一条消息 THEN 宿主经 SSH 上传代理并用远端提权装到同一位点，流程与本地一致
   - **AC-35**（FR-009）：GIVEN 远端 `/usr/libexec` 只读或不存在、远端 `sudo` 配置了 `requiretty`、或远端为共享机器 WHEN 部署 THEN 失败原因点名该项并可行动，不静默换落点、不改用其它提权工具
@@ -432,16 +431,8 @@ SSH 远端 Linux 工作区走同一套逻辑：宿主把代理随 Core 一起上
 - 能力不可用时 Core **拒绝以 `storage: isolated` 建会话**：不把该归属写进 `meta.json`（否则
   这个会话永久是 isolated 且每次工具调用都失败），并回推事实给宿主。
 - 已在 Overlay 归属的会话期间代理失效：Core 重启后新视图无法建立 → 工具返回明确错误，改动
-  **不落真实磁盘**；不把会话自动改成 `workspace` 归属（改动归属由 FR-011 的用户显式动作完成）。
-
-### FR-011：存量隔离会话的显式出路
-
-能力不可用时，存量的 `isolated` 会话不能变成「只能看不能动」。提供一个**用户显式触发**的动作
-「把该对话转为真实工作区」（`UiEvent`，登记进
-[docs/architecture/events.md 第 2.3 节](../../docs/architecture/events.md#23-uieventui--core单向)）：
-转换
-后该会话的后续工具读写真实磁盘，界面不再标注 Overlay。这是用户决定，不是自动降级，因此不破
-「不过度 fallback」；不做自动转换。
+  **不落真实磁盘**；归属不变、不自动改成 `workspace`——`isolated` 对话只在能力可用时打开，
+  代理不可用即打不开（打开时的部署闸门），不产生「打开了却只能看不能动」的形态。
 
 ### FR-012：卸载路径与安装审计
 
@@ -535,7 +526,6 @@ Linux 机器），按既有口径登记豁免：特权集成断言用仓库既�
 | FR-008 | 宿主侧「装完 → 重查能力 → 重发被拦消息」（**不再重启 Core**，`mountProxyGate.finish()` 删除 `restartCore`） | `src/test/mountProxyGate.test.ts`（假 Core 能力桩） | 自动 |
 | FR-009 | 上传走管道、远端安装与远端边界表 | `src/test/sshDaemonBootstrap.test.ts`（假 SSH） | 无自动覆盖 + 真实远端安装需可提权的 SSH 机器，按既有口径由 `npm run test:e2e:ssh` 手工执行 |
 | FR-010 | `ToolContext` 三态 + 路径解析错误 + 拒绝落盘 isolated | `core-rs` 工具错误路径单测 + `main_tests` 的拒绝落盘用例 | 自动 |
-| FR-011 | 会话存储转换 `UiEvent` 与宿主翻译 | `core-rs` 转换语义单测 | 自动 |
 | FR-012 | 卸载命令文档与安装审计日志行 | `src/test/mountProxyInstall.test.ts`（审计行形状）+ 文档里的卸载命令可执行性人工核对 | 自动 |
 
 ## 待澄清

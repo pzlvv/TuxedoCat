@@ -218,6 +218,8 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     updateSettingsJson: async () => undefined,
     // 挂载代理部署（specs/051）：测试宿主默认解析不出目标，用例要测就经 overrides 注入
     resolveMountProxyTarget: async () => null,
+    // 默认按存量普通会话处理（缺失即 workspace，specs/052 FR-001）
+    sessionStorageOf: () => 'workspace',
   };
 
   const host = Object.assign(base, overrides, { sent, broadcast });

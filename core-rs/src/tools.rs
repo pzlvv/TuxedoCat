@@ -345,6 +345,74 @@ impl WorkViewState {
     pub fn workspace() -> Self {
         WorkViewState::Workspace
     }
+
+    /// 把真实路径换成实际读写路径（specs/051：视图已 bind 到真实路径，因此这里是
+    /// 恒等；它仍校验路径落在工作区内）。
+    ///
+    /// 越界 / 视图不可用都返回错误而不是退回真实路径：静默降级会让隔离对话读到视图
+    /// 之外的东西，而调用方毫不知情（`docs/architecture/principles.md` 铁律 4.1）。
+    pub fn io_path(&self, real: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        match self {
+            WorkViewState::Workspace => Ok(real.to_path_buf()),
+            WorkViewState::View(handle) => handle.map_into_view(real),
+            WorkViewState::ViewUnavailable(reason) => Err(format!(
+                "该对话的 Overlay 视图不可用：{reason}；改动不落真实磁盘，请先修好挂载代理"
+            )),
+        }
+    }
+
+    /// 该对话的代理（隔离会话且有视图时）；其余情形 `None`。
+    pub fn proxy(&self) -> Option<&std::sync::Arc<crate::mount_proxy::SessionProxy>> {
+        match self {
+            WorkViewState::View(handle) => Some(handle.proxy()),
+            _ => None,
+        }
+    }
+
+    /// 路径的事实（存在 / 类型 / 大小）：隔离会话经代理，其余走 `std::fs`。
+    ///
+    /// **`std::fs` 分支只服务非隔离会话**：Core 不在挂载命名空间里，它自己
+    /// `open()` / `symlink_metadata()` 看到的永远是真实磁盘
+    /// （`docs/core/conversation-work-view.md` 第 5 节）。凡是要回答「这个会话看到的
+    /// 文件是什么」，都必须经这里——权限层也不例外
+    /// （`specs/defects/overlay-edit-and-card-links-read-real-disk.md`）。
+    pub fn stat_path(
+        &self,
+        real: &std::path::Path,
+    ) -> Result<crate::mount_proxy::PathFacts, String> {
+        let io_path = self.io_path(real)?;
+        match self.proxy() {
+            Some(proxy) => proxy.stat(&io_path),
+            None => match std::fs::symlink_metadata(&io_path) {
+                Ok(meta) => Ok(crate::mount_proxy::PathFacts {
+                    exists: true,
+                    is_file: meta.file_type().is_file(),
+                    is_dir: meta.file_type().is_dir(),
+                    is_symlink: meta.file_type().is_symlink(),
+                    size: meta.len(),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(crate::mount_proxy::PathFacts {
+                        exists: false,
+                        is_file: false,
+                        is_dir: false,
+                        is_symlink: false,
+                        size: 0,
+                    })
+                }
+                Err(error) => Err(error.to_string()),
+            },
+        }
+    }
+
+    /// 读一个文件：隔离会话经代理，其余走 `std::fs`。
+    pub fn read_bytes(&self, real: &std::path::Path) -> Result<Vec<u8>, String> {
+        let io_path = self.io_path(real)?;
+        match self.proxy() {
+            Some(proxy) => proxy.read_file(&io_path, None),
+            None => std::fs::read(&io_path).map_err(|error| error.to_string()),
+        }
+    }
 }
 
 impl ToolContext {
@@ -357,30 +425,17 @@ impl ToolContext {
     /// 越界 / 视图不可用都返回错误而不是退回真实路径：静默降级会让隔离对话的工具绕过
     /// 视图直接写磁盘，而调用方毫不知情（`docs/architecture/principles.md` 铁律 4.1）。
     pub fn io_path(&self, real: &std::path::Path) -> Result<std::path::PathBuf, String> {
-        match &self.work_view {
-            WorkViewState::Workspace => Ok(real.to_path_buf()),
-            WorkViewState::View(handle) => handle.map_into_view(real),
-            WorkViewState::ViewUnavailable(reason) => Err(format!(
-                "该对话的 Overlay 视图不可用：{reason}；改动不落真实磁盘，请先修好挂载代理"
-            )),
-        }
+        self.work_view.io_path(real)
     }
 
     /// 该对话的代理（隔离会话且有视图时）；其余情形 `None`。
     pub fn proxy(&self) -> Option<&std::sync::Arc<crate::mount_proxy::SessionProxy>> {
-        match &self.work_view {
-            WorkViewState::View(handle) => Some(handle.proxy()),
-            _ => None,
-        }
+        self.work_view.proxy()
     }
 
     /// 读一个文件：隔离会话经代理，其余走 `std::fs`。
     pub fn read_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, String> {
-        let io_path = self.io_path(path)?;
-        match self.proxy() {
-            Some(proxy) => proxy.read_file(&io_path, None),
-            None => std::fs::read(&io_path).map_err(|error| error.to_string()),
-        }
+        self.work_view.read_bytes(path)
     }
 
     /// 读一个文件（带上限）：隔离会话经代理，其余走 `std::fs`。
@@ -424,29 +479,7 @@ impl ToolContext {
         &self,
         path: &std::path::Path,
     ) -> Result<crate::mount_proxy::PathFacts, String> {
-        let io_path = self.io_path(path)?;
-        match self.proxy() {
-            Some(proxy) => proxy.stat(&io_path),
-            None => match std::fs::symlink_metadata(&io_path) {
-                Ok(meta) => Ok(crate::mount_proxy::PathFacts {
-                    exists: true,
-                    is_file: meta.file_type().is_file(),
-                    is_dir: meta.file_type().is_dir(),
-                    is_symlink: meta.file_type().is_symlink(),
-                    size: meta.len(),
-                }),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(crate::mount_proxy::PathFacts {
-                        exists: false,
-                        is_file: false,
-                        is_dir: false,
-                        is_symlink: false,
-                        size: 0,
-                    })
-                }
-                Err(error) => Err(error.to_string()),
-            },
-        }
+        self.work_view.stat_path(path)
     }
 }
 
