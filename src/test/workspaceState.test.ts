@@ -113,6 +113,23 @@ runTests('workspaceState', () => {
     parseSerializedAuth({ kind: 'sshPassword', password: 'p', extra: 1 })?.kind === 'sshPassword',
   );
 
+  // ---------- 私钥身份凭证（specs/053 FR-008） ----------
+
+  const keyFile = parseSerializedAuth({ kind: 'sshKey', keyPath: '/home/pz/.ssh/id_ed25519' });
+  check(
+    '私钥身份凭证往返保留路径',
+    keyFile?.kind === 'sshKey' && keyFile.keyPath === '/home/pz/.ssh/id_ed25519',
+  );
+  const keyAgent = parseSerializedAuth({ kind: 'sshKey', keyPath: null });
+  check('agent 凭证以 keyPath: null 表达', keyAgent?.kind === 'sshKey' && keyAgent.keyPath === null);
+  check('缺 keyPath 字段整项丢弃（不当作 agent）', parseSerializedAuth({ kind: 'sshKey' }) === null);
+  check('keyPath 空串丢弃', parseSerializedAuth({ kind: 'sshKey', keyPath: '' }) === null);
+  check('keyPath 类型不对丢弃', parseSerializedAuth({ kind: 'sshKey', keyPath: 7 }) === null);
+  check(
+    '私钥身份凭证不带私钥正文与 passphrase',
+    !Object.keys(keyFile ?? {}).includes('privateKey') && !Object.keys(keyFile ?? {}).includes('passphrase'),
+  );
+
   // ---------- 旧版本状态文件的工作目录字段迁移 ----------
 
   const legacyLast = migrateLegacyWorkspaceFields({

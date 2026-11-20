@@ -14,10 +14,18 @@ export interface RemoteWorkspaceLabels {
   sshPortPlaceholder: string;
   sshUserLabel: string;
   sshUserPlaceholder: string;
+  /** 口令浮层里的字段标签 */
   sshPasswordLabel: string;
-  sshPasswordPlaceholder: string;
   /** 连接进行中的提示（SSH 首次接入要上传产物并启动 daemon） */
   connecting: string;
+  /** 口令浮层的标题 */
+  passwordTitle: string;
+  /** 浮层里的原因说明：`{reason}` 是认证链最后一次失败的原因 */
+  passwordReason: string;
+  /** 浮层提交（与表单上的「连接」同一个入口） */
+  passwordSubmit: string;
+  /** 浮层里没填口令就提交时的提示 */
+  sshPasswordRequired: string;
   connect: string;
   cancel: string;
   /** SSH 候选行的删除按钮（清掉这条连接历史） */
@@ -54,8 +62,11 @@ const ZH: RemoteWorkspaceLabels = {
   sshUserLabel: '登录用户',
   sshUserPlaceholder: 'root',
   sshPasswordLabel: '登录密码',
-  sshPasswordPlaceholder: '登录密码',
   connecting: '正在连接远端并准备 Core…',
+  passwordTitle: '需要登录密码',
+  passwordReason: '{reason} 目标 {endpoint} 需要登录密码。',
+  passwordSubmit: '连接',
+  sshPasswordRequired: '请输入登录密码',
   connect: '连接',
   cancel: '取消',
   sshHistoryRemove: '删除这条连接历史',
@@ -88,8 +99,11 @@ const EN: RemoteWorkspaceLabels = {
   sshUserLabel: 'Login User',
   sshUserPlaceholder: 'root',
   sshPasswordLabel: 'Login Password',
-  sshPasswordPlaceholder: 'Login password',
   connecting: 'Connecting and preparing the remote Core…',
+  passwordTitle: 'Login password required',
+  passwordReason: '{reason} {endpoint} requires a login password.',
+  passwordSubmit: 'Connect',
+  sshPasswordRequired: 'Enter the login password',
   connect: 'Connect',
   cancel: 'Cancel',
   sshHistoryRemove: 'Remove this connection from history',

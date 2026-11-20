@@ -45,7 +45,6 @@ const FAKE_API_INIT = `
       endpoint: { host: '10.0.0.1', port: 22, user: 'root' },
     }),
     sshHistory: async () => [],
-    sshHistoryEntry: async () => null,
     removeSshHistoryEntry: async () => [],
     list: async (target) => (dirs.has(norm(target)) ? { ok: true, listing: listing(norm(target)) } : fail(target)),
     create: async (target) => { dirs.set(norm(target), []); return { ok: true, path: norm(target) }; },
