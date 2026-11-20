@@ -19,8 +19,8 @@ status: 已修
 1. **卸载只删主二进制，漏掉允许列表 sidecar**（产品文档与用例不一致）。
    [docs/core/mount-proxy.md](../../docs/core/mount-proxy.md#21-卸载) 的卸载一节删两个文件
    （`<落点>` 与 `<落点>.uids`），而用例的 `uninstallProxy()` 只 `rm -f` 前者。
-   本机实测留下 `/usr/libexec/tuxedo-cat-mount-proxy.uids`（内容 `1002`）——下一个装机
-   用户的 uid 会出现在放行名单里。AC-36 的断言也只查主二进制，因此没有拦住。
+   本机实测留下 `<core.mountProxyDir>/<core.mountProxyName>.uids`（内容为测试用户 uid）
+   ——下一个装机用户的 uid 会出现在放行名单里。AC-36 的断言也只查主二进制，因此没有拦住。
 2. **6 条用例用 `test.skip` 掩盖本可自备的前置**（顺序耦合）。见上。
 3. **AC-37 去远端找宿主的审计行**。审计行由宿主写
    （`src/host/ui/webviewMessageHandler.ts::applyDeployOutcome` 的 `this.log(auditLine(...))`），
@@ -104,8 +104,8 @@ status: 已修
 | e2e 类型检查 | `npm run check-types:e2e` | 绿 | — |
 | lint | `npm run lint` | 绿 | — |
 | Rust 格式基线 | `npm run fmt:rust:check` | 绿 | — |
-| `.uids` 残留复现 | 修复前跑完车道后 `ls /usr/libexec/tuxedo-cat-mount-proxy.uids` | 红 | 存在且内容为 `1002`；修复后收尾位点清空 |
-| 清理验证 | `ps -u e2essh -o pid,cmd` | 绿 | 车道结束后无残留 Core / 代理 / 测试子进程 |
+| `.uids` 残留复现 | 修复前跑完车道后查看 `<core.mountProxyDir>/<core.mountProxyName>.uids` | 红 | 存在且内容为测试用户 uid；修复后收尾位点清空 |
+| 清理验证 | `ps -u <测试用户> -o pid,cmd` | 绿 | 车道结束后无残留 Core / 代理 / 测试子进程 |
 
 本机作为远端的额外前置（非本缺陷范围，供复现者参考）：内核需加载 overlayfs（本机是模块，
 `sudo modprobe overlay` 后 `/proc/filesystems` 出现 `nodev overlay`，已写入
