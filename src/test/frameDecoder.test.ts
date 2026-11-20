@@ -99,6 +99,83 @@ async function run(): Promise<void> {
   }
   check('RT-4 reset 丢弃残行与未完成的字符', true);
 
+  // RT-5 / RT-6 / RT-7：大帧解码成本。
+  // 修复前：`push` 每块把整个已收缓冲 `+=` 重拼一次，一帧未收完时块数和缓冲一起涨，
+  // 总拷贝量随帧长平方增长。帧大小本身没有上限（standalone-core.md 5.1），而
+  // `conversationLoadRequested` 的应答是整段会话一个帧——大会话因此把 Host 主进程的
+  // 事件循环占住，沉默看门狗把「还在解帧」判成「daemon 死了」。
+  const bigFrame = (megabytes: number): string => {
+    // 每条约 8KB（工具输出预览量级），帧形与真实 history 应答同构
+    const perMessage = 8 * 1024;
+    const count = Math.floor((megabytes * 1024 * 1024) / perMessage);
+    const body = 'x'.repeat(perMessage);
+    const messages: unknown[] = [];
+    for (let i = 0; i < count; i += 1) {
+      messages.push({
+        type: 'assistant',
+        uuid: `u${i}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: body }] },
+      });
+    }
+    return encodeFrame({
+      kind: 'response',
+      id: 7,
+      ok: true,
+      result: { messages },
+    } as unknown as Parameters<typeof encodeFrame>[0]);
+  };
+
+  /** 按固定块长喂入并计时（取多轮最小值，压掉 GC 抖动） */
+  const timeDecode = (line: string, chunkSize: number, rounds: number): { ms: number; frames: unknown[] } => {
+    let best = Number.POSITIVE_INFINITY;
+    let frames: unknown[] = [];
+    for (let round = 0; round < rounds; round += 1) {
+      const decoded: unknown[] = [];
+      const decoder = new FrameDecoder({
+        onFrame: (value) => decoded.push(value),
+        onError: (error) => { throw error; },
+      });
+      const startedAt = process.hrtime.bigint();
+      for (let offset = 0; offset < line.length; offset += chunkSize) {
+        decoder.push(line.slice(offset, offset + chunkSize));
+      }
+      const ms = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      if (ms < best) best = ms;
+      frames = decoded;
+    }
+    return { ms: best, frames };
+  };
+
+  // ssh2 的转发通道按 PACKET_SIZE=32KB 切片，正是最坏分块区间
+  const CHUNK = 32 * 1024;
+  const bigLine = bigFrame(8);
+  timeDecode(bigLine, CHUNK, 1); // 预热：让 JIT 与字符串内部表示稳定
+  const chunked = timeDecode(bigLine, CHUNK, 3);
+  const wholeBig = timeDecode(bigLine, bigLine.length, 3);
+
+  // RT-5：成本与帧长线性——分块解码不得显著慢于整块解码。
+  //
+  // 这个判据只比「同一帧的两种喂法」，与机器快慢、JIT 状态无关：
+  // - 修复前残行在单个字符串上 `+=` 累积，每块重拷整个已收缓冲：分块 1771ms vs
+  //   整块 51ms ≈ 34x（块的切割方式直接决定成本，这正是 O(n²) 的证据）；
+  // - 修复后残行按分片数组累积、成行只 join 一次：实测 0.90x ~ 1.25x。
+  // 阈值取 <4x：远离修复后的实测值，也远离修复前的 34x，不会因机器抖动误判。
+  const ratio = chunked.ms / Math.max(wholeBig.ms, 1);
+  check(
+    `RT-5 大帧解码成本与帧长线性（8MB 帧分块/整块耗时比 ${ratio.toFixed(2)}x，阈值 <4x）`,
+    ratio < 4,
+  );
+
+  // RT-6：8MB 帧按 32KB 分块喂入仍解出恰好一帧（变快不得靠丢内容）
+  assert.strictEqual(chunked.frames.length, 1, '8MB 帧应解出恰好一帧');
+  check('RT-6 大帧分块解码仍解出恰好一帧', true);
+
+  // RT-7：分块解码的载荷与整块解码逐字一致（切分方式不影响结果）
+  {
+    assert.deepStrictEqual(chunked.frames, wholeBig.frames, '8MB 帧分块与整块解码结果应一致');
+  }
+  check('RT-7 大帧分块与整块解码结果一致', true);
+
   finish();
 }
 

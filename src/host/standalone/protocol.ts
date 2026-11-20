@@ -131,9 +131,20 @@ export interface FrameDecoderOptions {
  * 替换字符是合法字符，`JSON.parse` 照样成功——坏掉的文本因此**静默**流进 Core 与 UI
  * （日志乱码、对话正文出现 `�`），不留任何错误记录
  * （specs/defects/frame-decoder-splits-multibyte-chunks.md）。
+ *
+ * 残行按**分片数组**累积、只在成行时 `join` 一次：帧大小没有上限
+ * （docs/core/standalone-core.md 第 5.1 节），而会话应答是整段历史一个帧——
+ * 若在单个字符串上 `+=` 累积，每块都要把已收内容重拷一遍，总拷贝量与帧长平方成正比
+ * （specs/defects/frame-decoder-quadratic-buffer-copy.md）。分片累积让成本与帧长线性。
  */
 export class FrameDecoder {
-  private buffer = '';
+  /**
+   * 尚未成行的分片（按到达顺序）。
+   *
+   * 用数组而不是拼接的字符串：`+=` 在残行持续增长时每块整段重拷，大帧因此是 O(n²)。
+   * 压栈是平摊 O(1)，`join` 每行只做一次。
+   */
+  private pending: string[] = [];
   /**
    * 跨块暂存半个 UTF-8 字符的解码器。
    *
@@ -147,18 +158,27 @@ export class FrameDecoder {
 
   /** 丢弃残行与未完成的字符（重启进程时调用） */
   reset(): void {
-    this.buffer = '';
+    this.pending = [];
     this.decoder = new StringDecoder('utf8');
   }
 
   push(chunk: Buffer | string): void {
-    this.buffer += typeof chunk === 'string' ? chunk : this.decoder.write(chunk);
-    let index = this.buffer.indexOf('\n');
-    while (index >= 0) {
-      const line = this.buffer.slice(0, index);
-      this.buffer = this.buffer.slice(index + 1);
+    const text = typeof chunk === 'string' ? chunk : this.decoder.write(chunk);
+    let start = 0;
+    for (;;) {
+      const index = text.indexOf('\n', start);
+      if (index < 0) {
+        // 没有换行：余下部分留在分片里，等下一块
+        if (start < text.length) this.pending.push(text.slice(start));
+        return;
+      }
+      // 本行的前半段；整行只有这一段时（残行为空）不必 join，省一次拷贝
+      const head = text.slice(start, index);
+      const line = this.pending.length === 0 ? head : this.pending.join('') + head;
+      this.pending = [];
       this.decodeLine(line);
-      index = this.buffer.indexOf('\n');
+      start = index + 1;
+      // 正好以换行结尾：循环下一轮 `indexOf` 返回 -1，走上面的返回分支
     }
   }
 
