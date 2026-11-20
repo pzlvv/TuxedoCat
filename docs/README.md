@@ -25,7 +25,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | 主题规格 | `docs/core/<topic>.md`、`docs/hosts/<topic>.md` | 领域规格（Core 与进程、宿主与 UI）；长期 |
 | 特性规格 | `docs/features/<feature>.md`（spec 形态：场景 / FR / AC / 追溯矩阵） | 独立成篇判据：跨多个 surface 或有独立状态机；否则作主题规格的一节 |
 | 需求基线 | `docs/features/user-stories.md`（索引）+ `docs/features/user-stories/<主题>.md`（分册） | as-built 用户故事，e2e 用例以 `US-xx` 编号引用；随 e2e 演进 |
-| 改动规格 | `specs/<NNN>-<slug>/`（spec / plan / tasks 三件套） | 尚未落地的意图与验收，是「只写现状」的例外之一；生命周期见 `specs/README.md`；收敛后 delta 并入 `docs/`、整目录归档 `docs/archive/specs/` |
+| 改动规格 | `specs/<NNN>-<slug>/`（spec / plan / tasks 三件套） | 尚未落地的意图与验收，是「只写现状」的例外之一；生命周期见 `specs/README.md`；`spec.md` 是唯一评审面，评审通过后 `/implement` 一轮做完 plan / tasks / 实施 / 收敛，delta 并入 `docs/`、整目录归档 `docs/archive/specs/` |
 | 缺陷规格 | `specs/defects/<slug>.md`（扁平单文件，文件名即 slug） | 缺陷的现状与期望，也是「只写现状」的例外；两段流程（评估+红 → 修复+绿）、不编号、不归档，是回归证据的索引（口径见 `specs/README.md`） |
 | 待办清单 | `TODO.md`（根目录） | 只列**未排期**的想法与跨 spec 缺口，每条带验收判据；完成即删；进行中的工作在 specs/ 的 `tasks.md` 勾选跟踪、缺陷规格以 status 跟踪 |
 | 决策记录 | `docs/adr/NNNN-<slug>.md` | 只记决策、背景与被否决的替代方案；编号递增，只增不删 |

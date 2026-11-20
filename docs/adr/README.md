@@ -10,7 +10,7 @@
 | [0001](0001-two-core-implementations.md) | Core 的两套同契约实现（Embedded TS + Standalone Rust） | 被 [0007](0007-single-core-rust-only.md) 取代 |
 | [0002](0002-daemon-process-model.md) | Core 进程的 daemon 模型（一个 endpoint 一个 daemon） | 已采纳 |
 | [0003](0003-client-connection-split.md) | Client / Connection 拆分（连接模型按工作区收敛） | 已采纳 |
-| [0004](0004-spec-driven-change-workflow.md) | SPEC 驱动开发的改动规格层（`specs/`） | 已采纳 |
+| [0004](0004-spec-driven-change-workflow.md) | SPEC 驱动开发的改动规格层（`specs/`） | 已采纳（评审节奏被 [0020](0020-spec-only-review-gate.md) 取代） |
 | [0005](0005-docs-tree-and-feature-specs.md) | 文档体系重组（拆解 DEVELOPMENT.md、docs/ 分域目录与特性规格层） | 已采纳 |
 | [0006](0006-tiered-change-workflow.md) | 改动分级流程（L0 直改 / L1 缺陷修复 / L2 需求变更 / L3 新特性） | 已采纳 |
 | [0007](0007-single-core-rust-only.md) | 移除 Embedded Core，只保留 Rust 实现 | 已采纳 |
@@ -26,6 +26,7 @@
 | [0017](0017-root-mount-proxy.md) | Overlay 挂载由 root 属主 + setuid 位的代理做特权前置 | 被 [0018](0018-resident-mount-proxy.md) 取代 |
 | [0018](0018-resident-mount-proxy.md) | 命名空间由常驻代理持有，Core 自身不进命名空间 | 已采纳 |
 | [0019](0019-ssh-auth-chain.md) | SSH 接入的认证链（私钥优先、口令按需） | 已采纳 |
+| [0020](0020-spec-only-review-gate.md) | spec 是唯一评审面，plan / tasks / 实施 / 收敛一轮做完 | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

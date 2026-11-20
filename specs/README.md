@@ -4,7 +4,8 @@
 是 as-built 规格（`docs/<topic>.md`，只写现状）与冻结档案（`docs/archive/`）之间的活动层。
 `specs/` 不受「只写现状」约束（[AGENTS.md 第 0 节](../AGENTS.md#0-文档要求)的显式例外）；
 落地后 delta 并入 `docs/`，已完成的规格不留在本目录。决策背景见
-[ADR-0004](../docs/adr/0004-spec-driven-change-workflow.md)。
+[ADR-0004](../docs/adr/0004-spec-driven-change-workflow.md)（改动规格层）与
+[ADR-0020](../docs/adr/0020-spec-only-review-gate.md)（spec 是唯一评审面）。
 
 ## 1. 目录约定
 
@@ -14,8 +15,8 @@ slug 为小写连字符，与实施分支同名。目录内固定三件套：
 | 文件 | 内容 | 产出入口 |
 | --- | --- | --- |
 | `spec.md` | 意图与验收：用户场景、功能需求（FR）、验收标准（AC）、非目标、影响基线 | /spec |
-| `plan.md` | 技术方案、受影响模块与契约、宪章检查、被否决的替代方案 | /plan |
-| `tasks.md` | 任务分解（T 编号）与勾选进度，勾选状态即进度 | /tasks |
+| `plan.md` | 技术方案、受影响模块与契约、宪章检查、被否决的替代方案 | /implement |
+| `tasks.md` | 任务分解（T 编号）与勾选进度，勾选状态即进度 | /implement |
 
 本目录另有两个入口：缺陷规格 `specs/defects/<slug>.md`（扁平单文件、不编号，见第 8 节）与
 需求变更的就地修订（不新增目录，见第 9 节）。四档判据（L0 直改 / L1 缺陷修复 / L2 需求变更 /
@@ -27,13 +28,16 @@ L3 新特性）见 [AGENTS.md 第 5 节](../AGENTS.md#5-工作流)——**三件
 
 ## 2. 生命周期
 
-起草（/spec，status 起草）→ 评审通过（人审；/plan、/tasks 依次产出，status 待评审）→
-实施（/implement，status 实施中，逐任务勾 `tasks.md`）→ 收敛（/converge：逐条核对验收
+起草（/spec，status 起草）→ 评审（人审，status 待评审；**只有 spec 这一步过闸**）→
+实施（/implement：一次做完 plan → tasks → 逐任务实施，status 实施中；同步逐条核对验收
 标准与实现 / 测试证据，产出「已满足 / 偏差 / 未做」三分类，status 已收敛）→ delta 按
 「影响基线」并入 `docs/<topic>.md` → 整目录移入 `docs/archive/specs/`（保留审计轨迹）。
 
-- 每个 skill 只产出一个产物、产出即停等人评审；闸门写进 skill：待澄清项未清零不进
-  plan；宪章检查不过不进 implement；收敛不绿不归档。
+- **唯一评审面是 `spec.md`**（[ADR-0020](../docs/adr/0020-spec-only-review-gate.md)）：
+  /spec 产出即停等人评审；评审通过后 /implement 一轮做完 plan、tasks、实施与收敛归档，
+  中途不停等人评审。`plan.md` 与 `tasks.md` 是实施过程产物，自己写完直接往下做。
+- 闸门写进 skill：待澄清项未清零不进 /implement；宪章检查不过就先改方案再实施；
+  收敛不绿不归档（不绿时把未做项回写 `tasks.md` 并向用户报卡点）。
 - 未完成项回写 `tasks.md`（不勾选并注明），不另立进度表。
 - 放弃的改动同样归档（frontmatter status 改「放弃」），编号不复用。
 
@@ -67,8 +71,8 @@ spec 级未决问题写入 `spec.md`（或 `defect.md`）的「待澄清」节�
 - **适用**：跨文档引用必须是链接（目标文件与锚点存在）、固化术语无别名、禁行号引用、
   文档内代码块 `src=` 来源标注、结构组——三件套必填章节齐全、H1 前缀、FR / AC / T
   编号规范、tasks 覆盖全部 FR、追溯矩阵逐 FR 登记、status 取值合法、澄清标记带去向。
-- **三件套按 status 递进**：`起草` 只要求 `spec.md`，`待评审` 加 `plan.md`，`实施中` /
-  `已收敛` 要求三件套齐——起草与评审期间不会因为「还没写 tasks」而红。
+- **三件套按 status 递进**：`起草` / `待评审` 只要求 `spec.md`，`实施中` / `已收敛` 要求
+  三件套齐——评审闸门只卡 spec，/implement 一轮内补齐 plan 与 tasks。
 - **缺陷规格组**：`specs/defects/<slug>.md` 的 slug 格式、H1 前缀、status 取值、五节齐全、
   RT 编号、验证记录表四列与结果取值合法；`待修` 豁免存在性检查，`已修` 受落点存活检查
   （与 `已收敛` 的 spec 同口径）。
@@ -86,6 +90,8 @@ spec 级未决问题写入 `spec.md`（或 `defect.md`）的「待澄清」节�
 按第 1 节开目录。
 
 ## 7. 收敛与归档
+
+收敛与归档都在 /implement 的同一轮里完成（不再单独一次产出即停）：
 
 - 收敛检查逐条核对验收标准与实现 / 测试证据，结论只分三类：已满足（附证据）、
   偏差（要么改代码、要么改 spec 并留痕）、未做（回写 `tasks.md`）。

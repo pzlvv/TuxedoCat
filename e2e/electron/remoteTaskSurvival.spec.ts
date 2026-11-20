@@ -98,21 +98,32 @@ test.beforeEach(async () => {
   // 每个用例从干净远端开始：杀残留 daemon / Core、清状态文件、清本组会话目录
   //（前一个用例的会话落盘会混进下一条断言的侧栏计数）
   const fingerprint = localFingerprint();
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  // 等进程真的消失而不是等固定时长：pkill 只负责发信号，SIGTERM 到进程退出之间还有收尾
+  // （Core 写盘），负载高时 1s 不够——半死的 daemon 会让下一条用例建链挂住
+  //（e2e/README.md 已知坑 11）。本组用例的断言基数是「远端还剩几个 Core」，基线本身
+  // 必须是真的零。
+  await pollRemote(
+    async () => (await remoteCoreProcesses()).length === 0,
+    15_000,
+    '清场：残留 Core / daemon 全部退出',
+  ).catch(() => undefined);
   await sshExec(
-    `pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`
-      + ` && rm -rf ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`
+    `rm -rf ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`
       + ` && cd ~/${CONFIG_DIR_NAME}/conversations 2>/dev/null && rm -rf *tuxedo-e2e-survival* ; true`,
   );
 });
 
 test.afterAll(async () => {
   if (remoteWs) await sshExec(`rm -rf ${remoteWs}`).catch(() => undefined);
-  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
 });
 
 /** 远端还活着的 Core 进程（daemon 与 workspace Core 都算） */
 function remoteCoreProcesses(): Promise<Array<{ pid: string; cmd: string }>> {
-  return sshExec(`pgrep -af '${CORE_PROCESS_PATTERN}' || true`).then(({ stdout }) =>
+  // 按 SSH 用户自己的 uid 收敛（理由同 remoteSshExecution.spec.ts 的 remoteCoreProcesses）：
+  // 裸 pgrep 是全机口径，会把别的用户正在用的 Core 算成本车道残留
+  return sshExec(`pgrep -u "$(id -u)" -af '${CORE_PROCESS_PATTERN}' || true`).then(({ stdout }) =>
     stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => {
       const space = line.indexOf(' ');
       return { pid: line.slice(0, space), cmd: line.slice(space + 1) };

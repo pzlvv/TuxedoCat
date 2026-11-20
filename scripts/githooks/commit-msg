@@ -5,7 +5,8 @@
 #   L0 直改    —— 无产物，只声明
 #   L1 缺陷    —— specs/defects/<slug>.md（Defect trailer 指向）
 #   L2 需求变更 —— 暂存区必须含 docs/ 下的规格改动（需求与文档同提交）
-#   L3 新特性  —— specs/<NNN>-<slug>/ 三件套（Spec trailer 指向）
+#   L3 新特性  —— specs/<NNN>-<slug>/ 三件套（Spec trailer 指向；spec 评审通过后由
+#                 /implement 一轮产出 plan / tasks，所以带代码的提交三件套必然齐）
 #
 # 为什么闸门在 commit-msg 而不在 pre-commit：git 跑 pre-commit 时提交信息还没生成
 # （.git/COMMIT_EDITMSG 尚不存在），只有 commit-msg 拿得到消息文件（$1）。
@@ -85,7 +86,7 @@ case "$flow" in
       specDir=$(ls -d "docs/archive/specs/$num"-*/ 2>/dev/null | head -1)
     fi
     if [ -z "$specDir" ]; then
-      fail "specs/$num-*/ 不存在——L3 的产物是改动规格目录，先按 /spec 起草。"
+      fail "specs/$num-*/ 不存在——L3 的产物是改动规格目录，先按 /spec 起草并评审通过。"
     fi
     for required in spec.md plan.md tasks.md; do
       if [ ! -f "$specDir$required" ]; then
