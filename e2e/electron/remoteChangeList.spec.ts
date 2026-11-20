@@ -180,10 +180,28 @@ test.beforeEach(async () => {
  * 也在 `beforeAll` 之外各自清场。
  */
 async function resetRemoteDaemon(): Promise<void> {
-  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  // 等进程真的消失而不是等固定时长：pkill 只发信号，SIGTERM 到进程退出之间还有 Core 的
+  // 收尾写盘；固定 1s 在负载高时不够，半死的 daemon 正是本函数要消除的东西
+  await waitForNoCore(15_000);
   const fingerprint = localCoreFingerprint();
   if (fingerprint) {
     await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
+  }
+}
+
+/**
+ * 轮询直到远端没有本 uid 的 Core（超时即放弃，留给后续建链自己报错）。
+ *
+ * 按 SSH 用户自己的 uid 收敛（`pgrep -u`）：裸 `pgrep -af` 是全机口径，会把别的用户
+ * 正在用的 Core 算成本车道残留（本机自测时尤其明显）。
+ */
+async function waitForNoCore(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { stdout } = await sshExec(`pgrep -u "$(id -u)" -af '${CORE_PROCESS_PATTERN}' || true`);
+    if (stdout.trim().length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 

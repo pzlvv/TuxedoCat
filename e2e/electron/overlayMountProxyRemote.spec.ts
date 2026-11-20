@@ -40,8 +40,10 @@ import { requireSshEnvironment } from '../helpers/testEnvironment';
  * 共享机器纪律：用例自建工作区、`afterAll` 整目录清理；装了代理就在收尾卸载，没装则断言
  * 「仍不存在」；不留状态文件。
  *
- * 运行：`<envPrefix>_E2E_MOUNT_PROXY=1 npm run test:e2e:ssh -- overlayMountProxyRemote`
- * 前置：`npm run build:core:linux-x64`（远端是 Linux 时本机必须携带对应产物）。
+ * 运行：`npm run test:e2e:ssh -- overlayMountProxyRemote`
+ * 前置：`npm run build:core:linux-x64`（远端是 Linux 时本机必须携带对应产物）；
+ * 远端内核需有 overlayfs（`/proc/filesystems` 有 `nodev overlay`，否则产品的
+ * `deployable` 探测恒 false）；「已安装」段的用例要先跑过部署用例或手工装机。
  */
 
 
@@ -51,6 +53,12 @@ test.setTimeout(600_000);
 
 /** 远端安装位点（产物名与目录的唯一来源是 `src/config/project.json`） */
 const REMOTE_PROXY_PATH = `${CORE_MOUNT_PROXY_DIR}/${CORE_MOUNT_PROXY_NAME}`;
+/**
+ * 允许列表 sidecar（`<落点>.uids`）：`--install` 时写入调用者 uid，入口只放行列表内的
+ * 真实 uid（`docs/core/mount-proxy.md` 第 2 节）。卸载必须连它一起删，否则共享机器上
+ * 残留上一轮测试用户的 uid。
+ */
+const REMOTE_PROXY_UIDS_PATH = `${REMOTE_PROXY_PATH}.uids`;
 /** 远端部署槽位（代理与 Core 同目录） */
 const REMOTE_DEPLOY_DIR = `~/.local/share/${CORE_DEPLOY_PREFIX}`;
 /** 远端运行目录（daemon 状态文件） */
@@ -147,7 +155,15 @@ function shQuote(value: string): string {
  * 握手会挂在那儿，表现为「等待活动聊天视图超时（候选 0 个）」。
  */
 async function resetRemoteDaemon(): Promise<void> {
-  await sshExec(`pkill -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  // 等进程真的消失而不是等固定时长：pkill 只负责发信号，SIGTERM 到进程真正退出之间有
+  // 间隔（Core 还要收尾写盘），负载高时 1s 不够——半死的 daemon 会让下一条用例建链挂住
+  // （e2e/README.md 已知坑 11）。
+  await pollRemote(
+    async () => (await remoteProcesses(CORE_PROCESS_PATTERN)).length === 0,
+    15_000,
+    '清场：残留 Core / daemon 全部退出',
+  ).catch(() => undefined);
   const fingerprint = localCoreFingerprint();
   if (fingerprint) {
     await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
@@ -229,14 +245,21 @@ async function proxyInstalled(): Promise<{ installed: boolean; stat: string }> {
 }
 
 /**
- * 卸载代理（`docs/core/mount-proxy.md` 的幂等命令，FR-012 / AC-36）。
+ * 卸载代理（`docs/core/mount-proxy.md` 第 2.1 节的幂等命令，FR-012 / AC-36）。
  *
  * 幂等：位点不存在时也成功退出。口令式 `sudo` 可用、免密不可用（真机实测），因此密码
  * 经**标准输入**喂给 `sudo -S`（不进 argv，specs/051 FR-004 第 3 条同一口径）；收尾用它
  * 把远端恢复成「未装机」——共享机器不能留下一个 setuid root 文件。
+ *
+ * 必须删**两个**文件：主二进制与它的允许列表 `<落点>.uids`（`--install` 时把调用者 uid
+ * 写进去，入口只放行列表内的 uid）。只删主程序会留下一个记录着测试用户 uid 的 sidecar
+ * ——下一个装机的用户会发现自己的 uid 已在放行名单里。
  */
 async function uninstallProxy(): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return sshExecWithStdin(`sudo -S -p '' rm -f ${REMOTE_PROXY_PATH}`, `${SSH.password}\n`);
+  return sshExecWithStdin(
+    `sudo -S -p '' rm -f ${REMOTE_PROXY_PATH} ${REMOTE_PROXY_UIDS_PATH}`,
+    `${SSH.password}\n`,
+  );
 }
 
 /**
@@ -268,21 +291,64 @@ async function deployProxyViaUi(chatPage: Awaited<ReturnType<AppHandle['chatPage
  * 与 `FR-009` 的分工：那条**断言**首次部署的完整过程，这条只保证前置成立。装完即关掉
  * 这一轮应用，调用方随后自建干净会话——部署用的那次 Overlay 勾选不该带进被测会话。
  */
-async function ensureProxyInstalled(): Promise<void> {
-  if ((await proxyInstalled()).installed) return;
-  const chatPage = await launchWithRemoteWorkspace();
+/**
+ * 勾选「隔离工作视图」。
+ *
+ * 「勾选框可见」本身就是能力已到达的判据，不需要额外查一次：入口的渲染条件就是
+ * `isolatedWorkView || deployable`（`src/webview/MessagesView.tsx` 的 `showWorkViewOption`，
+ * specs/051 FR-002），两者都不成立时整块不渲染。因此等可见就够了。
+ *
+ * 早先这里额外轮询 `requestStorageCapabilities` 等 `deployable`，反而制造了竞态：
+ * 它每轮都发一条能力请求并装一个 `setStorageCapabilities` 监听器，会和随后的
+ * `sendMessage` 抢时序；且代理装好之后 `deployable` 恒为 false（`capabilities_from`
+ * 的 ready 分支），一律等它会把每条用例卡死在 60s 超时上。
+ */
+async function checkWorkViewOption(
+  chatPage: Awaited<ReturnType<AppHandle['chatPage']>>,
+): Promise<void> {
   await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
   await chatPage.locator('input[data-work-view-option]').check();
-  await chatPage.fill('textarea.input-textarea', '部署挂载代理（前置）');
-  await chatPage.press('textarea.input-textarea', 'Enter');
-  await deployProxyViaUi(chatPage);
-  await app!.close();
-  app = null;
-  mockLlm!.close();
-  mockLlm = null;
-  // 这里**不**调 `resetRemoteDaemon`：调用方紧接着就要建链，杀掉刚起来的 daemon 会让
-  // 下一条会话连到一个正在退出的进程上（表现为消息发出后既无模型请求也无工具执行）。
-  // 清场由 `beforeEach` 统一负责，它在每条用例开始前做。
+}
+
+/**
+ * 保证远端已装代理（幂等）。没装就经界面装一次，失败再重试一次。
+ *
+ * 为什么允许重试：这是**布置前置**，不是被测行为。UI 部署要经过「起应用 → SSH 建链 →
+ * daemon 引导 → 勾 Overlay → 发消息 → 宿主闸门 → 确认框 → sudo 口令 → 自检」一长串环节，
+ * 任何一环的瞬时抖动（已知坑 10 的 SSH 建链约 3% 失败）都会让确认框不出现。前置抖动不该
+ * 让用例判红——真正要判的是它装好之后的行为。重试只覆盖**部署前置**，被测链路的断言
+ * 一律不重试（那会掩盖 `specs/defects/` 里那一类缺陷）。
+ */
+async function ensureProxyInstalled(): Promise<void> {
+  if ((await proxyInstalled()).installed) return;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const chatPage = await launchWithRemoteWorkspace();
+      await checkWorkViewOption(chatPage);
+      await chatPage.fill('textarea.input-textarea', '部署挂载代理（前置）');
+      await chatPage.press('textarea.input-textarea', 'Enter');
+      await deployProxyViaUi(chatPage);
+      await app?.close();
+      app = null;
+      mockLlm?.close();
+      mockLlm = null;
+      // 这里**不**调 `resetRemoteDaemon`：调用方紧接着就要建链，杀掉刚起来的 daemon 会让
+      // 下一条会话连到一个正在退出的进程上（表现为消息发出后既无模型请求也无工具执行）。
+      // 清场由 `beforeEach` 统一负责，它在每条用例开始前做。
+      return;
+    } catch (error) {
+      lastError = error;
+      // 收掉这一轮的应用与 mock，下一轮重新起（脏实例上重试没有意义）
+      await app?.close().catch(() => undefined);
+      app = null;
+      mockLlm?.close();
+      mockLlm = null;
+      await resetRemoteDaemon();
+      if ((await proxyInstalled()).installed) return;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('挂载代理部署前置失败');
 }
 
 /** 远程 exec 并写入标准输入（密码只走 stdin，不进 argv——FR-004 第 3 条） */
@@ -314,13 +380,85 @@ function sshExecWithStdin(
   });
 }
 
-/** 远端还活着的 Core / 代理进程 */
-async function remoteProcesses(pattern: string): Promise<Array<{ pid: string; cmd: string }>> {
-  const { stdout } = await sshExec(`pgrep -af '${pattern}' || true`);
+/**
+ * 远端还活着的 Core / 代理进程。
+ *
+ * 只统计 **SSH 用户自己 uid** 的进程（`pgrep -u`）：裸 `pgrep -af` 是全机口径，本机自测
+ * （远端就是开发机）时会把开发机正在用的 Core 算成本车道残留，断言必然失败。车道只对
+ * 自己部署的进程负责——Core 与代理 A 都归 SSH 用户所有；代理 B 以 setuid root 运行时
+ * 由调用方显式传 `allUsers`（它是 root 身份，按 uid 过滤会漏掉）。
+ */
+async function remoteProcesses(
+  pattern: string,
+  allUsers = false,
+): Promise<Array<{ pid: string; cmd: string }>> {
+  const scope = allUsers ? '' : '-u "$(id -u)" ';
+  const { stdout } = await sshExec(`pgrep ${scope}-af '${pattern}' || true`);
   return stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => {
     const space = line.indexOf(' ');
     return { pid: line.slice(0, space), cmd: line.slice(space + 1) };
   });
+}
+
+/** Core 与底部代理的 pid + ppid + euid（判父子链与降权用） */
+interface ProcessRow {
+  pid: string;
+  ppid: string;
+  euid: string;
+  args: string;
+}
+
+/**
+ * 某组进程的 pid / ppid / euid / args。
+ *
+ * 代理的归属只能按**父子链**判，不能按「全机有几个代理」判：每个隔离会话一个代理，
+ * 上一个用例的代理若还在收尾，全机计数就永远不为 0（本机自测时尤其明显——开发机
+ * 自己的会话也带着代理）。AC-26b 本来就要求「A 是 Core 的直接子进程」，这里把同一条
+ * 判据提出来给回收断言共用。
+ */
+async function processRows(patterns: string[]): Promise<ProcessRow[]> {
+  const orPattern = patterns.join('|');
+  const { stdout } = await sshExec(
+    `ps -eo pid=,ppid=,euid=,args= | grep -E '${orPattern}' | grep -v grep || true`,
+  );
+  return stdout
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [pid, ppid, euid, ...rest] = line.trim().split(/\s+/);
+      return { pid, ppid, euid, args: rest.join(' ') };
+    });
+}
+
+/**
+ * 指定 Core（`corePid`）的后代里是否已经没有代理进程。
+ *
+ * 判据是「**该 Core 及其后代**里没有代理」：每个隔离会话一个代理，别的会话的代理归
+ * 别的 Core，与本会话无关——按全机计数会误判（见 `remoteProcesses` 的注释）。Core 自身
+ * 已消失时同样算「本会话代理已退」：没有父进程能给代理收尾了。
+ */
+async function sessionProxyGoneFor(corePid: string): Promise<boolean> {
+  const rows = await processRows([CORE_PROCESS_PATTERN, PROXY_PROCESS_PATTERN]);
+  if (!rows.some((row) => row.pid === corePid)) return true;
+  const children = new Map<string, ProcessRow[]>();
+  for (const row of rows) {
+    const list = children.get(row.ppid) ?? [];
+    list.push(row);
+    children.set(row.ppid, list);
+  }
+  const stack = [corePid];
+  const seen = new Set<string>();
+  while (stack.length > 0) {
+    const pid = stack.pop() as string;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    for (const child of children.get(pid) ?? []) {
+      if (child.args.includes(CORE_MOUNT_PROXY_NAME)) return false;
+      stack.push(child.pid);
+    }
+  }
+  return true;
 }
 
 /** 轮询远端直到条件满足（每 2s 一次连接） */
@@ -434,7 +572,8 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
   expect(corePidBefore, '应能读到远端 workspace Core 的 pid').toBeTruthy();
 
   // AC-34：勾选 Overlay 发第一条消息 → 确认框出现，文案点名真实主机（远端场景必须显示）
-  await chatPage.locator('input[data-work-view-option]').check();
+  // 用 helper 勾选：它先等能力到达，勾完再发消息，闸门才判得出可部署
+  await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '远端 Overlay 首次使用');
   await chatPage.press('textarea.input-textarea', 'Enter');
   const dialog = chatPage.locator('[data-mount-proxy-dialog="confirm"]');
@@ -471,9 +610,10 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
 });
 
 test('FR-009 已安装时能力 ready、Core pid 不变、帧通道正常', async () => {
-  // 前置：本用例假定代理已安装（上一轮部署成功或被运营装机）；未装则跳过而非修环境
-  const { installed, stat } = await proxyInstalled();
-  test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}（先跑部署用例或手工装机）；不做修复`);
+  // 自备前置（同 AC-36）：本文件不保证执行顺序，前一条用例可能刚把代理卸掉。
+  // ensureProxyInstalled 幂等：已装则直接返回。
+  await ensureProxyInstalled();
+  const { stat } = await proxyInstalled();
   expect(stat, '安装形态必须是 root:root 04755（AC-15）').toMatch(/^root root 4755$/);
 
   const chatPage = await launchWithRemoteWorkspace();
@@ -521,8 +661,7 @@ test('FR-007 连续工具调用不因工具线程收尾而丢代理', async () =
   await sshExec(`cat > ${shQuote(sourcePath)} <<'EOF'\n${sourceBody}EOF`);
 
   const chatPage = await launchWithRemoteWorkspace();
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
+  await checkWorkViewOption(chatPage);
 
   // 四步覆盖三条不同通道：spawn（Bash）、readFile（Read）、spawn（Bash）、
   // spawn + 相对路径（Bash 的 cwd 语义）。第二条的 Read 是缺陷首发点。
@@ -596,11 +735,12 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   expect((await sshExec(`test -e ${shQuote(overlayOnly)} && echo yes || echo no`)).stdout.trim()).toBe('no');
 
   const chatPage = await launchWithRemoteWorkspace();
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
 
-  // 纯文本一轮：会话落盘（storage: isolated），但**不调用任何工具**——视图因此尚未建立
+  // 纯文本一轮：会话落盘（storage: isolated），但**不调用任何工具**——视图因此尚未建立。
+  // handler 必须在发消息前置好（勾选 Overlay 之后界面就会接受输入），否则第一次请求
+  // 落到默认应答上，断言就在等一个不会出现的终答。
   mockLlm!.setHandler(() => ({ kind: 'text', text: 'EXPLORER-BASELINE-DONE' }));
+  await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '先不调工具');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('EXPLORER-BASELINE-DONE').first()).toBeVisible({ timeout: 120_000 });
@@ -689,8 +829,7 @@ test('Overlay 对话：Write 的风车必须收起，且工具卡片上屏期间
   await ensureProxyInstalled();
 
   const chatPage = await launchWithRemoteWorkspace();
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
+  await checkWorkViewOption(chatPage);
 
   // 采样「thinking 可见 / 有无 running 风车」：只要两者同时为假，界面上就没有任何
   // 进行中的指示。空窗按一次提问的完整生命周期取，逐帧记录。
@@ -780,9 +919,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   // 基线：真实磁盘上不存在
   expect((await sshExec(`test -e ${shQuote(realPath)} && echo yes || echo no`)).stdout.trim()).toBe('no');
 
-  // 建 Overlay 会话并让模型写文件
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
+  // 建 Overlay 会话并让模型写文件。handler 先就位再勾选（理由见 FR-002 用例）
   mockLlm!.setHandler((req) => {
     if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
       return { kind: 'text', text: 'OVERLAY-WRITE-DONE' };
@@ -793,6 +930,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
       args: { file_path: realPath, content: 'overlay only\n' },
     };
   });
+  await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '在隔离视图里写文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('OVERLAY-WRITE-DONE').first()).toBeVisible({ timeout: 120_000 });
@@ -811,13 +949,20 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
     'no',
   );
 
-  // AC-28j：会话关闭后代理 mountinfo 里没有该 overlay 条目
+  // AC-28j：会话关闭后代理 mountinfo 里没有该 overlay 条目。
+  //
+  // 判据按本会话收敛：关应用前记下 workspace Core 的 pid，关后断言「该 pid 及其后代里
+  // 没有代理」。不能数全机代理——每个隔离会话一个代理，别的会话（含同轮上一条用例的
+  // 收尾、以及本机自测时开发机自己的会话）都算进去就永远不为 0。
+  const corePid = (await remoteProcesses(CORE_PROCESS_PATTERN))
+    .find((p) => p.cmd.includes(' stdio'))?.pid;
+  expect(corePid, '应能读到 workspace Core 的 pid').toBeTruthy();
   await app!.close();
   app = null;
   mockLlm!.close();
   mockLlm = null;
   await pollRemote(
-    async () => (await remoteProcesses(PROXY_PROCESS_PATTERN)).length === 0,
+    async () => sessionProxyGoneFor(corePid as string),
     30_000,
     '代理进程退出（Core 关闭 → socketpair EOF → B 退 → A 收尸）',
   );
@@ -851,8 +996,7 @@ test('Overlay 会话：Write 新建的文件必须能被 Edit 继续修改', asy
   ).toBe('no');
 
   const chatPage = await launchWithRemoteWorkspace();
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
+  await checkWorkViewOption(chatPage);
 
   // 三步：Write 新建 → Edit 同一文件 → Read 读回。Read 是「改动真的落在视图里」的凭据：
   // 只看 Edit 的成功文案会漏掉「Edit 写了另一份内容」这类假绿。
@@ -921,9 +1065,8 @@ test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实�
   ).toBe('no');
 
   const chatPage = await launchWithRemoteWorkspace();
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
 
+  // handler 先就位再勾选（理由见 FR-002 用例）
   mockLlm!.setHandler((req) => {
     if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
       return { kind: 'text', text: 'CARD-LINK-DONE' };
@@ -934,6 +1077,7 @@ test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实�
       args: { file_path: target, content: `${marker}\n` },
     };
   });
+  await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '写一个文件然后点卡片链接');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('CARD-LINK-DONE').first()).toBeVisible({ timeout: 120_000 });
@@ -1002,8 +1146,7 @@ test('FR-006 隔离会话里 gcc 编译运行 main.c，产物只在叠加视图�
   const chatPage = await launchWithRemoteWorkspace();
 
   // 勾上 Overlay 建隔离会话
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
+  await checkWorkViewOption(chatPage);
 
   // 一条命令完成编译 + 运行：`&&` 保证编译失败时不会跑旧产物；先删掉可能残留的产物，
   // 避免「读了上一次成功的产物」这种假绿。
@@ -1080,16 +1223,15 @@ test('FR-010 代理不可用时宿主拦下消息：弹确认框、不进 Core�
   const writeTarget = 'fail-closed-write.txt';
   const writePath = `${remoteWs}/${writeTarget}`;
 
-  await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-  await chatPage.locator('input[data-work-view-option]').check();
-
-  // 第一轮：视图正常，Write 落进叠加视图（不进真实磁盘）——证明前提成立
+  // 第一轮：视图正常，Write 落进叠加视图（不进真实磁盘）——证明前提成立。
+  // handler 先就位再勾选（理由见 FR-002 用例）
   mockLlm!.setHandler((req) => {
     if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
       return { kind: 'text', text: 'WARMUP-DONE' };
     }
     return { kind: 'tool', name: 'Write', args: { file_path: writePath, content: 'warmup\n' } };
   });
+  await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '预热一轮');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('WARMUP-DONE').first()).toBeVisible({ timeout: 120_000 });
@@ -1140,42 +1282,122 @@ test('FR-010 代理不可用时宿主拦下消息：弹确认框、不进 Core�
   mockLlm = null;
 });
 
-test('FR-012 AC-36 文档里的卸载命令幂等：连跑两次都成功且位点消失', async () => {
-  const { installed } = await proxyInstalled();
-  test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；卸载命令的幂等性无法验证（不做修复）`);
+test('FR-012 AC-36 文档里的卸载命令幂等：连跑两次都成功且两个位点都消失', async () => {
+  // 自备前置：前一条用例（FR-010）会故意卸载代理，本文件也不保证执行顺序。
+  // 装好再卸是幂等命令的完整验收面，跳过等于永远不验证这条路径。
+  await ensureProxyInstalled();
 
-  // 第一次：删掉
+  // 第一次：删掉。文档的卸载命令删两个文件（主程序 + 允许列表 sidecar），
+  // 只删主程序会留下记录了测试用户 uid 的 `.uids`
   const first = await uninstallProxy();
   expect(first.code, `卸载失败：${first.stderr}`).toBe(0);
   expect((await proxyInstalled()).installed).toBe(false);
+  const uidsLeft = await sshExec(
+    `if [ -e ${REMOTE_PROXY_UIDS_PATH} ]; then echo PRESENT; else echo ABSENT; fi`,
+  );
+  expect(
+    uidsLeft.stdout.trim(),
+    `卸载后允许列表 ${REMOTE_PROXY_UIDS_PATH} 必须一并消失（docs/core/mount-proxy.md 第 2.1 节）`,
+  ).toBe('ABSENT');
 
-  // 第二次：位点不存在也成功（幂等）
+  // 第二次：两个位点都不存在也成功（幂等）
   const second = await uninstallProxy();
   expect(second.code, `第二次卸载必须也成功（幂等）：${second.stderr}`).toBe(0);
 });
 
 test('FR-012 AC-37 安装写审计行：主机名 / 落点 / sha256 / 安装者 uid', async () => {
-  const { installed } = await proxyInstalled();
-  test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；审计行无法验证（不做修复）`);
+  // 审计行由**宿主**写进它自己的日志（`webviewMessageHandler.ts::applyDeployOutcome` 的
+  // `this.log(auditLine(...))`），不是远端日志——远端只跑 Core。宿主日志落在 `launchApp`
+  // 为该实例建的沙箱 HOME（`<home>/<configDir>/logs/<logFileName>`），而每个实例默认
+  // 一个新 HOME，所以必须在本用例自己的部署之后、在**同一个** HOME 里读。
+  //
+  // 因此这条用例不能复用 `ensureProxyInstalled()`（它装完就关掉那个实例、HOME 随之销毁，
+  // 也不保证发生了真实安装动作）：这里自己走一次「先确保可装（源就位）→ 经界面装」的
+  // 完整部署。不先 `ensureProxyInstalled()` 再卸：那会在同一轮里连做两次部署，
+  // 宿主侧的部署闸门与代理进程收尾叠在一起，确认框会偶发不出现。
+  await uninstallProxy();
 
-  // 审计行在 Core 日志里（`~/<configDir>/logs/<logFileName>`）
-  const logPath = `${remoteHome}/${CONFIG_DIR_NAME}/logs/${LOG_FILE_NAME}`;
-  const grep = await sshExec(`grep -h 'mount-proxy' ${shQuote(logPath)} | tail -5 || true`);
-  const line = grep.stdout.split('\n').find((l) => l.includes(REMOTE_PROXY_PATH)) ?? '';
-  expect(line, `Core 日志里找不到代理安装审计行（${logPath}）`).not.toBe('');
+  // 部署前置允许重试（与 `ensureProxyInstalled` 同一口径）：UI 部署要过 SSH 建链 →
+  // daemon 引导 → 闸门 → 确认框 → sudo 口令 → 自检，任一环瞬时抖动都会让确认框不出现。
+  // 重试时**整轮重起**（新实例、新 HOME），因为审计行必须与本次部署同实例——脏实例上
+  // 重试读到的是上一轮的日志。
+  let chatPage: Awaited<ReturnType<AppHandle['chatPage']>> | null = null;
+  let sandboxHome = '';
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await uninstallProxy();
+      chatPage = await launchWithRemoteWorkspace();
+      sandboxHome = app!.homeDir;
+      await checkWorkViewOption(chatPage);
+      await chatPage.fill('textarea.input-textarea', '部署挂载代理（审计行）');
+      await chatPage.press('textarea.input-textarea', 'Enter');
+      await deployProxyViaUi(chatPage);
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      await app?.close().catch(() => undefined);
+      app = null;
+      mockLlm?.close();
+      mockLlm = null;
+      chatPage = null;
+      await resetRemoteDaemon();
+    }
+  }
+  if (lastError !== null || chatPage === null) {
+    throw lastError instanceof Error ? lastError : new Error('审计行用例的部署前置失败');
+  }
+
+  // 审计行在**这个实例**的宿主日志里。轮询到非空再取值——`expect.poll(...).not.toBe('')`
+  // 只断言不返回取到的值，四要素要拿字符串本身来比对。
+  const logPath = path.join(sandboxHome, CONFIG_DIR_NAME, 'logs', LOG_FILE_NAME);
+  const readAuditLine = async (): Promise<string> => {
+    const logDir = path.dirname(logPath);
+    const files = await fs.promises.readdir(logDir).catch(() => [] as string[]);
+    for (const file of files) {
+      const text = await fs.promises.readFile(path.join(logDir, file), 'utf8').catch(() => '');
+      const hit = text
+        .split('\n')
+        .find((l) => l.includes('[mount-proxy]') && l.includes(REMOTE_PROXY_PATH));
+      if (hit) return hit;
+    }
+    return '';
+  };
+  let line = '';
+  await expect
+    .poll(
+      async () => {
+        line = await readAuditLine();
+        return line;
+      },
+      { timeout: 60_000, message: `宿主日志里找不到代理安装审计行（${logPath}）` },
+    )
+    .not.toBe('');
+
   // 四要素：主机名 / 落点 / sha256 / 安装者 uid
   expect(line, '审计行缺主机名').toMatch(/\bhost[=:]/);
   expect(line, '审计行缺安装落点').toContain(REMOTE_PROXY_PATH);
   expect(line, '审计行缺内容 sha256').toMatch(/\b[0-9a-f]{64}\b/);
   expect(line, '审计行缺安装者 uid').toMatch(/\buid[=:]\s*\d+/);
+  expect(line, '审计行不得包含 SSH 口令').not.toContain(SSH.password);
+
+  // 收尾：关掉本实例即可。代理**留着**：后面的特权段用例（AC-15 / AC-19 / AC-21 /
+  // AC-26）都要用已装状态，本轮 `afterAll` 会统一卸载（共享机器不留 setuid root 文件）。
+  // 在这里卸会让它们各自重新部署一遍，多出来的部署余波会干扰紧随其后的时序断言。
+  await app!.close();
+  app = null;
+  mockLlm!.close();
+  mockLlm = null;
 });
 
 // ─────────────────────── 特权段：形态、自检、进程链 ───────────────────────
 
 test.describe('privileged', () => {
   test('AC-15 安装形态：root:root + 04755，同内容重装不重写（AC-17）', async () => {
-    const { installed, stat } = await proxyInstalled();
-    test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；不做修复`);
+    // 自备前置（同 AC-36）：安装形态要看完整体，必须先确保已安装
+    await ensureProxyInstalled();
+    const { stat } = await proxyInstalled();
 
     // AC-15：属主与模式恰好
     expect(stat).toBe('root root 4755');
@@ -1196,8 +1418,8 @@ test.describe('privileged', () => {
   });
 
   test('AC-19 自检四断言：降权后无 CAP_SYS_ADMIN / 三个 uid / mountinfo 一条 / 视图可读', async () => {
-    const { installed } = await proxyInstalled();
-    test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；自检无法验证（不做修复）`);
+    // 自备前置（同 AC-36）：自检要求代理已安装且有允许列表
+    await ensureProxyInstalled();
 
     // 代理自身的 --self-check：不满足条件时非零退出并点名断言（AC-19 / T008）。
     //
@@ -1230,8 +1452,8 @@ test.describe('privileged', () => {
   });
 
   test('AC-21 代理被调用者直接执行时拒绝：非零退出并给出原因', async () => {
-    const { installed } = await proxyInstalled();
-    test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；拒绝面无法验证（不做修复）`);
+    // 自备前置（同 AC-36）：拒绝面要真的把代理当普通程序执行一次
+    await ensureProxyInstalled();
 
     // 以调用者身份（非 setuid 上下文）执行常驻形态：euid != 0 → 必须非零退出
     // 注意：4755 位让内核给 euid 0，因此这条验的是「uid 允许列表之外的调用者」——
@@ -1245,47 +1467,62 @@ test.describe('privileged', () => {
   });
 
   test('AC-26/AC-26b/AC-26c Core 被 SIGKILL 后代理在 1 秒内消失，无残留', async () => {
-    const { installed } = await proxyInstalled();
-    test.skip(!installed, `远端未安装 ${REMOTE_PROXY_PATH}；回收链无法验证（不做修复）`);
+    // 自备前置（同 AC-36）：回收链要 Core 先拉得起代理
+    await ensureProxyInstalled();
 
     const chatPage = await launchWithRemoteWorkspace();
-    await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
-    // **必须真的建一个隔离会话**：代理是「会话第一次需要视图时」才拉起的
-    // （`docs/core/mount-proxy.md` 第 5 节「按需拉起」）。只让勾选框可见就轮到下一步，
-    // 代理永远不会出现——本用例曾因此恒在「代理进程出现」上超时。
-    await chatPage.locator('input[data-work-view-option]').check();
+    // handler 必须在发消息**之前**就位（与其他 Overlay 用例同序）：`checkWorkViewOption`
+    // 之后立刻 fill+Enter，若这时才设 handler，第一次请求会落到默认应答上，
+    // 断言就在等一个永远不会出现的终答。
     mockLlm!.setHandler((req) => {
       if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
         return { kind: 'text', text: 'RECYCLE-PROBE-DONE' };
       }
       return { kind: 'tool', name: 'Bash', args: { command: 'printf ok', description: 'recycle probe' } };
     });
+    // **必须真的建一个隔离会话**：代理是「会话第一次需要视图时」才拉起的
+    // （`docs/core/mount-proxy.md` 第 5 节「按需拉起」）。只让勾选框可见就轮到下一步，
+    // 代理永远不会出现——本用例曾因此恒在「代理进程出现」上超时。
+    await checkWorkViewOption(chatPage);
     await chatPage.fill('textarea.input-textarea', '拉起代理');
     await chatPage.press('textarea.input-textarea', 'Enter');
     await expect(chatPage.getByText('RECYCLE-PROBE-DONE').first()).toBeVisible({ timeout: 120_000 });
 
-    // AC-26b：A 是 Core 的直接子进程、B 是 A 的子进程
+    // AC-26b：A 是 Core 的直接子进程、B 是 A 的子进程。
+    //
+    // 整段按**本会话 Core** 收敛：先等该 Core 名下出现代理（`sessionProxyGoneFor` 取反），
+    // 再沿 ppid 串出它的后代树。不能数全机代理——别的会话的代理会让「至少两个」与
+    // 「Core 被 SIGKILL 后 1 秒内清零」都失去意义。
     const corePid = (await remoteProcesses(CORE_PROCESS_PATTERN))
       .find((p) => p.cmd.includes(' stdio'))?.pid;
     expect(corePid, '应能读到 Core pid').toBeTruthy();
     await pollRemote(
-      async () => (await remoteProcesses(PROXY_PROCESS_PATTERN)).length > 0,
+      async () => !(await sessionProxyGoneFor(corePid as string)),
       60_000,
       '代理进程出现（使用 Overlay 后拉起）',
     );
-    const tree = await sshExec(
-      `ps -o pid=,ppid=,euid=,args= -p $(pgrep -d, -f '${PROXY_PROCESS_PATTERN}' || echo 1)`,
-    );
-    const rows = tree.stdout.trim().split('\n').filter(Boolean);
-    expect(rows.length, '至少 A 与 B 两个代理进程').toBeGreaterThanOrEqual(2);
-    // A 的父进程是 Core
-    const parentIsCore = rows.some((row) => row.trim().split(/\s+/)[1] === corePid);
-    expect(parentIsCore, 'A 必须是 Core 的直接子进程').toBe(true);
+    // 本会话的代理子树：A（本 Core 直接子）与 B（A 的子）
+    const rows = await processRows([PROXY_PROCESS_PATTERN]);
+    const children = new Map<string, ProcessRow[]>();
+    for (const row of rows) {
+      const list = children.get(row.ppid) ?? [];
+      list.push(row);
+      children.set(row.ppid, list);
+    }
+    const directA = children.get(corePid as string) ?? [];
+    expect(directA.length, 'A 必须是 Core 的直接子进程').toBeGreaterThanOrEqual(1);
+    const agentA = directA[0];
+    const agentB = (children.get(agentA.pid) ?? []).filter((r) => r.args.includes(CORE_MOUNT_PROXY_NAME));
+    expect(agentB.length, 'B 必须是 A 的子进程').toBeGreaterThanOrEqual(1);
+    // A 在 fork 出 B 之后立刻降回真实 uid（docs/core/mount-proxy.md 第 3 节步骤 6），
+    // B 继承的也是降权后的身份——所以这里断言的是「都不再是 root」，不是「euid == 0」。
+    const realUid = (await sshExec('id -u')).stdout.trim();
+    expect(agentA.euid, 'A 挂载完成后必须降回真实 uid').toBe(realUid);
 
     // AC-26c：SIGKILL Core（不给任何清理机会）→ B 读 EOF 退出 → A 收尸退出
     await sshExec(`kill -9 ${corePid}`);
     await pollRemote(
-      async () => (await remoteProcesses(PROXY_PROCESS_PATTERN)).length === 0,
+      async () => sessionProxyGoneFor(corePid as string),
       1_000,
       'Core 被 SIGKILL 后代理在 1 秒内消失（socketpair EOF 回收，不依赖 Core 主动 kill）',
     );
