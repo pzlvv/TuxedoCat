@@ -111,7 +111,14 @@ webview 只按能力渲染，不判断宿主类型：
 `webviewEnv.navigateToConversation()` 是**底层原语，不是入口**，只允许被 `navigateToSession()`
 调用。历史上返回父会话按钮与 From 链接曾直连该原语，导致同一类跳转「有的显示 loading、
 有的直接换内容」的双路径不一致（直连路径还会让旧会话内容在 `conversationLoaded` 到达前
-继续显示，且失败时没有超时兜底）。新增跳转入口时必须走 `navigateToSession()`。
+继续显示，且没有进入 loading 状态）。新增跳转入口时必须走 `navigateToSession()`。
+
+加载态只有**一个结束条件**：本视图等待的那个会话的 `conversationLoaded` 到达
+（判据是 `src/webview/conversationLoadingState.ts` 的纯函数 `pendingAfterLoaded`）。不带
+「等太久就放弃」的兜底超时——读盘耗时 = 会话大小 / 链路带宽，没有上界（8MB 会话经慢速
+SSH 读盘实测 24.9s），而 `navigateToSession()` 进 loading 时已清空消息，任何固定超时到点
+都会让页面落到新对话空态
+（`specs/defects/conversation-loading-times-out-before-large-session.md`）。
 
 ### 3.2 渲染方的运行期切换
 

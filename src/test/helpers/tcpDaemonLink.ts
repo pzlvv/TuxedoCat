@@ -19,6 +19,9 @@ export interface TcpDaemonTransport {
 export function tcpDaemonOpener(transport: TcpDaemonTransport): CoreDaemonLinkOpener {
   return {
     open: () => openTcpLink(transport),
+    // 心跳链路：同一条 TCP 上另开一条独立连接（daemon 一条连接一个服务线程，
+    // 心跳的 pong 不会排在业务帧后面时才有意义）
+    openHeartbeat: () => openTcpLink(transport),
     // TCP 直连没有远端准备步骤（socket 连上即就绪）：no-op 是设计允许的形态
     prepare: async () => undefined,
     dispose: () => undefined,

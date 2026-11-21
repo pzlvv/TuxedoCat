@@ -64,12 +64,12 @@ const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
  *
  * 见过首个 `pong` 才武装：链路刚建立时还没有任何入站帧，武装时机放在首个 pong
  * 之后。到期不直接判死：补发一帧探针 ping，再等
- * `LINK_SILENCE_RECHECK_MS`，期间任何入站帧都算活——本进程卡顿（定时器迟到、
- * 入站帧积压在内核缓冲）与高时延链路的探针往返不误杀活链路。判死上限 = 死线 +
- * 宽限 ≤ 10s。
+ * `LINK_SILENCE_RECHECK_MS`，期间任何入站字节（完整帧、半个大帧、心跳 pong）都算活——
+ * 本进程卡顿（定时器迟到、入站帧积压在内核缓冲）、高时延链路的探针往返、正在慢慢
+ * 传输的大帧都不误杀活链路。判死上限 = 死线 + 宽限 ≤ 10s。
  */
 const LINK_SILENCE_DEADLINE_MS = 9_000;
-/** 沉默探针的宽限：探针 ping 发出后等这么久，仍无入站帧才判死 */
+/** 沉默探针的宽限：探针 ping 发出后等这么久，仍无入站字节才判死 */
 const LINK_SILENCE_RECHECK_MS = 900;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -135,6 +135,19 @@ export interface CoreDaemonLink {
  */
 export interface CoreDaemonLinkOpener {
   open(): Promise<CoreDaemonLink>;
+  /**
+   * 打开**只承载心跳**的第二条链路（`docs/core/core-remote.md` 第 2.5 节）。
+   *
+   * 为什么要独立：业务链路的出站是严格有序的（不丢帧、不合并帧），一个几 MB 的
+   * 业务帧没写完之前，排在它后面的 `pong` 出不去——心跳被业务流量饿死，Host 就会把
+   * 「正在传大帧」误判成「对端已死」。这条链路只收 `pong`，与业务帧互不排队。
+   *
+   * 目标 endpoint 与 `open()` 相同：SSH 实现是同一个 daemon 上的另一条转发通道
+   * （daemon 一条连接一个服务线程，`pong` 由它自己的写线程直接写出）。daemon 侧
+   * 不需要新协议——任何控制连接收到 `ping` 都回 `pong`。开不出来就是接线缺陷，
+   * 直接 reject（不降级回单通路，那正是本缺陷）。
+   */
+  openHeartbeat(): Promise<CoreDaemonLink>;
   /**
    * 建链前的准备（SSH 实现为引导远端 daemon——发现 / 部署 / 启动）。
    *
@@ -431,9 +444,19 @@ export class CoreDaemon {
   private exitWaiters: Array<() => void> = [];
   /** 控制通道就绪超时（连接 / daemon 应答） */
   private linkTimer: NodeJS.Timeout | null = null;
+  /**
+   * 心跳专用链路（`docs/core/core-remote.md` 第 2.5 节）。
+   *
+   * 只承载 `ping` / `pong`：业务链路的出站严格有序，大帧没写完之前 `pong` 出不去，
+   * 心跳会随业务流量一起被饿死。这条链路与业务链路在 daemon 侧是两条独立连接，
+   * 各自一个服务线程与写线程，互不排队。`null` 表示尚未建立（或已随链路退出释放）。
+   */
+  private heartbeatLink: CoreDaemonLink | null = null;
+  /** 心跳链路的解码器：与业务解码器分开，残行不能互相污染 */
+  private readonly heartbeatDecoder: FrameDecoder;
   /** 链路心跳定时器（链路就绪后启动，链路退出即停） */
   private heartbeatTimer: NodeJS.Timeout | null = null;
-  /** 最近一次入站控制帧的时刻（沉默判定的时间基准） */
+  /** 最近一次入站字节的时刻（沉默判定的时间基准：字节级而非帧级） */
   private lastInboundAt: number | null = null;
   /** 沉默判定是否已武装（见到首个 pong 才武装） */
   private silenceArmed = false;
@@ -447,6 +470,10 @@ export class CoreDaemon {
     this.decoder = new FrameDecoder({
       onFrame: (value) => this.handleFrame(value),
       onError: (error) => this.log(`[daemon] malformed frame: ${error.message}`),
+    });
+    this.heartbeatDecoder = new FrameDecoder({
+      onFrame: (value) => this.handleHeartbeatFrame(value),
+      onError: (error) => this.log(`[daemon] malformed heartbeat frame: ${error.message}`),
     });
   }
 
@@ -615,6 +642,8 @@ export class CoreDaemon {
     } catch {
       // 已断开
     }
+    // 心跳链路与业务链路一起释放：留着它只会占一条无处上报的转发通道
+    this.releaseHeartbeatLink();
     this.options.transport.dispose();
     const leftovers = [...this.channels.values()];
     this.channels.clear();
@@ -655,6 +684,7 @@ export class CoreDaemon {
     } catch {
       // 已断开
     }
+    this.releaseHeartbeatLink();
     // SSH 接入：控制通道只是这条 SSH 连接上的一条转发通道，一并释放
     this.options.transport.dispose();
     // daemon 退出后仍未收到 workspaceClosed 的 channel：一起失败
@@ -668,7 +698,17 @@ export class CoreDaemon {
 
   // ===================== 内部：控制通道 =====================
 
-  /** 确保控制通道已建立；返回 false 表示失败（失败已通过 fatalAll 上报） */
+  /**
+   * 确保控制通道已建立；返回 false 表示失败（失败已通过 fatalAll 上报）。
+   *
+   * 业务链路与心跳链路一起建（`docs/core/core-remote.md` 第 2.5 节）：心跳走独立通路，
+   * 才不会被大业务帧堵在同一个有序出站队列后面。心跳链路开不出来就是接线缺陷，
+   * 按建链失败上报——不降级回「只在业务链路上心跳」，那正是本缺陷的成因。
+   *
+   * 两条链路**先后**打开而不是并发：SSH 实现共用一个 `SshClient`，它在建链进行中再被
+   * 调 `connect()` 会直接抛错（`sshClient.ts` 的构造期防重入）；业务链路落定后 SSH 已经
+   * 连上，第二条的 `connect()` 是幂等快路径，代价只是一次转发通道的建立。
+   */
   private ensureStarted(): boolean {
     if (this.stopped) return false;
     if (this.writer || this.opening) return true;
@@ -676,10 +716,23 @@ export class CoreDaemon {
     const attempt = ++this.linkAttempt;
     this.armLinkTimeout('Core daemon connection');
     this.options.transport.open().then(
-      (link) => {
+      async (link) => {
         if (attempt !== this.linkAttempt || this.stopped) {
           // 已经超时 / 关闭：这条链路来晚了，直接放掉
           link.kill();
+          return;
+        }
+        let heartbeat: CoreDaemonLink;
+        try {
+          heartbeat = await this.options.transport.openHeartbeat();
+        } catch (error) {
+          // 心跳开不出来就不留半条接入：业务链路也放掉，按建链失败上报
+          link.kill();
+          throw error;
+        }
+        if (attempt !== this.linkAttempt || this.stopped) {
+          link.kill();
+          heartbeat.kill();
           return;
         }
         this.opening = false;
@@ -691,8 +744,14 @@ export class CoreDaemon {
         // 每一帧都变成坏帧（请求挂到超时，心跳却照发）
         // （specs/defects/daemon-decoder-keeps-stale-partial-line.md）
         this.decoder.reset();
-        link.onData((chunk) => this.decoder.push(chunk));
+        link.onData((chunk) => {
+          // 存活判据是字节级：一个还没收完的大帧同样是「对端在写」的证据，
+          // 只认完整帧会把慢速大帧判成断连（本缺陷的第二个成因）
+          this.noteInbound();
+          this.decoder.push(chunk);
+        });
         link.onClose(() => this.handleExit());
+        this.attachHeartbeatLink(heartbeat, attempt);
         // 链路建立即可写：清掉就绪超时、开始心跳，放行排队的帧
         this.clearLinkTimeout();
         this.linkReady = true;
@@ -707,8 +766,58 @@ export class CoreDaemon {
         this.opening = false;
         this.failPendingLink(toError(error));
       },
-    );
+    ).catch((error: unknown) => {
+      // `async` 回调里抛出的失败（心跳链路打不开）走这里：与管理建链失败同一出口
+      if (attempt !== this.linkAttempt) return;
+      this.opening = false;
+      this.failPendingLink(toError(error));
+    });
     return true;
+  }
+
+  /**
+   * 挂上心跳专用链路（`docs/core/core-remote.md` 第 2.5 节）。
+   *
+   * 只认 `pong`（有的对端／路径还会回别的帧，一律记诊断丢弃）；它同样按字节召
+   * `noteInbound`——心跳链路上先到的字节也说明对端活着。
+   */
+  private attachHeartbeatLink(link: CoreDaemonLink, attempt: number): void {
+    this.heartbeatLink = link;
+    this.heartbeatDecoder.reset();
+    link.onData((chunk) => {
+      this.noteInbound();
+      this.heartbeatDecoder.push(chunk);
+    });
+    link.onClose(() => {
+      // 心跳链路自己断了：不能悄悄退回「只在业务链路上心跳」——那正是本缺陷的形态。
+      // 两条链路是一个整体（同一 daemon、同一条 SSH 连接），按链路退出收尾，
+      // 由宿主走重连。
+      if (attempt !== this.linkAttempt) return;
+      if (this.heartbeatLink !== link) return;
+      this.heartbeatLink = null;
+      this.log('[daemon] heartbeat link closed; treating the control channel as gone');
+      // 业务链路也一起断：两条链路是同一个 daemon 上的同一个接入，只剩一条时
+      // 心跳与业务帧又会回到同一条通路（本缺陷的形态），留给宿主整体重连
+      try {
+        this.writer?.kill();
+      } catch {
+        // 已断开
+      }
+      this.handleExit();
+    });
+  }
+
+  private handleHeartbeatFrame(value: unknown): void {
+    if (!isDaemonToHostFrame(value)) {
+      this.log(`[daemon] unknown frame on heartbeat link: ${JSON.stringify(value)}`);
+      return;
+    }
+    if (value.kind !== 'pong') {
+      this.log(`[daemon] unexpected ${value.kind} on heartbeat link; dropped`);
+      return;
+    }
+    // 首个 pong 武装沉默判定（与业务链路同一条判据）
+    if (!this.silenceArmed) this.armSilenceWatchdog();
   }
 
   /**
@@ -750,9 +859,13 @@ export class CoreDaemon {
   // ===================== 内部：链路心跳 =====================
 
   /**
-   * 启动链路心跳（链路就绪后）：定期发 `ping`，daemon 以「最近一次收到控制帧」
-   * 判定链路死活，沉默超过它的心跳超时即按断开处理并回收全部 Core
-   * （`docs/core/core-remote.md` 第 2.5 节）。帧走 `enqueue`，与业务帧同序。
+   * 启动链路心跳（链路就绪后）。
+   *
+   * 两条职责分开走两条链路（`docs/core/core-remote.md` 第 2.5 节）：
+   * - 业务链路上照常发 `ping`：daemon 的心跳空闲回收按连接独立武装，业务连接长时间
+   *   没有入站帧（大帧正在下行）时靠这条上行帧顺延自己的死线；
+   * - 心跳链路是存活探测的独立通路：它的 `pong` 不会被大业务帧堵在同一个有序出站队列
+   *   后面，因此「正在传大帧」与「对端已死」不再同形。
    */
   private startHeartbeat(): void {
     if (this.heartbeatTimer) return;
@@ -760,9 +873,21 @@ export class CoreDaemon {
     const timer = setInterval(() => {
       if (this.stopped || !this.linkReady) return;
       this.enqueue(encodeDaemonFrame({ kind: 'ping' }));
+      this.sendHeartbeatPing();
     }, interval);
     timer.unref();
     this.heartbeatTimer = timer;
+  }
+
+  /** 在心跳链路上发一帧 `ping`；链路不在即无从探测，由 close 分支统一收尾 */
+  private sendHeartbeatPing(): void {
+    const link = this.heartbeatLink;
+    if (!link) return;
+    try {
+      link.write(encodeDaemonFrame({ kind: 'ping' }));
+    } catch (error) {
+      this.log(`[daemon] heartbeat ping failed: ${toError(error).message}`);
+    }
   }
 
   private stopHeartbeat(): void {
@@ -775,7 +900,10 @@ export class CoreDaemon {
   // ===================== 内部：沉默判定 =====================
 
   /**
-   * 任何入站控制帧都证明链路活着：前移沉默判定的时间基准。
+   * 链路上任何入站字节都证明对端活着：前移沉默判定的时间基准。
+   *
+   * 判据是字节级而不是帧级：一个几 MB 的业务帧要传几十秒，期间没有任何完整帧，
+   * 但它一直在交付字节——按帧判活会把慢速大帧当成断连。
    * 探针宽限期内（`silenceTimer` 为 null，控制权在 recheck）不重排常规检查，
    * 由 `finishSilenceRecheck` 统一收口。
    */
@@ -813,6 +941,9 @@ export class CoreDaemon {
    * 沉默到期：补发一帧探针 ping，宽限 `silenceRecheckMs` 后再判。
    * 链路活着的话 pong 在一个 RTT 内回来；不宽限直接判死，会把本进程卡顿
    * （定时器迟到、入站帧积压在内核缓冲等先于定时器入队）误报成断连。
+   *
+   * 探针同时走两条通路：心跳链路是主通路，业务链路的 ping 让 daemon 侧的空闲回收
+   * 也照常顺延（`docs/core/core-remote.md` 第 2.5 节）。
    */
   private beginSilenceRecheck(): void {
     if (this.stopped || !this.linkReady || !this.silenceArmed) return;
@@ -821,6 +952,7 @@ export class CoreDaemon {
       this.silenceTimer = null;
     }
     this.enqueue(encodeDaemonFrame({ kind: 'ping' }));
+    this.sendHeartbeatPing();
     if (this.recheckTimer) clearTimeout(this.recheckTimer);
     const recheckMs = this.options.silenceRecheckMs ?? LINK_SILENCE_RECHECK_MS;
     const timer = setTimeout(() => this.finishSilenceRecheck(recheckMs), recheckMs);
@@ -829,9 +961,9 @@ export class CoreDaemon {
   }
 
   /**
-   * 宽限期收口：期间来过任何帧（探针的 pong / 业务帧）就算活，回到常规沉默检查；
-   * 仍无入站即判死。kill 触发链路 close，handleExit 以 `silenceFatal` 上报 fatal，
-   * 不落在「exited unexpectedly」的默认文案上。
+   * 宽限期收口：期间来过任何入站字节（心跳 pong、业务帧、半个大帧）就算活，
+   * 回到常规沉默检查；仍无入站即判死。kill 触发链路 close，handleExit 以
+   * `silenceFatal` 上报 fatal，不落在「exited unexpectedly」的默认文案上。
    */
   private finishSilenceRecheck(recheckMs: number): void {
     if (this.stopped || !this.linkReady || !this.silenceArmed) return;
@@ -844,7 +976,8 @@ export class CoreDaemon {
     }
     const deadlineMs = this.options.silenceDeadlineMs ?? LINK_SILENCE_DEADLINE_MS;
     this.silenceFatal = new Error(
-      `Remote Core link has been silent for ${deadlineMs + recheckMs}ms (no pong); `
+      `Remote Core link has been silent for ${deadlineMs + recheckMs}ms `
+      + '(no pong on the heartbeat link, no inbound bytes on the business link); '
       + 'declaring it dead. The remote daemon or the network path is gone.',
     );
     this.log(`[daemon] ${this.silenceFatal.message}`);
@@ -876,6 +1009,18 @@ export class CoreDaemon {
     this.fatalAll(error);
   }
 
+  /** 关掉心跳链路并摘掉引用（幂等）；链路退出 / 关闭时与业务链路一起收尾 */
+  private releaseHeartbeatLink(): void {
+    const link = this.heartbeatLink;
+    this.heartbeatLink = null;
+    if (!link) return;
+    try {
+      link.kill();
+    } catch {
+      // 已断开
+    }
+  }
+
   private handleExit(): void {
     if (this.exitHandled) return; // close 只处理一次
     this.exitHandled = true;
@@ -884,6 +1029,7 @@ export class CoreDaemon {
     this.stopLinkWatchdog();
     this.opening = false;
     this.writer = null;
+    this.releaseHeartbeatLink();
     this.linkReady = false;
     this.waitingDrain = false;
     const waiters = this.exitWaiters;
@@ -951,11 +1097,13 @@ export class CoreDaemon {
       this.log(`[daemon] unknown or malformed frame: ${JSON.stringify(value)}`);
       return;
     }
-    // 任何合法入站帧都证明链路活着：前移沉默判定的时间基准
-    this.noteInbound();
+    // 入站字节的存活证据已在 link.onData 的 noteInbound 里记过（字节级，见那里）；
+    // 这里只按帧分派
     switch (value.kind) {
       case 'pong': {
-        // 心跳应答：首个 pong 武装沉默判定（`docs/core/core-remote.md` 第 2.5 节）
+        // 心跳应答：首个 pong 武装沉默判定（`docs/core/core-remote.md` 第 2.5 节）。
+        // 业务链路上的 pong 是 daemon 对业务链路 ping 的应答——它同样证明对端活着，
+        // 只是排在大帧后面时不能当主通路（主通路是心跳链路的 pong）。
         if (!this.silenceArmed) this.armSilenceWatchdog();
         return;
       }
