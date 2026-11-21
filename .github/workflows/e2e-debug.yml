@@ -1,0 +1,96 @@
+# 单用例调试车道（`workflow_dispatch`，手动填参数）。
+#
+# 为什么单独一份：`all.yml` 的 e2e-ssh 车道要 90 分钟才给结论，而定位一处失败只需要
+# 跑 1-2 条用例（约 2 分钟）。这份工作流复用同一套前置（产物 / 环境文件 / xvfb），
+# 只把「跑哪些用例」变成输入，并用 line reporter 把每一步打到日志里。
+#
+# 不做的事：不替代 all.yml 的定时回归，不跑全量（那是 all.yml 的职责）；凭证口径与
+# all.yml 完全一致（secrets 现写环境文件、关 trace、上传前扫描）。
+name: e2e-debug
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: 'Playwright project（如 electron-ssh）'
+        required: true
+        default: 'electron-ssh'
+      grep:
+        description: '用例标题过滤（-g 参数，留空跑整个 project）'
+        required: false
+        default: ''
+      file:
+        description: '只跑某个 spec 文件（相对 e2e/，如 electron/overlayMountProxyRemote.spec.ts）'
+        required: false
+        default: ''
+
+jobs:
+  debug:
+    name: e2e-debug
+    runs-on: ubuntu-latest
+    # 单用例调试不该跑太久：20 分钟没结论说明前置就有问题
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
+      # 产物与 all.yml 的 prepare 同一套命令，不依赖 artifact（调试要能独立跑）
+      - run: npm run build:core:linux-x64
+      - run: npm run build:webview
+      - run: npm run copy-assets
+      - run: npm run build:electron
+      - name: 写 e2e/environments.json
+        env:
+          E2E_SSH_HOST: ${{ secrets.E2E_SSH_HOST }}
+          E2E_SSH_PORT: ${{ secrets.E2E_SSH_PORT }}
+          E2E_SSH_USER: ${{ secrets.E2E_SSH_USER }}
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+          E2E_SSH_SUDO_USER: ${{ secrets.E2E_SSH_SUDO_USER }}
+          E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
+          E2E_SSH_LLM_ADVERTISE_HOST: ${{ secrets.E2E_SSH_LLM_ADVERTISE_HOST }}
+        run: node scripts/write-e2e-environments.mjs
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: xvfb openbox
+      - run: npx playwright install-deps chromium
+      # 把应用主进程日志透传到测试输出：调试车道就是要看这些
+      - name: 跑用例（E2E_DEBUG=1 透传主进程日志）
+        env:
+          E2E_DEBUG: '1'
+          PROJECT: ${{ inputs.project }}
+          GREP: ${{ inputs.grep }}
+          FILE: ${{ inputs.file }}
+        run: |
+          set -o pipefail
+          args=(-c e2e/playwright.config.ts "--project=${PROJECT}")
+          if [ -n "$GREP" ]; then args+=(-g "$GREP"); fi
+          if [ -n "$FILE" ]; then args+=("$FILE"); fi
+          # CI 上关掉重试：调试要一次就给出真实错误，不要重试掩盖
+          args+=(--retries=0 --reporter=list)
+          echo "运行：npx playwright test ${args[*]}"
+          xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test ${args[*]}"
+      # 凭证闸门与 all.yml 同口径：trace 会记录 fill() 进密码框的明文，上传前先扫
+      - name: 扫描 test-results 是否含凭证明文
+        if: always()
+        env:
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+          E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
+        run: node scripts/scan-e2e-artifacts-for-secrets.mjs test-results
+      # 失败时把 Playwright 的 error-context 与 trace 一起留下
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-debug-results
+          path: test-results
+          retention-days: 3
