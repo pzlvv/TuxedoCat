@@ -1049,7 +1049,7 @@ export interface SessionRuntimeState {
   /** 正在压缩上下文（会整体替换消息数组；与查询同属前台工作） */
   compacting: boolean;
   /**
-   * 已登记手动压缩、等待下一轮对话开始时执行（`compact.rs` 的 `PENDING_COMPACT`）。
+   * 已登记手动压缩、等前台工作收尾后执行（`compact.rs` 的 `PENDING_COMPACT`）。
    * 不参与派生 `idle`：排队不是正在执行的工作。
    */
   pendingCompact: boolean;

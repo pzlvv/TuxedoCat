@@ -96,7 +96,8 @@ pub fn should_auto_compact(
 
 /// 正在压缩的会话
 static COMPACTING: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// 待压缩的会话（非空闲时手动触发，延后到下一轮对话开始执行）
+/// 待压缩的会话（前台仍在工作时手动触发，等前台收尾后执行——
+/// `docs/features/compaction.md` FR-002）
 static PENDING_COMPACT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn mark_compacting(session_id: &str) {
@@ -126,6 +127,21 @@ pub fn unmark_pending_compact(session_id: &str) {
         .lock()
         .unwrap()
         .retain(|id| id != session_id);
+}
+
+/// 原子取走待压缩标记：返回 true 表示本次调用是唯一消费方。
+///
+/// 「取走」必须是原子的：消费循环的轮次边界与 `Core::request_compact` 的立即压缩
+/// 路径都会尝试消费同一条登记，各自「先查再清」会让同一次请求压两遍。
+pub fn take_pending_compact(session_id: &str) -> bool {
+    let mut sessions = PENDING_COMPACT.lock().unwrap();
+    match sessions.iter().position(|id| id == session_id) {
+        Some(index) => {
+            sessions.remove(index);
+            true
+        }
+        None => false,
+    }
 }
 
 pub fn is_pending_compact(session_id: &str) -> bool {

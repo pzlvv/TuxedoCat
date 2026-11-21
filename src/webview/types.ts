@@ -308,7 +308,7 @@ export interface SessionRuntimeState {
   waiting: boolean;
   queryRunning: boolean;
   compacting: boolean;
-  /** 已登记手动压缩、等待下一轮开始；不参与 `idle` */
+  /** 已登记手动压缩、等前台工作收尾后执行；不参与 `idle` */
   pendingCompact: boolean;
   backgroundRunning: boolean;
   /**
