@@ -433,7 +433,7 @@ pub fn build_background_reminder_text(
     };
     let mut lines = vec![
         "<reminder>".to_string(),
-        format!("Background bash task {task_id} is still running."),
+        format!("Background task {task_id} is still running."),
         format!("Description: {description}{command_part}"),
         format!("Elapsed: {}", format_duration(elapsed_ms)),
     ];

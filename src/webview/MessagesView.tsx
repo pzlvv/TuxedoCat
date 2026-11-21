@@ -556,7 +556,7 @@ const UserMessage = memo(function UserMessage({
         ? t('messagesView.fromAgent', { id: agentDisplayName ?? '' })
         // `To` 消息（`meta.type = 'to'`）的 metaParam 自带 "To: " 前缀，原样显示
         : metaParam ?? '';
-    // 完成通知的描述带括号（「Background bash completed. (描述)」），与通知文案本身的
+    // 完成通知的描述带括号（「Background task completed. (描述)」），与通知文案本身的
     // 引号形态区分开：括号是折叠行的排版，不是正文内容
     const summary = background
       ? `(${background.description})`
