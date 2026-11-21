@@ -75,6 +75,11 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
+  // 失败早停：默认会跑完全部用例并对每条失败用例重试，一条环境级故障能把车道拖到
+  // 一个多小时（实测 electron-ssh 20 条用例全红 × 2.2 分钟 × 重试 = 95 分钟，而根因
+  // 只是同一处启动失败）。CI 上 3 条失败即停：足够确认「不是偶发」，又能在几分钟内
+  // 拿到结论。本地不设限，方便一次看完所有失败。
+  maxFailures: process.env.CI ? 3 : 0,
   reporter: [['list']],
   use: {
     trace: 'retain-on-failure',
