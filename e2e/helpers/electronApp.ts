@@ -1,4 +1,4 @@
-import { spawn, execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { workspaceRefKey } from '../../src/host/workspaceRef';
 import { CONFIG_DIR_NAME, EXTENSION_NAME } from '../../src/config/project';
 import { TRAY_SOUND_DISABLE_ENV } from '../../electron/trayAttentionSound';
 import type { MockLlm } from './mockLlmServer';
+import { killSpawnedApp as killSpawnedAppProcess } from './processTeardown';
 
 /**
  * Electron 整应用启动器。
@@ -131,37 +132,16 @@ interface SpawnedApp {
  * 实测会留下完整的 Electron 进程树 + 沙箱 home；而垂死的 Electron 进程与下一个实例争
  * CPU 正是「时序敏感断言偶发超时」的已知成因（见 `close` 的原注释），于是泄漏会自我放大。
  *
- * 必须等进程树真正退出再返回：串行用例下，下一个实例若与垂死的 Electron / core 进程
- * 争 CPU，时序敏感的断言会偶发超时（实测回归）。
+ * 实现抽在 `processTeardown.ts`：那里只依赖 `node:child_process`，单测能直接执行
+ * （`src/test/e2eProcessTeardown.test.ts`）。POSIX 上必须杀进程组——只 kill 主进程会留下
+ * 孤儿（`specs/defects/e2e-linux-teardown-leaves-orphans.md` 的实测）。
  */
 async function killSpawnedApp(spawned: SpawnedApp): Promise<void> {
-  try {
-    const pid = spawned.child.pid;
-    if (pid) {
-      // Windows 下杀进程树（GPU/渲染器随父进程退出不可靠时兜底）
-      if (process.platform === 'win32') {
-        await new Promise<void>((resolve) => {
-          execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => resolve());
-        });
-        const deadline = Date.now() + 10_000;
-        while (Date.now() < deadline) {
-          const alive = await new Promise<boolean>((resolve) => {
-            execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
-              resolve(!err && new RegExp(`^"[^"]*","${pid}"`).test(String(stdout)));
-            });
-          });
-          if (!alive) break;
-          await new Promise((r) => setTimeout(r, 200));
-        }
-      } else {
-        spawned.child.kill('SIGKILL');
-      }
-    }
-  } finally {
-    if (spawned.ownsHomeDir) {
-      await fs.promises.rm(spawned.homeDir, { recursive: true, force: true }).catch(() => undefined);
-    }
-  }
+  await killSpawnedAppProcess({
+    child: spawned.child,
+    ownsHomeDir: spawned.ownsHomeDir,
+    homeDir: spawned.homeDir,
+  });
 }
 
 /** 等待子进程输出里出现某行（stderr + stdout 合并监听） */
@@ -276,6 +256,10 @@ async function spawnApp(options: {
     env,
     cwd: options.repoRoot,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // POSIX：让 Electron 自成进程组，关闭时才能整组杀掉（否则 GPU / renderer / Core
+    // 子进程会变孤儿，与下一条用例争 CPU——见 specs/defects/e2e-linux-teardown-leaves-orphans.md）。
+    // Windows 上该选项会新开控制台窗口，必须排除。
+    detached: process.platform !== 'win32',
   });
   // E2E_DEBUG=1 时把应用主进程日志透传到测试输出（排查 core / 权限链路）
   if (process.env.E2E_DEBUG) {

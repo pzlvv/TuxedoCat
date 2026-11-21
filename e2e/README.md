@@ -288,7 +288,18 @@ e2e/
     实测留下过完整的 Electron 进程树（主进程 + GPU + 网络 + 两个渲染进程）与
     `tuxedo-e2e-home-*`。而垂死的 Electron 进程与下一个实例争 CPU 正是「时序敏感断言偶发
     超时」的成因（见 `close` 的原注释），于是泄漏会让后续用例继续握手超时。现在启动失败走
-    与 `close` 同一个 `killSpawnedApp`（taskkill `/T /F` + 轮询等进程树真正退出 + 删沙箱）。
-    排查残留：`Get-CimInstance Win32_Process -Filter "Name='electron.exe'"` 看
+    与 `close` 同一个 `killSpawnedApp`（`e2e/helpers/processTeardown.ts`）：Windows 用
+    `taskkill /T /F`，**POSIX 用进程组 `kill(-pid)`**（`spawn` 时 `detached: true` 让
+    Electron 自成进程组），两条分支都轮询等进程树真正退出再返回，然后删沙箱。
+    **POSIX 分支不能只 `child.kill()`**：Windows 的 `kill` 会连带结束子进程，POSIX 不会——
+    实测同一个探针在 Linux 上 `parent_alive=false grandchild_alive=true`（孙进程成孤儿），
+    在 Windows 上父子都退出。这个平台差异让缺陷在开发机上永远复现不出来：`electron-ssh`
+    在 Linux CI 上单文件跑 139 分钟仍未结束，同一份代码在 Windows 开发机整轮 2.5 分钟
+    （`specs/defects/e2e-linux-teardown-leaves-orphans.md`）。回归用例
+    `src/test/e2eProcessTeardown.test.ts` 因此以 CI 的 ubuntu `tests` job 为判别面，
+    Windows 上 RT-2 显式跳过并打印原因。
+    排查残留：Windows 用 `Get-CimInstance Win32_Process -Filter "Name='electron.exe'"` 看
     `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的应用进程：沙箱实例的可执行
-    文件在仓库的 node_modules 下，真实安装的在用户目录的 Programs 下）。
+    文件在仓库的 node_modules 下，真实安装的在用户目录的 Programs 下）；Linux 用
+    `ps -o pid,etimes,args -u "$(id -u)" | grep electron` 看是否有跨用例存活的进程。
+
