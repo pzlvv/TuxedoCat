@@ -33,6 +33,11 @@ Execute shell commands.
 - No `/` inside the pattern: use `-p` with a glob, e.g. `fd -p -g '**/i18n/*.ts' src`.
 - Empty output is not absence: `.gitignore` and hidden entries are skipped (`-I` / `-H`), and no match exits 0.
 
+**Prefer the Read tool**: use `Read` instead of `cat` / `sed` to look at a file's content:
+- `cat a.txt` → `Read` with `file_path`
+- `sed -n '1,40p' f` → `Read` with `offset` / `limit`
+- Use `cat` / `sed` only when the content must flow into another command (pipes, redirection).
+
 **Syntax Guidelines**:
 - Use forward slashes for paths
 - Use unix-style commands: ls, cat, rm, cp, mv, mkdir, touch, sort, rg, fd, head, tail, wc, awk, sed, cut, tr, uniq, diff, tar, zip, unzip, curl, wget

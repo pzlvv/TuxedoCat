@@ -94,7 +94,13 @@ mod linux {
                     std::process::exit(2);
                 }
                 match privilege::install_from_stdin() {
-                    Ok(digest) => emit_line(&digest),
+                    Ok(report) => {
+                        // 两行固定形状：宿主按行取 sha256 校验内容（FR-005），按
+                        // `installer-uid` 行写审计记录（FR-012）。安装者 uid 是**本机**
+                        // 的真实 uid，远端部署时与宿主进程 uid 不是一回事。
+                        emit_line(&report.digest);
+                        emit_line(&format!("installer-uid={}", report.installer_uid));
+                    }
                     Err(reason) => {
                         eprintln!("[{PROXY_NAME}] 安装失败：{reason}");
                         std::process::exit(3);

@@ -121,7 +121,7 @@ fn responses_stream_emits_text_usage_and_stop_reason() {
 
 #[test]
 fn responses_stream_emits_thinking_and_tool_call() {
-    let arguments = r#"{"command":"echo hi"}"#;
+    let arguments = r#"{"command":"echo hi", "description": "test command"}"#;
     let (result, events) = collect(responses_thinking_tool_sse(
         "想一想",
         "好的",

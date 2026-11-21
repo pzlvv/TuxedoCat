@@ -1,16 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
-
-/** 加载兜底超时：目标会话数据长时间未到达（加载失败等异常）时自动结束 loading，避免永久遮罩 */
-const CONVERSATION_LOAD_TIMEOUT_MS = 15_000;
+import { useCallback, useState } from 'react';
+import { pendingAfterBegin, pendingAfterLoaded, type PendingSession } from '../conversationLoadingState';
 
 export interface ConversationLoadingController {
   /** 是否正在等待本视图负责的会话数据（conversationLoaded） */
   isLoading: boolean;
   /** 本视图当前等待的会话；null 表示没有待加载会话（新对话/已加载完成） */
-  pendingSessionId: string | null;
+  pendingSessionId: PendingSession;
   /** 声明本视图即将原地加载某个会话（切换会话时调用；null 表示进入新对话） */
   begin: (sessionId: string | null | undefined) => void;
-  /** 收到某个会话的 conversationLoaded 数据（仅当与当前等待的会话一致时结束 loading） */
+  /**
+   * 收到某个会话的 `conversationLoaded`：本视图负责的那个会话数据已到达，结束加载。
+   *
+   * 加载态的另一条结束出口是「该会话的装载被 Core 拒绝」（`notice.session.lockedOpen`，
+   * `conversationLoadRejection.ts`），它也走本方法收尾。两条都不是「时间到了」——没有
+   * 「等太久就放弃」的兜底超时。读盘耗时 = 会话大小 / 链路带宽，没有上界（8MB 会话经
+   * 慢速 SSH 读盘实测 24.9s），任何固定超时都会在更慢的链路上把加载态提前撤掉，让页面
+   * 落到新对话空态
+   * （`specs/defects/conversation-loading-times-out-before-large-session.md`）。
+   */
   finish: (sessionId?: string | null) => void;
   /** 本视图进入一个无需加载的新对话 */
   reset: () => void;
@@ -29,40 +36,26 @@ export interface ConversationLoadingController {
  * openConversation），本视图不会进入 loading，也就不会出现「显示了 loading
  * 但没有任何人通知它完成」的情况。
  *
- * `finish` 带 sessionId 校验：迟到的旧会话数据不会误关新会话的 loading。
+ * 结束判据与匹配规则是纯函数（`../conversationLoading`），可以被单测直接驱动。
  */
 export function useConversationLoading(
   initialTargetSessionId?: string | null,
 ): ConversationLoadingController {
-  const [pendingSessionId, setPendingSessionId] = useState<string | null>(
-    initialTargetSessionId ?? null,
+  const [pendingSessionId, setPendingSessionId] = useState<PendingSession>(
+    pendingAfterBegin(initialTargetSessionId),
   );
 
   const begin = useCallback((sessionId: string | null | undefined) => {
-    setPendingSessionId(sessionId ? sessionId : null);
+    setPendingSessionId(pendingAfterBegin(sessionId));
   }, []);
 
   const finish = useCallback((sessionId?: string | null) => {
-    setPendingSessionId((prev) => {
-      if (prev === null) return null;
-      // 未指定 sessionId 时按“当前等待的会话已到达”处理；指定时要求严格匹配
-      if (sessionId && prev !== sessionId) return prev;
-      return null;
-    });
+    setPendingSessionId((prev) => pendingAfterLoaded(prev, sessionId));
   }, []);
 
   const reset = useCallback(() => {
     setPendingSessionId(null);
   }, []);
-
-  // 兜底超时：只有仍在等待时才生效，正常结束会随 pendingSessionId 变化被清理
-  useEffect(() => {
-    if (pendingSessionId === null) return;
-    const timer = setTimeout(() => {
-      setPendingSessionId((prev) => (prev === pendingSessionId ? null : prev));
-    }, CONVERSATION_LOAD_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [pendingSessionId]);
 
   return {
     isLoading: pendingSessionId !== null,

@@ -308,22 +308,41 @@ export interface SessionRuntimeState {
   waiting: boolean;
   queryRunning: boolean;
   compacting: boolean;
-  /** 已登记手动压缩、等待下一轮开始；不参与 `idle` */
+  /** 已登记手动压缩、等前台工作收尾后执行；不参与 `idle` */
   pendingCompact: boolean;
   backgroundRunning: boolean;
   /**
    * 运行中后台 Bash 任务清单（specs/019 FR-001），注册序；空集为 `[]`。
-   * 镜像 shared `BackgroundTaskBrief`（ taskId / description / command）——webview
+   * 镜像 shared `BackgroundTaskBrief`（ taskId / description / command / startedAt）——webview
    * 不 import shared 的 AssistantEventBus（其类型链含 node 依赖，会破坏 webview
-   * 构建图），与 `SessionRuntimeState` 整体镜像同一口径。
+   * 构建图），与 `SessionRuntimeState` 整体镜像同一口径。`startedAt` 为 `null` 表示
+   * 快照没带开始时刻（旧宿主 / 假宿主）：渲染侧只省略时长，不猜值。
    */
-  backgroundTasks: { taskId: string; description: string; command: string }[];
+  backgroundTasks: {
+    taskId: string;
+    description: string;
+    command: string;
+    startedAt: number | null;
+  }[];
   subAgentRunning: boolean;
   /**
    * 子代理会话为创建时 Agent 工具调用的 description；普通会话与恢复路径
    * 取不到时为 `null`（UI 显示回退文案）
    */
   subAgentDescription: string | null;
+  /** 本地子代理的登记时刻（毫秒，specs/054 FR-002）；取不到为 `null`（遗漏时长） */
+  subAgentStartedAt: number | null;
+  /**
+   * 发起方仍在登记的跨工作区子代理（specs/054 FR-003），登记序；空集为 `[]`。
+   * 镜像 shared `RemoteSubAgentBrief`——远程子代理在本进程没有会话条目，只能由 core
+   * 的远程登记投影过来（不能从 `creator` 反推）。
+   */
+  remoteSubAgents: {
+    sessionId: string;
+    description: string | null;
+    workspaceId: string;
+    startedAt: number;
+  }[];
   /** 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 null，specs/025 FR-002） */
   parentSessionId: string | null;
   /**

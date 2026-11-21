@@ -1253,8 +1253,9 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             core.on_queued_message_discarded(&session_id, uuid);
         }
         "compactRequested" => {
-            // 空闲时立即压缩，非空闲时
-            // 登记「待压缩」交由下一轮对话开始时执行。
+            // 前台已停下（abort 按钮黄 / 灰）立即压缩——只剩后台 Bash 任务或子代理时
+            // 不等待它们结束；前台仍在工作（红色档）登记「待压缩」，交由当前轮次
+            // 结束、队列排空时执行（`docs/features/compaction.md` FR-002）。
             //
             // 压缩要发一次 LLM 摘要请求（阻塞），放后台线程跑，避免卡住帧通道。
             let core = Arc::clone(core);

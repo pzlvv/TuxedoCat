@@ -66,6 +66,13 @@ sudo rm -f /usr/libexec/<core.mountProxyName> /usr/libexec/<core.mountProxyName>
 代理内容本身不进日志。行由 `src/host/mountProxyInstall.ts` 的 `auditLine` 产出，形状有
 单测锁定。
 
+**安装者 uid 是目标机上的真实身份**：代理 `--install` 成功时在 stdout 回显两行——落盘
+内容的 sha256 与 `installer-uid=<n>`（该机的 `SUDO_UID`，无则 `getuid()`，与写允许列表
+`<落点>.uids` 用的是同一个值）。宿主只读这两行，**不取自己的 `process.getuid()`**：远端
+部署时两者是不同机器上的两个账号，Windows 宿主更是根本取不到
+（[mount-proxy-audit-uid-from-host-process.md](../../specs/defects/mount-proxy-audit-uid-from-host-process.md)）。
+缺这一行即判部署失败，不写 `unknown` 之类的占位。
+
 ## 3. 特权阶段的时序与加固
 
 入口自检与请求收紧在任何特权动作之前完成，两者都是纯函数，可被单测逐条驱动：

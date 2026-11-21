@@ -108,6 +108,7 @@ const App = () => {
    */
   const {
     isLoading: isLoadingConversation,
+    pendingSessionId: pendingConversationLoad,
     begin: beginConversationLoad,
     finish: finishConversationLoad,
     reset: resetConversationLoad,
@@ -544,11 +545,15 @@ const App = () => {
     [sessionTodos, currentSessionId],
   );
 
-  // abort 悬停明细（specs/019 FR-002）：黄色态悬停 1s 显示的后台任务 / 子代理清单。
-  // tasks 读当前会话快照的 backgroundTasks；子代理由唯一纯函数 collectRunningSubAgents
-  // 按 parentSessionId 从全量快照聚合。`?? []` 是 specs/019「边界与错误路径」明文的缺
-  // 字段口径（旧宿主 / 假宿主未带新字段），与上方布尔位的缺字段处理同一口径。
-  const abortHoverDetail: { tasks: { taskId: string; description: string; command: string }[]; subAgents: RunningSubAgentBrief[] } = useMemo(() => {
+  // abort 悬停明细（specs/019 FR-002 / specs/054 FR-004）：黄色态悬停 1s 显示的后台任务 /
+  // 子代理清单。tasks 读当前会话快照的 backgroundTasks（每条带开始时刻）；子代理由唯一
+  // 纯函数 collectRunningSubAgents 按 parentSessionId 从全量快照聚合，并合并该会话快照里的
+  // 远程登记（远程子代理在本进程没有会话条目）。`?? []` 是 specs/019 与 specs/054
+  // 「边界与错误路径」明文的缺字段口径（旧宿主 / 假宿主未带新字段）。
+  const abortHoverDetail: {
+    tasks: { taskId: string; description: string; command: string; startedAt: number | null }[];
+    subAgents: RunningSubAgentBrief[];
+  } = useMemo(() => {
     if (!currentSessionId) return { tasks: [], subAgents: [] };
     const state = sessionRuntimeStatesRef.current.get(currentSessionId);
     const tasks = state?.backgroundTasks ?? [];
@@ -628,6 +633,7 @@ const App = () => {
     setProviderConfigured,
     setConfigReady,
     pushNotice,
+    pendingConversationLoad,
     messages,
     currentSessionIdRef, sessionStates, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
@@ -646,7 +652,7 @@ const App = () => {
     currentFile, selectedLines,
     setRewindDialogOpen: (open: boolean) => { if (!open) setRewindTargetUuid(null); },
     onRewindFailed: (message: string) => { setRewindTargetUuid(null); pushNotice('rewind.failed', { message }, 'error'); },
-  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, currentFile, selectedLines, messages, pushNotice]);
+  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, currentFile, selectedLines, messages, pushNotice, pendingConversationLoad]);
   useMessageHandler(handlerProps);
 
     const appHandlerProps = useMemo(() => ({

@@ -434,12 +434,27 @@ fn umount_path(merged: &Path) -> Result<(), String> {
     )
 }
 
+/// 安装结果的回显面：落盘内容的 sha256 与安装者在本机的真实 uid。
+///
+/// 两项都由 root 侧算出并在成功后回显（`main.rs` 各打印一行），宿主据此校验内容一致
+/// （FR-005）并写审计行（FR-012）。
+pub struct InstallReport {
+    /// 落盘内容的 sha256（小写 hex）
+    pub digest: String,
+    /// 安装者在**本机**的真实 uid（`SUDO_UID`，无则 `getuid()`）
+    pub installer_uid: u32,
+}
+
 /// 安装模式（FR-005「安装不变量」）：从标准输入读内容，`mkstemp` 落临时名，
 /// `fchown` / `fchmod` 在 `rename` **之前**完成，随后 `fsync` 并回显 sha256。
 ///
 /// 内容经管道、不经路径：源路径不参与安装命令，因此没有「源侧替换窗口」，也没有
 /// 「root 向调用方指定位置写字节」的符号链接原语。
-pub fn install_from_stdin() -> Result<String, String> {
+///
+/// 带回安装者在**本机**的真实 uid（`installer_uid`）：宿主侧审计行（FR-012）要记的是
+/// 这台机器上是谁装的，而不是发起部署的宿主进程 uid——远端部署时两者是不同机器上的
+/// 两个账号。
+pub fn install_from_stdin() -> Result<InstallReport, String> {
     let target_dir = Path::new(env!("TC_MOUNT_PROXY_DIR"));
     let target_name = env!("TC_MOUNT_PROXY_NAME");
     if !target_dir.is_dir() {
@@ -478,7 +493,7 @@ pub fn install_from_stdin() -> Result<String, String> {
     }
     let temp_path = String::from_utf8_lossy(&template[..template.len() - 1]).to_string();
 
-    let result = (|| -> Result<String, String> {
+    let result = (|| -> Result<InstallReport, String> {
         // 从 stdin 读全部内容
         let mut content = Vec::new();
         let mut buffer = [0u8; 64 * 1024];
@@ -509,10 +524,14 @@ pub fn install_from_stdin() -> Result<String, String> {
         if let Ok(existing) = std::fs::read(target_dir.join(target_name)) {
             if existing == content {
                 // 内容一致：仍需把安装者 uid 补进允许列表（共享机器上多个用户互不覆盖）
-                record_allowed_uid(installer_uid())?;
+                let installer = installer_uid();
+                record_allowed_uid(installer)?;
                 let _ = unsafe { sys::close(temp_fd) };
                 let _ = std::fs::remove_file(&temp_path);
-                return Ok(sha256_hex(&content));
+                return Ok(InstallReport {
+                    digest: sha256_hex(&content),
+                    installer_uid: installer,
+                });
             }
         }
         // 写入临时文件
@@ -548,9 +567,13 @@ pub fn install_from_stdin() -> Result<String, String> {
 
         // 受众收窄（FR-005「受众收窄」）：把安装者的真实 uid 追加进允许列表。
         // 追加去重而不是单值——共享机器上多个用户互不覆盖。
-        record_allowed_uid(installer_uid())?;
+        let installer = installer_uid();
+        record_allowed_uid(installer)?;
 
-        Ok(sha256_hex(&content))
+        Ok(InstallReport {
+            digest: sha256_hex(&content),
+            installer_uid: installer,
+        })
     })();
 
     if result.is_err() {

@@ -909,6 +909,12 @@ impl Core {
                 // 子代理都空闲，父会话才算空闲。
                 let idle = Core::is_idle_deep(&sessions, session_id, &mut HashSet::new());
                 let sub_agent_running = Core::has_busy_subagent(&sessions, session_id);
+                // 本地子代理的登记时刻（specs/054 FR-002）：悬停明细的「已执行时间」起点。
+                // 未登记（普通会话 / 恢复路径）为 None，UI 只省略时长（AC-4）。
+                let sub_agent_started_at = crate::subagent::created_at(session_id);
+                // 远程子代理清单（specs/054 FR-003）：发起方只有登记表，投影成明细供
+                // 悬停浮层展示；与 `subAgentRunning` 同源同发（都在同一次 emit_runtime）。
+                let remote_sub_agents = crate::subagent::remote_sub_agents_for_session(session_id);
                 Core::runtime_state_json(
                     session_id,
                     idle,
@@ -922,6 +928,8 @@ impl Core {
                     &creator,
                     &background_tasks,
                     sub_agent_desc.as_deref(),
+                    sub_agent_started_at,
+                    &remote_sub_agents,
                 )
             })
             .collect();
@@ -958,6 +966,8 @@ impl Core {
         creator: &SessionCreator,
         background_tasks: &[crate::bash_task::RunningTask],
         sub_agent_description: Option<&str>,
+        sub_agent_started_at: Option<u64>,
+        remote_sub_agents: &[crate::subagent::RemoteAgentBrief],
     ) -> Value {
         json!({
             "sessionId": session_id,
@@ -965,7 +975,7 @@ impl Core {
             "waiting": waiting,
             "queryRunning": query_running,
             "compacting": compacting,
-            // 手动压缩已登记、等待下一轮开始时执行（`compact.rs` 的 `PENDING_COMPACT`）。
+            // 手动压缩已登记、等前台工作收尾后执行（`compact.rs` 的 `PENDING_COMPACT`）。
             // 不参与 `idle` 派生：排队不是正在执行的工作。
             "pendingCompact": pending_compact,
             "backgroundRunning": background,
@@ -977,7 +987,8 @@ impl Core {
             // 抑制与输入禁用据此判定（TS 镜像 `sessionCreator.ts` 判别联合）。
             "creator": creator,
             // 运行中后台 Bash 任务清单（specs/019 FR-001，注册序；空集为 `[]`）。
-            // pid / start_time 不进契约——abort 悬停明细只展示身份（描述 + 命令）。
+            // pid / 输出预览不进契约；`startedAt` 是悬停明细的「已执行时间」起点
+            // （specs/054 FR-001），写定后不变，不随秒数流逝参与 diff。
             "backgroundTasks": background_tasks
                 .iter()
                 .map(|task| {
@@ -985,12 +996,29 @@ impl Core {
                         "taskId": task.task_id,
                         "description": task.description,
                         "command": task.command,
+                        "startedAt": task.start_time,
                     })
                 })
                 .collect::<Vec<Value>>(),
             // 子代理创建时的 Agent 工具 description（specs/019 FR-001）；
             // 普通会话与恢复路径为 `null`，UI 显示回退文案。
             "subAgentDescription": sub_agent_description,
+            // 本地子代理的登记时刻（specs/054 FR-002）：悬停明细的「已执行时间」起点；
+            // 未登记（普通会话 / 恢复路径）为 `null`，UI 只省略时长。
+            "subAgentStartedAt": sub_agent_started_at,
+            // 发起方会话仍在登记的远程子代理（specs/054 FR-003），登记序；空集为 `[]`。
+            // 与 `subAgentRunning` 同源同发：结束事件 / 目标不可达时注销，两者一起收敛。
+            "remoteSubAgents": remote_sub_agents
+                .iter()
+                .map(|agent| {
+                    json!({
+                        "sessionId": agent.id,
+                        "description": agent.description,
+                        "workspaceId": agent.target_workspace_id,
+                        "startedAt": agent.created_at,
+                    })
+                })
+                .collect::<Vec<Value>>(),
         })
     }
 
@@ -1138,13 +1166,7 @@ impl Core {
         if self.session_if_exists(session_id).is_some() && self.is_session_idle(session_id) {
             return;
         }
-        let foreground_busy = self
-            .session_if_exists(session_id)
-            .map(|state| {
-                let state = state.lock().unwrap();
-                state.running || state.compacting || state.pending_user_message.is_some()
-            })
-            .unwrap_or(false);
+        let foreground_busy = self.foreground_busy(session_id);
         if foreground_busy {
             // 同 `abort_session_scope`：先采样「中止前是否已收尾」，再置 cancel。
             let finished_before = self
@@ -1834,7 +1856,12 @@ impl Core {
             return Err("cross-workspace agent response is missing sessionId".to_string());
         };
         crate::subagent::register(sub_session_id, &request.creator_session_id);
-        crate::subagent::register_remote(sub_session_id, &request.creator_session_id, &target);
+        crate::subagent::register_remote(
+            sub_session_id,
+            &request.creator_session_id,
+            &target,
+            Some(&request.description),
+        );
         self.emit_runtime();
         Ok(sub_session_id.to_string())
     }
@@ -2931,13 +2958,30 @@ impl Core {
         Core::is_idle_deep(&sessions, session_id, &mut HashSet::new())
     }
 
+    /// 前台是否仍在工作——abort 按钮的红色档。
+    ///
+    /// 判据只看该会话自身的前台工作（查询 / 压缩 / 排队待消费的用户消息），**不含**
+    /// 后台 Bash 任务与非 idle 子代理：后者是按钮的黄色档（`docs/features/abort-button.md`
+    /// FR-001）。手动压缩按它决定「立即执行 / 登记待压缩」——后台工作不阻止压缩，
+    /// 压缩期间它们的通知只入队（`docs/features/compaction.md` FR-002）。
+    pub fn foreground_busy(&self, session_id: &str) -> bool {
+        match self.session_if_exists(session_id) {
+            None => false,
+            Some(state) => {
+                let state = state.lock().unwrap();
+                state.running || state.compacting || state.pending_user_message.is_some()
+            }
+        }
+    }
+
     /// 用户手动触发压缩（对齐 `Integration.requestCompact`）。
     ///
     /// - 没有可压缩的消息：什么都不做（不排队、不通知 UI、不替换消息）
     /// - 已在压缩中：忽略重复请求
-    /// - 会话非空闲：登记「待压缩」，经运行时快照的 `pendingCompact` 告知 UI，
-    ///   交由下一轮对话开始时执行
-    /// - 否则：立即压缩，收尾时唤醒压缩期间入队的消息
+    /// - 前台仍有工作（abort 红色档）：登记「待压缩」，经运行时快照的 `pendingCompact`
+    ///   告知 UI，交由当前轮次结束、消费队列排空时执行
+    /// - 否则（前台空闲，abort 黄色 / 灰色）：立即压缩，收尾时唤醒压缩期间入队的消息——
+    ///   不等待仍在运行的后台 Bash 任务与子代理
     pub fn request_compact(self: &Arc<Self>, session_id: &str) {
         let Some(state) = self.session_if_exists(session_id) else {
             self.log("compactRequested for unknown session; dropped");
@@ -2972,31 +3016,59 @@ impl Core {
             self.log("compact already in progress, ignoring request");
             return;
         }
-        if !self.is_session_idle(session_id) {
-            if !compact::is_pending_compact(session_id) {
-                compact::mark_pending_compact(session_id);
-                // 排队事实经运行时快照推给 UI（`pendingCompact`），不再发 once 通知
+        // 登记先写、前台判据后读：登记是唯一同步点，消费循环的轮次边界与退出复核
+        // 都靠原子的 `take_pending_compact` 接手这条登记；反过来（先判前台再登记）
+        // 会与循环收尾交错，登记挂到下一条用户消息
+        // （specs/defects/queued-compact-waits-for-next-round.md）。
+        let already_pending = compact::is_pending_compact(session_id);
+        if !already_pending {
+            compact::mark_pending_compact(session_id);
+        }
+        if self.foreground_busy(session_id) {
+            // 前台仍在工作：等当前轮次结束、队列排空时执行。排队事实经运行时快照
+            // 推给 UI（`pendingCompact`），不发 once 通知。
+            if !already_pending {
                 self.emit_runtime();
             }
-            return;
+            // 复核：登记之后前台可能已经停下，且循环已过自己的取走点。此时由本线程
+            // 接手，否则这条登记要等到下一条用户消息。
+            if self.foreground_busy(session_id) {
+                return;
+            }
         }
 
-        // 立即压缩：清掉可能存在的「待压缩」标记，避免本轮压缩完成后下一轮又压一次
-        compact::unmark_pending_compact(session_id);
-        let Ok(project) = self.project_of(session_id) else {
-            // 标记已清除但没有压缩流程会推送，补一次快照让 UI 还原用量文本
-            self.emit_runtime();
+        // 前台已停下（abort 黄色 / 灰色）：原子取走并立即压缩。取不到说明消费循环的
+        // 退出复核或并发的重复请求先取到了，由那边执行，这里不重复。
+        if !compact::take_pending_compact(session_id) {
             return;
-        };
-        let applied =
-            compact::compact_and_apply_messages(self, session_id, &project, &state, false, None);
-        if !applied {
-            // 无可摘要内容：`compact_conversation` 提前返回、不会推送 compacting 快照
-            self.emit_runtime();
+        }
+        if !self.apply_pending_compact(session_id, &state) {
             self.log("compact skipped (no messages to summarize)");
             return;
         }
         self.resume_after_compact(session_id);
+    }
+
+    /// 执行一条已取走的待压缩（`compact::take_pending_compact` 之后的唯一执行点）。
+    ///
+    /// 返回是否真的替换了消息数组：无可摘要内容 / 项目解析失败时返回 `false`，
+    /// 并补发一次运行时快照让 UI 从「准备压缩」还原为用量文本（这两种情况都不会
+    /// 进入压缩流程，也就不会由 `compact_conversation` 推送 `compacting` 快照）。
+    fn apply_pending_compact(
+        self: &Arc<Self>,
+        session_id: &str,
+        state: &Arc<Mutex<SessionState>>,
+    ) -> bool {
+        let Ok(project) = self.project_of(session_id) else {
+            self.emit_runtime();
+            return false;
+        };
+        let applied =
+            compact::compact_and_apply_messages(self, session_id, &project, state, false, None);
+        if !applied {
+            self.emit_runtime();
+        }
+        applied
     }
 
     /// 压缩结束后调用：压缩期间入队的消息此时才启动消费循环。
@@ -3624,28 +3696,8 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
                 // 用户排队的压缩：本轮结束、队列排空时立即执行，不再等下一轮用户消息。
                 // `running` 保持 true——轮次末尾到压缩开始之间的间隙仍属同一段连续任务，
                 // 压缩完成后才允许进入 idle。
-                if compact::is_pending_compact(&session_id) {
-                    compact::unmark_pending_compact(&session_id);
-                    match core.project_of(&session_id) {
-                        Ok(project) => {
-                            let applied = compact::compact_and_apply_messages(
-                                &core,
-                                &session_id,
-                                &project,
-                                &state,
-                                false,
-                                None,
-                            );
-                            if !applied {
-                                // 无可摘要内容：压缩提前返回、不会推送 compacting 快照
-                                core.emit_runtime();
-                            }
-                        }
-                        Err(_) => {
-                            // 项目解析失败：标记已清除，补一次快照让 UI 还原
-                            core.emit_runtime();
-                        }
-                    }
+                if compact::take_pending_compact(&session_id) {
+                    core.apply_pending_compact(&session_id, &state);
                     // 压缩期间可能有新消息入队：回到循环顶部重新取
                     continue;
                 }
@@ -3679,6 +3731,17 @@ fn run_consumer_with_ui(core: Arc<Core>, session_id: String, emit_ui: bool) {
             }
         };
         let Some(step) = step else {
+            // 收尾复核：登记「待压缩」与「队列排空」可能交错——请求到达时前台仍
+            // `running`（于是只登记），循环这边已经判断过队列为空。把 `running` 标回
+            // 真并回到循环顶部，由常规路径原子取走这条登记，否则它会挂到下一条用户消息
+            // （specs/defects/queued-compact-waits-for-next-round.md）。
+            //
+            // 注册表与 `SessionState` 两把锁**不嵌套**（先问注册表再锁会话，与
+            // `emit_runtime` 的取锁顺序一致）。中间没有 emit。
+            if compact::is_pending_compact(&session_id) {
+                state.lock().unwrap().running = true;
+                continue;
+            }
             break;
         };
 
@@ -5296,7 +5359,9 @@ fn run_query_loop(
         {
             let context_token_count =
                 estimate_next_context_tokens(state, session_id, project, &system_prompt, None);
-            let pending_compact = compact::is_pending_compact(session_id);
+            // 取走必须原子（`take_pending_compact`）：消费循环的队列排空分支也在消费
+            // 同一条登记，各自「先查再清」会让同一次请求压两遍。
+            let pending_compact = compact::take_pending_compact(session_id);
             let tracking = state.lock().unwrap().auto_compact_tracking.clone();
             let should_compact = pending_compact
                 || compact::should_auto_compact(
@@ -5306,9 +5371,6 @@ fn run_query_loop(
                     provider.max_tokens as u64,
                 );
             if should_compact {
-                if pending_compact {
-                    compact::unmark_pending_compact(session_id);
-                }
                 // 延后的手动压缩按 manual 记录边界（trigger = 'manual'）；自动压缩保持 'auto'
                 let applied = compact::compact_and_apply_messages(
                     core,

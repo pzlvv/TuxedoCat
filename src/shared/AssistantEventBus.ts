@@ -1010,12 +1010,35 @@ export type UiRequestResultMap = {
 
 /**
  * 运行中的后台 Bash 任务快照（specs/019 FR-001）：`SessionRuntimeState.backgroundTasks`
- * 的元素。abort 按钮悬停明细据此展示任务身份；pid / 启动时刻等调度细节不进契约。
+ * 的元素。abort 按钮悬停明细据此展示任务身份与已执行时间；pid / 输出预览等调度细节
+ * 不进契约。
  */
 export interface BackgroundTaskBrief {
   taskId: string;
   description: string;
   command: string;
+  /**
+   * 任务开始时刻（wall clock 毫秒，specs/054 FR-001）：悬停明细的「已执行时间」起点。
+   * 注册时写定，不随秒数流逝变化——时长由 UI 用本机时钟推算，core 不推随时变的字段。
+   */
+  startedAt: number;
+}
+
+/**
+ * 发起方会话仍在登记的跨工作区子代理（specs/054 FR-003）：
+ * `SessionRuntimeState.remoteSubAgents` 的元素。
+ *
+ * 远程子代理的运行时在目标工作区的 Core 里，本进程只有登记表；这一条是它的只读投影，
+ * 供 abort 悬停明细列出「远程那条」。结束事件到达 / 目标工作区不可达时随登记一起消失。
+ */
+export interface RemoteSubAgentBrief {
+  sessionId: string;
+  /** 派发时 `Agent` 工具调用的 description；取不到时为 `null`（UI 显示回退文案） */
+  description: string | null;
+  /** 目标工作区身份（`<机器名>:<工作区路径>`），悬停明细据此标注「运行在哪个工作区」 */
+  workspaceId: string;
+  /** 发起方登记成功的时刻（wall clock 毫秒）：悬停明细的「已执行时间」起点 */
+  startedAt: number;
 }
 
 /**
@@ -1049,7 +1072,7 @@ export interface SessionRuntimeState {
   /** 正在压缩上下文（会整体替换消息数组；与查询同属前台工作） */
   compacting: boolean;
   /**
-   * 已登记手动压缩、等待下一轮对话开始时执行（`compact.rs` 的 `PENDING_COMPACT`）。
+   * 已登记手动压缩、等前台工作收尾后执行（`compact.rs` 的 `PENDING_COMPACT`）。
    * 不参与派生 `idle`：排队不是正在执行的工作。
    */
   pendingCompact: boolean;
@@ -1074,6 +1097,17 @@ export interface SessionRuntimeState {
    * abort 按钮黄色态的悬停明细据此列出子代理。
    */
   subAgentDescription: string | null;
+  /**
+   * 本地子代理的登记时刻（wall clock 毫秒，specs/054 FR-002）：悬停明细的「已执行时间」
+   * 起点；普通会话、跨工作区对话与恢复路径取不到时为 `null`，UI 只省略时长（不猜值）。
+   */
+  subAgentStartedAt: number | null;
+  /**
+   * 该会话作为发起方仍在登记的跨工作区子代理清单（specs/054 FR-003），按登记序；
+   * 空集为 `[]`。与 `subAgentRunning` 同源同发（结束事件 / 目标不可达时注销，两者
+   * 一起收敛），abort 按钮悬停明细据此列出远程那条。
+   */
+  remoteSubAgents: readonly RemoteSubAgentBrief[];
   /**
    * 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 `null`）。登记于
    * 子代理创建时，随会话存续——不随 SubAgentRegistry 的注销消失（子代理完成一轮后

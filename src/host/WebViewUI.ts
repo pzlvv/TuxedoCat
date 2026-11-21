@@ -89,6 +89,18 @@ export class WebViewUI implements WebViewUiPort {
   private readonly conversations: ConversationManager;
 
   /**
+   * 打开对话落定的两个宿主出口（多视图宿主 Electron 注入，单视图宿主不注入）。
+   *
+   * 「哪条对话已打开」在 Electron 是视图层事实（侧栏绿点、`UserChoiceQueue` 的 open
+   * 判据），owner 是 `ChatViewManager`；而「内容是否真的装载完成 / 这次打开是否被拒」
+   * 只有这里知道，因此由这里通知它，视图层不自己猜
+   * （docs/architecture/contracts.md 的「loaded 不进列表流 / 状态流」一节）。
+   */
+  onConversationLoaded: ((sessionId: string) => void) | null = null;
+  /** 本次打开被 Core 拒绝（会话被其它实例持有，specs/032 / US-66）：宿主撤销这次打开 */
+  onConversationOpenRejected: ((sessionId: string) => void) | null = null;
+
+  /**
    * 创建全局唯一实例。重复调用抛错（启动接线错误应在启动期暴露）。
    * bus 由 bootstrap 先创建并注册（setGlobalEventBus）。
    */
@@ -202,6 +214,8 @@ export class WebViewUI implements WebViewUiPort {
         + ` buildMs=${Date.now() - startedAt}`,
     );
     this.host.sendToWebview(payload);
+    // 内容已装载完成：此刻这条对话才算「已打开」（Electron 侧栏绿点 / open 判据）
+    this.onConversationLoaded?.(sessionId);
   }
 
   /** 会话标题变化通知（转调 onTitleChanged） */
@@ -867,6 +881,12 @@ export class WebViewUI implements WebViewUiPort {
    * 不落盘。键缺失时 webview 显示键本身并记日志。
    */
   onNotice(sessionId: string, key: string, params: NoticeParams, level: NoticeLevel): void {
+    // 装载被拒（会话被其它实例持有，specs/032 / US-66）：这次打开到此为止。
+    // 提示照常下发（占用原因与持有者 pid 必须让用户看到），但「已打开」这件事不成立：
+    // 多视图宿主撤销刚建的视图并回到原对话（specs/defects/open-locked-conversation-stuck-loading）。
+    if (key === CoreNoticeKeys.sessionLockedOpen) {
+      this.onConversationOpenRejected?.(sessionId);
+    }
     this.postToWebview(sessionId, { type: 'notice', key, params, level });
   }
 

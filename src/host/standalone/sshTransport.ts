@@ -69,6 +69,19 @@ export function createSshDaemonOpener(
   const ssh = new SshClient(transport.target, log);
   const bootstrap = (): Promise<RemoteDaemonEndpoint> =>
     ensureRemoteDaemonShared(transport.target, ssh, { extensionPath: transport.extensionPath, log });
+  /**
+   * 最近一次 `open()` 拿到的 endpoint。
+   *
+   * 心跳链路紧接着业务链路建在同一个 daemon 上：复用这份结果，不再跑一遍引导
+   * （`ensureRemoteDaemonShared` 虽然是幂等快路径，但它要经 SSH exec 读状态文件 / 探活，
+   * 白白多几个往返）。链路重开后 `open()` 会把它刷新成新的 endpoint。
+   */
+  let lastEndpoint: RemoteDaemonEndpoint | null = null;
+  /** 建一条到该 endpoint 的转发通道并包成控制链路 */
+  const forward = async (daemon: RemoteDaemonEndpoint): Promise<CoreDaemonLink> => {
+    const channel = await ssh.openTcpForward(daemon.host, daemon.port);
+    return openSshChannelLink(channel, log);
+  };
   return {
     // 引导（上传产物 + 拉起 daemon）是建链前最慢的一步：单独暴露给探测方在计时前
     // 跑掉，`open()` 里照常再走一遍——daemon 已就绪时是幂等快路径。上限沿用
@@ -81,10 +94,30 @@ export function createSshDaemonOpener(
     async open(): Promise<CoreDaemonLink> {
       await ssh.connect();
       const daemon = await bootstrap();
-      const channel = await ssh.openTcpForward(daemon.host, daemon.port);
-      return openSshChannelLink(channel, log);
+      lastEndpoint = daemon;
+      return forward(daemon);
     },
-    dispose: () => ssh.dispose(),
+    /**
+     * 心跳专用转发通道：同一个 daemon 上的**第二条** `direct-tcpip` 通道。
+     *
+     * daemon 一条连接一个服务线程，`pong` 由该连接自己的写线程直接写出——因此它不会
+     * 排在业务链路的大帧后面（业务链路的出站严格有序）。SSH 层多路复用同一条连接，
+     * 两条转发通道各自独立成流（`docs/core/core-remote.md` 第 2.5 节）。
+     */
+    async openHeartbeat(): Promise<CoreDaemonLink> {
+      await ssh.connect();
+      const daemon = lastEndpoint ?? await bootstrap();
+      lastEndpoint = daemon;
+      const channel = await ssh.openTcpForward(daemon.host, daemon.port);
+      const link = openSshChannelLink(channel, log);
+      // 心跳链路的诊断单独标一次，日志里一眼能分清是哪条转发通道挂了
+      channel.on('close', () => log('[ssh] heartbeat channel closed'));
+      return link;
+    },
+    dispose: () => {
+      lastEndpoint = null;
+      ssh.dispose();
+    },
   };
 }
 

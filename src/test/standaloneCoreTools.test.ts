@@ -430,6 +430,16 @@ async function run(): Promise<void> {
       'Bash schema 暴露 restricted 且缺省为 true',
       restrictedProp?.type === 'boolean' && restrictedProp?.default === true,
     );
+    // `description` 是必填入参（卡片标题 / 后台任务清单 / 完成通知的事实来源）
+    const requiredProps = (
+      bashTool?.function?.parameters as { required?: string[] } | undefined
+    )?.required;
+    check(
+      `Bash schema 把 description 列为必填（实际：${(requiredProps ?? []).join(',')}）`,
+      Array.isArray(requiredProps) &&
+        requiredProps.includes('command') &&
+        requiredProps.includes('description'),
+    );
     // 子代理工具（Agent / Reply）也已随内置工具下发
     const toolNames = (
       (llm.bodies()[0] as { tools?: Array<{ function?: { name?: string } }> }).tools ?? []

@@ -20,6 +20,7 @@ import {
   manualInstallCommand,
   sha256Hex,
   verifyInstalledDigest,
+  parseInstallReport,
   auditLine,
   type MountProxyDeployOptions,
   type MountProxyTarget,
@@ -79,11 +80,26 @@ function options(
   };
 }
 
+/** 目标机上执行安装的账号 uid（代理 `installer-uid=` 行的值） */
+const INSTALLER_UID = 1002;
+
+/**
+ * 代理 `--install` 成功时的 stdout：sha256 一行 + `installer-uid=<n>` 一行。
+ *
+ * 两行都由代理在 root 侧算出（`mount-proxy-rs` 的 `install_from_stdin`）；宿主侧不猜
+ * 安装者身份，只读这两行（FR-005 / FR-012）。
+ */
+function installStdout(payload: Uint8Array = PAYLOAD, uid: number | null = INSTALLER_UID): string {
+  const lines = [sha256Hex(payload)];
+  if (uid !== null) lines.push(`installer-uid=${uid}`);
+  return `${lines.join('\n')}\n`;
+}
+
 // ────────────────────────── FR-004 第 1 条：免密优先 ──────────────────────────
 
 test('免密 sudo 可用时直接装上，不进入凭据通道', async () => {
   // 代理 --install 成功时在 stdout 回显 sha256（FR-005 按内容比对）
-  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: sha256Hex(PAYLOAD), stderr: '' }));
+  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
 
   const outcome = await deployWithPasswordlessSudo(options(shell));
 
@@ -119,7 +135,7 @@ test('免密不可用时转三选一（这不是一次失败）', async () => {
 });
 
 test('安装命令返回 0 但落点没有代理时报错，不静默放过', async () => {
-  const { shell } = fakeShell(() => ({ code: 0, stdout: sha256Hex(PAYLOAD), stderr: '' }));
+  const { shell } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
 
   const outcome = await deployWithPasswordlessSudo({
     target: target(shell, { isInstalled: async () => false }),
@@ -133,7 +149,7 @@ test('安装命令返回 0 但落点没有代理时报错，不静默放过', as
 // ────────────────────── FR-004 第 3 条：密码只走 stdin ──────────────────────
 
 test('sudo 密码只出现在 stdin：密码行在前、代理内容在后', async () => {
-  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: sha256Hex(PAYLOAD), stderr: '' }));
+  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
 
   const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
 
@@ -149,7 +165,7 @@ test('sudo 密码只出现在 stdin：密码行在前、代理内容在后', asy
 });
 
 test('root 密码走 su -c，同样只经 stdin', async () => {
-  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: sha256Hex(PAYLOAD), stderr: '' }));
+  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
 
   const outcome = await deployWithCredential(options(shell), 'rootPassword', 'rootpw');
 
@@ -237,6 +253,57 @@ test('sha256 不一致时不报 installed，而是 failed 并点名原因', asyn
   assert.equal(outcome.kind, 'failed');
   if (outcome.kind !== 'failed') return;
   assert.match(outcome.failure, /sha256/);
+});
+
+// ────────────── FR-012 安装者 uid 来自目标机（specs/defects 的口径） ──────────────
+
+test('RT-1 解析 stdout 取出 sha256 与安装者 uid，两行顺序无关', () => {
+  const digest = sha256Hex(PAYLOAD);
+  const forward = parseInstallReport(`${digest}\ninstaller-uid=1002\n`, PAYLOAD);
+  const reversed = parseInstallReport(`installer-uid=1002\n${digest}\n`, PAYLOAD);
+
+  for (const report of [forward, reversed]) {
+    assert.equal(report.digest, digest);
+    assert.equal(report.installerUid, 1002);
+  }
+});
+
+test('RT-1 夹杂其它输出时仍能取到两行（按行匹配，不做位置假设）', () => {
+  const report = parseInstallReport(
+    `noise\n${sha256Hex(PAYLOAD)}\nmore noise\ninstaller-uid=0\n`,
+    PAYLOAD,
+  );
+
+  assert.equal(report.digest, sha256Hex(PAYLOAD));
+  assert.equal(report.installerUid, 0, 'root 直装时安装者 uid 就是 0，不能被当成缺失');
+});
+
+test('RT-1 缺 installer-uid 行时该字段为 null（调用方据此判失败）', () => {
+  const report = parseInstallReport(`${sha256Hex(PAYLOAD)}\n`, PAYLOAD);
+
+  assert.equal(report.digest, sha256Hex(PAYLOAD));
+  assert.equal(report.installerUid, null);
+});
+
+test('RT-1 缺 installer-uid 行时部署判 failed，不写占位值', async () => {
+  // 修复前的实现会把宿主进程 uid（Windows 上根本没有）写进审计行，最终落成 uid=unknown
+  const { shell } = fakeShell(() => ({ code: 0, stdout: installStdout(PAYLOAD, null), stderr: '' }));
+
+  const outcome = await deployWithPasswordlessSudo(options(shell));
+
+  assert.equal(outcome.kind, 'failed');
+  if (outcome.kind !== 'failed') return;
+  assert.match(outcome.failure, /安装者 uid/);
+});
+
+test('installed 结果带上目标机的安装者 uid（供审计行使用）', async () => {
+  const { shell } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
+
+  const outcome = await deployWithPasswordlessSudo(options(shell));
+
+  assert.equal(outcome.kind, 'installed');
+  if (outcome.kind !== 'installed') return;
+  assert.equal(outcome.installerUid, INSTALLER_UID);
 });
 
 test('审计行含主机名 / 落点 / sha256 / uid 四要素（FR-012）', () => {

@@ -134,7 +134,7 @@
       "output": "hello\n",
       "nextIntervalLabel": "10min",
       "killCommand": "kill 1234",
-      "expected": "<reminder>\nBackground bash task bg-1 is still running.\nDescription: Say hello\nCommand: echo hello\nElapsed: 5m 0s\nCurrent output (last 500 chars):\nhello\nNext reminder in 10min.\nIf this task is no longer needed, kill it: kill 1234\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+      "expected": "<reminder>\nBackground task bg-1 is still running.\nDescription: Say hello\nCommand: echo hello\nElapsed: 5m 0s\nCurrent output (last 500 chars):\nhello\nNext reminder in 10min.\nIf this task is no longer needed, kill it: kill 1234\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
     },
     {
       "name": "命令与描述相同、无输出",
@@ -145,7 +145,7 @@
       "output": "",
       "nextIntervalLabel": "5min",
       "killCommand": "taskkill /T /F /PID 4321",
-      "expected": "<reminder>\nBackground bash task bg-2 is still running.\nDescription: echo hi\nElapsed: 1m 5s\nNext reminder in 5min.\nIf this task is no longer needed, kill it: taskkill /T /F /PID 4321\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+      "expected": "<reminder>\nBackground task bg-2 is still running.\nDescription: echo hi\nElapsed: 1m 5s\nNext reminder in 5min.\nIf this task is no longer needed, kill it: taskkill /T /F /PID 4321\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
     },
     {
       "name": "亚秒级时长",
@@ -156,7 +156,7 @@
       "output": "done",
       "nextIntervalLabel": "30min",
       "killCommand": "kill 7",
-      "expected": "<reminder>\nBackground bash task bg-3 is still running.\nDescription: Quick\nCommand: quick\nElapsed: 999ms\nCurrent output (last 500 chars):\ndone\nNext reminder in 30min.\nIf this task is no longer needed, kill it: kill 7\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+      "expected": "<reminder>\nBackground task bg-3 is still running.\nDescription: Quick\nCommand: quick\nElapsed: 999ms\nCurrent output (last 500 chars):\ndone\nNext reminder in 30min.\nIf this task is no longer needed, kill it: kill 7\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
     },
     {
       "name": "长输出取尾部 500 字符",
@@ -167,7 +167,7 @@
       "output": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789",
       "nextIntervalLabel": "20min",
       "killCommand": "kill 999",
-      "expected": "<reminder>\nBackground bash task bg-4 is still running.\nDescription: Stream\nCommand: stream\nElapsed: 2m 5s\nCurrent output (last 500 chars):\n...\n01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\nNext reminder in 20min.\nIf this task is no longer needed, kill it: kill 999\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
+      "expected": "<reminder>\nBackground task bg-4 is still running.\nDescription: Stream\nCommand: stream\nElapsed: 2m 5s\nCurrent output (last 500 chars):\n...\n01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\nNext reminder in 20min.\nIf this task is no longer needed, kill it: kill 999\nDo not sleep or poll; if there is nothing else to do, end this turn.\n</reminder>"
     }
   ],
   "fallbackQualifyCases": [

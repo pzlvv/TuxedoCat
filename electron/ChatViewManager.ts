@@ -20,6 +20,7 @@ import type { WebviewMessage } from '../src/host/webviewMessages.js';
 import { requireEventBus } from '../src/shared/AssistantEventBus.js';
 import { guardViewNavigation } from './viewNavigation.js';
 import { diag } from './diagnostics.js';
+import { PendingOpenRegistry } from './pendingOpen.js';
 
 /** 侧栏默认宽度（无持久化记录 / 双击拖拽手柄恢复时使用） */
 export const SIDEBAR_DEFAULT_WIDTH = 280;
@@ -134,6 +135,14 @@ export class ChatViewManager {
   private lru: string[] = [];
   private currentSessionId: string | null = null;
   private readonly maxViews = 12;
+  /**
+   * 刚建好、内容尚未装载完成的会话视图（`pendingOpen.ts`）。
+   *
+   * 打开一条对话要读盘 + 传输整段会话；完成之前它不算「已打开」——侧栏不亮绿点、
+   * `UserChoiceQueue` 也不把它当可投递的 open。打开被 Core 拒绝时（同一对话已被另一个
+   * 实例持有，specs/032 / US-66）据此撤销这次打开、把界面交回打开前那条对话。
+   */
+  private readonly pendingOpens = new PendingOpenRegistry();
   /**
    * 「新建但还没发过任何消息」的会话 key 集合（含尚未上报正式 sessionId 的 `new-` 临时 key）。
    *
@@ -482,10 +491,10 @@ export class ChatViewManager {
 
   /** 当前已加载（有活动视图）的真实会话 ID 列表（排除新建中的临时 key） */
   getLoadedSessionIds(): string[] {
-    return [...this.views.keys()].filter((key) => {
+    return this.pendingOpens.onlySettled([...this.views.keys()].filter((key) => {
       const view = this.views.get(key);
       return !key.startsWith('new-') && !!view && !view.webContents.isDestroyed();
-    });
+    }));
   }
 
   /**
@@ -500,6 +509,10 @@ export class ChatViewManager {
    * 打开（或切换）指定会话的聊天视图。
    * workspace 为该对话所属的工作目录（宿主按对话解析后传入）；省略时按视图已有登记，
    * 再回退到当前活动工作目录。
+   *
+   * 新建的视图先记为「打开中」：内容装载完成（`revealOpen`）之前它不算已打开——
+   * 侧栏不亮绿点、`UserChoiceQueue` 也不把它当可投递的 open。打开被 Core 拒绝时按
+   * `rejectPendingOpen` 撤销，界面回到打开前那条对话。
    */
   openConversation(sessionId: string, id?: string, path?: string): void {
     let view = this.views.get(sessionId);
@@ -512,6 +525,9 @@ export class ChatViewManager {
       const wsId = id ?? this.viewWorkspaces.get(sessionId) ?? this.opts.workspaceId;
       const ws = path ?? this.workspacePathById.get(wsId) ?? this.opts.workspacePath;
       this.workspacePathById.set(wsId, ws);
+      // 打开前正在展示的那条对话（此刻还没 show()，currentSessionId 仍是上一条）。
+      // 撤销时回到它：视图不因「打开别的对话」而销毁，所以这就是打开前的完整状态。
+      this.pendingOpens.begin(sessionId, this.currentSessionId);
       view = this.createView(sessionId, { workspace: ws });
       this.views.set(sessionId, view);
       this.viewWorkspaces.set(sessionId, wsId);
@@ -520,6 +536,44 @@ export class ChatViewManager {
     this.show(sessionId);
     // 会话被打开：MCP 引用由 core 的 loadConversation 流程建立
     // （restoreConversationEngine → MCPHost.onSessionOpened），视图层不再触发
+    this.emitLoadedChanged();
+  }
+
+  /**
+   * 该会话的内容已装载完成（webview 的 `conversationLoaded` 到达宿主）。
+   * 这一刻它才真正「已打开」：进入已打开集合（侧栏绿点、UserChoiceQueue 的 open 判据）。
+   * 幂等：没有在途打开时是 no-op。
+   */
+  revealOpen(sessionId: string): void {
+    if (!this.pendingOpens.settle(sessionId)) return;
+    this.emitLoadedChanged();
+  }
+
+  /**
+   * 打开被 Core 拒绝（同一对话已被另一个实例持有，specs/032 / US-66）：
+   * 撤销这次打开——销毁本次新建的视图、回到打开前展示的那条对话，界面停在原位置。
+   *
+   * 只处理本类为这次打开新建、尚未装载完成的视图：没有在途打开（切换已有视图 /
+   * 重复或迟到的拒绝）时什么都不做，绝不碰用户正在看的视图。
+   */
+  rejectPendingOpen(sessionId: string): void {
+    const entry = this.pendingOpens.reject(sessionId);
+    if (!entry) return;
+    // 从未装载成功：不向 core 发 conversationClosed（它本来就没被这次打开装载）
+    this.destroyViewEntry(sessionId, { releaseSession: false });
+    if (this.currentSessionId === sessionId) {
+      this.currentSessionId = null;
+      const previous = entry.previousKey;
+      if (previous && this.isViewAlive(previous)) {
+        this.show(previous);
+      } else {
+        // 打开前没有可回的对话视图（启动即打开 / 上一个已关掉）：补一个新对话，
+        // 否则聊天区会停在已销毁的视图上
+        this.openNewConversation(this.opts.workspaceId);
+      }
+    }
+    // 侧栏在点击时就乐观高亮了被拒的那一行：把「当前对话」推回真正的活动视图
+    this.opts.onActiveSessionChanged(this.currentSessionId);
     this.emitLoadedChanged();
   }
 
@@ -935,6 +989,9 @@ export class ChatViewManager {
     this.unsentNewKeys.delete(key);
     this.prewarmKeys.delete(key);
     if (this.prewarmKey === key) this.prewarmKey = null;
+    // 视图没了，「待打开」登记也必须一起消失：留着它只会让该会话的「已打开」判定
+    // 永久被排除（绿点不亮、UserChoiceQueue 判 open=false），且不会再有装载完成事件
+    this.pendingOpens.drop(key);
   }
 
   /** 销毁指定会话的聊天视图（移除 ChildView + 关闭 webContents，释放渲染进程资源） */

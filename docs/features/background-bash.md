@@ -5,12 +5,13 @@ last_reviewed: 2026-11-16
 
 # 规格：Bash 后台任务
 
-本规格界定 Bash 任务后台化的三块语义：**手工转后台**（FR-001 / FR-002——用户把正在
+本规格界定 Bash 任务后台化的四块语义：**手工转后台**（FR-001 / FR-002——用户把正在
 前台运行的命令转入后台继续执行时，工具结果如何进入上下文、本轮 agent 循环如何暂停、
 暂停后由谁接续）、**后台任务提醒**（FR-003 / FR-004——查询结束兜底提醒与周期性进度
-提醒的调度与文案）与 **`restricted` 闸门**（FR-005 / FR-006——缺省为真时拒绝 `sleep`
-轮询与「`cd` + `sed` 读文件」两类写法，并说明该字段的默认值）。后台任务的注册 / 完成通知 / 中止
-不在本规格内；运行时事实（`backgroundRunning`）的归属见
+提醒的调度与文案）、**`restricted` 闸门**（FR-005 / FR-006——缺省为真时拒绝 `sleep`
+轮询与「`cd` + `sed` 读文件」两类写法，并说明该字段的默认值）与 **读文件口径**
+（FR-008——系统提示词要求用 `Read` 代替 `cat` / `sed` 看文件内容）。后台任务的注册 /
+完成通知 / 中止不在本规格内；运行时事实（`backgroundRunning`）的归属见
 [docs/core/session-runtime.md](../core/session-runtime.md)。
 
 交叉引用：UiEvent 词汇表见 [events.md 第 2.3 节](../architecture/events.md#23-uieventui--core单向)；
@@ -48,6 +49,8 @@ last_reviewed: 2026-11-16
   - **AC-20**（FR-006）：GIVEN 工具的 LLM 可见定义与系统提示词 WHEN 读 Bash 段 THEN `restricted` 字段类型是 `boolean`、显式带 `default: true`，说明是英文且只声明「默认 `true`、通常传 `true`」，不复述判据、不提前点明它限制哪两类写法
   - **AC-21**（FR-007）：GIVEN 命令被闸门拦下（sleep 或 sed 任一分支） WHEN 读失败文案 THEN 末尾是同一句 `- If you are certain this is a false positive, re-run the same command with restricted: false.`
   - **AC-22**（FR-007）：GIVEN 模型判断是误拦截 WHEN 把原命令带上 `restricted: false` 重跑 THEN 闸门不再拦（回到既有权限路径）
+  - **AC-23**（FR-008）：GIVEN 系统提示词的 Bash 段 WHEN 检索全文 THEN 含「用 `Read` 代替 `cat` / `sed` 看文件内容」的规则与两条对照（`cat a.txt` → `Read` 的 `file_path`；`sed -n '1,40p' f` → `Read` 的 `offset` / `limit`），并保留「内容要流进另一条命令时照常用 `cat` / `sed`」的例外
+  - **AC-24**（FR-008）：GIVEN `restricted: true` WHEN 命令是 `cat a.txt`、`cat > f <<'EOF' … EOF` THEN 都不被闸门拦下（`cat` 不是拦截判据，只受提示词规则引导）
 
 ## 2. 功能需求
 
@@ -172,7 +175,9 @@ Bash 的每次调用在执行前过一道闸门：`restricted` 参数（布尔�
 命令里出现 `sleep` 命令、或去掉所有 `cd` 段后只剩 `sed`，工具直接失败、命令不执行。
 前者是用计时器等结果——完成时 core 会注入通知并接续消费循环，模型不必自己轮询；后者
 是把 `sed` 当文件读取器用——读文件的入口是 `Read` 工具。`restricted: false` 时两条
-限制都不生效，这是唯一的开关。
+限制都不生效，这是唯一的开关。`cat` 不在闸门判据内：它是只读命令，还有
+`cat > f <<EOF` 这类写形态；「优先用 `Read` 代替 `cat` / `sed` 看文件内容」是系统提示词的
+规则，不是拦截判据（[US-78](user-stories/tools.md#us-78-读文件优先用-read-工具)）。
 
 判定口径：
 
@@ -228,6 +233,16 @@ schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属�
 命令带上 `restricted: false` 重跑。模型无需改写命令、无需向用户提问，也不必从别处推断这个
 参数的存在——这与 `detach` 的「失败文案给三条出路」是同一种教学方式。
 
+### FR-008：提示词里的 `cat` / `sed` → `Read` 规则
+
+系统提示词 Bash 段的 `**Prefer the Read tool**` 块写明看文件内容时的入口是 `Read`：
+`cat a.txt` 对应 `Read` 的 `file_path`，`sed -n '1,40p' f` 对应 `Read` 的
+`offset` / `limit`；内容要流进另一条命令（管道、重定向）时照常用 `cat` / `sed`。
+
+`cat` 不进闸门判据（FR-005 只管 `sleep` 与「`cd` + `sed`」）：`cat` 是只读命令、在只读
+白名单里，而且 `cat > f <<'EOF'` 这类写形态同样依赖它。因此这条规则只约束模型的选择，
+不产生工具失败；`sed` 另有闸门兜底，两者口径不重叠。
+
 ## 3. 行为规格
 
 ### 3.1 实现对照
@@ -241,6 +256,7 @@ schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属�
 | 注册表 | `tools.rs` 的 `MANUAL_BG`（`tool_use_id` → 请求标记） |
 | 暂停信号 | `tools.rs` 的 `LoopPauseSignal`（`paused` + `source_task`）挂在 `SessionState.pause_loop` |
 | `restricted` 闸门 | `permission.rs` 的 `base_check` Bash 分支（只读判定之前 deny）；纯函数 `tools.rs` 的 `has_sleep_command` / `is_cd_sed_only_command`（共用 `gate_segments`），文案 `BASH_RESTRICTED_SLEEP_MESSAGE` / `BASH_RESTRICTED_SED_MESSAGE` |
+| `cat` / `sed` → `Read` 规则（FR-008） | `core-rs/src/prompt.rs` 的 `TOOL_DETAILS_BEFORE_TRANSFER` Bash 段 `**Prefer the Read tool**` 块；对照表 `core-rs/fixtures/systemPrompt.json` |
 | 兜底抑制 | 暂停出口消费 `source_task` → `ReminderEntry.fallback_reminded` |
 | 消费点 | `core-rs/src/engine.rs` 的 `run_query_loop`（工具批收尾、下一轮请求前） |
 
@@ -318,7 +334,7 @@ schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属�
 ## 6. 对需求基线的影响
 
 关联既有 [user-stories.md](user-stories.md) 的 US-45（命令转入后台）、US-76
-（后台等待不靠 sleep 轮询）与 US-78（sed 读文件改用 Read 工具），见
+（后台等待不靠 sleep 轮询）与 US-78（读文件优先用 Read 工具），见
 [user-stories/tools.md](user-stories/tools.md#us-76-后台等待不靠-sleep-轮询)。
 
 ## 7. 追溯矩阵
@@ -332,4 +348,5 @@ schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属�
 | FR-005 | `core-rs/src/permission.rs` 的 `base_check` Bash 分支；纯函数 `core-rs/src/tools.rs` 的 `has_sleep_command` / `is_cd_sed_only_command`（共用 `gate_segments`）与 `bash_restricted`，文案 `BASH_RESTRICTED_SLEEP_MESSAGE` / `BASH_RESTRICTED_SED_MESSAGE` | `core-rs/src/tools_tests.rs` 的 `restricted_gate_rejects_sleep_anywhere` / `restricted_gate_rejects_cd_and_sed_only`；`core-rs/src/permission_tests.rs` 的 `restricted_sleep_gate_denies_in_every_agent_mode` / `restricted_gate_ignores_quoted_comment_and_heredoc_sleep` / `restricted_sed_gate_denies_in_every_agent_mode` / `restricted_false_lifts_both_gates` / `restricted_false_keeps_detach_gate` / `restricted_gate_is_not_lifted_by_detach` / `restricted_gate_wins_over_detach_gate` / `restricted_defaults_to_true`；对照表 `core-rs/fixtures/permission.json` | 自动 |
 | FR-006 | `core-rs/src/tools.rs` 的 `BASH_RESTRICTED_FIELD`；`core-rs/src/prompt.rs` 的 `TOOL_DETAILS_BEFORE_TRANSFER` Bash 段 | `core-rs/src/prompt_tests.rs` 的 `system_prompt_static_text_matches_the_shared_table`；`core-rs/src/tools_tests.rs` 的 `schema_parity_tests`；对照表 `core-rs/fixtures/toolSchema.json` / `systemPrompt.json` | 自动 |
 | FR-007 | `core-rs/src/tools.rs` 的 `BASH_RESTRICTED_SLEEP_MESSAGE` / `BASH_RESTRICTED_SED_MESSAGE` 末行 | `core-rs/src/permission_tests.rs` 的 `restricted_messages_name_the_escape_hatch` / `restricted_false_lifts_both_gates` | 自动 |
+| FR-008 | `core-rs/src/prompt.rs` 的 `TOOL_DETAILS_BEFORE_TRANSFER` Bash 段 `**Prefer the Read tool**` 块 | `core-rs/src/prompt_tests.rs` 的 `tool_details_prefer_read_over_cat_and_sed` / `system_prompt_static_text_matches_the_shared_table`；对照表 `core-rs/fixtures/systemPrompt.json`（`cat` 不进闸门的口径由 `permission_tests` 的既有 `restricted_*` 放行用例覆盖） | 自动 |
 | 输出解码（第 3.3 节） | `core-rs/src/text_decode.rs`；`core-rs/src/tools.rs` 的 `read_pipe` / `run_bash`；`core-rs/src/bash_task.rs` 的 `handle_finish` / `read_output_tail` | `core-rs/src/text_decode_tests.rs`（码页判定与增量不劈字）；`core-rs/src/tools_tests.rs` 的 `bash_decodes_gbk_output_to_readable_chinese` / `bash_decodes_utf8_output_unchanged` / `bash_does_not_split_multibyte_chars_across_pipe_chunks` | 自动 |

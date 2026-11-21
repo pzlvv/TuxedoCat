@@ -475,7 +475,7 @@ async function run(): Promise<void> {
             message: {
               role: 'assistant',
               content: [
-                { type: 'tool_use', id: 'call_orphan', name: 'Bash', input: { command: 'ls' } },
+                { type: 'tool_use', id: 'call_orphan', name: 'Bash', input: { command: 'ls', description: 'recover probe' } },
               ],
             },
           },

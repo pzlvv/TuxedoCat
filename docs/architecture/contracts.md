@@ -335,13 +335,20 @@ VS Code 实现里的成员：
 | 列表 | core 侧数据变化 | `CoreEvent.conversationListChanged` → `WebViewUI.onConversationListChanged()` → `conversations.refresh()` |
 | 列表 | UI 主动查询 | webview 的 `getConversations` 消息 → `WebViewUiPort.refreshConversations()` → `conversations.refresh()` |
 | 状态 | core 侧状态变化 | `CoreEvent.sessionRuntimeChanged` → `WebViewUI.onSessionRuntimeChanged()` → `conversations.updateSessionStates(states)` |
-| 视图（仅 Electron） | 视图 open / close / LRU 淘汰 | `ChatViewManager.onLoadedChanged(ids)` → `sidebar:session-loaded-changed` → 侧栏绿点 |
+| 视图（仅 Electron） | 视图 open / close / LRU 淘汰 / 装载完成 | `ChatViewManager.onLoadedChanged(ids)` → `sidebar:session-loaded-changed` → 侧栏绿点 |
 | 空闲回收（仅 VS Code） | 定时巡检 | `sweepIdleSessions()` → `idleCloseHandler` |
 
 **`loaded`（视图已打开）不进这两条流**：它是 Electron 视图层的状态（`ChatViewManager` 知道
 哪些会话的视图开着），不是 core 的事实，也不属于磁盘列表；`ChatViewManager` 是这份状态的
 owner，由它**单独推送**给侧栏（`sidebar:session-loaded-changed`），与列表流、状态流并列。
 侧栏渲染时把三条流合并：列表提供行、状态流提供流水灯、loaded 流提供绿点。
+
+「已打开」按**装载完成**计：视图对象建好、内容还在读盘 / 传输时不算已打开（不亮绿点、
+不参与 `UserChoiceQueue` 的 open 判据）。两条落定结果由宿主侧提供——内容装载完成
+（`WebViewUI.postConversationLoaded` → `onConversationLoaded`）与打开被拒（Core 的
+`notice.session.lockedOpen` → `onConversationOpenRejected`，会话被另一个实例持有，
+specs/032 / US-66）。被拒时这次打开整体撤销：销毁本次新建的视图、回到打开前那条对话，
+界面停在原位置、不亮绿点。
 
 ## 5. 宿主侧入口：动作翻译为 UiEvent
 

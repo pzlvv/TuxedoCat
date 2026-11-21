@@ -467,7 +467,7 @@ fn rewind_marks_bash_in_the_range() {
                 "uuid": "a1",
                 "message": {"role": "assistant", "content": [{
                     "type": "tool_use", "id": "t1", "name": "Bash",
-                    "input": {"command": "rm x"},
+                    "input": {"command": "rm x", "description": "test command"},
                 }]},
             }),
             tool_result("r1", "t1", None),

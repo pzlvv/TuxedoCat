@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-21
 ---
 
 # 规格：abort 按钮
@@ -32,8 +32,8 @@ webview 侧投影见 [docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md
 - 场景 5：事实与表现分离
   - **AC-9**（FR-003）：GIVEN 同一份根事实快照 WHEN 调 `resolveAbortButtonState` THEN 三态结果唯一，且该纯函数只有一份实现
   - **AC-10**（FR-003）：GIVEN 用户点击 abort WHEN webview 上行消息 THEN 载荷只有 `sessionId`，UI 不携带中止范围字段
-- 场景 6：黄色态悬停运行明细（specs/019，US-52）
-  - **AC-11**（FR-004）：GIVEN 黄色态且有运行中的后台任务 / 子代理 WHEN 悬停按钮满 1 秒 THEN 只读浮层逐项列出任务（描述，与命令不同时附命令）与子代理（创建时描述，递归含下层非空闲者）
+- 场景 6：黄色态悬停运行明细（specs/019 / specs/054，US-52）
+  - **AC-11**（FR-004）：GIVEN 黄色态且有运行中的后台任务 / 子代理 WHEN 悬停按钮满 1 秒 THEN 只读浮层逐项列出任务（描述，与命令不同时附命令）与子代理（创建时描述，递归含下层非空闲者），每条都带已执行时间
   - **AC-12**（FR-004）：GIVEN 悬停未满 1 秒即移出 WHEN 计时到期 THEN 浮层不出现；GIVEN 浮层已显示 WHEN 指针移出或离开黄色态 THEN 浮层立即隐藏
   - **AC-13**（FR-004）：GIVEN 红色 / 灰色态或恢复态 spin（两组明细皆空） WHEN 悬停超过 1 秒 THEN 无浮层
   - **AC-14**（FR-004）：GIVEN 浮层显示中 WHEN 点击浮层条目 THEN 不产生任何上行消息；GIVEN 快照更新到达 THEN 浮层内容跟随刷新、两组皆空即关闭
@@ -41,6 +41,11 @@ webview 侧投影见 [docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md
   - **AC-15**（FR-002）：GIVEN 子代理运行中 WHEN 用户 abort 使其停止 THEN 创建者会话收到一条「已被用户取消、不会再 `Reply`」的自动消息（`origin='agent'`、带 From 头），创建者空闲时立刻以它拉起一轮
   - **AC-16**（FR-002）：GIVEN 创建者与其子代理一同被中止 WHEN 取消回报投递 THEN 消息进上下文与消息流，但创建者的 `cancel` 保持置位、`running` 保持假（中止不被自身回报复活）
   - **AC-17**（FR-002）：GIVEN 子代理已调用过 `Reply`、驱动已收尾、或本次是会话关闭 / 删除 / 静默中止 WHEN 收尾 THEN 不发取消回报；同一子代理重复 abort 只回报一次
+- 场景 8：悬停明细的时长与远程子代理（specs/054，US-52）
+  - **AC-18**（FR-004）：GIVEN 浮层已显示 WHEN 停留 3 秒 THEN 各条目的已执行时间每秒递增一次；GIVEN 浮层隐藏 WHEN 再等待数秒 THEN 不再刷新
+  - **AC-19**（FR-004）：GIVEN 发起方只有远程（跨工作区）子代理在跑 WHEN 黄色态悬停满 1 秒 THEN 「子代理」组列出它，行内显示描述、目标工作区身份与已执行时间
+  - **AC-20**（FR-004）：GIVEN 已执行时长分别为 5 秒 / 65 秒 / 3725 秒 / 93784 秒 WHEN 渲染 THEN 文本分别为 `5秒` / `1分5秒` / `1小时2分5秒` / `1天2小时3分4秒`；全部为零（含时钟偏差钳零）为 `0秒`
+  - **AC-21**（FR-004）：GIVEN 条目取不到开始时刻（旧宿主 / 假宿主 / 恢复路径） WHEN 浮层显示 THEN 该条省略时长文本、其余字段照常显示，不出现占位文案
 
 ## 2. 功能需求
 
@@ -55,7 +60,9 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 | 空闲 | 前台无工作，且无后台任务、无子代理 | 灰色 | 否 |
 
 - 「前台工作」＝ `sessionRuntime` 的 `query` 或 `compacting` 来源为真。压缩会整体替换
-  消息数组，与查询同属前台工作，因此同样计入「运行中」。
+  消息数组，与查询同属前台工作，因此同样计入「运行中」。手动压缩的受理也读这一档
+  （`Core::foreground_busy`）：前台仍有工作时登记「待压缩」，前台停下即可压，不等
+  后台任务与子代理收尾（[compaction.md FR-002](compaction.md#fr-002手动压缩与延后执行)）。
 - 「spin 模式」＝ 会话工作模式为 `spin`（`workMode` 事实单独注入
   `resolveAbortButtonState`，runtime 快照不携带），判定**优先于** `queryRunning`。
   spin 期间父会话的消费循环被 SpinLoop 占用，快照里的 `queryRunning` 为真，但跑的
@@ -117,27 +124,36 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 - 快照暴露**根事实**：`sessionId` / `idle` / `waiting` / `queryRunning` /
   `compacting` / `backgroundRunning` / `subAgentRunning`（含跨工作区子代理：结束事件到达前
   一律算运行中），以及悬停明细成员
-  `backgroundTasks`（运行中后台任务清单）与 `subAgentDescription`（子代理创建时描述，
-  specs/019——语义见 [session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)）。
-  颜色是表现，不进契约。
+  `backgroundTasks`（运行中后台任务清单，每条带开始时刻 `startedAt`）与
+  `subAgentDescription` / `subAgentStartedAt`（子代理创建时描述与登记时刻，specs/019 /
+  specs/054）、`remoteSubAgents`（发起方仍在登记的远程子代理清单，specs/054）。
+  语义见 [session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)。颜色是表现，
+  不进契约。
 - 按钮状态由纯函数 `resolveAbortButtonState`（`src/host/abortButtonState.ts`）从根事实
   推导，只有一份实现，webview 与测试共用它（[principles.md 第 8 节](../architecture/principles.md#8-契约只写现状派生字段从根字段推导)）。
 - 悬停明细的子代理清单由唯一纯函数 `collectRunningSubAgents`
-  （`src/shared/sessionRuntime.ts`）按 `parentSessionId` 从全量快照纯派生，webview 与
-  测试共用（specs/019 FR-001）。
-- 中止范围的判定在 Core（`Core::on_abort`），不在 UI：UI 不发送范围
-  字段，避免「按钮颜色」与「实际中止范围」各写一份判据而分叉。
+  （`src/shared/sessionRuntime.ts`）按 `parentSessionId` 从全量快照纯派生，并合并所在节点的
+  `remoteSubAgents`；webview 与测试共用（specs/019 FR-001、specs/054 FR-004）。
+- 已执行时长是**派生值**：开始时刻来自快照，webview 用本机时钟推算（`src/webview/elapsedTime.ts`），
+  core 不推送随时变化的时长字段（specs/054 FR-005）。
 
-### FR-004：黄色态悬停运行明细（specs/019）
+### FR-004：黄色态悬停运行明细（specs/019；specs/054）
 
 - 仅黄色态（`background`，含 spin）响应悬停：指针进入按钮持续满 1 秒显示只读浮层；
   未满 1 秒移出取消，显示中移出立即隐藏，离开黄色态或切换会话一并隐藏。
 - 浮层两组：「后台任务」逐项显示 `backgroundTasks` 的 description（`command` 与
-  description 不同时附命令）；「子代理」按 `collectRunningSubAgents` 的聚合口径逐项
-  显示 description，为 `null` 显示回退文案。两组皆空（恢复态 spin）不显示浮层。
+  description 不同时附命令）与已执行时间；「子代理」按 `collectRunningSubAgents` 的聚合
+  口径逐项显示 description（`null` 显示回退文案），远程（跨工作区）条目另标目标工作区
+  身份 `→ <workspaceId>`，两者都带已执行时间。两组皆空（恢复态 spin）不显示浮层。
+- 已执行时间的文本从「天」到「秒」逐级拼接、数值为零的单位连同单位一起省略，全部为零
+  显示 `0秒`；单位文案走 i18n（zh 天 / 小时 / 分 / 秒，en d / h / m / s）。开始时刻缺失
+  （`null`，旧宿主或恢复路径）时省略时长文本，不显示占位文案。
+- 计时随浮层可见性启停：浮层可见时每秒刷新一次读数，隐藏后停止刷新；再次悬停按当时
+  的开始时刻重新推算。浮层不可见时不维护常驻定时器。
 - 浮层只读：`pointer-events` 穿透，点击不产生任何上行；显示期间随快照刷新，
   两组皆空即关闭。黄色态不设 native `title`（浮层取代），红 / 灰维持「终止」文案。
-- 明细事实的推送语义：清单 / description 参与快照 diff，布尔位不变也触发推送
+- 明细事实的推送语义：清单 / description / 开始时刻 / 远程登记参与快照 diff，布尔位不变
+  也触发推送；开始时刻写定后不变，时间流逝本身不产生推送
   （[session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)）。
 
 ## 3. 行为规格
@@ -170,13 +186,24 @@ Core 运行时状态表 ──sessionRuntimeChanged（全量根事实 + 悬停�
   `queryRunning=false`、`backgroundRunning=true`，按钮转黄（FR-001 判据的组合结果）。
 - **假宿主注入异常快照**：e2e 以假宿主注入 `sessionRuntimeStates` 驱动按钮颜色与可点性，
   缺字段即按缺省根事实判定（webview 不猜值，[principles.md 第 10 节](../architecture/principles.md#10-webview-不持有事实的默认值)）。
+- **开始时刻缺失**：快照没带 `startedAt` / `subAgentStartedAt`（旧宿主、假宿主、恢复路径）
+  时，对应条目省略时长文本、其余字段照常显示；`remoteSubAgents` 缺失按空数组处理。
+  这是设计允许的瞬时状态，不抛错。
+- **时钟偏差**：已执行时长 = 本机当前时刻 − 快照开始时刻，负值钳到 0（显示 `0秒`）。
+  跨机器（SSH 远程 Core）时钟偏差会让读数偏大或偏小，属已知限制；core 不推送时长字段，
+  以保持快照稳定与 diff 不抖动。
+- **远程子代理期间**：登记存在期间恒出现在明细里（与 `subAgentRunning` 口径一致），
+  即使目标侧已实际结束而结束事件尚未到达；事件到达或目标工作区不可用时随登记一起移除，
+  重复 / 迟到事件幂等。远程条目的时长从发起方派发成功（登记）起算；排队中的派发从未
+  创建会话，不出现在明细里。
 
 ## 5. 非目标
 
 - 流水灯、托盘状态点读同一份 core 事实但表现不同，不在本规格内。
 - 后台任务的提醒调度（兜底 / 周期）见 [background-bash.md](background-bash.md)。
 - 悬停浮层内逐项中止单个任务 / 子代理——abort 保持整体范围语义（specs/019 明确不做）；
-  任务的 pid / 已运行时长 / 输出预览不进契约或浮层。
+  任务的 pid / 输出预览不进契约或浮层。
+- 跨机器时钟同步 / 由 core 推送随时变化的时长字段不在本规格内（时长由 UI 按开始时刻推算）。
 
 ## 6. 对需求基线的影响
 
@@ -193,4 +220,4 @@ US-52（黄灯悬停预览后台任务与子代理，
 | FR-001 | `src/host/abortButtonState.ts` 的 `resolveAbortButtonState` | `src/test/abortButtonState.test.ts`（三态 + spin 黄色）；e2e `e2e/webview/conversation.spec.ts`（三态） | 自动 |
 | FR-002 | `Core::on_abort`（`core-rs/src/engine.rs`，spin 子代理范围 + 两阶段判定）、`Core::notify_creator_of_cancel`（取消回报） | `core-rs/src/engine_tests.rs` 的 `abort_request_stops_foreground_before_background` / `abort_during_running_spin_aborts_sub_agents` / `abort_does_not_exit_restored_spin_mode_of_idle_session` / `aborted_sub_agent_reports_cancel_notice_to_its_creator` / `whole_tree_abort_reports_cancel_without_resurrecting_the_creator`；整应用 e2e `e2e/electron/assistant.spec.ts`（两阶段中止、网关不回响应头时中止） | 自动 |
 | FR-003 | `UiEvent.abortRequested` 载荷（`src/shared/AssistantEventBus.ts`） | `src/test/sessionBusyLevel.test.ts`（快照根事实的宿主派生） | 自动 |
-| FR-004 | `src/webview/InputArea.tsx` 悬停浮层 + `App.tsx` 明细推导 + 快照成员 `backgroundTasks` / `subAgentDescription`（`src/shared/AssistantEventBus.ts`、`core-rs/src/engine.rs` 的 `emit_runtime`） | `core-rs/src/engine_tests.rs` 的 `runtime_snapshot_*` 三用例；`src/test/sessionBusyLevel.test.ts`（`collectRunningSubAgents`）；e2e `e2e/webview/conversation.spec.ts`（US-52 悬停用例） | 自动 |
+| FR-004 | `src/webview/InputArea.tsx` 悬停浮层 + `App.tsx` 明细推导 + `src/webview/elapsedTime.ts` + 快照成员 `backgroundTasks` / `subAgentDescription` / `subAgentStartedAt` / `remoteSubAgents`（`src/shared/AssistantEventBus.ts`、`core-rs/src/engine.rs` 的 `emit_runtime`） | `core-rs/src/engine_tests.rs` 的 `runtime_snapshot_*` 用例；`src/test/sessionBusyLevel.test.ts`（`collectRunningSubAgents`）；`src/test/elapsedTime.test.ts`（时长格式）；e2e `e2e/webview/conversation.spec.ts`（US-52 悬停用例：时长、远程行、秒级刷新与停止） | 自动 |

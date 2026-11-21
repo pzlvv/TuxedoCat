@@ -15,6 +15,19 @@ import path from 'node:path';
  *   拿不到就是该文件的用例在收集期即失败，错误信息指明缺什么、怎么补。
  */
 
+/**
+ * 同一个远端上的另一个账号：**免密 `sudo` 不可用**，口令式 `sudo -S` 可用。
+ *
+ * 为什么需要它：挂载代理的两条部署通道（免密 → 三选一凭据）都是产品行为，各有用例
+ * 覆盖。免密通道要求账号有 `NOPASSWD` 规则，凭据通道要求没有——同一个账号不可能同时
+ * 满足，因此环境里显式配两个账号，用例按 `sudo -n` 的实测结果选通道，不按机器名猜。
+ * 字段与 `ssh` 段同形（同一 host / port，只换 user / password）。
+ */
+export interface SshSudoPasswordEnvironment {
+  user: string;
+  password: string;
+}
+
 /** 真实 SSH 服务器（remoteSshExecution.spec.ts 等真实远程用例的远端） */
 export interface SshTestEnvironment {
   host: string;
@@ -29,6 +42,15 @@ export interface SshTestEnvironment {
    * 且不想建隧道时才配它；配了也与隧道不冲突（隧道优先）。
    */
   llmAdvertiseHost?: string;
+  /**
+   * 同一远端上**免密 `sudo` 不可用**的账号（口令式 `sudo -S` 可用）。
+   *
+   * 挂载代理的部署用例要同时覆盖「免密直接装」与「免密不可用 → 三选一凭据」两条通道，
+   * 而这两条互斥于账号的 sudoers 配置（`NOPASSWD`）。因此不靠用例内探测反向推断，而是
+   * 在这里显式登记第二个账号；缺这一项时依赖它的用例在收集期报错，不静默跳过
+   * （`e2e/README.md` 的「测试环境配置」）。
+   */
+  sudoPasswordRequired?: SshSudoPasswordEnvironment;
 }
 
 /** 本机 PyCharm 安装（pycharm-plugin 车道，specs/035）：沙箱拉起与 CDP 驱动的宿主 IDE */
@@ -110,12 +132,23 @@ export function requireSshEnvironment(): SshTestEnvironment {
   if (ssh.llmAdvertiseHost !== undefined) {
     requireNonEmptyString(ssh, 'llmAdvertiseHost', 'ssh.llmAdvertiseHost', problems);
   }
+  if (ssh.sudoPasswordRequired !== undefined) {
+    const nested = ssh.sudoPasswordRequired;
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
+      problems.push('ssh.sudoPasswordRequired 必须是对象 { user, password }');
+    } else {
+      const account = nested as Record<string, unknown>;
+      requireNonEmptyString(account, 'user', 'ssh.sudoPasswordRequired.user', problems);
+      requireNonEmptyString(account, 'password', 'ssh.sudoPasswordRequired.password', problems);
+    }
+  }
   if (problems.length > 0) {
     throw new Error(
       `E2E 环境配置的 ssh 段不合法（${environmentFilePath()}）：\n  - ${problems.join('\n  - ')}\n`
       + `请修正后重跑；不做修复、不使用部分可用的字段。`,
     );
   }
+  const sudoAccount = ssh.sudoPasswordRequired as Record<string, unknown> | undefined;
   return {
     host: ssh.host as string,
     port: port as number,
@@ -124,6 +157,39 @@ export function requireSshEnvironment(): SshTestEnvironment {
     ...(ssh.llmAdvertiseHost !== undefined
       ? { llmAdvertiseHost: ssh.llmAdvertiseHost as string }
       : {}),
+    ...(sudoAccount !== undefined
+      ? {
+          sudoPasswordRequired: {
+            user: sudoAccount.user as string,
+            password: sudoAccount.password as string,
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * 取「免密 `sudo` 不可用」的远端账号（`ssh.sudoPasswordRequired`），**以该账号的身份**
+ * 返回一份 `SshTestEnvironment`：`user` / `password` 换成该账号，`host` / `port` 沿用
+ * `ssh` 段（两个账号在同一台测试机上）。
+ *
+ * 与 `requireSshEnvironment` 同口径：段缺失 / 字段非法抛错，不静默 skip、不回退成
+ * `ssh` 段那个账号——那会让用例在「免密可用」的机器上走到错误的分支上（本函数存在的
+ * 全部理由，见 `SshSudoPasswordEnvironment` 的注释）。
+ */
+export function requireSudoPasswordEnvironment(): SshTestEnvironment {
+  const ssh = requireSshEnvironment();
+  if (ssh.sudoPasswordRequired === undefined) {
+    throw new Error(
+      `E2E 环境配置缺少 ssh.sudoPasswordRequired 段（${environmentFilePath()}）。`
+      + `该段登记同一远端上「免密 sudo 不可用、口令式 sudo -S 可用」的账号`
+      + `（{ user, password }），用于覆盖「免密不可用 → 三选一凭据」这条部署通道。`,
+    );
+  }
+  return {
+    ...ssh,
+    user: ssh.sudoPasswordRequired.user,
+    password: ssh.sudoPasswordRequired.password,
   };
 }
 

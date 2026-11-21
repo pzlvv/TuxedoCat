@@ -617,7 +617,7 @@ impl ToolOutcome {
 
 // ==================== 工具定义 ====================
 
-/// Bash 工具 `description` 参数的说明文本（与 `src/core/tools/bash/Types.ts` 逐字一致）
+/// Bash 工具 `description` 参数的说明文本（必填：模型每次调用都得给一句主动语态的短描述）
 const BASH_DESCRIPTION_FIELD: &str = r#"Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
 
 For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words):
@@ -688,7 +688,7 @@ pub fn definitions() -> Vec<Value> {
                     // 明确的缺省声明，不靠 description 里的自然语言推断。
                     "restricted": { "type": "boolean", "description": BASH_RESTRICTED_FIELD, "default": true }
                 },
-                "required": ["command"]
+                "required": ["command", "description"]
             }
         }),
         json!({
@@ -1868,6 +1868,12 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(command) = input_str(input, "command") else {
         return ToolOutcome::Error("Bash: \"command\" is required".to_string());
     };
+    // `description` 是必填入参（schema `required` 与 `tool_input` 的 Bash 分支同口径）：
+    // Bash 卡片标题、后台任务清单与完成通知都读它，缺了没有可展示的事实。
+    let Some(description) = input_str(input, "description").filter(|value| !value.is_empty())
+    else {
+        return ToolOutcome::Error("Bash: \"description\" is required".to_string());
+    };
     // `input.cwd` **原样**交给子进程——相对路径由 OS 按 Core 进程的 cwd 解析
     // （不是会话工作目录），`~` 也不展开；空串是假值，回退会话工作目录。
     let cwd = input_str(input, "cwd")
@@ -1893,9 +1899,6 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 立刻返回 taskId，完成后经 `ToolContext.background.notify` 注入通知
     // 。
     if js_coerce_bool(input.get("run_in_background")) {
-        let description = input_str(input, "description")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| command.clone());
         // 视图状态显式传入：后台命令与前台同一判据（`ViewUnavailable` 在这里是
         // 「该会话不存在代理」，因此只有 `View` 才走代执行）
         let view = match &ctx.work_view {
@@ -2083,7 +2086,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             return auto_background_command(
                 child,
                 &command,
-                &description_of(input, &command),
+                &description,
                 ctx,
                 &full_output,
                 started,
@@ -2306,13 +2309,6 @@ struct PipeSink {
     /// （`docs/features/background-bash.md` 第 4 节）。
     raw: Vec<u8>,
     file: Option<std::fs::File>,
-}
-
-/// Bash 工具的 `description`（缺省回退命令本身）
-fn description_of(input: &Value, command: &str) -> String {
-    input_str(input, "description")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| command.to_string())
 }
 
 /// 前台命令转入后台继续执行。

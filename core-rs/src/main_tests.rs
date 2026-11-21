@@ -1394,7 +1394,7 @@ fn ui_request_conversation_load_recovers_interrupted_tool_use_for_idle_session()
             "type": "assistant",
             "uuid": "a1",
             "message": { "role": "assistant", "content": [
-                { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls" } }
+                { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls", "description": "test command" } }
             ]},
         }),
         None,
@@ -1988,6 +1988,8 @@ fn runtime_state_fields_match_parity_fixture() {
         &crate::engine::SessionCreator::User,
         &[],
         None,
+        None,
+        &[],
     );
     let mut actual: Vec<String> = sample
         .as_object()

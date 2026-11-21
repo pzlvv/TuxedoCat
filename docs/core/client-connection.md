@@ -177,6 +177,11 @@ Connection 持有：
   （`<sessionId>.session.lock`，互斥归内核；锁的持有者是 Core 内的会话实例，宿主断开
   而 Core 存活——detach / 孤儿化——不构成释放），争用时装载与变更入口硬拒绝并发占用
   通知。锁的行为只取决于文件系统、内核与进程，本层与宿主都零参与。
+- 装载被拒是**失败的一次打开**，不是一次「打开了一半」：Core 回装载错误并发
+  `notice.session.lockedOpen`（带持有者 pid），界面停在打开前的原位置——不展示内容、
+  不留在加载态、不把该会话算作已打开（Electron 侧栏不亮绿点、也不进入
+  `UserChoiceQueue` 的 open 判据）。宿主侧据此撤销这次打开（specs/defects/
+  open-locked-conversation-stuck-loading）。
 
 ---
 

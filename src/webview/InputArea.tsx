@@ -14,6 +14,7 @@ import { isAgentCreator, type SessionCreator } from '../shared/sessionCreator';
 import { SegmentControl, CheckboxGlyph } from './components/SegmentControl';
 import { dropdownMenuTheme, menuPanelShellStyle } from './components/dropdownMenuTheme';
 import { t } from './i18n';
+import { formatElapsedTime, type ElapsedTimeLabels } from './elapsedTime';
 import { useUiFontOffset, uiFontSizePx } from './fontSize';
 import {
   filterWorkspaces,
@@ -97,13 +98,20 @@ interface InputAreaProps {
   /** 当前会话 id（specs/019 FR-003；null = 无当前会话）：切换会话时复位悬停明细浮层 */
   sessionId: string | null;
   /**
-   * abort 悬停明细（specs/019 FR-001 / FR-002）：当前会话运行中的后台任务与子代理
-   * 清单，App 从 sessionRuntime 快照推导；两组皆空时黄色态悬停不弹浮层
-   * （恢复态 spin）。浮层只读：点击无任何上行，中止范围仍由 abort 点击整体判定。
+   * abort 悬停明细（specs/019 FR-001 / FR-002；specs/054 FR-004 / FR-005）：当前会话
+   * 运行中的后台任务与子代理清单（含远程登记），App 从 sessionRuntime 快照推导；
+   * 两组皆空时黄色态悬停不弹浮层（恢复态 spin）。每条带开始时刻，浮层可见期间由本组件
+   * 用本机时钟推算已执行时间。浮层只读：点击无任何上行，中止范围仍由 abort 点击整体判定。
    */
   abortHoverDetail: {
-    tasks: { taskId: string; description: string; command: string }[];
-    subAgents: { sessionId: string; description: string | null }[];
+    tasks: { taskId: string; description: string; command: string; startedAt: number | null }[];
+    subAgents: {
+      sessionId: string;
+      description: string | null;
+      startedAt: number | null;
+      /** 远程（跨工作区）子代理的目标工作区身份；本地子代理为 `null`（specs/054 FR-004） */
+      workspaceId: string | null;
+    }[];
   };
   /**
    * 会话关联的询问模式。
@@ -1702,7 +1710,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   // 发送模式菜单的主题 token 用到字号档位（与主配置菜单同一来源，随设置缩放）
   const fontOffset = useUiFontOffset();
 
-  // ==================== abort 悬停明细浮层（specs/019 FR-002） ====================
+  // ==================== abort 悬停明细浮层（specs/019 FR-002；specs/054 FR-004 / FR-005） ====================
 
   // 仅黄色态（background）起 1s 计时；移出取消 / 立即隐藏；内容随快照刷新，
   // 两组皆空时不渲染（恢复态 spin）。浮层 pointer-events-none：只读投影，
@@ -1726,6 +1734,32 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   useEffect(() => () => {
     if (abortTipTimerRef.current !== null) clearTimeout(abortTipTimerRef.current);
   }, []);
+
+  // 已执行时间的读数来源（specs/054 FR-005）：浮层可见时每秒推进一次「当前时刻」，
+  // 隐藏后停止——不在不可见时维护常驻定时器。开始时刻来自快照（事实），时长在这里
+  // 现算，不缓存第二份。
+  const [abortTipNow, setAbortTipNow] = useState(() => Date.now());
+  const abortTipHasDetail = abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0;
+  useEffect(() => {
+    if (!abortTipVisible || !abortTipHasDetail) return undefined;
+    // 首帧读数即当前时刻（不等下一个整秒），此后每秒递增
+    setAbortTipNow(Date.now());
+    const interval = setInterval(() => setAbortTipNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [abortTipVisible, abortTipHasDetail]);
+  // 单位文案随界面语言：格式化函数本身零 import，文案在这里注入
+  const elapsedLabels: ElapsedTimeLabels = useMemo(() => ({
+    day: t('inputArea.elapsedDay'),
+    hour: t('inputArea.elapsedHour'),
+    minute: t('inputArea.elapsedMinute'),
+    second: t('inputArea.elapsedSecond'),
+  }), []);
+  // 开始时刻缺失（旧宿主 / 恢复路径）→ 不显示时长，也不显示占位文案
+  const elapsedText = useCallback(
+    (startedAt: number | null): string | null =>
+      (startedAt === null ? null : formatElapsedTime(abortTipNow - startedAt, elapsedLabels)),
+    [abortTipNow, elapsedLabels],
+  );
 
   // ==================== 任务进度按钮与浮层（docs/features/todo-list.md FR-003） ====================
 
@@ -2614,7 +2648,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           列表（图标 + 文本，docs/features/todo-list.md FR-003）。pointer-events-none：
           只读投影，点击不产生任何上行（FR-004）。放在任务进度浮层之后，两组浮层
           同时可见（进度已固定 + 悬停 abort）时 abort 浮层盖在上层。 */}
-        {abortTipVisible && (abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0) && (
+        {abortTipVisible && abortTipHasDetail && (
           <div
             data-abort-tip
             className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"
@@ -2626,19 +2660,28 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                   <div className="ui-fs-10 font-semibold" style={{ color: colors.textSecondary }}>
                     {t('inputArea.abortHoverTasks')}
                   </div>
-                  {abortHoverDetail.tasks.map((task) => (
-                    <div key={task.taskId} className="flex items-start gap-2 ui-fs-11">
-                      <span className="flex-shrink-0 mt-0.5" style={{ color: colors.harness }}>
-                        <Icon name="terminal" size={12} />
-                      </span>
-                      <span style={{ color: colors.textSystem, wordBreak: 'break-word' }}>
-                        {task.description}
-                        {task.command !== task.description && (
-                          <span className="block ui-fs-10 opacity-70 break-all font-mono mt-0.5">{task.command}</span>
-                        )}
-                      </span>
-                    </div>
-                  ))}
+                  {abortHoverDetail.tasks.map((task) => {
+                    const elapsed = elapsedText(task.startedAt);
+                    return (
+                      <div key={task.taskId} className="flex items-start gap-2 ui-fs-11">
+                        <span className="flex-shrink-0 mt-0.5" style={{ color: colors.harness }}>
+                          <Icon name="terminal" size={12} />
+                        </span>
+                        <span style={{ color: colors.textSystem, wordBreak: 'break-word' }}>
+                          {task.description}
+                          {/* 已执行时间（specs/054 FR-005）：开始时刻缺失时整段省略 */}
+                          {elapsed !== null && (
+                            <span data-elapsed className="ml-2 opacity-70" style={{ whiteSpace: 'nowrap' }}>
+                              {elapsed}
+                            </span>
+                          )}
+                          {task.command !== task.description && (
+                            <span className="block ui-fs-10 opacity-70 break-all font-mono mt-0.5">{task.command}</span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </>
               )}
               {abortHoverDetail.subAgents.length > 0 && (
@@ -2646,16 +2689,35 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                   <div className="ui-fs-10 font-semibold" style={{ color: colors.textSecondary }}>
                     {t('inputArea.abortHoverSubAgents')}
                   </div>
-                  {abortHoverDetail.subAgents.map((agent) => (
-                    <div key={agent.sessionId} className="flex items-start gap-2 ui-fs-11">
-                      <span className="flex-shrink-0 mt-0.5" style={{ color: colors.harness }}>
-                        <Icon name="bot" size={12} />
-                      </span>
-                      <span style={{ color: colors.textSystem, wordBreak: 'break-word' }}>
-                        {agent.description ?? t('inputArea.abortHoverSubAgentFallback')}
-                      </span>
-                    </div>
-                  ))}
+                  {abortHoverDetail.subAgents.map((agent) => {
+                    const elapsed = elapsedText(agent.startedAt);
+                    return (
+                      <div key={agent.sessionId} className="flex items-start gap-2 ui-fs-11">
+                        <span className="flex-shrink-0 mt-0.5" style={{ color: colors.harness }}>
+                          <Icon name="bot" size={12} />
+                        </span>
+                        <span style={{ color: colors.textSystem, wordBreak: 'break-word' }}>
+                          {agent.description ?? t('inputArea.abortHoverSubAgentFallback')}
+                          {/* 远程子代理标注运行位置（specs/054 FR-004）：本地条目不显示这个标签 */}
+                          {agent.workspaceId !== null && (
+                            <span
+                              data-remote-workspace
+                              className="ml-2 opacity-70 ui-fs-10"
+                              style={{ whiteSpace: 'nowrap' }}
+                              title={agent.workspaceId}
+                            >
+                              → {agent.workspaceId}
+                            </span>
+                          )}
+                          {elapsed !== null && (
+                            <span data-elapsed className="ml-2 opacity-70" style={{ whiteSpace: 'nowrap' }}>
+                              {elapsed}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </>
               )}
             </div>

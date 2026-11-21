@@ -34,7 +34,7 @@ test('后台完成通知收成一行摘要，展开后显示原始通知全文',
   await host.send({ type: 'addMessage', sessionId, role: 'user', content: COMPLETION, origin: 'bash' });
 
   // 一行摘要：标题 + description + 时长；正文（Task: / Output:）默认不渲染
-  const head = page.getByRole('button', { name: /Background bash completed\./ });
+  const head = page.getByRole('button', { name: /Background task completed\./ });
   await expect(head).toBeVisible({ timeout: 10_000 });
   await expect(head).toContainText('(List files in current directory)');
   await expect(head).toContainText('1.5s');
@@ -65,7 +65,7 @@ test('失败的后台任务只换标题文案，不标红、图标与成功态�
   ].join('\n');
   await host.send({ type: 'addMessage', sessionId, role: 'user', content: failed, origin: 'bash' });
 
-  const failedHead = page.getByRole('button', { name: /Background bash failed\./ });
+  const failedHead = page.getByRole('button', { name: /Background task failed\./ });
   await expect(failedHead).toBeVisible({ timeout: 10_000 });
   await expect(failedHead).toContainText('(Build the standalone core)');
   await expect(failedHead).toContainText('43.2s');
@@ -73,13 +73,13 @@ test('失败的后台任务只换标题文案，不标红、图标与成功态�
   // 标题用系统色（不标红），图标与成功态是同一个
   const colorOf = (locator: ReturnType<typeof page.locator>): Promise<string> =>
     locator.evaluate((el) => getComputedStyle(el).color);
-  const failedTitle = failedHead.getByText('Background bash failed.');
+  const failedTitle = failedHead.getByText('Background task failed.');
   const successMessage = await colorOf(failedTitle);
 
   await host.send({ type: 'addMessage', sessionId, role: 'user', content: COMPLETION, origin: 'bash' });
-  const okHead = page.getByRole('button', { name: /Background bash completed\./ });
+  const okHead = page.getByRole('button', { name: /Background task completed\./ });
   await expect(okHead).toBeVisible({ timeout: 10_000 });
-  const okTitle = okHead.getByText('Background bash completed.');
+  const okTitle = okHead.getByText('Background task completed.');
   expect(await colorOf(okTitle)).toBe(successMessage);
 
   // 两个折叠行的图标类名一致（同一个 glyph），且都不是叉/叹号类图标
@@ -102,12 +102,12 @@ test('认不出结论的通知用中性标题，不宣称成功或失败', async
   ].join('\n');
   await host.send({ type: 'addMessage', sessionId, role: 'user', content: legacy, origin: 'bash' });
 
-  const head = page.getByRole('button', { name: /Background bash\./ });
+  const head = page.getByRole('button', { name: /Background task\./ });
   await expect(head).toBeVisible({ timeout: 10_000 });
   await expect(head).toContainText('(Background command "legacy form" finished somehow)');
   await expect(head).toContainText('900ms');
-  await expect(page.getByText(/Background bash completed\./)).toHaveCount(0);
-  await expect(page.getByText(/Background bash failed\./)).toHaveCount(0);
+  await expect(page.getByText(/Background task completed\./)).toHaveCount(0);
+  await expect(page.getByText(/Background task failed\./)).toHaveCount(0);
 });
 
 test('子代理 From 消息收成一行：来源 + 正文首行摘要，展开后是完整 markdown', async () => {
