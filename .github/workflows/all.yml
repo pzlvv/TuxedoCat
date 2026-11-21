@@ -217,7 +217,14 @@ jobs:
       - run: npx playwright install-deps chromium
       # Electron 起点同 electron 车道：Linux 无显示要 xvfb，裸 X 没有 WM（最大化 / 焦点
       # 语义不成立）要 openbox。SSH 远端由用例自己经 ssh2 建链，不依赖本节点的 ssh 客户端
+      #
+      # `TUXEDO_CAT_E2E_CONNECT_PROBE_MS`：放宽建链探测超时（产品默认 3 秒，规格见
+      # `docs/core/client-connection.md`）。共享 CI runner 跨公网连远端时 SSH 建链会超过
+      # 3 秒，`remoteSshExecution` 的重连两条因此恒红（实测 `reconnect failed:
+      # 远程连接超时（3 秒）`）。这个开关只影响测试进程内的等待上限，产品默认值不变。
       - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-ssh ${{ matrix.spec }}"
+        env:
+          TUXEDO_CAT_E2E_CONNECT_PROBE_MS: '20000'
       # 凭证闸门：trace 会记录 fill() 进密码框的明文（动作参数 / 日志 / DOM 快照三处），
       # 而仓库是 public——上传前扫一遍，命中即让 job 失败，绝不把口令带出 runner。
       # 项目配置已对 electron-ssh 关掉 trace（e2e/playwright.config.ts），这是第二道。

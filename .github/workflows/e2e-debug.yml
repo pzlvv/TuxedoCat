@@ -71,6 +71,8 @@ jobs:
           PROJECT: ${{ inputs.project }}
           GREP: ${{ inputs.grep }}
           FILE: ${{ inputs.file }}
+          # 与 all.yml 同口径：放宽建链探测超时，避免 CI 上重连类用例因 3 秒预算恒红
+          TUXEDO_CAT_E2E_CONNECT_PROBE_MS: '20000'
         run: |
           set -o pipefail
           args=(-c e2e/playwright.config.ts "--project=${PROJECT}")

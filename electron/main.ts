@@ -430,8 +430,25 @@ function refKey(ref: WorkspaceRef): string {
   return workspaceRefKey(ref);
 }
 
+/**
+ * e2e 专用的建链探测超时覆盖（`<envPrefix>_E2E_CONNECT_PROBE_MS`）。
+ *
+ * 规格定义的上限是 3 秒（`docs/core/client-connection.md`：建链超时 3 秒，远端引导
+ * 不计入）——那是**用户等待失败信号**的预算，不随环境变。但 e2e 跑在共享 CI runner 上、
+ * 跨公网连远端时，SSH 建链在负载下会超过 3 秒，用例因此恒红（
+ * `e2e/electron/remoteSshExecution.spec.ts` 的重连两条）。这个开关只放宽**测试里的**
+ * 等待上限，产品默认值不变；与 `_E2E_SLOW_LIST_MS` / `_E2E_REMOTE_GIT_OPS` 同一口径。
+ */
+const E2E_CONNECT_PROBE_MS_ENV = `${ENV_PREFIX}_E2E_CONNECT_PROBE_MS`;
+
 /** 建链探测超时（启动恢复与重新连接共用）：用户等待失败信号的上限 */
 const CONNECT_PROBE_TIMEOUT_MS = 3_000;
+
+/** 实际使用的探测超时：e2e 可用 `<envPrefix>_E2E_CONNECT_PROBE_MS` 放宽（见上） */
+function connectProbeTimeoutMs(): number {
+  const override = Number(process.env[E2E_CONNECT_PROBE_MS_ENV]);
+  return Number.isFinite(override) && override > 0 ? override : CONNECT_PROBE_TIMEOUT_MS;
+}
 
 /** 工作区引用的展示路径（本地即路径，远程带 `tcp://host` 前缀） */
 function refDisplay(ref: WorkspaceRef): string {
@@ -4243,7 +4260,7 @@ async function reconnectWorkspace(id: string): Promise<void> {
 async function openRemoteWorkspaceAfterProbe(ref: WorkspaceRef): Promise<void> {
   if (ref.endpoint) {
     const { probeRemoteEndpoint } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
-    await probeRemoteEndpoint(ref.endpoint, CONNECT_PROBE_TIMEOUT_MS);
+    await probeRemoteEndpoint(ref.endpoint, connectProbeTimeoutMs());
   } else if (!isValidWorkspaceDir(ref.path)) {
     throw new Error(`本地目录仍不存在：${ref.path}`);
   }
@@ -4416,7 +4433,7 @@ function probeStartupRemoteWorkspaces(): void {
   }
   const { probeRemoteEndpoint } = require('../src/host/bootstrapCore.js') as typeof import('../src/host/bootstrapCore.js');
   for (const group of groups.values()) {
-    void probeRemoteEndpoint(group.endpoint, CONNECT_PROBE_TIMEOUT_MS)
+    void probeRemoteEndpoint(group.endpoint, connectProbeTimeoutMs())
       .then(() => {
         for (const ref of group.refs) {
           const key = refKey(ref);
