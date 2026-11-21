@@ -165,9 +165,25 @@ jobs:
           retention-days: 3
 
   ssh:
-    name: e2e-ssh（真实 SSH 远端）
+    name: e2e-ssh（${{ matrix.spec }}）
     needs: prepare
     runs-on: ubuntu-latest
+    # 按 spec 文件拆开跑：整条车道 43 条用例连着跑时，测试脚手架的上百次建链会把远端
+    # sshd 的连接数推到 `MaxStartups`（默认 10:30:100）之上，后半程开始出现
+    # `Connection lost before handshake` / `Channel open failure`，表现为大面积失败；
+    # 同一个文件单独跑 15/17 通过（调试车道实测）。
+    #
+    # `max-parallel: 1` 是必须的：四个 spec 同时跑会翻倍并发，比不拆更糟。串行的代价是
+    # 总时长约等于四个文件之和，换来的是每个文件独立的连接预算与可定位的失败面。
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        spec:
+          - electron/remoteSshExecution.spec.ts
+          - electron/remoteTaskSurvival.spec.ts
+          - electron/remoteChangeList.spec.ts
+          - electron/overlayMountProxyRemote.spec.ts
     steps:
       - uses: actions/checkout@v4
         with:
@@ -195,15 +211,13 @@ jobs:
           E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
           E2E_SSH_LLM_ADVERTISE_HOST: ${{ secrets.E2E_SSH_LLM_ADVERTISE_HOST }}
         run: node scripts/write-e2e-environments.mjs
-      # 远端是共享机器，同机并发跑两条车道会互相踩工作区与 daemon 状态；4 条用例
-      # 全套跑满约 20 分钟，串行比并发省心（workers=1 已是工程配置）
       - uses: ./.github/actions/apt-install
         with:
           packages: xvfb openbox
       - run: npx playwright install-deps chromium
       # Electron 起点同 electron 车道：Linux 无显示要 xvfb，裸 X 没有 WM（最大化 / 焦点
       # 语义不成立）要 openbox。SSH 远端由用例自己经 ssh2 建链，不依赖本节点的 ssh 客户端
-      - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-ssh"
+      - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-ssh ${{ matrix.spec }}"
       # 凭证闸门：trace 会记录 fill() 进密码框的明文（动作参数 / 日志 / DOM 快照三处），
       # 而仓库是 public——上传前扫一遍，命中即让 job 失败，绝不把口令带出 runner。
       # 项目配置已对 electron-ssh 关掉 trace（e2e/playwright.config.ts），这是第二道。
