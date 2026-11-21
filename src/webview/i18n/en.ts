@@ -213,6 +213,11 @@ export const enDict: Record<string, string> = {
   'inputArea.abortHoverTasks': 'Background tasks',
   'inputArea.abortHoverSubAgents': 'Sub-agents',
   'inputArea.abortHoverSubAgentFallback': 'Unnamed sub-agent',
+  // Elapsed-time units (specs/054 FR-005): joined day → second, zero units omitted
+  'inputArea.elapsedDay': 'd',
+  'inputArea.elapsedHour': 'h',
+  'inputArea.elapsedMinute': 'm',
+  'inputArea.elapsedSecond': 's',
   'inputArea.removeImage': 'Remove image',
   'inputArea.spinDesign': 'Spin Design',
   'inputArea.model': 'Model',

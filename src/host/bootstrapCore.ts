@@ -559,6 +559,12 @@ function markConnectionSessionsFailed(
                 pendingCompact: false,
                 backgroundRunning: false,
                 subAgentRunning: false,
+                // 明细清单跟布尔位一起清：留下「subAgentRunning=false 但快照里还列着
+                // 远程子代理 / 后台任务」的自相矛盾快照会污染 abort 悬停浮层
+                // （specs/054 FR-001 / FR-003）。`subAgentStartedAt` 是时间线事实、
+                // 不是活动来源，保持原值。
+                backgroundTasks: [],
+                remoteSubAgents: [],
               }
             : state,
         ),

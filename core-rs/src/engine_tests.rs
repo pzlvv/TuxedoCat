@@ -8426,6 +8426,155 @@ fn runtime_snapshot_republishes_when_task_mix_changes() {
     crate::bash_task::reset_for_test();
 }
 
+// ==================== 悬停明细的开始时刻与远程清单（specs/054） ====================
+
+/// `backgroundTasks` 元素携带任务开始时刻（specs/054 FR-001）：取值与任务注册表记录的
+/// 开始时刻同源，写定后不随秒数流逝变化（否则快照每秒 diff 都会抖动）。
+#[test]
+fn runtime_snapshot_background_task_carries_started_at() {
+    let sandbox = Sandbox::new("engine-runtime-bg-started-at");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    crate::bash_task::reset_for_test();
+    let harness = EngineHarness::allow_all();
+
+    let _state = harness.core.session("s1");
+    let hooks = harness.core.background_hooks();
+    crate::bash_task::register_running("t1", "任务一", "echo 1", "s1", 100, Some(hooks));
+    // 注册即经 hooks 推过一次（布尔位 false→true）；显式 emit 保证拿到的是最新快照
+    harness.core.emit_runtime();
+    let entry = harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .pop()
+        .expect("runtime");
+    let tasks = entry["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("session entry")["backgroundTasks"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let registered = crate::bash_task::running_tasks_for_session("s1");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        tasks[0]["startedAt"].as_u64(),
+        Some(registered[0].start_time),
+        "startedAt 必须取注册表的开始时刻（同一事实，不另记一份）"
+    );
+    assert!(tasks[0]["startedAt"].as_u64().unwrap_or(0) > 0);
+
+    // 同一任务再次投影：startedAt 不变 → 快照无变化，不重发（秒数流逝不进 diff）
+    harness.sink.clear();
+    harness.core.emit_runtime();
+    assert!(
+        harness.sink.event_of("sessionRuntimeChanged").is_none(),
+        "开始时刻写定后，单纯的时间流逝不应产生推送"
+    );
+    crate::bash_task::reset_for_test();
+}
+
+/// `subAgentStartedAt` 是子代理的登记时刻（specs/054 FR-002）：已登记的子代理会话为数字
+/// 毫秒，普通会话为 `null`（UI 只省略时长）。
+#[test]
+fn runtime_snapshot_carries_sub_agent_started_at() {
+    let sandbox = Sandbox::new("engine-runtime-subagent-started-at");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+
+    let _parent = harness.core.session("p1");
+    let child = harness.core.session("c1");
+    {
+        let mut child = child.lock().unwrap();
+        child.parent_session_id = Some("p1".to_string());
+        child.sub_agent_description = Some("浏览文件找规格".to_string());
+    }
+    crate::subagent::register("c1", "p1");
+    harness.core.emit_runtime();
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
+    let states = runtime["states"].as_array().unwrap();
+    let child_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "c1")
+        .expect("child entry");
+    assert_eq!(
+        child_entry["subAgentStartedAt"].as_u64(),
+        crate::subagent::created_at("c1"),
+        "subAgentStartedAt 必须取登记的创建时刻"
+    );
+    let parent_entry = states
+        .iter()
+        .find(|state| state["sessionId"] == "p1")
+        .expect("parent entry");
+    assert_eq!(
+        parent_entry["subAgentStartedAt"],
+        Value::Null,
+        "普通会话未登记 → null（UI 省略时长而不是猜一个值）"
+    );
+    crate::subagent::reset_for_test();
+}
+
+/// `remoteSubAgents` 列出发起方仍在登记的远程子代理（specs/054 FR-003）：身份 + 目标
+/// 工作区 + 开始时刻；结束事件到达后清单与 `subAgentRunning` 一起收敛。
+#[test]
+fn runtime_snapshot_lists_remote_sub_agents_until_ended() {
+    let sandbox = Sandbox::new("engine-runtime-remote-subagents");
+    config::set_active_workspace(Some(sandbox.workspace.to_string_lossy().to_string()));
+    crate::subagent::reset_for_test();
+    let harness = EngineHarness::allow_all();
+    let _origin = harness.core.session("origin");
+    crate::subagent::register("sub_remote_1", "origin");
+    crate::subagent::register_remote("sub_remote_1", "origin", "HOST:/b", Some("跨区找规格"));
+    harness.core.emit_runtime();
+
+    let runtime = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("runtime");
+    let entry = runtime["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "origin")
+        .expect("origin entry");
+    let remote = entry["remoteSubAgents"]
+        .as_array()
+        .expect("remoteSubAgents");
+    assert_eq!(remote.len(), 1);
+    assert_eq!(remote[0]["sessionId"], "sub_remote_1");
+    assert_eq!(remote[0]["description"], "跨区找规格");
+    assert_eq!(remote[0]["workspaceId"], "HOST:/b");
+    assert!(remote[0]["startedAt"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(
+        entry["subAgentRunning"], true,
+        "远程登记期间同样算「子代理在跑」（悬停明细与黄灯判据同源）"
+    );
+
+    // 结束事件到达：注销远程与本地登记，清单与布尔位一起收敛
+    harness.sink.clear();
+    harness
+        .core
+        .on_cross_workspace_agent_completed("origin", "sub_remote_1");
+    let after = harness
+        .sink
+        .event_of("sessionRuntimeChanged")
+        .expect("收敛推送");
+    let entry = after["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["sessionId"] == "origin")
+        .expect("origin entry");
+    assert_eq!(entry["remoteSubAgents"].as_array().unwrap().len(), 0);
+    assert_eq!(entry["subAgentRunning"], false);
+    crate::subagent::reset_for_test();
+}
+
 // ==================== 跨工作区代理（specs/023） ====================
 
 /// `@` 命令身份解析：引号 / 非引号 / 首字符 / 空身份。
@@ -8859,7 +9008,7 @@ fn reply_to_cross_workspace_subagent_reports_remote_workspace() {
     let harness = EngineHarness::allow_all();
     // 造态：与 `spawn_remote_agent` 成功分支相同——只登记，不建本地会话状态
     crate::subagent::register("sub_remote_target", "s-parent");
-    crate::subagent::register_remote("sub_remote_target", "s-parent", "HOST:/b");
+    crate::subagent::register_remote("sub_remote_target", "s-parent", "HOST:/b", None);
 
     let error = harness
         .core
@@ -8945,7 +9094,12 @@ fn reply_tool_error_for_cross_workspace_target_names_the_remote_workspace() {
         .unwrap()
         .project = Some("D:/repo/a".to_string());
     crate::subagent::register("sub_remote_tool", "session_parent");
-    crate::subagent::register_remote("sub_remote_tool", "session_parent", "HOST:/b");
+    crate::subagent::register_remote(
+        "sub_remote_tool",
+        "session_parent",
+        "HOST:/b",
+        Some("远程追问"),
+    );
 
     let outcome = crate::tools::execute(
         "Reply",
@@ -9043,7 +9197,7 @@ fn cross_workspace_abort_emits_event() {
     let state = harness.core.session("s-cross-abort");
     state.lock().unwrap().project = Some("D:/repo/a".to_string());
     crate::subagent::register("sub_abort_1", "s-cross-abort");
-    crate::subagent::register_remote("sub_abort_1", "s-cross-abort", "HOST:/b");
+    crate::subagent::register_remote("sub_abort_1", "s-cross-abort", "HOST:/b", Some("跨区任务"));
 
     harness.core.on_abort("s-cross-abort");
     let event = harness

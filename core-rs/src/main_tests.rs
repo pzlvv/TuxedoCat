@@ -1988,6 +1988,8 @@ fn runtime_state_fields_match_parity_fixture() {
         &crate::engine::SessionCreator::User,
         &[],
         None,
+        None,
+        &[],
     );
     let mut actual: Vec<String> = sample
         .as_object()
