@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-21
 ---
 
 # 规格：abort 按钮
@@ -55,7 +55,9 @@ abort 按钮常驻输入区。它的可用性与颜色由**当前会话**的运�
 | 空闲 | 前台无工作，且无后台任务、无子代理 | 灰色 | 否 |
 
 - 「前台工作」＝ `sessionRuntime` 的 `query` 或 `compacting` 来源为真。压缩会整体替换
-  消息数组，与查询同属前台工作，因此同样计入「运行中」。
+  消息数组，与查询同属前台工作，因此同样计入「运行中」。手动压缩的受理也读这一档
+  （`Core::foreground_busy`）：前台仍有工作时登记「待压缩」，前台停下即可压，不等
+  后台任务与子代理收尾（[compaction.md FR-002](compaction.md#fr-002手动压缩与延后执行)）。
 - 「spin 模式」＝ 会话工作模式为 `spin`（`workMode` 事实单独注入
   `resolveAbortButtonState`，runtime 快照不携带），判定**优先于** `queryRunning`。
   spin 期间父会话的消费循环被 SpinLoop 占用，快照里的 `queryRunning` 为真，但跑的

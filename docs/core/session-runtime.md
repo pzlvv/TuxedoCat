@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-21
 ---
 
 # 规格：会话运行时状态（Core 进程）
@@ -24,7 +24,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | --- | --- | --- |
 | `queryRunning` | 会话自身有活跃查询 / 引擎在消费 | 消费循环（`run_consumer` / `run_query_loop`）的进入与收尾、子代理轮次 |
 | `compacting` | 正在压缩上下文（会整体替换消息数组） | `compact.rs` 的 `mark_compacting` / `unmark_compacting`（`compact_conversation` 的进出） |
-| `pendingCompact` | 手动压缩已登记、等待当前轮次结束、队列排空时执行（排队不是正在执行的工作，不参与 `idle`） | `Core::request_compact` 的 `mark_pending_compact`；`run_consumer` 队列排空时消费、中止 / `Core::drop_session` 清理时 `unmark_pending_compact` |
+| `pendingCompact` | 手动压缩已登记、等前台工作收尾（当前轮次结束、队列排空）时执行（排队不是正在执行的工作，不参与 `idle`） | `Core::request_compact` 先 `mark_pending_compact` 再判前台：前台仍在工作时留下来等（前台已停下时同一入口立刻取走并执行）；`run_query_loop` 每轮 `aiBegin` 前、`run_consumer` 队列排空分支、`Core::request_compact` 自己都经原子的 `take_pending_compact` 取走同一条登记（循环在排空分支看到登记时把 `running` 标回真再回顶部出队）；中止 / `Core::drop_session` 清理时 `unmark_pending_compact` |
 | `backgroundRunning` | 有运行中的后台 Bash 任务 | `bash_task.rs` 的任务注册 / 结束 / 中止（按剩余任务数同步） |
 | `subAgentRunning` | 该会话已注册子代理（idle 递归看子代理当前是否非 idle，本标志只作变更信号；跨工作区子代理在 `crossWorkspaceAgentCompleted` 前恒算非 idle） | `subagent.rs` 的 `register` / `unregister` / `register_remote` / `unregister_remote` |
 | `waiting` | 正在等待用户操作 | `Core::on_user_choice_pending`（宿主上报）；`waiting_request` 入队时提前标记，等待结束（应答 / 回复超时 / 会话中止）时归零 |
@@ -55,7 +55,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `waiting` | `waiting` 来源（正在等待用户操作，流水灯显示黄色） |
 | `queryRunning` | `query` 来源（前台查询 / 引擎在消费） |
 | `compacting` | `compacting` 来源（正在压缩上下文） |
-| `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待当前轮次结束后执行；不参与 `idle`） |
+| `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待前台工作收尾时执行；不参与 `idle`） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
 | `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务（[docs/features/abort-button.md](../features/abort-button.md)） |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理）；跨工作区子代理没有本地会话状态，登记期间恒算非 idle，结束事件到达后注销 |
@@ -68,6 +68,9 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 按需读根字段自行推导表现（abort 按钮三态见 [docs/features/abort-button.md](../features/abort-button.md)，
 推导原则见 [principles.md 第 8 节](../architecture/principles.md#8-契约只写现状派生字段从根字段推导)）。
 `pendingCompact` 不在这个合取里：排队不是正在执行的工作，会话空闲时它也可以为真。
+手动压缩的受理只看**前台**是否仍在工作（`Core::foreground_busy`：`running` /
+`compacting` / 排队待消费的用户消息，即 abort 按钮的红色档）：前台停下后即压，不等
+`backgroundRunning` 与 `subAgentRunning` 收尾（[docs/features/compaction.md](../features/compaction.md) FR-002）。
 
 明细成员（`backgroundTasks` / `subAgentDescription`）与布尔位同源同发，并参与快照
 diff：清单增减、子代理 description 出现即使布尔位不变也触发推送——abort 悬停明细

@@ -285,7 +285,7 @@ export type HostToWebviewMessage = {
     waiting: boolean;
     queryRunning: boolean;
     compacting: boolean;
-    /** 已登记手动压缩、等待下一轮开始；不参与 `idle` */
+    /** 已登记手动压缩、等前台工作收尾后执行；不参与 `idle` */
     pendingCompact: boolean;
     backgroundRunning: boolean;
     /** 运行中后台 Bash 任务清单（specs/019 FR-001），注册序；空集为 `[]` */

@@ -510,6 +510,79 @@ fn manual_compact_is_deferred_while_the_session_is_busy() {
     crate::compact::reset_for_test();
 }
 
+/// 前台空闲、只剩后台工作（abort 按钮为黄）时手动压缩立即执行：
+/// 不登记「待压缩」、不等后台任务与子代理结束（`docs/features/compaction.md` FR-002）。
+#[test]
+fn manual_compact_runs_immediately_while_only_background_work_remains() {
+    let sandbox = Sandbox::new("engine-compact-background-only");
+    crate::compact::reset_for_test();
+    crate::bash_task::reset_for_test();
+    crate::subagent::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    seed_messages(&harness, "s1", &project, 40);
+
+    // 黄色档的两个来源同时在场：运行中的后台 Bash 任务 + 非 idle 子代理
+    let hooks = harness.core.background_hooks();
+    let _kill =
+        crate::bash_task::register_running("t1", "跑长测试", "sleep 30", "s1", 4242, Some(hooks));
+    let child = harness.core.session("child-1");
+    child.lock().unwrap().running = true;
+    child.lock().unwrap().parent_session_id = Some("s1".to_string());
+    crate::subagent::register("child-1", "s1");
+    harness.core.emit_runtime();
+    let entry = harness
+        .sink
+        .events_of("sessionRuntimeChanged")
+        .into_iter()
+        .last()
+        .expect("runtime snapshot")["states"]
+        .as_array()
+        .expect("states")
+        .iter()
+        .find(|state| state["sessionId"] == "s1")
+        .expect("s1 in runtime snapshot")
+        .clone();
+    assert_eq!(entry["idle"], false, "后台工作让会话整体非空闲（黄）");
+    assert_eq!(entry["queryRunning"], false, "前台没有查询在跑");
+    assert_eq!(entry["compacting"], false, "前台没有压缩在跑");
+    assert_eq!(entry["backgroundRunning"], true);
+    assert_eq!(entry["subAgentRunning"], true);
+
+    harness.core.request_compact("s1");
+
+    assert!(
+        !crate::compact::is_pending_compact("s1"),
+        "前台空闲即可压缩，不应登记待压缩"
+    );
+    let begins = harness.sink.events_of("compactBegin");
+    assert_eq!(
+        begins.len(),
+        1,
+        "应当立即压缩: {:?} / log: {:?}",
+        harness.sink.event_types(),
+        harness.sink.events_of("log")
+    );
+    assert_eq!(
+        harness.sink.events_of("compactEnd")[0]["result"]["status"],
+        "complete"
+    );
+    let messages = crate::history::load_messages("s1", &project);
+    assert_eq!(messages[0]["compactMetadata"]["trigger"], "manual");
+    // 后台工作不受压缩影响：任务仍在册、子代理登记仍在
+    assert_eq!(crate::bash_task::running_count_for_session("s1"), 1);
+
+    // 收尾：子代理的 `running` 是伪造的（没有驱动循环会把它停下），
+    // 先归零再清注册表，免得 harness 收尾白等深度空闲超时
+    harness.core.session("child-1").lock().unwrap().running = false;
+    crate::bash_task::reset_for_test();
+    crate::subagent::reset_for_test();
+    crate::compact::reset_for_test();
+}
+
 /// 待压缩被消费但消息不足（不可压缩）：清除标记并推送快照，不进入压缩。
 #[test]
 fn pending_compact_is_cleared_when_there_is_nothing_to_summarize() {

@@ -390,6 +390,10 @@ mod unit_tests {
         mark_pending_compact("s1");
         assert!(is_pending_compact("s1"));
         assert_eq!(PENDING_COMPACT.lock().unwrap().len(), 1);
+        // 取走是原子的一步：第一次成功、第二次（另一消费方）失败
+        assert!(take_pending_compact("s1"));
+        assert!(!is_pending_compact("s1"));
+        assert!(!take_pending_compact("s1"));
         unmark_pending_compact("s1");
         assert!(!is_pending_compact("s1"));
     }

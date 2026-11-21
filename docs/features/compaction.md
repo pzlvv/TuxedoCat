@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-21
 ---
 
 # 规格：对话压缩
@@ -21,8 +21,9 @@ last_reviewed: 2026-11-10
   - **AC-1**（FR-001）：GIVEN 会话上下文超过自动压缩阈值 WHEN 下一轮 `aiBegin` 之前 THEN 自动触发压缩
   - **AC-2**（FR-001）：GIVEN 压缩边界之后的消息数不大于 `maxMessagesToKeep` WHEN 触发压缩 THEN 不做任何处理直接返回
 - 场景 2：手动压缩
-  - **AC-3**（FR-002）：GIVEN 会话空闲 WHEN UI 发 `compactRequested` THEN 立即执行压缩
-  - **AC-4**（FR-002）：GIVEN 会话非空闲 WHEN 手动请求压缩 THEN 登记「待压缩」，当前轮次结束、队列排空时执行
+  - **AC-3**（FR-002）：GIVEN 会话前台空闲 WHEN UI 发 `compactRequested` THEN 立即执行压缩
+  - **AC-4**（FR-002）：GIVEN 会话前台仍有工作 WHEN 手动请求压缩 THEN 登记「待压缩」，当前轮次结束、队列排空时执行
+  - **AC-15**（FR-002）：GIVEN 前台已停下、只剩后台 Bash 任务或非 idle 子代理（abort 按钮为黄） WHEN UI 发 `compactRequested` THEN 立即执行压缩，不等这些后台工作结束
 - 场景 3：压缩结果
   - **AC-5**（FR-003）：GIVEN 可压缩消息 WHEN 压缩完成 THEN 消息数组整体替换为 `[边界标记, 摘要, ...保留区]`，meta 标记 `isCompacted`，UI 收到 `messagesReplaced`
   - **AC-6**（FR-003）：GIVEN `tool_use` 被留在归档区而其 `tool_result` 落在保留区（或相反） WHEN 按条数截断保留区 THEN 向保留区补一条 `is_canceled` 的合成 `tool_result`
@@ -58,15 +59,32 @@ last_reviewed: 2026-11-10
 
 ### FR-002：手动压缩与延后执行
 
-UI 发 `UiEvent.compactRequested` → Core 的手动压缩入口；
-会话非空闲（`idle === false`）时登记「待压缩」，在当前轮次结束、消费队列排空时执行
-（轮次末尾到压缩开始之间 `running` 保持为真，压缩完成后才进入 idle）。
+UI 发 `UiEvent.compactRequested` → Core 的手动压缩入口（`Core::request_compact`），
+受理判据是**前台是否仍在工作**（`Core::foreground_busy`：`running` / `compacting` /
+排队待消费的用户消息，即 abort 按钮的红色档，见
+[docs/features/abort-button.md](abort-button.md#fr-001三态判定)）：
+
+- 前台仍有工作：登记「待压缩」，在当前轮次结束、消费队列排空时执行
+  （轮次末尾到压缩开始之间 `running` 保持为真，压缩完成后才进入 idle）。
+- 前台已停下（abort 按钮为黄或灰）：立即执行，**不等待**仍在运行的后台 Bash 任务与
+  非 idle 子代理。后台工作不阻塞压缩——压缩期间它们的通知只入队（FR-003 的并发保护），
+  收尾时再排空。
+
+登记先写、前台判据后读，登记标记由 `compact::take_pending_compact` 原子取走：
+`run_query_loop` 每轮 `aiBegin` 前、`run_consumer` 的队列排空分支、`Core::request_compact`
+自己都会消费同一条登记，一步取走保证只压一次；反过来（先判前台再登记）会让登记与
+循环收尾交错、挂到下一条用户消息。循环在排空分支看到这条登记时把 `running` 标回真并
+回到顶部，由常规出队分支取走（同样一步原子取走）——轮次末尾到压缩开始之间仍属同一段
+连续任务，不出现 `idle` 快照。
 排队事实经运行时快照的 `pendingCompact` 根事实推给 UI（见
 [docs/core/session-runtime.md 第 2 节](../core/session-runtime.md#2-对外快照)）：
 webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期间把上下文用量
 文本显示为「准备压缩」（英文 `Preparing`），webview 同时取消该文本的点击入口；实际开始
 压缩或标记清除后还原。不再发 `message`（`once: true`）通知，也不写 `meta.json` 的
 `onceMessage`。
+
+中止（`abortRequested`）时清除待压缩：中止后不补跑压缩，用户需重新点用量条
+（此时前台已停下，按上面的判据立即执行）。
 
 ### FR-003：压缩流程与落盘
 
@@ -227,6 +245,10 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
   进度提示转错误态；消息数组不被替换。
 - **并发保护**：压缩进行中标记 `compacting`，新到用户消息只入队（压缩结束后排空）；
   周期性后台提醒压缩中不投递。
+- **仅剩后台工作时压缩**：前台已停下（abort 按钮为黄）时手动压缩立即执行，不等后台
+  Bash 任务与子代理结束；压缩产物里的「后台任务」章节按压缩开始那一刻的注册表现算。
+  子代理不进该章节——它的 `Reply` 压缩后按自动消息接续（同一「时点事实 + 通知接续」
+  口径）。中止会清除待压缩，中止后不补跑。
 - **孤立工具调用**：截断导致的配对断裂由 `sanitize_tool_pairing` 修复（AC-6）。
 - **运行中后台任务**：压缩开始时按任务登记表现算一次并进摘要消息（FR-006）；
   登记表为空时不出章节。章节不随后续完成 / 中止回写（AC-13）。
@@ -254,7 +276,7 @@ US-17（压缩历史展开）；无新增 US。
 | 需求 | 实现落点 | 测试落点 | 覆盖 |
 | --- | --- | --- | --- |
 | FR-001 | `core-rs/src/compact.rs` 的 `get_auto_compact_threshold` | `core-rs/src/compact_tests.rs`（阈值与触发判定） | 自动 |
-| FR-002 | `core-rs/src/main.rs` 的 `compactRequested` 分发（空闲立即 / 非空闲延后） | `core-rs/src/compact_engine_tests.rs`（手动 / 自动触发、延后执行） | 自动 |
+| FR-002 | `core-rs/src/engine.rs` 的 `Core::request_compact`（判据 `Core::foreground_busy`）+ `compact.rs` 的 `take_pending_compact`；分发在 `core-rs/src/main.rs` 的 `compactRequested` | `core-rs/src/compact_engine_tests.rs`（手动 / 自动触发、延后执行、仅剩后台工作立即执行）、`core-rs/src/compact_tests.rs` 的 `compacting_registry_tracks_sessions`（原子取走） | 自动 |
 | FR-003 | `core-rs/src/compact.rs` 的 `compact_conversation` / `sanitize_tool_pairing` | `core-rs/src/compact_engine_tests.rs`；`core-rs/src/compact_tests.rs` | 自动 |
 | FR-004 | `core-rs/src/compact.rs` 的 `select_user_input_history` | `core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_keeps_the_global_user_input_head` | 自动 |
 | FR-005 | `core-rs/src/history.rs` 的 `append_compact_archive`（按代次追加）+ `core-rs/src/main.rs` 的 `compact_archive_display`（合并与每代起始下标）+ 宿主 `expandCompact`（`src/host/ui/webviewMessageHandler.ts`，分段转换）+ `src/webview/compactExpand.ts`（层级 → 可见集合 / 按钮显隐） | `core-rs/src/history_tests.rs`（追加不覆盖 / 旧格式 / 半行）、`core-rs/src/main_tests.rs` 的 `compact_archive_display_*`、`core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_appends_a_second_archive_generation`、`src/test/compactExpand.test.ts`、e2e `e2e/webview/messagePresentation.spec.ts`（US-17 逐层展开） | 自动 |

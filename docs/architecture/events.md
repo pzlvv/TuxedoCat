@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-21
 ---
 
 # 规格：AssistantEventBus 与事件词汇表
@@ -203,7 +203,7 @@ Spin 设计器）。core 不感知「当前工作目录是谁」，因此没有�
 | # | `type` | 载荷 | UI 侧触发点 | core 侧消费方 |
 | --- | --- | --- | --- | --- |
 | 1 | `abortRequested` | `sessionId` | `abort` 消息（webview 的 abort 按钮由 `sessionRuntimeStates` 的根事实推导，见[docs/hosts/webview-ui.md 第 8 节](../hosts/webview-ui.md#8-abort-按钮读-core-的-sessionruntime不由这里判定)与 [docs/features/abort-button.md](../features/abort-button.md)） | `Core::on_abort`（按该会话运行时事实决定中止范围：spin 模式递归中止子代理与后台任务并让 SpinLoop 收尾，spin 单向、恢复态 spin 为空操作；常规会话前台有工作只中止前台，前台空闲则中止后台 Bash + 递归子代理。范围判定幂等） |
-| 2 | `compactRequested` | `sessionId` | `requestCompress` | Core 的手动压缩入口（空闲立即执行；非空闲登记「待压缩」，当前轮次结束后执行） |
+| 2 | `compactRequested` | `sessionId` | `requestCompress` | Core 的手动压缩入口（前台已停下——abort 按钮黄 / 灰——立即执行，不等后台任务与子代理；前台仍在工作只登记「待压缩」，当前轮次结束后执行，见 [docs/features/compaction.md](../features/compaction.md) FR-002） |
 | 3 | `conversationStarted` | `sessionId`, `storage` | `startNewConversation`（handler 先登记会话工作目录，再发事件） | Core 的 `start_conversation`（预创建引擎 + MCP 引用 + 缓存该会话工作目录的环境事实） |
 | 4 | `conversationOpened` | `sessionId` | `loadConversation` 与 `startNewConversation`（handler 都先登记会话工作目录，再发事件；新会话也登记为「已打开」，供 Core 重启后重放） | Core 的 `on_conversation_opened`（载入历史 + MCP 引用） |
 | 5 | `conversationClosed` | `sessionId` | `WebViewUI.releaseConversation`（关闭按钮 / 侧栏关闭 / VS Code 空闲回收 / Electron 视图销毁序列 `ChatViewManager.closeConversation`；临时 `new-` key 不发，[docs/hosts/webview-ui.md 第 1 节](../hosts/webview-ui.md#1-类定义与接线)） | Core 的 `on_conversation_closed`（卸内存 + 拒绝该会话挂起的 user choice；磁盘不动） |
