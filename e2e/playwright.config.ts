@@ -6,7 +6,7 @@ import { assertEnvironmentFileIfPresent } from './helpers/testEnvironment';
 /**
  * 场景级 e2e 配置（`e2e/README.md`）。
  *
- * 六个 project 对应五层用例（`electron-app` 与 `electron-ssh` 同属整应用层：后者要外部
+ * 七个 project 对应六层用例（`electron-app` 与 `electron-ssh` 同属整应用层：后者要外部
  * SSH 环境，拆开是为了让没有远端机器的开发机与 CI 车道都能各自独立跑）：
  * - `webview-ui`：Chromium 直接加载构建产物 `dist/webview/index.html`，宿主侧以
  *   假宿主（`helpers/fakeHost.ts`）按 `src/host/webviewMessages.ts` 协议应答，
@@ -90,8 +90,8 @@ export default defineConfig({
       testMatch: /electron[\\/].+\.spec\.ts/,
       testIgnore: REMOTE_SSH_SPECS,
     },
-    // 真实 SSH 远端（本地车道：要 e2e/environments.json，不进 CI——runner 内临时起的
-    // sshd 替代不了真实远端，见 e2e/README.md 的 CI 车道表）
+    // 真实 SSH 远端（要 e2e/environments.json：开发机用本机那份，CI 由 secrets 现写，
+    // 见 e2e/README.md 的 CI 车道表）
     { name: 'electron-ssh', testMatch: REMOTE_SSH_SPECS },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道

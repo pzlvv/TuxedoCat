@@ -25,8 +25,8 @@
 npm run build:webview && npm run copy-assets && npm run build:electron
 npx playwright install chromium            # 网络受限时：PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
 
-npm run test:e2e            # 全部（六个 project，串行，workers=1）
-npm run test:e2e:local      # 除真实 SSH 远端外的五个 project（= CI 三车道同集，test:all 收的就是它）
+npm run test:e2e            # 全部（七个 project，串行，workers=1）
+npm run test:e2e:local      # 除真实 SSH 远端外的五个 project（= CI 的 ui / electron / tui 三车道同集，test:all 收的就是它）
 npm run test:e2e:webview    # 仅 webview UI 级
 npm run test:e2e:electron   # 仅 Electron 整应用（不需要 SSH 环境）
 npm run test:e2e:ssh        # 仅真实 SSH 远端车道（需要 e2e/environments.json）
@@ -62,7 +62,7 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 e2e 在全量回归工作流 `all.yml` 里跑：合入 main 后整点定时（每小时）+ 手动 dispatch。
 MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检查 + 单测 + Rust 测试 +
 `check-types:e2e`，不含 e2e 用例；`all.yml` 直接复用它的两个 job）。`prepare` job 构建
-一次产物（7 个前端产物 + 宿主平台 Core + Electron 主进程），三个车道并行下载产物后
+一次产物（7 个前端产物 + 宿主平台 Core + Electron 主进程），四个车道并行下载产物后
 各跑一层：
 
 | job | project | 车道额外前置 |
@@ -70,20 +70,30 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 | `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
 | `electron` | `electron-app` | xvfb + openbox（Linux 无显示；裸 X 没有窗口管理器）+ Chromium 运行时库（`playwright install-deps`）+ artifact 下载后补可执行位（已知坑 6） |
 | `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
+| `ssh` | `electron-ssh` | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位 |
 
 失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
-`electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，CI 与开发机都能直接跑；
+`electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，任何机器都能直接跑；
 后者缺 `environments.json` 时在收集期报错（无效直接报错，不做兜底）。
 
-`electron-ssh` **不进 CI**：它要求一台可连的真实远端机器，runner 内临时起的 sshd 与真实
-远端在服务配置 / 网络 / 权限模型上差异太大，判定为本地车道——本地跑
-`npm run test:e2e:ssh`（前置见下节）。要接回 CI 时，在 `.github/workflows/all.yml` 里加回
-job 并同步本表。
+`electron-ssh` 在 CI 里由 **GitHub 托管 runner 当宿主**（跑 Electron + mock LLM），SSH 远端
+仍是真实那台测试机。runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock LLM 经
+SSH 反向隧道暴露到远端回环（`e2e/README.md` 的「运行」一节），因此 runner 在 NAT 后不影响
+链路。选托管 runner 而不是在那台机器上跑自托管 runner：远端是共享云主机（4 vCPU），
+宿主侧编译与 Electron 都更吃单核性能，而 SSH 用例的瓶颈在 WAN 往返与远端部署。
 
-`pycharm-plugin` 同为**本地车道**：要本机 PyCharm（`environments.json` 的 `pycharm` 段，
-至少 `idePath`）与 `npm run package:pycharm` 产出的分发 zip，runner 两者皆无。前置：
+凭证只在 job 内存在：`scripts/write-e2e-environments.mjs` 从 6 个必填 secret 生成
+`e2e/environments.json`（`ssh` 段的 `host` / `port` / `user` / `password` 与
+`sudoPasswordRequired` 段的 `user` / `password`），可选 `E2E_SSH_LLM_ADVERTISE_HOST`
+对应 `ssh.llmAdvertiseHost`。缺任何一项即报错退出，不补默认值、不跳过用例；文件按 0600
+落盘、内容不打印。这段形状与 `e2e/helpers/testEnvironment.ts` 的类型、`e2e/environments.example.json`
+的示例同源。
+
+`pycharm-plugin` 仍是**本地车道**：要本机 PyCharm（`environments.json` 的 `pycharm` 段，
+至少 `idePath`）与 `npm run package:pycharm` 产出的分发 zip，托管 runner 两者皆无。前置：
 JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / local.properties /
 常见安装位探测）。要接回 CI 时，在 `.github/workflows/all.yml` 里加回 job 并同步本表。
+
 
 ## 测试环境配置（environments.json）
 
@@ -121,7 +131,7 @@ JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / loc
 
 ```
 e2e/
-├── playwright.config.ts        # 六个 project，串行执行（workers=1）
+├── playwright.config.ts        # 七个 project，串行执行（workers=1）
 ├── helpers/
 │   ├── fakeHost.ts             # webview 级假宿主：注入 window.vscode / __hostInfo 等全局，
 │   │                           # 自动应答启动序列，sendMessage 播放脚本化流式轮次

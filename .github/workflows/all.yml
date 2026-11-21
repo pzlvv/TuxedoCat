@@ -1,17 +1,19 @@
-# 全量回归车道：冒烟（复用 smoke.yml）+ e2e 三车道，合入 main 后整点定时执行，
+# 全量回归车道：冒烟（复用 smoke.yml）+ e2e 四车道，合入 main 后整点定时执行，
 # 是 PR 冒烟闸门之外的全量回归网；workflow_dispatch 供手动补跑。
 #
 # 不挂 pull_request：MR 的合入闸门是 smoke.yml（分钟级出结果），全量要构建全部产物
 # 并在 xvfb 里跑真实 Electron 链路，放不进 PR 关键路径——合入后的回归由定时车道兜底。
 #
-# electron-ssh（真实 SSH 远端）不进 CI：它需要一台可连的外部机器，runner 内的 sshd 与
-# 真实远端差异太大（SSH 服务配置 / 网络 / 权限模型），按现状判定为本地车道
-# （npm run test:e2e:ssh，需要 e2e/environments.json）。接回 CI 前先在
-# e2e/README.md 的 CI 车道表里补回对应 job。
+# electron-ssh（真实 SSH 远端）挂 GitHub 托管 runner：runner 只当**宿主**（跑 Electron +
+# mock LLM），SSH 远端是 `e2e/environments.json` 里那台真实 Linux 机器。选托管 runner 而不是
+# 在那台机器上跑自托管 runner：远端是 4 vCPU 共享云主机（单核 sha256 比 runner 慢一个数量级），
+# 且 SSH 用例的瓶颈在 WAN 往返与远端 Core 部署，不在宿主编译；宿主侧产物由 prepare 构建一次
+# 分发到各车道。环境文件含口令、不入库，由 secrets 在 job 内现写
+# （`scripts/write-e2e-environments.mjs`，缺 secret 直接报错）。
 #
-# pycharm-plugin（specs/035 的 PyCharm 插件宿主）同为本地车道：需要本机 PyCharm
-# （e2e/environments.json 的 pycharm 段）与 npm run package:pycharm 产物，runner 两者皆无
-# （npm run test:e2e:pycharm）。接回 CI 前先在 e2e/README.md 的 CI 车道表里补回对应 job。
+# pycharm-plugin（specs/035 的 PyCharm 插件宿主）仍是本地车道：需要本机 PyCharm
+# （e2e/environments.json 的 pycharm 段）与 npm run package:pycharm 产物，托管 runner 两者皆无
+# （npm run test:e2e:pycharm）。接回 CI 时先在 e2e/README.md 的 CI 车道表里补回对应 job。
 name: all
 
 on:
@@ -159,5 +161,53 @@ jobs:
         if: failure()
         with:
           name: e2e-tui-trace
+          path: test-results
+          retention-days: 3
+
+  ssh:
+    name: e2e-ssh（真实 SSH 远端）
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-artifacts
+      # 同 electron 车道：artifact 上传把文件落成 644，Core 与自带 ripgrep 要 spawn，
+      # 不补回 +x 就是 EACCES（已知坑 6）
+      - run: chmod -R u+x dist/resources/core resources/core
+      # 环境文件含 SSH 口令、不入库：由 secrets 现写（缺项直接报错，不回退、不跳过）。
+      # 口令经 env 传入而不是拼进 run 的命令行——拼进命令行会出现在日志的 `Run` 段
+      - name: 写 e2e/environments.json
+        env:
+          E2E_SSH_HOST: ${{ secrets.E2E_SSH_HOST }}
+          E2E_SSH_PORT: ${{ secrets.E2E_SSH_PORT }}
+          E2E_SSH_USER: ${{ secrets.E2E_SSH_USER }}
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+          E2E_SSH_SUDO_USER: ${{ secrets.E2E_SSH_SUDO_USER }}
+          E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
+          E2E_SSH_LLM_ADVERTISE_HOST: ${{ secrets.E2E_SSH_LLM_ADVERTISE_HOST }}
+        run: node scripts/write-e2e-environments.mjs
+      # 远端是共享机器，同机并发跑两条车道会互相踩工作区与 daemon 状态；4 条用例
+      # 全套跑满约 20 分钟，串行比并发省心（workers=1 已是工程配置）
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: xvfb openbox
+      - run: npx playwright install-deps chromium
+      # Electron 起点同 electron 车道：Linux 无显示要 xvfb，裸 X 没有 WM（最大化 / 焦点
+      # 语义不成立）要 openbox。SSH 远端由用例自己经 ssh2 建链，不依赖本节点的 ssh 客户端
+      - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-ssh"
+      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-ssh-trace
           path: test-results
           retention-days: 3

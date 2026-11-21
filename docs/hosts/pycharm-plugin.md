@@ -115,7 +115,8 @@ fixture 测试锁定）。
   `-Porg.gradle.java.installations.paths` 注入；Kotlin 插件 2.3.21+——2.2.20 在 JDK 25
   上 `JavaVersion.parse` 崩）。本机 PyCharm 经 `intellijPlatform local()` 作为编译平台
   （路径来自 `e2e/environments.json` 的 pycharm 段 / `local.properties`），缺省远程坐标。
-- e2e 本地车道 `pycharm-plugin`（`e2e/pycharm/`，`npm run test:e2e:pycharm`）：不进 CI。
+- e2e 本地车道 `pycharm-plugin`（`e2e/pycharm/`，`npm run test:e2e:pycharm`）：不进 CI
+  （托管 runner 没有 PyCharm；`electron-ssh` 车道已在 all.yml 里跑，本车仍为本地车道）。
   zip 结构层无 IDE 依赖；IDE 内链路层以沙箱化目录拉起本机 PyCharm——`PYCHARM_VM_OPTIONS`
   四路径重定向 + `-Didea.trust.all.projects=true` + `-Djb.consents.confirmation.enabled=false`
   + CDP 端口经 `options/ide.general.xml` 持久化覆盖（`-D` 不进 Registry，实测无效）；
