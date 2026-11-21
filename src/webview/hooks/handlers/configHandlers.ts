@@ -9,6 +9,7 @@ import type { SessionState } from '../../types';
 import { postMessage } from '../../webviewEnv';
 import { sameMcpEnabledList } from '../../../shared/utils/mcpList';
 import { missingPanelFields } from './shared';
+import { rejectedLoadSessionOf } from '../../conversationLoadRejection';
 
 /**
  * 当前会话的会话状态快照打补丁：live state 与 store 快照的会话配置字段必须
@@ -165,8 +166,25 @@ export function handleConfigNotice(
   msg: Extract<HostToWebviewWire, { type: 'notice' }>,
   ctx: HandlerContext,
 ): void {
-  const { props } = ctx;
-          props.pushNotice(msg.key, msg.params, msg.level);
+  const { props, propsRef, sessionMessagesCacheRef } = ctx;
+  // 打开被拒（会话被其它实例持有，specs/032 / US-66）：提示照常弹（占用原因与持有者
+  // pid 必须让用户看到），但这次打开到此为止——结束加载并回到打开前的位置，
+  // 不许停在 loading、也不许把被拒的对话当成已打开
+  // （specs/defects/open-locked-conversation-stuck-loading）。
+  //
+  // 回滚的是**当前会话**的现场：单视图进入加载态时清空过消息与排队横幅
+  // （`App.tsx` 的 `navigateToSession`），此刻 currentSessionId 仍是打开前那条对话，
+  // 按它的内存缓存与排队项恢复即可。多视图宿主下这次打开属于被销毁的另一个视图，
+  // 本视图的 currentSessionId 尚未确定，回滚是 no-op。
+  const rejected = rejectedLoadSessionOf(propsRef.current.pendingConversationLoad, msg);
+  if (rejected) {
+    props.finishConversationLoad(rejected);
+    const current = props.currentSessionIdRef.current;
+    const cached = current ? sessionMessagesCacheRef.current.get(current) : undefined;
+    if (cached && cached.length > 0) props.setMessages(cached);
+    props.setQueuedMessage(current ? props.queuedMessageRef.current.get(current) ?? null : null);
+  }
+  props.pushNotice(msg.key, msg.params, msg.level);
 }
 
 export function handleConfigSettingsDefaults(

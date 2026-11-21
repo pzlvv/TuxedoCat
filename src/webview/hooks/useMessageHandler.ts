@@ -84,6 +84,8 @@ export interface UseMessageHandlerProps {
   setWorkspaces: (v: Array<{ id: string; path: string; displayName: string }>) => void;
   /** 呈现一条 core 产出的瞬时提示（键 + 参数，`docs/architecture/core-ui-separation.md` 第 4.9 节） */
   pushNotice: (key: string, params: Record<string, string | number>, level: 'info' | 'warn' | 'error') => void;
+  /** 本视图正在等待装载的会话（`null` = 没有在等）：打开被拒时按它严格匹配 */
+  pendingConversationLoad: string | null;
   /** MCP 服务器列表（含启用状态），由 extension 读取 mcp.json + settings.json 后下发 */
   setMcpServers: (v: McpServerInfo[]) => void;
   setConversationDropdownOpen: (v: boolean) => void;
