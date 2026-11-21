@@ -154,7 +154,11 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   `ui` / `electron` / `tui` / `ssh` 并行（electron 与 ssh 车道跑在 `xvfb-run` 里）。
   `electron-ssh`（真实 SSH 远端）挂在 GitHub 托管 runner 上：runner 只当宿主，SSH 远端是
   `e2e/environments.json` 里那台真实机器，凭证由 6 个必填 secret 在 job 内现写成该文件
-  （`scripts/write-e2e-environments.mjs`，缺项直接报错）。`pycharm-plugin`（PyCharm 插件宿主，
+  （`scripts/write-e2e-environments.mjs`，缺项直接报错）。**凭证不进 artifact**：这条车道
+  要把 sudo 口令 `fill()` 进密码框，而 Playwright trace 会记下明文（动作参数 / 日志 / DOM
+  快照），仓库又是 public——因此该 project 关 trace、job 不上传 test-results、上传前用
+  `scripts/scan-e2e-artifacts-for-secrets.mjs` 扫一遍（会解 zip）。新增用凭证的用例时按
+  同样三条处理，口径见 [e2e/README.md](e2e/README.md#凭证不进-artifact)。`pycharm-plugin`（PyCharm 插件宿主，
   specs/035）仍是本地车道：要本机 PyCharm（`e2e/environments.json` 的 pycharm 段）与
   `npm run package:pycharm` 产物（`npm run test:e2e:pycharm`）。本地 `npm run test:all`
   已把 `test:e2e:local`（除 `electron-ssh` 与 `pycharm-plugin` 外的全部车道，与 CI

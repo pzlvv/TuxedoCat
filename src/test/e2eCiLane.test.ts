@@ -24,7 +24,9 @@ import { createChecker, runTests } from './helpers/harness';
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const ALL_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'all.yml');
 const WRITE_SCRIPT = path.join(REPO_ROOT, 'scripts', 'write-e2e-environments.mjs');
+const SCAN_SCRIPT = path.join(REPO_ROOT, 'scripts', 'scan-e2e-artifacts-for-secrets.mjs');
 const TEST_ENVIRONMENT = path.join(REPO_ROOT, 'e2e', 'helpers', 'testEnvironment.ts');
+const PLAYWRIGHT_CONFIG = path.join(REPO_ROOT, 'e2e', 'playwright.config.ts');
 
 function read(file: string): string {
   if (!fs.existsSync(file)) throw new Error(`缺少文件：${path.relative(REPO_ROOT, file)}`);
@@ -61,9 +63,51 @@ function requiredSecrets(script: string): string[] {
   return [...block.matchAll(/\[\s*'(E2E_[A-Z0-9_]+)'/g)].map((match) => match[1]);
 }
 
-/** ssh job 的 env 块传进去的 secret 源名（`${{ secrets.X }}` 的 X） */
+/**
+ * ssh job 的 env 块传进去的 secret 源名（`${{ secrets.X }}` 的 X）。
+ *
+ * `job` 里有两处传 secret：写环境文件的步骤（6 个）与凭证扫描步骤（2 个口令）。
+ * 本函数只用于「脚本要的都传齐了」这条判据，取并集；「是否有死变量」由
+ * `scopedSecrets` 按步骤分别对照。
+ */
 function passedSecrets(block: string): string[] {
-  return [...block.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]);
+  return [...block.matchAll(SECRET_REF)].map((match) => match[1]);
+}
+
+/**
+ * GitHub Actions 的 secret 引用：`${{ secrets.X }}`。
+ *
+ * 必须带 `${{ }}` 外壳而不是裸 `secrets.X`——仓库里有
+ * `scripts/scan-e2e-artifacts-for-secrets.mjs`，它的文件名里就含 `secrets.mjs`，
+ * 裸匹配会把 `mjs` 当成一个 secret 名。
+ */
+const SECRET_REF = /\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+/**
+ * 把 workflow 的某个步骤块（从 `- name:` 或 `- run:` 起，到下一个 `- ` 起）按脚本切分：
+ * 返回 `{ body, secrets }`，secrets 是该步骤 env 里传的 secret 名。
+ *
+ * 为什么要按步骤切：同一个 secret 可能被多个步骤用到（口令既写环境文件、又参与
+ * 上传前扫描），按整段 job 判「有无死变量」会把「只在一个步骤里」的合法用法误判。
+ */
+function stepBlocks(job: string): { body: string; secrets: string[] }[] {
+  const lines = job.split(/\r?\n/);
+  const starts = lines
+    .map((line, index) => (/^\s{6}- /.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+  return starts.map((start, i) => {
+    const end = i + 1 < starts.length ? starts[i + 1] : lines.length;
+    const body = lines.slice(start, end).join('\n');
+    // 只认 `${{ secrets.X }}`：文件名里的 `-for-secrets.mjs` 不是引用（见 SECRET_REF）
+    const secrets = [...body.matchAll(SECRET_REF)].map((m) => m[1]);
+    return { body, secrets };
+  });
+}
+
+/** 步骤里 `run:` 调用的脚本路径（`node scripts/x.mjs` 的 x.mjs） */
+function stepScript(body: string): string | null {
+  const match = /node\s+(scripts\/[A-Za-z0-9._-]+\.mjs)/.exec(body);
+  return match ? match[1] : null;
 }
 
 /**
@@ -101,6 +145,27 @@ function writtenSshKeys(source: string): string[] {
   return keys;
 }
 
+/**
+ * `e2e/playwright.config.ts` 里 `name: 'electron-ssh'` 那条 project 的文本块。
+ *
+ * 按行长切：从 `{ name: 'electron-ssh'` 起，到该行闭合的 `},` 止（单行写法也在块内）。
+ */
+function sshProjectBlock(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const start = lines.findIndex((line) => /name:\s*'electron-ssh'/.test(line));
+  if (start < 0) throw new Error("playwright.config.ts 里没有 electron-ssh project");
+  // 单行写法（`{ name: 'electron-ssh', ... }`）直接返回这一行
+  if (lines[start].includes('},')) return lines[start];
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*\}\s*,?\s*$/.test(lines[i])) {
+      end = i + 1;
+      break;
+    }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
 runTests('e2eCiLane', () => {
   const { check, finish } = createChecker();
   const workflow = read(ALL_WORKFLOW);
@@ -117,12 +182,26 @@ runTests('e2eCiLane', () => {
     required.length > 0 && required.every((name) => passed.includes(name)),
   );
 
-  // RT-2：job 里传的 secret 都要被脚本读到（改名后的残留变量会被静默忽略）
-  const readNames = new Set([...script.matchAll(/process\.env\.([A-Za-z0-9_]+)/g)].map((m) => m[1]));
+  // RT-2：每个步骤传的 secret 都要被该步骤调用的脚本读到（改名后的残留变量会被静默忽略）。
+  // 按步骤对照而不是按整段 job：同一口令既进环境文件、又进上传前扫描，两个步骤各读各的
+  const steps = stepBlocks(job);
+  const deadSecrets: string[] = [];
+  for (const step of steps) {
+    const rel = stepScript(step.body);
+    if (rel === null || step.secrets.length === 0) continue;
+    const source = read(path.join(REPO_ROOT, rel));
+    for (const name of step.secrets) {
+      if (!new RegExp(`process\\.env\\.${name}\\b`).test(source)
+        && !new RegExp(`'${name}'`).test(source)) {
+        deadSecrets.push(`${rel} 不读 ${name}`);
+      }
+    }
+  }
   check(
-    'ssh job 传的每个 secret 都被脚本读取（无死变量）',
-    passed.length > 0 && passed.every((name) => readNames.has(name)),
+    'ssh job 每个步骤传的 secret 都被该步骤的脚本读取（无死变量）',
+    deadSecrets.length === 0 && steps.some((step) => step.secrets.length > 0),
   );
+  if (deadSecrets.length > 0) console.error(`     ${deadSecrets.join('；')}`);
 
   // RT-3：车道本身挂在 all.yml 上，并跑 electron-ssh project（否则「接进 CI」是空话）
   check(
@@ -156,6 +235,49 @@ runTests('e2eCiLane', () => {
   check(
     '缺 secret 时脚本以非零码退出',
     /process\.exit\(1\)/.test(script),
+  );
+
+  // ---------- 凭证不进 artifact（`e2e/README.md` 的「凭证不进 artifact」一节） ----------
+  //
+  // 背景：`overlayMountProxyRemote.spec.ts` 要把远端 sudo 口令 `fill()` 进密码框，而
+  // Playwright 的 trace 会把 fill 的值原样记进动作参数 / 动作日志 / DOM 快照（实测）。
+  // 仓库是 public，失败时 trace 作为 artifact 上传就是公开泄露。下面是三道防线的断言：
+  // 项目配置关 trace、上传前扫明文、ssh 车道不再上传 trace。
+
+  const playwrightConfig = read(PLAYWRIGHT_CONFIG);
+
+  // RT-7：electron-ssh project 必须显式关掉 trace（继承全局 retain-on-failure 就会记口令）
+  const sshProject = sshProjectBlock(playwrightConfig);
+  check(
+    'electron-ssh project 显式设置 trace: off',
+    /trace:\s*'off'/.test(sshProject),
+  );
+
+  // RT-8：ssh job 在上传任何 artifact 之前跑凭证扫描，且扫描带了两个口令 secret
+  const scanScript = read(SCAN_SCRIPT);
+  check(
+    'all.yml 的 ssh job 调用凭证扫描脚本',
+    /scripts\/scan-e2e-artifacts-for-secrets\.mjs/.test(job),
+  );
+  check(
+    'ssh job 的扫描步骤拿到两个口令 secret',
+    ['E2E_SSH_PASSWORD', 'E2E_SSH_SUDO_PASSWORD'].every((name) =>
+      scanScript.includes(name) && job.includes(`secrets.${name}`)),
+  );
+  check(
+    '扫描脚本命中即非零退出（不静默放行）',
+    /process\.exit\(1\)/.test(scanScript),
+  );
+  check(
+    '扫描脚本不打印命中的凭证内容',
+    !/console\.(log|error)\([^)]*(secret\.value|values\[)/.test(scanScript),
+  );
+
+  // RT-9：ssh 车道不再把 test-results 当 artifact 上传（关 trace 后目录为空，
+  // 留着上传入口等于给将来重开 trace 留后门）
+  check(
+    'ssh job 不上传 test-results artifact',
+    !/upload-artifact/.test(job) || !/path:\s*\|?\s*\n?\s*test-results/.test(job),
   );
 
   finish();

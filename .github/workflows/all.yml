@@ -204,10 +204,16 @@ jobs:
       # Electron 起点同 electron 车道：Linux 无显示要 xvfb，裸 X 没有 WM（最大化 / 焦点
       # 语义不成立）要 openbox。SSH 远端由用例自己经 ssh2 建链，不依赖本节点的 ssh 客户端
       - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-ssh"
-      # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: e2e-ssh-trace
-          path: test-results
-          retention-days: 3
+      # 凭证闸门：trace 会记录 fill() 进密码框的明文（动作参数 / 日志 / DOM 快照三处），
+      # 而仓库是 public——上传前扫一遍，命中即让 job 失败，绝不把口令带出 runner。
+      # 项目配置已对 electron-ssh 关掉 trace（e2e/playwright.config.ts），这是第二道。
+      # `if: always()`：用例失败也要先扫；成功时目录为空、脚本直接放行
+      - name: 扫描 test-results 是否含凭证明文
+        if: always()
+        env:
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+          E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
+        run: node scripts/scan-e2e-artifacts-for-secrets.mjs test-results
+      # ssh 车道**不**上传 trace（其它车道的 trace 里没有凭证）：这条车道已关 trace，
+      # 上传空目录无意义；真要排查用 E2E_DEBUG=1 重跑，不靠 artifact 带口令出去。
+      # 失败现场改为只保留 Playwright 的文本输出（已在上一步的日志里，不含口令）

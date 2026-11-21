@@ -91,8 +91,16 @@ export default defineConfig({
       testIgnore: REMOTE_SSH_SPECS,
     },
     // 真实 SSH 远端（要 e2e/environments.json：开发机用本机那份，CI 由 secrets 现写，
-    // 见 e2e/README.md 的 CI 车道表）
-    { name: 'electron-ssh', testMatch: REMOTE_SSH_SPECS },
+    // 见 e2e/README.md 的 CI 车道表）。
+    //
+    // **trace 必须关闭**：本车道的 `overlayMountProxyRemote.spec.ts` 要把远端 sudo 口令
+    // `fill()` 进密码框，而 Playwright 的 trace 会把它原样记进三个地方——动作参数
+    // （`{"method":"fill","params":{"value":"<口令>"}}`）、动作日志（`fill("<口令>")`）、
+    // DOM 快照（`{"__playwright_value_":"<口令>"}`）。实测见 `e2e/README.md` 的
+    // 「凭证不进 artifact」小节。仓库是 public，失败时 trace 作为 artifact 上传就是公开
+    // 泄露。关掉 trace 后失败现场只剩 list reporter 的输出（实测不含口令），代价是这条
+    // 车道没有 trace 可看——排查靠 `E2E_DEBUG=1` 透传主进程日志与远端证据。
+    { name: 'electron-ssh', testMatch: REMOTE_SSH_SPECS, use: { trace: 'off' } },
     { name: 'remote-workspace-ui', testMatch: /remoteWorkspace[\\/].+\.spec\.ts/ },
     // 远程终端页面（specs/022，同 remote-workspace-ui 的手法）：构建产物 + 假 SSH 通道
     { name: 'terminal-ui', testMatch: /terminal[\\/].+\.spec\.ts/ },

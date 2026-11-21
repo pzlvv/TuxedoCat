@@ -94,6 +94,35 @@ SSH 反向隧道暴露到远端回环（`e2e/README.md` 的「运行」一节）
 JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / local.properties /
 常见安装位探测）。要接回 CI 时，在 `.github/workflows/all.yml` 里加回 job 并同步本表。
 
+## 凭证不进 artifact
+
+`electron-ssh` 车道的用例要把远端 sudo 口令 `fill()` 进密码框
+（`overlayMountProxyRemote.spec.ts` 的部署确认），而 **Playwright 的 trace 会把该值原样
+记下来**，实测 `trace.zip` 的三处：
+
+| 位置 | 形态 |
+| --- | --- |
+| 动作参数 | `{"method":"fill","params":{...,"value":"<口令>"}}` |
+| 动作日志 | `fill("<口令>")` |
+| DOM 快照 | `{"__playwright_value_":"<口令>"}`，以及 trace 会打包进来的 spec 源码 |
+
+仓库是 public，失败时 trace 作为 artifact 上传就是公开泄露。因此这条链上有三道防线：
+
+1. **该 project 关掉 trace**（`e2e/playwright.config.ts` 的 `electron-ssh` 用
+   `use: { trace: 'off' }`，不继承全局的 `retain-on-failure`）。代价是这条车道没有
+   trace 可看——排查靠 `E2E_DEBUG=1` 透传主进程日志与远端证据。
+2. **ssh job 不再上传 `test-results`**（关 trace 后目录是空的，留着入口等于给将来重开
+   trace 留后门）。其它车道照旧上传，它们的 trace 里没有凭证。
+3. **上传前扫描兜底**：`scripts/scan-e2e-artifacts-for-secrets.mjs` 在 job 里扫
+   `test-results/`，命中口令明文就让 job 失败、绝不传上去。扫描**会解 zip**——trace 是
+   压缩的，只扫原始字节对最需要防的 `trace.zip` 恰好漏检（实测）。缺 secret 时它同样
+   失败（不知道要防什么就不放行），且只报「哪个文件、哪个 secret 名」，不打印命中内容。
+
+新增任何「测试里会用到凭证」的车道时，按同样三条处理；`src/test/e2eCiLane.test.ts`
+对「ssh project 关 trace / job 有扫描步骤 / job 不传 test-results」做了断言，
+`src/test/e2eArtifactSecretScan.test.ts` 覆盖扫描器本身（含 zip 与不泄露输出）。
+
+
 
 ## 测试环境配置（environments.json）
 
