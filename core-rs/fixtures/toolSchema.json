@@ -5,7 +5,8 @@
       "name": "Bash",
       "description": "Execute Bash shell commands",
       "required": [
-        "command"
+        "command",
+        "description"
       ],
       "properties": {
         "command": {

@@ -65,7 +65,7 @@ function startFakeLlm(command: string): Promise<{ url: string; close: () => Prom
                     {
                       index: 0,
                       id: 'call_perm',
-                      function: { name: 'Bash', arguments: JSON.stringify({ command }) },
+                      function: { name: 'Bash', arguments: JSON.stringify({ command, description: 'permission probe' }) },
                     },
                   ],
                 },

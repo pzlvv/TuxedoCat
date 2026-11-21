@@ -384,7 +384,7 @@ function startFakeLlm(
                             ? { prompt: '代理任务', agentRole: 'Master', target: 'HOST:/b' }
                             : tool === 'Transfer'
                               ? { sourcePath: '/nonexistent/src', targetPath: '/nonexistent/dst' }
-                              : { command },
+                              : { command, description: 'waiting probe' },
                         ),
                       },
                     },

@@ -170,7 +170,7 @@ fn bash_fields() -> Vec<Field<'static>> {
         },
         Field {
             name: "description",
-            required: false,
+            required: true,
             kind: Kind::Str(None),
         },
         Field {

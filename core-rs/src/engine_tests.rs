@@ -27,7 +27,12 @@ fn submit(harness: &EngineHarness, session_id: &str, content: &str, uuid: &str) 
 
 #[test]
 fn tool_use_block_parses_json_arguments() {
-    let block = tool_use_block("call_1", "Bash", r#"{"command":"ls"}"#, &json!({}));
+    let block = tool_use_block(
+        "call_1",
+        "Bash",
+        r#"{"command":"ls", "description": "test command"}"#,
+        &json!({}),
+    );
     assert_eq!(block["type"], "tool_use");
     assert_eq!(block["id"], "call_1");
     assert_eq!(block["name"], "Bash");
@@ -45,7 +50,7 @@ fn tool_use_block_falls_back_to_empty_input_on_broken_json() {
 fn tool_use_block_keeps_content_block_start_input_without_delta() {
     // 没有 input_json_delta 时用 content_block_start 的初始 input；
     // 解析失败时同样回退到初始 input。
-    let initial = json!({ "command": "echo hi" });
+    let initial = json!({ "command": "echo hi", "description": "test command" });
     let block = tool_use_block("call_1", "Bash", "", &initial);
     assert_eq!(block["input"], initial);
     let block = tool_use_block("call_1", "Bash", "{broken", &initial);
@@ -178,7 +183,7 @@ fn build_assistant_message_orders_thinking_text_and_tool_uses() {
     let tools = vec![tool_use_block(
         "call_1",
         "Bash",
-        r#"{"command":"ls"}"#,
+        r#"{"command":"ls", "description": "test command"}"#,
         &json!({}),
     )];
     let message = build_assistant_message(
@@ -425,7 +430,7 @@ fn collect_fence_languages_scans_string_and_block_contents() {
         "message": { "role": "assistant", "content": [
             { "type": "thinking", "thinking": "```go\n" },
             { "type": "text", "text": "```js\n" },
-            { "type": "tool_use", "id": "c1", "name": "Bash", "input": { "command": "```bash" } },
+            { "type": "tool_use", "id": "c1", "name": "Bash", "input": { "command": "```bash", "description": "test command" } },
             { "type": "tool_result", "tool_use_id": "c1", "content": "```sh\n" },
             { "type": "text", "text": "```averyveryverylonglanguagename0123456789\n" },
         ] },
@@ -2124,7 +2129,11 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
     let sandbox = Sandbox::new("engine-turn-tool");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo tool-ok"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo tool-ok", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["完成"])
         }
@@ -2385,7 +2394,7 @@ fn orphan_tool_use_is_backfilled_with_a_cancelled_tool_result_on_load() {
             "message": {
                 "role": "assistant",
                 "content": [
-                    { "type": "tool_use", "id": "call_orphan", "name": "Bash", "input": { "command": "ls" } },
+                    { "type": "tool_use", "id": "call_orphan", "name": "Bash", "input": { "command": "ls", "description": "test command" } },
                 ],
             },
         }),
@@ -2436,7 +2445,7 @@ fn crash_recovered_tool_results_are_persisted_before_the_next_user_message() {
             "message": {
                 "role": "assistant",
                 "content": [
-                    { "type": "tool_use", "id": "call_orphan", "name": "Bash", "input": { "command": "ls" } },
+                    { "type": "tool_use", "id": "call_orphan", "name": "Bash", "input": { "command": "ls", "description": "test command" } },
                 ],
             },
         }),
@@ -2924,7 +2933,11 @@ fn tool_loop_has_no_default_turn_limit() {
     let llm = FakeLlm::start(move |index, _| {
         *counter.lock().unwrap() = index + 1;
         if index < 45 {
-            openai_tool_sse(&format!("call_{index}"), "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                &format!("call_{index}"),
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收工"])
         }
@@ -2963,7 +2976,11 @@ fn settings_features_max_turns_is_ignored() {
     let llm = FakeLlm::start(move |index, _| {
         *counter.lock().unwrap() = index + 1;
         if index < 2 {
-            openai_tool_sse(&format!("call_{index}"), "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                &format!("call_{index}"),
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收工"])
         }
@@ -2998,7 +3015,11 @@ fn permission_denied_turns_the_tool_result_into_an_error() {
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             // 破坏性命令是 risk 模式下唯一仍会 ask 的一类
-            openai_tool_sse("call_1", "Bash", r#"{"command":"dd if=/dev/zero of=x"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"dd if=/dev/zero of=x", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -3045,7 +3066,11 @@ fn allowed_tool_executes_without_permission_response() {
             anthropic_sse(
                 "",
                 "",
-                Some(("toolu_1", "Bash", r#"{"command":"echo orphan"}"#)),
+                Some((
+                    "toolu_1",
+                    "Bash",
+                    r#"{"command":"echo orphan", "description": "test command"}"#,
+                )),
             )
         } else {
             anthropic_sse("", "完成", None)
@@ -3179,7 +3204,11 @@ fn permission_denied_without_a_reason_uses_the_default_message() {
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             // 破坏性命令是 risk 模式下唯一仍会 ask 的一类
-            openai_tool_sse("call_1", "Bash", r#"{"command":"dd if=/dev/zero of=x"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"dd if=/dev/zero of=x", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -3206,7 +3235,11 @@ fn permission_response_cannot_rewrite_the_tool_input() {
     let sandbox = Sandbox::new("engine-permission-rewrite");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好了"])
         }
@@ -3216,7 +3249,7 @@ fn permission_response_cannot_rewrite_the_tool_input() {
     let harness = EngineHarness::start(|request| match request["type"].as_str().unwrap() {
         "toolPermissionRequested" => Some(json!({
             "behavior": "allow",
-            "updatedInput": { "command": "echo rewritten" }
+            "updatedInput": { "command": "echo rewritten", "description": "test command" }
         })),
         _ => Some(json!({})),
     });
@@ -3240,7 +3273,11 @@ fn permission_response_cannot_deny_a_locally_allowed_tool() {
     let sandbox = Sandbox::new("engine-permission-deny");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -3266,7 +3303,11 @@ fn malformed_permission_response_cannot_affect_execution() {
     let sandbox = Sandbox::new("engine-permission-unknown");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -3292,7 +3333,11 @@ fn permission_request_failure_does_not_block_execution() {
     let sandbox = Sandbox::new("engine-permission-failure");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -3346,7 +3391,11 @@ fn anthropic_provider_runs_the_same_turn() {
             anthropic_sse(
                 "想一想",
                 "",
-                Some(("toolu_1", "Bash", r#"{"command":"echo anthropic"}"#)),
+                Some((
+                    "toolu_1",
+                    "Bash",
+                    r#"{"command":"echo anthropic", "description": "test command"}"#,
+                )),
             )
         } else {
             anthropic_sse("", "完成", None)
@@ -3464,7 +3513,7 @@ fn anthropic_content_block_start_input_is_persisted_without_delta() {
         if index == 0 {
             concat!(
                 "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
-                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo start-input\"}}}\n\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo start-input\",\"description\":\"test command\"}}}\n\n",
                 "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
                 "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2},\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n",
             )
@@ -3514,7 +3563,10 @@ fn anthropic_content_block_start_input_is_persisted_without_delta() {
         })
         .find(|block| block["type"] == "tool_use")
         .expect("tool_use block");
-    assert_eq!(tool_use["input"], json!({ "command": "echo start-input" }));
+    assert_eq!(
+        tool_use["input"],
+        json!({ "command": "echo start-input", "description": "test command" })
+    );
 }
 
 #[test]
@@ -3667,7 +3719,11 @@ fn pure_tool_use_turn_emits_one_usage_carrying_stream_end() {
             crate::test_support::anthropic_sse(
                 "",
                 "",
-                Some(("toolu_1", "Bash", r#"{"command":"echo hi"}"#)),
+                Some((
+                    "toolu_1",
+                    "Bash",
+                    r#"{"command":"echo hi", "description": "test command"}"#,
+                )),
             )
         } else {
             crate::test_support::anthropic_sse("", "完成", None)
@@ -3716,7 +3772,11 @@ fn queued_message_is_flushed_before_the_next_llm_round() {
                     "workspacePath": null,
                 }));
             }
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收到"])
         }
@@ -3783,7 +3843,11 @@ fn agent_reply_is_flushed_before_the_next_llm_round() {
             if let Some(core) = submitter.lock().unwrap().as_ref() {
                 core.enqueue_agent_message("s1", "子代理回复", "agent", "sub-1");
             }
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收到"])
         }
@@ -3855,7 +3919,11 @@ fn queued_user_message_merges_with_agent_replies_in_one_round() {
                     "workspacePath": null,
                 }));
             }
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收到"])
         }
@@ -4168,7 +4236,11 @@ fn bash_streams_tool_progress_frames() {
     let sandbox = Sandbox::new("engine-tool-progress");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hello-progress"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hello-progress", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -4280,7 +4352,11 @@ fn abort_during_the_tool_loop_skips_the_next_llm_round() {
     let captured = Arc::clone(&bodies);
     let llm = FakeLlm::start(move |_, body| {
         captured.lock().unwrap().push(body.clone());
-        openai_tool_sse("call_1", "Bash", r#"{"command":"touch should-not-run"}"#)
+        openai_tool_sse(
+            "call_1",
+            "Bash",
+            r#"{"command":"touch should-not-run", "description": "test command"}"#,
+        )
     });
     prepare(&sandbox, &llm.base_url, "manual");
 
@@ -4360,7 +4436,7 @@ fn abort_during_tool_execution_reports_interruption() {
             openai_tool_sse(
                 "call_1",
                 "Bash",
-                r#"{"command":"touch started.marker && sleep 30","restricted":false}"#,
+                r#"{"command":"touch started.marker && sleep 30", "description": "test command","restricted":false}"#,
             )
         } else {
             openai_text_sse(&["不应到达第二轮"])
@@ -4837,8 +4913,16 @@ fn permission_deny_cancels_the_remaining_tools_in_the_batch() {
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             openai_multi_tool_sse(&[
-                ("call_1", "Bash", r#"{"command":"touch first.txt"}"#),
-                ("call_2", "Bash", r#"{"command":"touch second.txt"}"#),
+                (
+                    "call_1",
+                    "Bash",
+                    r#"{"command":"touch first.txt", "description": "test command"}"#,
+                ),
+                (
+                    "call_2",
+                    "Bash",
+                    r#"{"command":"touch second.txt", "description": "test command"}"#,
+                ),
             ])
         } else {
             openai_text_sse(&["好的"])
@@ -4905,7 +4989,11 @@ fn permission_refusal_without_a_reason_terminates_the_turn() {
     let sandbox = Sandbox::new("engine-permission-terminate");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["不该被调用"])
         }
@@ -4940,7 +5028,11 @@ fn permission_refusal_with_a_reason_continues_the_turn() {
     let sandbox = Sandbox::new("engine-permission-refusal-reason");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["换个方式"])
         }
@@ -4999,7 +5091,7 @@ fn rename_without_a_metadata_file_creates_it_and_broadcasts_title_changed() {
 #[test]
 fn tool_use_block_unwraps_double_encoded_input() {
     // Provider 把整个入参再 JSON.stringify 一次：`"{\"command\":\"ls\"}"`
-    let inner = r#"{"command":"ls -la"}"#;
+    let inner = r#"{"command":"ls -la", "description": "test command"}"#;
     let double = serde_json::to_string(inner).unwrap();
     let block = tool_use_block("call_1", "Bash", &double, &json!({}));
     assert_eq!(block["input"]["command"], "ls -la");
@@ -5013,7 +5105,7 @@ fn double_encoded_tool_input_still_executes_and_is_persisted_as_an_update() {
     let sandbox = Sandbox::new("engine-double-encoded-input");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            let inner = r#"{"command":"touch marker.txt"}"#;
+            let inner = r#"{"command":"touch marker.txt", "description": "test command"}"#;
             let double = serde_json::to_string(inner).unwrap();
             openai_tool_sse("call_1", "Bash", &double)
         } else {
@@ -5183,7 +5275,11 @@ fn bash_input_validation_failure_is_reported_and_skipped() {
     let sandbox = Sandbox::new("engine-bash-validation");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"   "}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"   ", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -6321,8 +6417,7 @@ fn tool_arguments_parity_tests() {
     assert_eq!(sanitized["content"][0]["input"], json!({}));
 
     // 对象型 tool_use 不被改写（保持原值）
-    let object_block =
-        json!({ "type": "tool_use", "id": "t-3", "name": "Bash", "input": { "command": "ls" } });
+    let object_block = json!({ "type": "tool_use", "id": "t-3", "name": "Bash", "input": { "command": "ls", "description": "test command" } });
     let message = json!({
         "role": "assistant",
         "content": [object_block.clone(), { "type": "text", "text": "ok" }],
@@ -6565,7 +6660,11 @@ fn a_non_concurrency_safe_tool_flushes_the_pending_batch() {
             openai_multi_tool_sse(&[
                 ("call_1", "Read", r#"{"file_path":"a.txt"}"#),
                 // `echo` 是只读命令 → Bash 也并发安全；换成 `touch`（非只读）切开批次
-                ("call_2", "Bash", r#"{"command":"touch marker.txt"}"#),
+                (
+                    "call_2",
+                    "Bash",
+                    r#"{"command":"touch marker.txt", "description": "test command"}"#,
+                ),
                 ("call_3", "Read", r#"{"file_path":"b.txt"}"#),
             ])
         } else {
@@ -7290,7 +7389,11 @@ fn a_second_user_message_replaces_the_pending_one() {
                     }));
                 }
             }
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收到"])
         }
@@ -7865,7 +7968,11 @@ fn auto_approved_tool_permission_never_marks_the_session_waiting() {
     let sandbox = Sandbox::new("engine-waiting-auto");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -7900,7 +8007,11 @@ fn manual_tool_permission_marks_waiting_only_while_the_choice_is_pending() {
     let sandbox = Sandbox::new("engine-waiting-manual");
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
-            openai_tool_sse("call_1", "Bash", r#"{"command":"touch marker.txt"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"touch marker.txt", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["好的"])
         }
@@ -8519,7 +8630,11 @@ fn mention_message_flushed_mid_turn_keeps_its_reminder() {
                     "workspacePath": null,
                 }));
             }
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收到"])
         }
@@ -8598,7 +8713,11 @@ fn skill_command_flushed_mid_turn_keeps_its_injection() {
                     "workspacePath": null,
                 }));
             }
-            openai_tool_sse("call_1", "Bash", r#"{"command":"echo hi"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"echo hi", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["收到"])
         }
@@ -9610,7 +9729,7 @@ fn isolated_session_bash_writes_stay_in_the_view() {
             openai_tool_sse(
                 "call_1",
                 "Bash",
-                r#"{"command":"echo hi > made-by-bash.txt; cat made-by-bash.txt"}"#,
+                r#"{"command":"echo hi > made-by-bash.txt; cat made-by-bash.txt", "description": "test command"}"#,
             )
         } else {
             openai_text_sse(&["完成"])
@@ -9922,7 +10041,11 @@ fn user_choice_timeout_cancels_the_request_and_keeps_the_turn_going() {
     let llm = FakeLlm::start(|index, _| {
         if index == 0 {
             // 破坏性命令是 risk 模式下唯一仍会 ask 的一类
-            openai_tool_sse("call_1", "Bash", r#"{"command":"dd if=/dev/zero of=x"}"#)
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"dd if=/dev/zero of=x", "description": "test command"}"#,
+            )
         } else {
             openai_text_sse(&["超时后继续"])
         }

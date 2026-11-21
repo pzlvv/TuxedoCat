@@ -168,7 +168,7 @@ fn canceled_tool_use_renders_as_failed_not_running() {
             "message": {
                 "role": "assistant",
                 "content": [
-                    { "type": "tool_use", "id": "c1", "name": "Bash", "input": { "command": "ls" } },
+                    { "type": "tool_use", "id": "c1", "name": "Bash", "input": { "command": "ls", "description": "test command" } },
                     { "type": "tool_use", "id": "c2", "name": "Bash", "input": {} },
                     { "type": "tool_use", "id": "c3", "name": "Bash", "input": {} },
                 ],

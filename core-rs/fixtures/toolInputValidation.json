@@ -456,25 +456,28 @@
       "name": "Bash-38",
       "tool": "Bash",
       "input": {
-        "command": "ls"
+        "command": "ls",
+        "description": "test command"
       },
       "error": null,
       "parsed": {
-        "command": "ls"
+        "command": "ls",
+        "description": "test command"
       }
     },
     {
       "name": "Bash-39",
       "tool": "Bash",
       "input": {},
-      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"command\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"command\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  },\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"description\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
       "parsed": null
     },
     {
       "name": "Bash-40",
       "tool": "Bash",
       "input": {
-        "command": 5
+        "command": 5,
+        "description": "test command"
       },
       "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"command\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
       "parsed": null
@@ -494,6 +497,7 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "cwd": null
       },
       "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"cwd\"\n    ],\n    \"message\": \"Invalid input: expected string, received null\"\n  }\n]",
@@ -504,11 +508,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": "false"
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": true
       }
     },
@@ -517,11 +523,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": "true"
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": true
       }
     },
@@ -530,11 +538,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": 0
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": false
       }
     },
@@ -543,11 +553,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": null
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "run_in_background": false
       }
     },
@@ -556,6 +568,7 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "extra": 1
       },
       "error": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
@@ -566,11 +579,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "restricted": false
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "restricted": false
       }
     },
@@ -579,11 +594,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "restricted": "false"
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "restricted": true
       }
     },
@@ -592,11 +609,13 @@
       "tool": "Bash",
       "input": {
         "command": "ls",
+        "description": "test command",
         "restricted": null
       },
       "error": null,
       "parsed": {
         "command": "ls",
+        "description": "test command",
         "restricted": false
       }
     },

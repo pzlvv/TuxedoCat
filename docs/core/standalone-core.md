@@ -109,8 +109,7 @@ Core 进程承载的 core 侧业务：
 - 需要反复读取的环境事实（如工作目录的 git 状态）在 Core 进程内缓存，
   不按轮次重复 spawn 子进程。
 - Core 创建的每个子进程都不继承帧通道（标准输入置空），工具不会读到协议帧。
-- Bash 工具按 `core-rs/src/shell.rs` 的探测优先级选择 shell：
-  Windows 上 Git Bash 优先，cmd.exe 只在全部探测失败时兜底。
+- Bash 工具按 `core-rs/src/shell.rs` 的探测优先级选择 shell：Windows 上 Git Bash 优先，cmd.exe 只在全部探测失败时兜底。`command` 与 `description` 都是必填入参——`description` 是卡片标题、运行中任务清单与完成通知的事实来源，缺失或空串按入参错误返回。
 - 后台 Bash 任务（`run_in_background` / 前台超时自动转后台）的输出直接由子进程
   写入 `<TMPDIR|TEMP|/tmp>/<tmpTaskDirName>/<taskId>.output`（对齐
   `tools/bash/TaskOutput.ts` 的 file mode）；任务完成后 Core 把一条
