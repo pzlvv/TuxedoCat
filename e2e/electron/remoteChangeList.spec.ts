@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Client } from 'ssh2';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, mainEval } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
@@ -9,6 +8,7 @@ import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { CONFIG_DIR_NAME, CORE_BINARY_NAME, ENV_PREFIX, LOG_FILE_NAME } from '../../src/config/project';
 import { requireSshEnvironment } from '../helpers/testEnvironment';
+import { createSshSession } from '../helpers/sshSession';
 
 /** 远端状态目录 / 进程匹配模式（产品身份唯一来源 `src/config/project.json`，
  *  用例里不落字面量；pkill 模式首字符加 [] 不匹配执行它的远端 shell 自身） */
@@ -69,51 +69,22 @@ process.env[`${ENV_PREFIX}_E2E_REMOTE_GIT_OPS`] = '1';
 
 test.setTimeout(600_000);
 
-function sshConnect(): Client {
-  const client = new Client();
-  client.connect({ host: SSH.host, port: SSH.port, username: SSH.user, password: SSH.password, readyTimeout: 20_000 });
-  return client;
-}
-
 /**
- * 在远端执行一条命令（一次性连接，测试脚手架用）。
+ * 远端执行面：**一条复用连接**跑完本文件所有命令。
  *
- * 链路层带重试：实测这台远端（Ubuntu 24.04 上的 OpenSSH，30 次连续建链里约 1 次直接
- * `read ECONNRESET` / `Timed out while waiting for handshake`，同机 `ssh` 命令行也复现），
- * 且失败也可能落在 `ready` 之后、exec 通道打开之前的瞬间。这是远端链路层的瞬时失败，
- * 不是被测行为。重试判据是「命令**还没**被远端受理」（`ready` 之前，或 exec 通道尚未
- * 打开）：一次已经在跑的远端命令不会被执行两遍，只有通道都没建起来才重试。
+ * 为什么不再「每条命令一条连接」：本文件 38 处 `sshExec` + 每次 `sshConnect()`。既有的
+ * 注释记录过「30 次连续建链里约 1 次 ECONNRESET / 握手超时」——那正是连接数把远端 sshd
+ * 推到 `MaxStartups`（默认 10:30:100）之上的症状，而不是链路本身不可靠。复用一条连接后
+ * 这个比例消失（`specs/defects/e2e-ssh-per-command-connections-exhaust-sshd.md`）。
+ *
+ * 链路层重试判据不变：只在命令**还没被远端受理**时重试（`ready` 之前，或 exec 通道尚未
+ * 打开）；一次已经在跑的远端命令不会被执行两遍。
  */
-function sshExec(command: string, timeoutMs = 60_000, attempt = 1): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve, reject) => {
-    const client = sshConnect();
-    /** 远端是否已受理这条命令（exec 通道打开 = 命令开始执行） */
-    let dispatched = false;
-    const fail = (error: Error): void => {
-      client.end();
-      if (!dispatched && attempt < 3) {
-        setTimeout(() => { sshExec(command, timeoutMs, attempt + 1).then(resolve, reject); }, 500);
-        return;
-      }
-      reject(error);
-    };
-    client.on('error', fail);
-    client.on('ready', () => {
-      client.exec(command, (err, stream) => {
-        if (err) return fail(err);
-        dispatched = true;
-        let stdout = '';
-        let stderr = '';
-        stream.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
-        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
-        stream.on('close', (code: number | null) => {
-          client.end();
-          resolve({ stdout, stderr, code });
-        });
-      });
-    });
-    setTimeout(() => fail(new Error(`ssh exec 超时: ${command}`)), timeoutMs);
-  });
+const ssh = createSshSession(SSH);
+
+/** 在远端执行一条命令（连接复用与「仅未受理才重试」都在 `sshSession.ts`） */
+function sshExec(command: string, timeoutMs = 60_000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return ssh.exec(command, timeoutMs);
 }
 
 /** 远端 shell 片段里的单引号转义（路径 / 文件名逐个单引号包住） */
@@ -210,6 +181,8 @@ test.afterAll(async () => {
   // 1) 删本轮唯一目录；2) 杀残留 daemon；3) 删 daemon 状态文件
   if (remoteWs) await sshExec(`rm -rf ${remoteWs}`).catch(() => undefined);
   await resetRemoteDaemon();
+  // 复用连接要显式关闭：worker 退出前不断开，远端会多留一条 sshd 会话
+  ssh.close();
 });
 
 test.afterEach(async () => {

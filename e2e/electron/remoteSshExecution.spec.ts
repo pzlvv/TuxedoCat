@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { Client } from 'ssh2';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
 import { launchApp, waitForMessageBox, clickMessageBoxButton, messageBoxText } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
@@ -37,64 +36,30 @@ const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1
  */
 
 import { requireSshEnvironment } from '../helpers/testEnvironment';
+import { createSshSession } from '../helpers/sshSession';
 
 const SSH = requireSshEnvironment();
 
 test.setTimeout(300_000);
 
-function sshConnect(): Client {
-  const client = new Client();
-  client.connect({ host: SSH.host, port: SSH.port, username: SSH.user, password: SSH.password, readyTimeout: 20_000 });
-  return client;
-}
+/**
+ * 远端执行面：**一条复用连接**跑完本文件所有命令。
+ *
+ * 为什么不再「每条命令一条连接」：本文件 27 处 `sshExec` + 每次 `sshConnect()`，一次完整
+ * 车道会建上百条连接，把远端 sshd 的连接数推到 `MaxStartups`（默认 10:30:100）之上，
+ * 后续建链被丢弃，表现为 `Connection lost before handshake` / `远程连接超时（3 秒）`
+ * （`specs/defects/e2e-ssh-per-command-connections-exhaust-sshd.md`）。
+ */
+const ssh = createSshSession(SSH);
 
-/** 在远端执行一条命令（一次性连接，测试脚手架用） */
+/** 在远端执行一条命令（连接复用与「仅未受理才重试」都在 `sshSession.ts`） */
 function sshExec(command: string, timeoutMs = 30_000): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve, reject) => {
-    const client = sshConnect();
-    const fail = (error: Error): void => { client.end(); reject(error); };
-    client.on('error', fail);
-    client.on('ready', () => {
-      client.exec(command, (err, stream) => {
-        if (err) return fail(err);
-        let stdout = '';
-        let stderr = '';
-        stream.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
-        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
-        stream.on('close', (code: number | null) => {
-          client.end();
-          resolve({ stdout, stderr, code });
-        });
-      });
-    });
-    setTimeout(() => fail(new Error(`ssh exec 超时: ${command}`)), timeoutMs);
-  });
+  return ssh.exec(command, timeoutMs);
 }
 
 /** 经 SFTP 读远端文件；不存在返回 null */
 function sshReadFile(remotePath: string): Promise<string | null> {
-  return new Promise((resolve, reject) => {
-    const client = sshConnect();
-    const fail = (error: Error): void => { client.end(); reject(error); };
-    client.on('error', fail);
-    client.on('ready', () => {
-      client.sftp((err, sftp) => {
-        if (err) return fail(err);
-        sftp.readFile(remotePath, 'utf8', (readErr, data) => {
-          client.end();
-          if (readErr) {
-            // sftp 状态码 2 = NO_SUCH_FILE（不存在按 null 返回，配合 expect.poll 重试）
-            const code = (readErr as { code?: unknown }).code;
-            if (String(code) === '2' || /No such file/i.test(String(readErr.message))) resolve(null);
-            else reject(readErr);
-          } else {
-            resolve(String(data));
-          }
-        });
-      });
-    });
-    setTimeout(() => fail(new Error(`sftp read 超时: ${remotePath}`)), 30_000);
-  });
+  return ssh.readFile(remotePath);
 }
 
 let remoteHome = '';
@@ -143,6 +108,8 @@ test.beforeEach(async () => {
 
 test.afterAll(async () => {
   if (remoteWs) await sshExec(`rm -rf ${remoteWs}`).catch(() => undefined);
+  // 复用连接要显式关闭：worker 退出前不断开，远端会多留一条 sshd 会话
+  ssh.close();
 });
 
 test.afterEach(async () => {
