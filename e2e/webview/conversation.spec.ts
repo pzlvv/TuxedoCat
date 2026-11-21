@@ -448,7 +448,27 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
   await page.waitForFunction(() => (window as any).__fakeHost.turnsDone >= 1, undefined, { timeout: 30_000 });
   await expect(abortButton).toHaveAttribute('data-abort-state', 'none', { timeout: 10_000 });
 
+  // specs/054 FR-005：记录 1s 定时器的启停，验证「计时随浮层可见性启停」
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__abortTipIntervals = new Set<number>();
+    const rawSet = window.setInterval.bind(window);
+    const rawClear = window.clearInterval.bind(window);
+    window.setInterval = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      const id = rawSet(fn, ms, ...args);
+      if (ms === 1000) w.__abortTipIntervals.add(id);
+      return id;
+    }) as typeof window.setInterval;
+    window.clearInterval = ((id?: number) => {
+      if (id !== undefined) w.__abortTipIntervals.delete(id);
+      rawClear(id as number);
+    }) as typeof window.clearInterval;
+  });
+
   // 黄色态 + 明细：2 个后台任务（其一 command == description）+ 一对子代理（一跑一完）
+  // + 一条远程（跨工作区）子代理（specs/054 FR-003 / FR-004）。开始时刻取相对当前时刻
+  // 的偏移，让每条都能显示已执行时间（specs/054 FR-001 / FR-002）。
+  const now = Date.now();
   await host.send({
     type: 'sessionRuntimeStates',
     states: [
@@ -456,20 +476,30 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
         sessionId: sid, idle: false, waiting: false, queryRunning: false, compacting: false,
         pendingCompact: false, backgroundRunning: true, subAgentRunning: true,
         backgroundTasks: [
-          { taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs' },
-          { taskId: 'bg-2', description: '压测脚本', command: '压测脚本' },
+          { taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs', startedAt: now - 5_000 },
+          { taskId: 'bg-2', description: '压测脚本', command: '压测脚本', startedAt: now - 65_000 },
+          // specs/054 AC-11：缺开始时刻的条目仍列出、只是不显示时长（不猜值）
+          { taskId: 'bg-3', description: '旧宿主任务', command: 'echo legacy' },
         ],
         subAgentDescription: null, parentSessionId: null,
+        subAgentStartedAt: null,
+        remoteSubAgents: [
+          { sessionId: `${sid}-remote`, description: '跨区找规格', workspaceId: 'HOST:/b', startedAt: now - 3_725_000 },
+        ],
       },
       {
         sessionId: `${sid}-sub1`, idle: false, waiting: false, queryRunning: true, compacting: false,
         pendingCompact: false, backgroundRunning: false, subAgentRunning: false, backgroundTasks: [],
         subAgentDescription: '浏览文件找规格', parentSessionId: sid,
+        subAgentStartedAt: now - 65_000,
+        remoteSubAgents: [],
       },
       {
         sessionId: `${sid}-sub2`, idle: true, waiting: false, queryRunning: false, compacting: false,
         pendingCompact: false, backgroundRunning: false, subAgentRunning: false, backgroundTasks: [],
         subAgentDescription: '已完成的子代理', parentSessionId: sid,
+        subAgentStartedAt: now - 65_000,
+        remoteSubAgents: [],
       },
     ],
   });
@@ -490,15 +520,42 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
   await expect(abortTip).toContainText('浏览文件找规格');
   await expect(abortTip).not.toContainText('已完成的子代理');
 
+  // specs/054 AC-1 / AC-3：任务与子代理行都带已执行时间（格式见单元测试 elapsedTime）
+  const elapsedSpans = abortTip.locator('[data-elapsed]');
+  // 带开始时刻的：2 条任务 + 1 条本地子代理 + 1 条远程子代理；缺开始时刻的那条不算
+  await expect(elapsedSpans).toHaveCount(4);
+  await expect(elapsedSpans.first()).toHaveText(/^(?:\d+天)?(?:\d+小时)?(?:\d+分)?\d+秒$/);
+
+  // specs/054 AC-11：缺 startedAt 的条目照常列出、只是没有时长（不猜值、不显示占位）
+  const legacyRow = abortTip.locator('div').filter({ hasText: /^\s*旧宿主任务/ });
+  await expect(legacyRow.first()).toBeVisible();
+  await expect(legacyRow.first().locator('[data-elapsed]')).toHaveCount(0);
+
+  // specs/054 AC-5 / AC-6：远程子代理出现在「子代理」组，带描述、目标工作区身份与时长
+  const remoteRow = abortTip.locator('[data-remote-workspace]');
+  await expect(remoteRow).toHaveCount(1);
+  await expect(remoteRow).toHaveText('→ HOST:/b');
+  await expect(abortTip).toContainText('跨区找规格');
+
+  // specs/054 AC-2：浮层停留期间读数每秒递增（同一任务行的时长文本会变）
+  const firstElapsed = elapsedSpans.first();
+  const before = await firstElapsed.innerText();
+  await expect
+    .poll(async () => firstElapsed.innerText(), { timeout: 5_000, intervals: [200] })
+    .not.toBe(before);
+
   // AC-10（FR-003）：浮层只读——点击浮层区域不产生 abort 上行（pointer-events 穿透）
   const box = await abortTip.boundingBox();
   await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
   const aborts = (await host.sentAll()).filter((m) => m.type === 'abort');
   expect(aborts).toHaveLength(0);
 
-  // AC-4：移出立即隐藏
+  // AC-4：移出立即隐藏；specs/054 AC-10：隐藏后 1s 定时器被清理（不留常驻刷新）
   await page.mouse.move(10, 10);
   await expect(abortTip).toBeHidden();
+  await expect
+    .poll(async () => page.evaluate(() => (window as any).__abortTipIntervals.size), { timeout: 3_000 })
+    .toBe(0);
 
   // AC-11：显示期间快照刷新跟随（任务 2→1），两组皆空浮层关闭
   await abortButton.hover();
@@ -509,8 +566,9 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
       {
         sessionId: sid, idle: false, waiting: false, queryRunning: false, compacting: false,
         pendingCompact: false, backgroundRunning: true, subAgentRunning: false,
-        backgroundTasks: [{ taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs' }],
+        backgroundTasks: [{ taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs', startedAt: now - 5_000 }],
         subAgentDescription: null, parentSessionId: null,
+        subAgentStartedAt: null, remoteSubAgents: [],
       },
     ],
   });
@@ -523,6 +581,7 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
         sessionId: sid, idle: true, waiting: false, queryRunning: false, compacting: false,
         pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
         backgroundTasks: [], subAgentDescription: null, parentSessionId: null,
+        subAgentStartedAt: null, remoteSubAgents: [],
       },
     ],
   });
@@ -536,6 +595,7 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
         sessionId: sid, idle: false, waiting: false, queryRunning: true, compacting: false,
         pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
         backgroundTasks: [], subAgentDescription: null, parentSessionId: null,
+        subAgentStartedAt: null, remoteSubAgents: [],
       },
     ],
   });
@@ -552,6 +612,7 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
         sessionId: sid, idle: true, waiting: false, queryRunning: false, compacting: false,
         pendingCompact: false, backgroundRunning: false, subAgentRunning: false,
         backgroundTasks: [], subAgentDescription: null, parentSessionId: null,
+        subAgentStartedAt: null, remoteSubAgents: [],
       },
     ],
   });

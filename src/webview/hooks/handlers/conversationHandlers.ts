@@ -140,10 +140,24 @@ export function handleConversationSessionRuntimeStates(
               compacting: !!s.compacting,
               pendingCompact: !!s.pendingCompact,
               backgroundRunning: !!s.backgroundRunning,
-              // specs/019 FR-001：缺字段按空清单 / null 判定（旧宿主 / 假宿主未带新字段）
-              backgroundTasks: Array.isArray(s.backgroundTasks) ? s.backgroundTasks : [],
+              // specs/019 FR-001 / specs/054 FR-001：缺字段按空清单 / null 判定
+              // （旧宿主 / 假宿主未带新字段）。`startedAt` 缺失记 `null`——渲染侧据此
+              // 省略时长，不为缺失值猜一个当前时刻
+              // （docs/architecture/principles.md 第 10 节）。
+              backgroundTasks: Array.isArray(s.backgroundTasks)
+                ? s.backgroundTasks.map((task) => ({
+                    taskId: task.taskId,
+                    description: task.description,
+                    command: task.command,
+                    startedAt: typeof task.startedAt === 'number' ? task.startedAt : null,
+                  }))
+                : [],
               subAgentRunning: !!s.subAgentRunning,
               subAgentDescription: s.subAgentDescription ?? null,
+              // specs/054 FR-002：取不到创建时刻 → null（UI 只省略时长）
+              subAgentStartedAt: typeof s.subAgentStartedAt === 'number' ? s.subAgentStartedAt : null,
+              // specs/054 FR-003：旧宿主没有远程清单 → 空集
+              remoteSubAgents: Array.isArray(s.remoteSubAgents) ? s.remoteSubAgents : [],
               parentSessionId: s.parentSessionId ?? null,
               creator: s.creator,
             });

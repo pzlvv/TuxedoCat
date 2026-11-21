@@ -69,8 +69,8 @@ pub fn list_for_creator(creator_session_id: &str) -> Vec<String> {
         .collect()
 }
 
-/// 登记时间（`createdAt`；供展示 / 将来按时间清理）
-#[cfg_attr(not(test), allow(dead_code))]
+/// 登记时间（wall clock 毫秒）：`emit_runtime` 投影成快照的 `subAgentStartedAt`，
+/// abort 悬停明细据此显示子代理的已执行时间（specs/054 FR-002）。
 pub fn created_at(id: &str) -> Option<u64> {
     AGENTS
         .lock()
@@ -356,27 +356,67 @@ pub fn generate_sub_session_id() -> String {
 ///
 /// 与 `AGENTS` 分开存放：`AGENTS` 里的条目参与 `is_idle_deep` 的本地递归，
 /// 远程子代理没有本地会话状态，必须由本表单独判定「仍在运行」。
+/// 跨工作区子代理的远程登记快照（specs/054 FR-003）：发起方运行时快照的
+/// `remoteSubAgents` 元素来源。
+#[derive(Clone, Debug)]
+pub struct RemoteAgentBrief {
+    pub id: String,
+    /// 派发时 `Agent` 工具调用的 description；登记时必带，取不到才是 `None`
+    pub description: Option<String>,
+    pub target_workspace_id: String,
+    /// 登记时刻（wall clock，毫秒）：悬停明细的「已执行时间」起点
+    pub created_at: u64,
+}
+
 struct RemoteRecord {
     id: String,
-    /// 发起方会话 id（specs/023）：保留完整登记以便排查与后续按创建者聚合；
-    /// 当前的路由由宿主按 link 表完成。
-    #[allow(dead_code)]
+    /// 发起方会话 id（specs/023）：远程登记按创建者聚合成悬停明细（specs/054 FR-003）。
     creator_session_id: String,
     /// 目标工作区代理身份（specs/023）：Reply 的 From 头带上它，UI 才能跨工作区跳转。
     target_workspace_id: String,
+    /// 派发时 Agent 工具调用的 description（specs/054 FR-003，悬停明细的身份）
+    description: Option<String>,
+    /// 登记时刻（specs/054 FR-003，悬停明细的「已执行时间」起点）
+    created_at: u64,
 }
 
 static REMOTE_AGENTS: Mutex<Vec<RemoteRecord>> = Mutex::new(Vec::new());
 
 /// 登记一个跨工作区子代理（发起方 Core 侧）
-pub fn register_remote(id: &str, creator_session_id: &str, target_workspace_id: &str) {
+pub fn register_remote(
+    id: &str,
+    creator_session_id: &str,
+    target_workspace_id: &str,
+    description: Option<&str>,
+) {
     let mut records = REMOTE_AGENTS.lock().unwrap();
     records.retain(|record| record.id != id);
     records.push(RemoteRecord {
         id: id.to_string(),
         creator_session_id: creator_session_id.to_string(),
         target_workspace_id: target_workspace_id.to_string(),
+        description: description.map(str::to_string),
+        created_at: crate::util::now_millis(),
     });
+}
+
+/// 某个创建者会话仍在登记的远程子代理（按登记序，specs/054 FR-003）。
+///
+/// 与 `list_for_creator` 的区别：那个返回 `AGENTS` 里的本地 / 远程混合清单（供递归
+/// 判定用），这里只取远程登记的身份明细（悬停浮层展示用）。
+pub fn remote_sub_agents_for_session(creator_session_id: &str) -> Vec<RemoteAgentBrief> {
+    REMOTE_AGENTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|record| record.creator_session_id == creator_session_id)
+        .map(|record| RemoteAgentBrief {
+            id: record.id.clone(),
+            description: record.description.clone(),
+            target_workspace_id: record.target_workspace_id.clone(),
+            created_at: record.created_at,
+        })
+        .collect()
 }
 
 /// 跨工作区子代理的目标工作区身份（发起方 Core 侧；非远程子代理返回 None）

@@ -27,18 +27,35 @@ export function sessionBusyLevel(
   return state.idle ? 'idle' : 'running';
 }
 
-/** 运行中子代理条目（specs/019 FR-002）：abort 按钮悬停明细的「子代理」组逐项展示 */
+/**
+ * 运行中子代理条目（specs/019 FR-002 / specs/054 FR-004）：abort 按钮悬停明细的
+ * 「子代理」组逐项展示。
+ *
+ * - `startedAt`：开始时刻（毫秒）；`null` = 快照没带（旧宿主 / 恢复路径），渲染侧
+ *   只省略时长、不猜值（`docs/architecture/principles.md` 第 10 节）；
+ * - `workspaceId`：远程（跨工作区）子代理的目标工作区身份；本地子代理为 `null`。
+ *   用可空字段而不是判别联合：两个形态只差这一个标签，判别联合会让每个渲染点都写
+ *   `switch`（plan 被否决的替代方案 4）。
+ */
 export interface RunningSubAgentBrief {
   sessionId: string;
   description: string | null;
+  startedAt: number | null;
+  workspaceId: string | null;
 }
 
 /**
- * 当前会话运行中的子代理清单（specs/019 FR-001）：直接子代理（`parentSessionId`
- * 指向该会话）中 `idle === false` 的条目，递归展开下层非空闲子代理，深先序、
- * 同层按 states 数组顺序（core 的 `session_order` 即创建序，宿主与 webview 的
- * Map 都保序）。只经非空闲节点下钻——core 的 `idle` 本就是递归合取，空闲节点
- * 的下层不可能在跑。
+ * 当前会话运行中的子代理清单（specs/019 FR-001 / specs/054 FR-004）：直接子代理
+ * （`parentSessionId` 指向该会话）中 `idle === false` 的条目，递归展开下层非空闲
+ * 子代理，深先序、同层按 states 数组顺序（core 的 `session_order` 即创建序，宿主与
+ * webview 的 Map 都保序）；每个节点的本地子树展开完之后，追加它自己的
+ * `remoteSubAgents`（登记序）。只经非空闲节点下钻——core 的 `idle` 本就是递归合取，
+ * 空闲节点的下层不可能在跑。
+ *
+ * 远程子代理不继续下钻：跨工作区子代理不能继续派生
+ * （`docs/features/cross-workspace-agent.md`），它的身份由 core 的远程登记投影过来
+ * （`remoteSubAgents`），不靠 `creator` 反推——`creator` 是归属事实，树事实是
+ * `parentSessionId`。
  *
  * 唯一实现，webview 与测试共用（`docs/architecture/principles.md` 第 8 节）；
  * 子代理身份不在快照里二次聚合，靠 `parentSessionId` 在客户端纯派生（同一事实只写一处）。
@@ -49,23 +66,47 @@ export function collectRunningSubAgents(
     idle: boolean;
     parentSessionId: string | null;
     subAgentDescription: string | null;
+    subAgentStartedAt: number | null;
+    remoteSubAgents: readonly {
+      sessionId: string;
+      description: string | null;
+      workspaceId: string;
+      startedAt: number;
+    }[];
   }[],
   sessionId: string,
 ): RunningSubAgentBrief[] {
-  const childrenByParent = new Map<string, { sessionId: string; idle: boolean; subAgentDescription: string | null }[]>();
+  const byId = new Map<string, (typeof states)[number]>();
+  const childrenByParent = new Map<string, string[]>();
   for (const state of states) {
+    byId.set(state.sessionId, state);
     const parent = state.parentSessionId;
     if (!parent) continue;
     const siblings = childrenByParent.get(parent);
-    if (siblings) siblings.push(state);
-    else childrenByParent.set(parent, [{ sessionId: state.sessionId, idle: state.idle, subAgentDescription: state.subAgentDescription }]);
+    if (siblings) siblings.push(state.sessionId);
+    else childrenByParent.set(parent, [state.sessionId]);
   }
   const result: RunningSubAgentBrief[] = [];
   const visit = (parent: string): void => {
-    for (const state of childrenByParent.get(parent) ?? []) {
-      if (state.idle) continue;
-      result.push({ sessionId: state.sessionId, description: state.subAgentDescription ?? null });
-      visit(state.sessionId);
+    for (const childId of childrenByParent.get(parent) ?? []) {
+      const child = byId.get(childId);
+      if (!child || child.idle) continue;
+      result.push({
+        sessionId: child.sessionId,
+        description: child.subAgentDescription,
+        startedAt: child.subAgentStartedAt,
+        workspaceId: null,
+      });
+      visit(child.sessionId);
+    }
+    // 该节点的远程登记排在它的本地子树之后（specs/054 FR-004），远程条目没有下层
+    for (const remote of byId.get(parent)?.remoteSubAgents ?? []) {
+      result.push({
+        sessionId: remote.sessionId,
+        description: remote.description,
+        startedAt: remote.startedAt,
+        workspaceId: remote.workspaceId,
+      });
     }
   };
   visit(sessionId);

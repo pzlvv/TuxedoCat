@@ -11,7 +11,9 @@
     "parentSessionId",
     "creator",
     "backgroundTasks",
-    "subAgentDescription"
+    "subAgentDescription",
+    "subAgentStartedAt",
+    "remoteSubAgents"
   ],
   "webviewOmitted": ["sessionId"]
 }

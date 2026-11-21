@@ -210,6 +210,11 @@ export const zhDict: Record<string, string> = {
   'inputArea.abortHoverTasks': '后台任务',
   'inputArea.abortHoverSubAgents': '子代理',
   'inputArea.abortHoverSubAgentFallback': '未命名子代理',
+  // 已执行时长的单位（specs/054 FR-005）：从「天」到「秒」逐级拼接、零单位省略
+  'inputArea.elapsedDay': '天',
+  'inputArea.elapsedHour': '小时',
+  'inputArea.elapsedMinute': '分',
+  'inputArea.elapsedSecond': '秒',
   'inputArea.removeImage': '移除图片',
   'inputArea.spinDesign': 'Spin 设计',
   'inputArea.model': '模型',

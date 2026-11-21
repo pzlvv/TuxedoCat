@@ -57,9 +57,11 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `compacting` | `compacting` 来源（正在压缩上下文） |
 | `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待前台工作收尾时执行；不参与 `idle`） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
-| `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务（[docs/features/abort-button.md](../features/abort-button.md)） |
+| `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command` / `startedAt`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务与已执行时间（[docs/features/abort-button.md](../features/abort-button.md)）。`startedAt` 是任务的开始时刻（wall clock 毫秒），注册时写定 |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理）；跨工作区子代理没有本地会话状态，登记期间恒算非 idle，结束事件到达后注销 |
 | `subAgentDescription` | 子代理会话为创建时 Agent 工具调用的 description（specs/019）；普通会话与恢复路径取不到时为 `null`，UI 显示回退文案。悬停明细据此列出子代理 |
+| `subAgentStartedAt` | 本地子代理的登记时刻（wall clock 毫秒，specs/054）；普通会话、跨工作区对话与恢复路径取不到时为 `null`。悬停明细据此显示子代理的已执行时间，`null` 时只省略时长、不猜值 |
+| `remoteSubAgents` | 该会话作为发起方仍在登记的跨工作区子代理清单（specs/054），按登记序逐项 `sessionId` / `description` / `workspaceId` / `startedAt`；空集为 `[]`。与 `subAgentRunning` 同源同发（结束事件 / 目标不可达时注销，两者一起收敛）。远程子代理在本进程没有会话条目，只能由远程登记投影，不能从 `creator` 反推 |
 | `parentSessionId` | 父会话 ID（**本地**子代理会话才有；普通会话与跨工作区对话为 `null`）。登记于子代理创建时，随会话存续，不随注册表注销消失。它是**树事实**（本地嵌套在哪）；「谁创建的」归属语义读 `creator`，不得从本字段反推（specs/025 FR-002） |
 | `creator` | 会话创建者（specs/025 FR-002）：`user` = 用户 prompt 发起；agent 形态携带创建方工作区身份（本地创建为 `null`）与创建方会话 id。完成提醒 / 未读绿灯的抑制、输入禁用、`Reply` 回传路由与跨工作区跳转都以此为判据（specs/025 FR-003 / FR-004 / FR-007） |
 
@@ -72,9 +74,11 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 `compacting` / 排队待消费的用户消息，即 abort 按钮的红色档）：前台停下后即压，不等
 `backgroundRunning` 与 `subAgentRunning` 收尾（[docs/features/compaction.md](../features/compaction.md) FR-002）。
 
-明细成员（`backgroundTasks` / `subAgentDescription`）与布尔位同源同发，并参与快照
-diff：清单增减、子代理 description 出现即使布尔位不变也触发推送——abort 悬停明细
-（specs/019）据此保持与注册表一致。
+明细成员（`backgroundTasks` / `subAgentDescription` / `subAgentStartedAt` / `remoteSubAgents`）
+与布尔位同源同发，并参与快照 diff：清单增减、子代理 description 或开始时刻出现、远程登记
+增删，即使布尔位不变也触发推送——abort 悬停明细（specs/019 / specs/054）据此保持与注册表
+一致。开始时刻写定后不变，因此「时间流逝」本身不产生推送：已执行时长由 UI 用本机时钟
+推算（[docs/features/abort-button.md](../features/abort-button.md) FR-004）。
 
 对外快照里每个会话都递归计算派生值（`is_idle_deep`），因此子代理的 `query` / `waiting` /
 `compacting` / `background` 变化会连带刷新其创建者的 `idle` / `subAgentRunning`。

@@ -288,14 +288,24 @@ export type HostToWebviewMessage = {
     /** 已登记手动压缩、等前台工作收尾后执行；不参与 `idle` */
     pendingCompact: boolean;
     backgroundRunning: boolean;
-    /** 运行中后台 Bash 任务清单（specs/019 FR-001），注册序；空集为 `[]` */
-    backgroundTasks: ReadonlyArray<{ taskId: string; description: string; command: string }>;
+    /** 运行中后台 Bash 任务清单（specs/019 FR-001），注册序；空集为 `[]`。`startedAt`
+     * 是任务的开始时刻（毫秒，specs/054 FR-001），悬停明细的「已执行时间」起点 */
+    backgroundTasks: ReadonlyArray<{ taskId: string; description: string; command: string; startedAt: number }>;
     subAgentRunning: boolean;
     /**
      * 子代理会话为创建时 Agent 工具调用的 description；普通会话与恢复路径
      * 取不到时为 `null`
      */
     subAgentDescription: string | null;
+    /** 本地子代理的登记时刻（毫秒，specs/054 FR-002）；取不到为 `null` */
+    subAgentStartedAt: number | null;
+    /** 发起方仍在登记的跨工作区子代理（specs/054 FR-003），登记序；空集为 `[]` */
+    remoteSubAgents: ReadonlyArray<{
+      sessionId: string;
+      description: string | null;
+      workspaceId: string;
+      startedAt: number;
+    }>;
     /** 父会话 id（本地子代理会话才有；普通会话与跨工作区对话为 null，specs/025 FR-002） */
     parentSessionId: string | null;
     /** 会话创建者（specs/025 FR-002），镜像 shared `sessionCreator.ts` 判别联合 */

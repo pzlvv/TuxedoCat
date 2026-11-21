@@ -321,3 +321,46 @@ fn drop_session_keeps_surviving_children_registered() {
     );
     reset_for_test();
 }
+
+// ==================== 远程登记明细（specs/054 FR-003） ====================
+
+/// 远程登记携带悬停明细所需的身份与开始时刻：description / 目标工作区身份 / 登记时刻；
+/// 清单按创建者聚合、按登记序，注销后不再出现。
+#[test]
+fn remote_registry_carries_description_and_created_at() {
+    let _guard = serial();
+    reset_for_test();
+    let before = crate::util::now_millis();
+    register_remote("sub_r1", "origin", "HOST:/b", Some("跨区找规格"));
+    let first = remote_sub_agents_for_session("origin");
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].id, "sub_r1");
+    assert_eq!(first[0].description.as_deref(), Some("跨区找规格"));
+    assert_eq!(first[0].target_workspace_id, "HOST:/b");
+    assert!(
+        first[0].created_at >= before,
+        "登记时刻不得早于登记前：{}",
+        first[0].created_at
+    );
+    // 别的创建者看不到这条登记
+    assert!(remote_sub_agents_for_session("other").is_empty());
+    // 同一个创建者的多条按登记序
+    register_remote("sub_r2", "origin", "HOST:/c", None);
+    let ids: Vec<String> = remote_sub_agents_for_session("origin")
+        .into_iter()
+        .map(|brief| brief.id)
+        .collect();
+    assert_eq!(ids, ["sub_r1", "sub_r2"]);
+    assert_eq!(
+        remote_sub_agents_for_session("origin")[1].description,
+        None,
+        "取不到 description 时为 None（UI 显示回退文案）"
+    );
+    unregister_remote("sub_r1");
+    let remaining: Vec<String> = remote_sub_agents_for_session("origin")
+        .into_iter()
+        .map(|brief| brief.id)
+        .collect();
+    assert_eq!(remaining, ["sub_r2"]);
+    reset_for_test();
+}

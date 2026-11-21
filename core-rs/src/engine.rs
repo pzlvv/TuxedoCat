@@ -909,6 +909,12 @@ impl Core {
                 // 子代理都空闲，父会话才算空闲。
                 let idle = Core::is_idle_deep(&sessions, session_id, &mut HashSet::new());
                 let sub_agent_running = Core::has_busy_subagent(&sessions, session_id);
+                // 本地子代理的登记时刻（specs/054 FR-002）：悬停明细的「已执行时间」起点。
+                // 未登记（普通会话 / 恢复路径）为 None，UI 只省略时长（AC-4）。
+                let sub_agent_started_at = crate::subagent::created_at(session_id);
+                // 远程子代理清单（specs/054 FR-003）：发起方只有登记表，投影成明细供
+                // 悬停浮层展示；与 `subAgentRunning` 同源同发（都在同一次 emit_runtime）。
+                let remote_sub_agents = crate::subagent::remote_sub_agents_for_session(session_id);
                 Core::runtime_state_json(
                     session_id,
                     idle,
@@ -922,6 +928,8 @@ impl Core {
                     &creator,
                     &background_tasks,
                     sub_agent_desc.as_deref(),
+                    sub_agent_started_at,
+                    &remote_sub_agents,
                 )
             })
             .collect();
@@ -958,6 +966,8 @@ impl Core {
         creator: &SessionCreator,
         background_tasks: &[crate::bash_task::RunningTask],
         sub_agent_description: Option<&str>,
+        sub_agent_started_at: Option<u64>,
+        remote_sub_agents: &[crate::subagent::RemoteAgentBrief],
     ) -> Value {
         json!({
             "sessionId": session_id,
@@ -977,7 +987,8 @@ impl Core {
             // 抑制与输入禁用据此判定（TS 镜像 `sessionCreator.ts` 判别联合）。
             "creator": creator,
             // 运行中后台 Bash 任务清单（specs/019 FR-001，注册序；空集为 `[]`）。
-            // pid / start_time 不进契约——abort 悬停明细只展示身份（描述 + 命令）。
+            // pid / 输出预览不进契约；`startedAt` 是悬停明细的「已执行时间」起点
+            // （specs/054 FR-001），写定后不变，不随秒数流逝参与 diff。
             "backgroundTasks": background_tasks
                 .iter()
                 .map(|task| {
@@ -985,12 +996,29 @@ impl Core {
                         "taskId": task.task_id,
                         "description": task.description,
                         "command": task.command,
+                        "startedAt": task.start_time,
                     })
                 })
                 .collect::<Vec<Value>>(),
             // 子代理创建时的 Agent 工具 description（specs/019 FR-001）；
             // 普通会话与恢复路径为 `null`，UI 显示回退文案。
             "subAgentDescription": sub_agent_description,
+            // 本地子代理的登记时刻（specs/054 FR-002）：悬停明细的「已执行时间」起点；
+            // 未登记（普通会话 / 恢复路径）为 `null`，UI 只省略时长。
+            "subAgentStartedAt": sub_agent_started_at,
+            // 发起方会话仍在登记的远程子代理（specs/054 FR-003），登记序；空集为 `[]`。
+            // 与 `subAgentRunning` 同源同发：结束事件 / 目标不可达时注销，两者一起收敛。
+            "remoteSubAgents": remote_sub_agents
+                .iter()
+                .map(|agent| {
+                    json!({
+                        "sessionId": agent.id,
+                        "description": agent.description,
+                        "workspaceId": agent.target_workspace_id,
+                        "startedAt": agent.created_at,
+                    })
+                })
+                .collect::<Vec<Value>>(),
         })
     }
 
@@ -1828,7 +1856,12 @@ impl Core {
             return Err("cross-workspace agent response is missing sessionId".to_string());
         };
         crate::subagent::register(sub_session_id, &request.creator_session_id);
-        crate::subagent::register_remote(sub_session_id, &request.creator_session_id, &target);
+        crate::subagent::register_remote(
+            sub_session_id,
+            &request.creator_session_id,
+            &target,
+            Some(&request.description),
+        );
         self.emit_runtime();
         Ok(sub_session_id.to_string())
     }
