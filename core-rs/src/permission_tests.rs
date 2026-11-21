@@ -200,6 +200,27 @@ fn restricted_gates_do_not_use_ask() {
     }
 }
 
+/// `cat` 不是闸门判据（`docs/features/background-bash.md` 第 2 节 FR-005 / FR-008）：
+/// 看文件内容改走 `Read` 是提示词规则，权限层照旧把 `cat` 只读放行；
+/// `cat > f <<EOF` 这类写形态同样不被闸门拦。
+#[test]
+fn restricted_gate_does_not_cover_cat() {
+    for command in [
+        "cat a.txt",
+        "cd src && cat a.ts",
+        "cat > f.txt <<'EOF'\nhello\nEOF",
+        "cat a.txt | head",
+    ] {
+        for mode in ["manual", "risk", "auto"] {
+            let decision = decide("Bash", &bash(command), mode, CWD);
+            assert!(
+                !matches!(decision, Decision::Deny(_)),
+                "command={command} mode={mode} 得到 {decision:?}，cat 不应被闸门拒绝"
+            );
+        }
+    }
+}
+
 /// `restricted: false` 不豁免 detach 闸门（FR-004）：两个字段互不豁免，后台化构造仍由
 /// `run_bash` 的 detach 闸门拦下，权限层这里只看 `is_detach_escape` 的危险分级照旧。
 #[test]
