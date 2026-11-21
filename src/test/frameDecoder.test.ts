@@ -159,10 +159,14 @@ async function run(): Promise<void> {
   // - 修复前残行在单个字符串上 `+=` 累积，每块重拷整个已收缓冲：分块 1771ms vs
   //   整块 51ms ≈ 34x（块的切割方式直接决定成本，这正是 O(n²) 的证据）；
   // - 修复后残行按分片数组累积、成行只 join 一次：实测 0.90x ~ 1.25x。
-  // 阈值取 <4x：远离修复后的实测值，也远离修复前的 34x，不会因机器抖动误判。
-  const ratio = chunked.ms / Math.max(wholeBig.ms, 1);
+  //
+  // 分母下限 5ms：整块解码只 `push` 一次，最小值可能低到亚毫秒，此时比值被噪声放大
+  // （CI 共享 runner 上实测出现过 4.17x 而绝对耗时仍在毫秒级）。下限不掩盖真实回归——
+  // 修复前是 34x，远高于阈值；它只压掉「分母太小」这一类抖动。
+  const ratio = chunked.ms / Math.max(wholeBig.ms, 5);
   check(
-    `RT-5 大帧解码成本与帧长线性（8MB 帧分块/整块耗时比 ${ratio.toFixed(2)}x，阈值 <4x）`,
+    `RT-5 大帧解码成本与帧长线性（8MB 帧分块/整块耗时比 ${ratio.toFixed(2)}x，`
+    + `分块 ${chunked.ms.toFixed(1)}ms / 整块 ${wholeBig.ms.toFixed(1)}ms，阈值 <4x）`,
     ratio < 4,
   );
 
