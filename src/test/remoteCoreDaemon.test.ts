@@ -287,6 +287,180 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ==================== 慢速大帧假远端（心跳独立通路） ====================
+
+interface SlowFrameRemote {
+  port: number;
+  /** 建立过的连接数（业务链路 + 心跳链路各一条） */
+  connections: () => number;
+  /** 大帧已写出的字节数：0 = 还没开始 */
+  written: () => number;
+  /** 在「没被大帧堵住」的连接上写出的 pong 数——心跳通路的独立存活证据 */
+  independentPongs: () => number;
+  /** 全部连接上的 pong 总数（沉默判定见到首个 pong 才武装） */
+  totalPongs: () => number;
+  close: () => Promise<void>;
+}
+
+/** 大帧载荷的字节量：远大于任何 socket 发送缓冲，且分块慢写 */
+const BIG_FRAME_BYTES = 512 * 1024;
+/** 单块大小：模拟「业务帧一帧很大、网络一点点往外吐」 */
+const BIG_FRAME_CHUNK = 16 * 1024;
+/** 有标记的日志事件：宿主侧用它确认整帧到齐 */
+const BIG_FRAME_MARKER = 'big-frame-complete';
+
+/**
+ * 模拟真实 daemon 的**有序出站写**：一条连接上一个帧没写完时，排在它后面的
+ * `pong` 出不去（这正是缺陷的成因）。
+ *
+ * - `stall: true`：大帧写到约 1/4 就停住，此后这条连接再也不写任何东西；
+ * - `stall: false`：大帧按 `BIG_FRAME_CHUNK` 分块慢速写满，总耗时远超沉默死线。
+ *
+ * 收到非 `ping` 的帧（`uiEvent`）即开始写这一大帧。心跳链路（另一条连接）上
+ * 没有大帧，因此 `pong` 立刻写回。
+ */
+function startSlowFrameRemote(options: { stall: boolean }): Promise<SlowFrameRemote> {
+  let connections = 0;
+  let written = 0;
+  let independentPongs = 0;
+  let totalPongs = 0;
+  const sockets = new Set<Socket>();
+
+  const server: Server = createServer((socket) => {
+    connections += 1;
+    sockets.add(socket);
+    socket.setEncoding('utf8');
+    let buffer = '';
+    /** 本连接是否正被大帧占着出站（有序写：期间一切帧排队） */
+    let blocked = false;
+    const queued: string[] = [];
+    const write = (line: string): void => {
+      if (blocked) {
+        queued.push(line);
+        return;
+      }
+      if (!socket.writable) return;
+      socket.write(line);
+    };
+    const send = (frame: unknown): void => write(`${JSON.stringify(frame)}\n`);
+    const sendPong = (): void => {
+      totalPongs += 1;
+      if (blocked) {
+        queued.push(`${JSON.stringify({ kind: 'pong' })}\n`);
+        return;
+      }
+      independentPongs += 1;
+      if (socket.writable) socket.write(`${JSON.stringify({ kind: 'pong' })}\n`);
+    };
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => undefined);
+
+    const startBigFrame = (channel: number): void => {
+      blocked = true;
+      // 一帧就是整段会话历史（`conversationLoadRequested` 的应答形态）：行首 + 巨量载荷 + 行尾
+      const lineHead = `{"kind":"frame","channel":${channel},"frame":{"kind":"event",`
+        + '"event":{"type":"log","message":"';
+      const lineTail = `${BIG_FRAME_MARKER}"}}}`;
+      const payload = 'x'.repeat(BIG_FRAME_BYTES);
+      let offset = 0;
+      socket.write(lineHead);
+      written += lineHead.length;
+      const timer = setInterval(() => {
+        if (!socket.writable) {
+          clearInterval(timer);
+          return;
+        }
+        if (options.stall && offset >= Math.floor(payload.length / 4)) {
+          clearInterval(timer);
+          // 停在这里：这条连接再也不写任何字节（业务链路彻底静默）
+          return;
+        }
+        if (offset < payload.length) {
+          const chunk = payload.slice(offset, offset + BIG_FRAME_CHUNK);
+          socket.write(chunk);
+          written += chunk.length;
+          offset += chunk.length;
+          return;
+        }
+        clearInterval(timer);
+        socket.write(`${lineTail}
+`);
+        written += lineTail.length;
+        // 大帧写完：排队的 pong 这才出去（真实 daemon 的有序写）
+        blocked = false;
+        for (const line of queued.splice(0, queued.length)) {
+          if (socket.writable) socket.write(line);
+        }
+      }, 6);
+      timer.unref();
+    };
+
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      for (;;) {
+        const index = buffer.indexOf('\n');
+        if (index < 0) break;
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        if (line.trim().length === 0) continue;
+        let frame: Record<string, unknown>;
+        try {
+          frame = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (frame['kind'] === 'ping') {
+          // 真实 daemon 对每个 ping 回 pong；但大帧占着出站时它排在大帧后面
+          sendPong();
+          continue;
+        }
+        if (frame['kind'] === 'openWorkspace') {
+          const channel = 1;
+          send({
+            kind: 'workspaceOpened',
+            id: frame['id'],
+            channel,
+            descriptor: { kind: 'multiplexed', channel },
+          });
+          continue;
+        }
+        if (frame['kind'] === 'frame') {
+          const inner = frame['frame'] as { kind?: string };
+          const channel = Number(frame['channel']);
+          if (inner?.kind === 'hello') {
+            send({ kind: 'frame', channel, frame: { kind: 'ready' } });
+            continue;
+          }
+          if (inner?.kind === 'uiEvent') startBigFrame(channel);
+          continue;
+        }
+        if (frame['kind'] === 'shutdown') {
+          socket.end();
+        }
+      }
+    });
+  });
+
+  return new Promise<SlowFrameRemote>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      resolve({
+        port,
+        connections: () => connections,
+        written: () => written,
+        independentPongs: () => independentPongs,
+        totalPongs: () => totalPongs,
+        close: () =>
+          new Promise<void>((done) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+}
+
 const requestHandlers: CoreRequestHandlers = {
   toolPermissionRequested: async () => ({ behavior: 'allow' }),
   userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
@@ -541,6 +715,9 @@ async function run(): Promise<void> {
         // 底层连接还在（上次链路死了没人 dispose）：复用它——已是僵尸
         return Promise.resolve(disposed ? tcp.open() : zombieLink);
       },
+      // 心跳链路在同一个「底层连接」上也走僵尸 / 新建语义：本用例只验证业务链路的
+      // 复用与 dispose，心跳链路的建链不是被测对象
+      openHeartbeat: () => (disposed ? tcp.openHeartbeat() : Promise.resolve(zombieLink)),
       // TCP 直连没有远端准备步骤（socket 连上即就绪）：no-op 是设计允许的形态
       prepare: async () => undefined,
       dispose: () => {
@@ -591,6 +768,175 @@ async function run(): Promise<void> {
     check('沉默判死后重连：重开 channel 重新就绪', await waitFor(() => second.isReady(), 3_000));
     check('沉默判死后重连：重开未再 fatal', secondFailure.error === null);
     check('沉默判死后重连：重开是全新连接', fake.connections() === 2);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 心跳独立通路：大帧传输期间不判死（specs/defects/remote-heartbeat-starved-by-large-frame）----------
+  //
+  // 真实形态：`conversationLoadRequested` 的应答是整段会话历史一帧（8MB 量级），
+  // 慢带宽下要传几十秒；业务链路的出站严格有序，`pong` 排在大帧后面，而 Host 的
+  // 沉默看门狗只看「有没有入站帧」。心跳若与业务帧共用出站队列，「正在传大帧」就会
+  // 被判成「对端已死」。
+  {
+    const fake = await startSlowFrameRemote({ stall: true });
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 80,
+      silenceRecheckMs: 40,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('RT-1 大帧用例完成握手', await waitFor(() => transport.isReady()));
+    // 缺陷形态是「链路已就绪、心跳往返正常，然后打开一个大对话」：先让至少一个 pong
+    // 落地武装沉默判定，再触发大帧——否则测的是「武装之前」的另一条路径
+    check('RT-1 心跳已往返（沉默判定武装）', await waitFor(() => fake.totalPongs() > 0));
+    await sleep(60);
+    // 触发大帧（真话务里是 request → response，这里是同方向的一帧）
+    transport.send({
+      kind: 'uiEvent',
+      event: { type: 'conversationOpened', sessionId: 's1' },
+    } as never);
+    check('RT-1 大帧开始下传（字节已流动，但没有完整帧）', await waitFor(() => fake.written() > 0));
+    const startedAt = Date.now();
+    // 死线 + 宽限 = 120ms；大帧停在中途，业务链路此后不再有字节
+    await sleep(400);
+    check(
+      'RT-1 大帧停顿期间心跳独立通路保活（不判死）',
+      failure.error === null && Date.now() - startedAt >= 400,
+    );
+    check('RT-1 心跳链路的 pong 独立往返', fake.independentPongs() > 0);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 慢速大帧按字节判活（存活判据不再要求完整帧）----------
+  {
+    const fake = await startSlowFrameRemote({ stall: false });
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 80,
+      silenceRecheckMs: 40,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    const messages: string[] = [];
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFrame: (frame) => {
+        if (frame.kind === 'event' && frame.event.type === 'log') messages.push(frame.event.message);
+      },
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('RT-2 慢速大帧用例完成握手', await waitFor(() => transport.isReady()));
+    check('RT-2 心跳已往返（沉默判定武装）', await waitFor(() => fake.totalPongs() > 0));
+    await sleep(60);
+    transport.send({
+      kind: 'uiEvent',
+      event: { type: 'conversationOpened', sessionId: 's1' },
+    } as never);
+    // 512KB / 16KB × 6ms ≈ 190ms 的总传输时长，远超死线 + 宽限（120ms）
+    const arrived = await waitFor(() => messages.some((m) => m.includes(BIG_FRAME_MARKER)), 5_000);
+    check('RT-2 慢速大帧完整到达', arrived);
+    check('RT-2 慢速大帧期间未被判死', failure.error === null);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 心跳链路建不起来 = 接线缺陷，不降级回单通路 ----------
+  //
+  // 「只在业务链路上心跳」正是本缺陷的形态：一旦心跳与业务帧共用出站队列，
+  // 大帧就会把存活探测饿死。因此心跳链路打不开必须直接失败，不能静默退回。
+  {
+    const fake = await startFakeRemote({ pong: true });
+    const tcp = tcpDaemonOpener({ host: '127.0.0.1', port: fake.port });
+    const opener: CoreDaemonLinkOpener = {
+      open: () => tcp.open(),
+      openHeartbeat: () => Promise.reject(new Error('heartbeat forward refused')),
+      prepare: async () => undefined,
+      dispose: () => undefined,
+    };
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 1_000,
+      shutdownTimeoutMs: 500,
+      transport: opener,
+    });
+    let message = '';
+    try {
+      await daemon.listDirectories(null);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    check('心跳链路建不起来直接失败（不降级）', message.includes('heartbeat forward refused'));
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 心跳链路中途断掉 → 按链路退出收尾，不退回单通路 ----------
+  {
+    const fake = await startFakeRemote({ pong: true });
+    const heartbeatLinks: CoreDaemonLink[] = [];
+    const tcp = tcpDaemonOpener({ host: '127.0.0.1', port: fake.port });
+    const opener: CoreDaemonLinkOpener = {
+      open: () => tcp.open(),
+      openHeartbeat: async () => {
+        const link = await tcp.openHeartbeat();
+        heartbeatLinks.push(link);
+        return link;
+      },
+      prepare: async () => undefined,
+      dispose: () => undefined,
+    };
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 1_000,
+      shutdownTimeoutMs: 500,
+      transport: opener,
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('心跳链路中断用例完成握手', await waitFor(() => transport.isReady()));
+    // 只断心跳链路：业务链路仍能收发，但存活探测已失去独立通路
+    heartbeatLinks[0]?.kill();
+    check('心跳链路中断 → 链路按退出收尾', await waitFor(() => failure.error !== null, 2_000));
     await daemon.shutdown();
     await fake.close();
   }

@@ -222,7 +222,7 @@ Host 每建一条新链路都从解码器的新起点开始（上一条链路可
 | daemon → Host | `directoryDeleted` | `{ kind: 'directoryDeleted', id: number, path: string }` |
 | daemon → Host | `directoryFailed` | `{ kind: 'directoryFailed', id: number, error: string, reason: 'notEmpty' \| 'other' }`（列举 / 新建 / 删除共用） |
 | Host → daemon | `shutdown` | `{ kind: 'shutdown' }` |
-| Host → daemon | `ping` | `{ kind: 'ping' }`（链路心跳，[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)；链路就绪后定期发送） |
+| Host → daemon | `ping` | `{ kind: 'ping' }`（链路心跳，[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)；链路就绪后定期发送。业务链路与心跳链路各发一份——业务链路那份只为顺延 daemon 按连接武装的空闲回收，存活探测走心跳链路） |
 | daemon → Host | `pong` | `{ kind: 'pong' }`（对 `ping` 的应答，[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)） |
 
 - `id` 由 Host 生成，在单条控制通道内唯一；`workspaceOpened` / `workspaceFailed` /
@@ -243,6 +243,9 @@ Host 每建一条新链路都从解码器的新起点开始（上一条链路可
 - 一条控制连接的拥塞不得阻塞其它连接（每条连接一个服务线程，状态互相独立）。
 - 不丢帧、不合并帧；单条 channel 内保持顺序。
 - 控制通道的写入方维护有序出站队列；越软水位时记录诊断，不丢弃帧。
+- **存活探测不受出站队列影响**：Host 的心跳走另一条控制连接
+  （[docs/core/core-remote.md 第 2.5 节](core-remote.md#25-连接与生命周期)），因此一个大帧
+  长期占着某条连接的出站队列时，`pong` 仍然从另一条连接的写线程直接写出。
 
 ---
 

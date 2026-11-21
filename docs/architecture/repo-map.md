@@ -24,7 +24,7 @@ last_reviewed: 2026-10-18
 | `src/host/standalone/protocol.ts` | Core 帧协议：帧类型、编解码、换行分隔 JSON 解码器 |
 | `src/host/standalone/coreBinary.ts` | Core 产物定位：平台 / 架构 → `resources/core/<arch>-<platform>/`；内置工具登记表 `BUNDLED_TOOLS`（`ripgrep/rg`、`fd/fd`）与本地 / 部署两条路径派生 |
 | `src/host/standalone/CoreProcess.ts` | 单进程形态的 Core 进程管理：启动 / 握手 / 帧收发 / 背压 / 崩溃重启 / 关闭；实现 `CoreChannelTransport` |
-| `src/host/standalone/CoreDaemon.ts` | Host 侧 daemon 客户端：一个 endpoint 一个 daemon，每个工作区一条 channel；Core 的重启与终止由 daemon 承担；把 `channelReset` 翻译成重新握手；链路就绪后定期发 `ping` 心跳（daemon 据此回收死连接，[docs/core/core-remote.md 第 2.5 节](../core/core-remote.md#25-连接与生命周期)） |
+| `src/host/standalone/CoreDaemon.ts` | Host 侧 daemon 客户端：一个 endpoint 一个 daemon，每个工作区一条 channel；Core 的重启与终止由 daemon 承担；把 `channelReset` 翻译成重新握手；链路就绪后定期发 `ping` 心跳（daemon 据此回收死连接），存活探测另走一条只承载 `ping` / `pong` 的心跳链路，不会被大业务帧堵住（[docs/core/core-remote.md 第 2.5 节](../core/core-remote.md#25-连接与生命周期)） |
 | `src/host/standalone/daemonProtocol.ts` | daemon 控制通道协议：帧类型、`ChannelDescriptor`、编解码与校验 |
 | `src/host/standalone/StandaloneEventBus.ts` | `AssistantEventBus` 的帧通道实现（在 `CoreChannelTransport` 之上）：就绪前排队、连接态重放、`CoreRequest` 应答；传输层可以是单进程或 daemon channel |
 | `core-rs/` | Core 的 Rust 实现（唯一一套 Core：引擎 / 工具 / 技能 / 权限 / 提示词 / 压缩 / MCP / 会话落盘 / 帧协议、进程入口、daemon 模式；测试对照表数据在 `core-rs/fixtures/`） |
