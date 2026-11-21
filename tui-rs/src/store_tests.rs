@@ -482,3 +482,44 @@ fn session_config_and_context_tokens_updates() {
     );
     assert_eq!(state.sessions["s1"].context_tokens, 30_720.0);
 }
+
+/// 工具批次收尾 → 下一轮 aiBegin 之间仍属同一次查询：thinking 不得熄灭
+/// （docs/hosts/tui.md 第 5.1 节；同一口径的 TS 用例在
+/// `src/test/toolCompletionThinking.test.ts`）。
+#[test]
+fn ai_end_keeps_thinking_until_the_query_ends() {
+    let mut ids = Ids::new();
+    let mut state = initial_state();
+    state = step(
+        &state,
+        &mut ids,
+        &Action::ShowThinkingAnimation {
+            session_id: "s1".into(),
+            show: true,
+        },
+    );
+    assert!(state.sessions["s1"].show_thinking);
+
+    state = step(
+        &state,
+        &mut ids,
+        &Action::AiEnd {
+            session_id: "s1".into(),
+        },
+    );
+    assert!(
+        state.sessions["s1"].show_thinking,
+        "一轮 LLM 调用收尾不熄灭 thinking：下一轮紧接着开始"
+    );
+
+    // 查询已收尾：host 显式关动画
+    state = step(
+        &state,
+        &mut ids,
+        &Action::ShowThinkingAnimation {
+            session_id: "s1".into(),
+            show: false,
+        },
+    );
+    assert!(!state.sessions["s1"].show_thinking);
+}

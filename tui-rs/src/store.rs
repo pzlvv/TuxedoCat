@@ -669,8 +669,11 @@ pub fn reduce(state: &TuiState, ids: &mut Ids, action: &Action) -> TuiState {
         Action::AiBegin { session_id } => with_session(state, session_id, |session| {
             session.show_thinking = true;
         }),
+        // 一轮 LLM 调用的收尾不熄灭 thinking：工具批次之后 Core 紧接着发起下一轮，
+        // 中间那段（落盘 / 列表刷新 / 提示词组装 / 上下文估算 / 自动压缩）仍属同一次
+        // 查询，thinking 是唯一的过程指示。收敛点是 `ShowThinkingAnimation{show:false}`
+        // （查询已收尾时才由 host 发出）与 `QueryEnd`。
         Action::AiEnd { session_id } => with_session(state, session_id, |session| {
-            session.show_thinking = false;
             session.stream = None;
         }),
         Action::QueryEnd { session_id } => {

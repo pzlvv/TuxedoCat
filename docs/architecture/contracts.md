@@ -271,7 +271,7 @@ Core 进程内另有一份内存覆盖）优先，其次全局默认（`settings
 
 | 成员 | 语义 |
 | --- | --- |
-| `refresh()` | 重新读取**当前活动目录**的对话列表并分发给该宿主所有需要它的界面（顺带存成该目录的快照） |
+| `refresh()` | 重新读取**当前活动目录**的对话列表并分发给该宿主所有需要它的界面（顺带存成该目录的快照）。同一时刻只有一次重读在途：重叠调用合并成「在途那次 + 结束后补读一次」，因为重读在 Core 帧循环上同步执行，串行重读会挤压其它会话的帧（[docs/hosts/webview-ui.md 第 6 节](../hosts/webview-ui.md#6-活动阶段谁在什么时候写)） |
 | `refreshWorkspace(workspace)` | 定向装载一个（可以不是活动项的）目录的对话列表：快照进该目录自己的键、走同一分发链（灯管线、归属索引都吃列表到达）；是否推给侧栏 / webview 由实现按「是否活动目录」判定。Electron 在**工作区建链就绪**时对非活动目录调用（离场完成的补武装唯一挂在列表到达出口，重启恢复后非当前标签页的列表由此装载，specs/defects/inactive-tab-completion-light-missing） |
 | `loadFor(workspace)`（protected） | 读磁盘对话列表（source of truth，两端一致）。请求带工作目录，按目录路由到对应的 Connection，因此也能装载非活动目录 |
 | `dispatchList(list, workspace)`（abstract） | 把纯磁盘列表分发给该宿主的界面；`workspace` 是这份列表归属的目录（活动装载传活动目录） |

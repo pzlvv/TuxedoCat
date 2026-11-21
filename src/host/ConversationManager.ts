@@ -42,6 +42,22 @@ export abstract class ConversationManager {
   private readonly listSnapshots = new Map<string, { list: readonly ConversationMetadata[]; dirty: boolean }>();
 
   /**
+   * 在途的列表重读（`null` = 没有）。
+   *
+   * `conversationListChanged` 的粒度是「每条消息落盘各一次」（`announce_message_appended`），
+   * 并行会话同时跑工具批次时，这些事件会在宿主侧堆成一串，每个都触发一次远端整目录重读；
+   * 重读走 `UiRequest.conversationListRequested`，在 Core 的帧循环上**同步**执行，于是
+   * 一个会话的下一轮 `aiBegin` 被别的会话的列表重读压在后面（多会话并行时最容易显形）。
+   *
+   * 因此同一时刻只允许一次重读在途：重叠的请求合并成「在途那次 + 结束后补读一次」。
+   * 补读一次是必要的——在途那次读到的是它开始时的磁盘状态，期间又有落盘就要再读一遍，
+   * 否则列表停在旧计数上。
+   */
+  private inFlightRefresh: Promise<void> | null = null;
+  /** 尚未被任何一次重读覆盖的请求数（重读开始时清零，期间到达的累加） */
+  private pendingRefreshes = 0;
+
+  /**
    * 重新读取**当前活动目录**的对话列表并分发给该宿主所有需要它的界面，
    * 顺带把结果存成该目录的快照（标记为干净）。
    *
@@ -49,8 +65,39 @@ export abstract class ConversationManager {
    * 走的 UiRequest 会在连接关闭 / Core 重启窗口被总线就地拒绝（``docs/architecture/events.md` 第 6 节）——这里若
    * 把失败抛出去，就会变成未处理 rejection 按进程级错误崩掉宿主。刷新本来就是
    * 「尽力而为」：失败后下一次 conversationListChanged 会再触发。
+   *
+   * 重叠调用合并（见 `inFlightRefresh`）：同一时刻只有一次重读在途，期间到达的请求
+   * 合并成结束后的一次补读；`await refresh()` 返回时本轮的请求一定已被某次重读覆盖，
+   * 因此紧接着读快照能看到最新一份列表。
    */
   async refresh(): Promise<void> {
+    this.pendingRefreshes += 1;
+    while (this.pendingRefreshes > 0) {
+      if (this.inFlightRefresh === null) {
+        const run = this.runRefreshLoop();
+        this.inFlightRefresh = run;
+        try {
+          await run;
+        } finally {
+          this.inFlightRefresh = null;
+        }
+        continue;
+      }
+      // 已有重读在途：它会在退出前吃掉这一次请求（本轮请求未覆盖时重新进循环）
+      await this.inFlightRefresh;
+    }
+  }
+
+  /** 连续重读：把「重读期间又到的请求」合并成再读一次，直到没有未覆盖的请求 */
+  private async runRefreshLoop(): Promise<void> {
+    while (this.pendingRefreshes > 0) {
+      this.pendingRefreshes = 0;
+      await this.refreshOnce();
+    }
+  }
+
+  /** 单次重读：读盘 → 命中快照 → 分发；失败只记日志 */
+  private async refreshOnce(): Promise<void> {
     try {
       const workspace = this.host.getWorkspacePath();
       const list = await this.loadFor(workspace);

@@ -338,6 +338,7 @@ mod tests {
 
     fn options() -> ChoiceOptions {
         ChoiceOptions {
+            choice_request_id: "creq-1".into(),
             tool_name: "Bash".into(),
             message: "允许执行？".into(),
             choices: vec![ChoiceItem {

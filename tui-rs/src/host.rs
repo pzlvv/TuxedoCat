@@ -484,12 +484,22 @@ impl Host {
                     _ => ToolStatus::Success,
                 };
                 self.ui_state.end_tool_phase(&session_id);
-                vec![Action::UpdateToolStatus {
+                // 工具卡片收尾即熄灭风车；到下一轮 aiBegin 之间仍属同一查询（落盘 /
+                // 列表刷新 / 提示词组装 / 上下文估算），查询在跑就重新点亮 thinking。
+                let mut actions = Vec::new();
+                if self.ui_state.is_query_active(&session_id) {
+                    actions.push(Action::ShowThinkingAnimation {
+                        session_id: session_id.clone(),
+                        show: true,
+                    });
+                }
+                actions.push(Action::UpdateToolStatus {
                     session_id,
                     tool_call_id,
                     status: Some(status),
                     output: Some(output),
-                }]
+                });
+                actions
             }
             "toolArgsUpdated" => {
                 // 文件引用 chips 与紧凑 diff 的数据面，TUI v1 不渲染（原样忽略）
@@ -529,15 +539,23 @@ impl Host {
             }
             "aiEnd" => {
                 let session_id = session(event);
-                self.ui_state.mark_idle(&session_id);
                 self.fetch_balance(&session_id);
-                vec![
-                    Action::ShowThinkingAnimation {
-                        session_id: session_id.clone(),
-                        show: false,
-                    },
-                    Action::AiEnd { session_id },
-                ]
+                // 「一轮」不等于「一次查询」：工具批次之后 Core 紧接着发起下一轮（中间
+                // 还有落盘 / 列表刷新 / 提示词组装 / 上下文估算，必要时自动压缩）。
+                // 查询仍在跑时保持 thinking，唯一收敛点是 queryEnd。
+                if self.ui_state.is_query_active(&session_id) {
+                    self.ui_state.mark_thinking(&session_id);
+                    vec![Action::AiEnd { session_id }]
+                } else {
+                    self.ui_state.mark_idle(&session_id);
+                    vec![
+                        Action::ShowThinkingAnimation {
+                            session_id: session_id.clone(),
+                            show: false,
+                        },
+                        Action::AiEnd { session_id },
+                    ]
+                }
             }
             "messagesReplaced" => {
                 let session_id = session(event);

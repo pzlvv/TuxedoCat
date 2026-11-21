@@ -720,8 +720,20 @@ export class WebViewUI implements WebViewUiPort {
     this.toolHandler.onToolCall(sessionId, toolUseId, toolName, messageUuid);
   }
 
+  /**
+   * 工具收尾：递减工具计数，并在本会话仍有活跃查询时重新点亮 thinking 动画。
+   *
+   * 工具卡片在 webview 里收尾即熄灭风车（`shouldKeepThinkingForToolCard` 让位），而
+   * 到下一轮 `aiBegin` 之间 Core 还要落盘工具结果、重算 meta.json 的消息数、刷新对话
+   * 列表、组装提示词、估算上下文、必要时自动压缩——这段窗口没有任何别的过程指示，
+   * 远程 SSH 多会话并行时被放大成肉眼可见的「卡住」（docs/hosts/webview-ui.md 第 6 节）。
+   * 查询已收尾（中止后的取消结果等）时 `isQueryActive` 为假，不点亮。
+   */
   onToolResult(sessionId: string, toolUseId: string, toolName: string, output: string, status: 'success' | 'error'): void {
     this.sessionUi.endToolPhase(sessionId);
+    if (this.sessionUi.isQueryActive(sessionId)) {
+      this.setThinkingAnimation(sessionId, true);
+    }
     this.toolHandler.onToolResult(sessionId, toolUseId, toolName, output, status);
   }
 
@@ -744,9 +756,22 @@ export class WebViewUI implements WebViewUiPort {
     this.postToWebview(sessionId, { type: 'aiBegin' });
   }
 
+  /**
+   * 本轮 LLM 调用结束。
+   *
+   * 「一轮」不等于「一次查询」：工具批次之后 Core 会紧接着发起下一轮（中间还夹着落盘、
+   * 列表刷新、提示词组装与上下文估算，必要时还有自动压缩）。因此这里只在**查询已经
+   * 收尾**时熄灭 thinking；查询仍在进行时保持点亮，下一轮开始只是重复一次「显示」。
+   * 查询收尾的唯一收敛点是 `onQueryEnd`（它显式关动画，覆盖中断路径没有 `aiEnd` 的情况）。
+   */
   onAIEnd(sessionId: string): void {
-    this.sessionUi.markIdle(sessionId);
-    this.setThinkingAnimation(sessionId, false);
+    // 查询仍在进行 → 阶段回 thinking（等待下一轮）；查询已收尾 → idle
+    if (this.sessionUi.isQueryActive(sessionId)) {
+      this.sessionUi.markThinking(sessionId);
+    } else {
+      this.sessionUi.markIdle(sessionId);
+      this.setThinkingAnimation(sessionId, false);
+    }
     this.postToWebview(sessionId, { type: 'aiEnd' });
     // 每轮 LLM 调用后刷新余额
     this.fetchAndSendBalance(sessionId);

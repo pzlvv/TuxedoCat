@@ -65,7 +65,13 @@ impl SessionUiState {
             .insert(session_id.to_string(), ActivityPhase::Tool);
     }
 
-    /// 工具结束：递减并发计数，全部结束后回到 idle；计数为 0 时是重复结束，忽略。
+    /// 工具结束：递减并发计数；最后一个工具结束且本会话查询仍在进行时回到 thinking
+    /// （等待下一轮 LLM 调用），查询已收尾才回到 idle。计数为 0 时是重复结束，忽略。
+    ///
+    /// 为什么不无条件回 idle：工具收尾到下一轮 `aiBegin` 之间 Core 还要落盘工具结果、
+    /// 重算 meta 的消息数、刷新对话列表、组装提示词、估算上下文、必要时自动压缩
+    /// （docs/hosts/tui.md 第 5.1 节）。这段期间界面上已经没有转动的工具风车，thinking
+    /// 是唯一的过程指示。
     pub fn end_tool_phase(&mut self, session_id: &str) {
         let count = self
             .active_tool_counts
@@ -77,8 +83,12 @@ impl SessionUiState {
         }
         if count == 1 {
             self.active_tool_counts.remove(session_id);
-            self.activity_phases
-                .insert(session_id.to_string(), ActivityPhase::Idle);
+            let phase = if self.is_query_active(session_id) {
+                ActivityPhase::Thinking
+            } else {
+                ActivityPhase::Idle
+            };
+            self.activity_phases.insert(session_id.to_string(), phase);
         } else {
             self.active_tool_counts
                 .insert(session_id.to_string(), count - 1);
@@ -117,9 +127,10 @@ impl SessionUiState {
 
     /// 该会话自己的查询是否在跑（收到 queryBegin、尚未收到 queryEnd）。
     ///
-    /// 与 activity_phase 的区别：活动阶段在轮次之间会短暂回到 idle（每轮 aiEnd 之后、
-    /// 下一次 aiBegin / 工具阶段之前），本方法在整个查询生命周期内恒为 true。不能用
-    /// core 的 sessionRuntime.idle——那是「会话非空闲」口径，包含后台子代理 / 压缩。
+    /// 与 activity_phase 的区别：活动阶段表达「此刻显示什么」，整个查询生命周期内的
+    /// 等待段（工具收尾到下一轮 aiBegin 之间）也归 thinking；本方法表达「查询是否还
+    /// 在跑」，用于抑制收尾之后才到达的工具结果把动画重新点亮。不能用 core 的
+    /// sessionRuntime.idle——那是「会话非空闲」口径，包含后台子代理 / 压缩。
     pub fn is_query_active(&self, session_id: &str) -> bool {
         self.query_active_counts
             .get(session_id)
@@ -165,10 +176,45 @@ mod tests {
             "并发工具未全部结束仍处于 tool 阶段"
         );
         state.end_tool_phase("s1");
-        assert_eq!(state.activity_phase("s1"), ActivityPhase::Idle);
+        assert_eq!(
+            state.activity_phase("s1"),
+            ActivityPhase::Idle,
+            "查询已收尾时工具收尾回到 idle"
+        );
         // 计数为 0 的重复结束是 no-op
         state.end_tool_phase("s1");
         assert_eq!(state.activity_phase("s1"), ActivityPhase::Idle);
+    }
+
+    /// 工具批次收尾 → 下一轮 aiBegin 之间仍属同一查询：阶段是「等待下一轮」而不是 idle
+    /// （`docs/hosts/webview-ui.md` 第 6 节；同一口径的 TS 用例在
+    /// `src/test/toolCompletionThinking.test.ts`）。
+    #[test]
+    fn tool_phase_returns_to_thinking_while_the_query_is_active() {
+        let mut state = SessionUiState::default();
+        state.begin_query("s1");
+        state.mark_thinking("s1");
+        state.begin_tool_phase("s1");
+        state.mark_tool_phase("s1");
+        state.end_tool_phase("s1");
+        assert_eq!(state.activity_phase("s1"), ActivityPhase::Thinking);
+        assert!(state.is_query_active("s1"));
+
+        // 并发工具：最后一个结束才回 thinking
+        let mut parallel = SessionUiState::default();
+        parallel.begin_query("s1");
+        parallel.begin_tool_phase("s1");
+        parallel.begin_tool_phase("s1");
+        parallel.end_tool_phase("s1");
+        assert_eq!(parallel.activity_phase("s1"), ActivityPhase::Tool);
+        parallel.end_tool_phase("s1");
+        assert_eq!(parallel.activity_phase("s1"), ActivityPhase::Thinking);
+
+        // 没有活跃查询（Spin 直连工具）：工具收尾仍是 idle，不得凭空亮 thinking
+        let mut no_query = SessionUiState::default();
+        no_query.begin_tool_phase("s1");
+        no_query.end_tool_phase("s1");
+        assert_eq!(no_query.activity_phase("s1"), ActivityPhase::Idle);
     }
 
     #[test]

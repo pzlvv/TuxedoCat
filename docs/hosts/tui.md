@@ -177,12 +177,12 @@ tui-rs/
 | `message` | `AddMessage` 动作；role 为 user 时顺带刷新对话列表（`onMessage`） |
 | `streamMessage` | assistant 空累积跳过；thinking / text 阶段标记 + 流式缓冲替换 |
 | `streamEnd` | 按 (role, streamId) 匹配消息就地收敛（同一块两条收尾：block_stop 缺 usage + message_delta 带 usage），未匹配才追加（相邻同内容兜底）；tokens 记账（input+output，不取 max） |
-| `toolCall` / `toolResult` | 工具卡片状态机（running → success/fail；状态只升不降；并发计数） |
+| `toolCall` / `toolResult` | 工具卡片状态机（running → success/fail；状态只升不降；并发计数）；最后一个工具收尾且查询仍在跑时重新点亮 thinking（同一轮次窗口口径见[docs/hosts/webview-ui.md 第 6 节](webview-ui.md#6-活动阶段谁在什么时候写)） |
 | `toolProgress` | 卡片输出替换（core 已按 4K 上限裁剪，原样转发） |
 | `toolArgsUpdated` | 显式忽略（文件引用 chips 数据面，v1 不渲染） |
-| `aiBegin` / `aiEnd` | thinking 动画开关；aiEnd 触发余额拉取（`balanceRequested`） |
+| `aiBegin` / `aiEnd` | aiBegin 点亮 thinking；aiEnd 只在查询已收尾时熄灭（同一查询里工具批次之后还有下一轮，见[docs/hosts/webview-ui.md 第 6 节](webview-ui.md#6-活动阶段谁在什么时候写)）；aiEnd 另触发余额拉取（`balanceRequested`） |
 | `messagesReplaced` | 整批替换消息列表（压缩后重建 / 对话级回退截断）。TUI 没有归档展开入口 |
-| `queryBegin` / `queryEnd` | 查询计数去重（嵌套 begin/end 只表现一次）；queryEnd 收敛悬挂流式缓冲 + 刷新列表 |
+| `queryBegin` / `queryEnd` | 查询计数去重（嵌套 begin/end 只表现一次）；queryEnd 收敛悬挂流式缓冲、熄灭 thinking + 刷新列表 |
 | `titleChanged` | 会话标题 |
 | `sessionCreated` | 显式忽略（`initSessionState` 对 TUI 无语义） |
 | `conversationListChanged` | 重读列表（`conversationListRequested`） |

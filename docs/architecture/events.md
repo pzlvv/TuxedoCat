@@ -139,8 +139,8 @@ export type CoreRequestHandlers = {
 | 5 | `toolResult` | `sessionId`, `toolUseId`, `toolName`, `output`, `status` | `engine.rs`（`emit_tool_outcome`）；读后失效拒绝（[docs/core/tool-read-guard.md 第 3 节](../core/tool-read-guard.md#3-错误文案)）也经这条产出，载荷不变 | `onToolResult`（webview 渲染 + 宿主旁路转发 `UIHost.onToolResult`，specs/030 FR-001） | `updateToolStatus`（Edit 失败时追加 `updateToolArgs`） |
 | 6 | `toolArgsUpdated` | `sessionId`, `toolUseId`, `args` | `engine.rs`（流式 tool input 累积） | `onToolArgsUpdated` | `updateToolArgs` |
 | 7 | `toolProgress` | `sessionId`, `toolUseId`, `progress: ToolProgressData` | `engine.rs` | `onToolProgress` | `toolProgress` |
-| 8 | `aiBegin` | `sessionId` | `engine.rs`（每轮 LLM 调用开始） | `onAIBegin` | `aiBegin` + `showThinkingAnimation` |
-| 9 | `aiEnd` | `sessionId` | `engine.rs`（每轮 LLM 调用结束） | `onAIEnd` | `aiEnd` + `showThinkingAnimation` + `balance_update` |
+| 8 | `aiBegin` | `sessionId` | `engine.rs`（每轮 LLM 调用开始） | `onAIBegin` | `aiBegin` + `showThinkingAnimation`（每轮都点亮：工具批次之后还有下一轮，见 [docs/hosts/webview-ui.md 第 6 节](../hosts/webview-ui.md#6-活动阶段谁在什么时候写)） |
+| 9 | `aiEnd` | `sessionId` | `engine.rs`（每轮 LLM 调用结束） | `onAIEnd` | `aiEnd` + `balance_update`；查询仍在进行时 thinking 不熄灭（[docs/hosts/webview-ui.md 第 6 节](../hosts/webview-ui.md#6-活动阶段谁在什么时候写)） |
 | 10 | `messagesReplaced` | `sessionId`, `messages: readonly MessageData[]` | `replay.rs`（压缩后重建）、`main.rs`（对话级回退截断后重发） | `onMessagesReplaced` | `messagesReplaced`（整批替换消息列表） |
 | 11 | `queryBegin` | `sessionId` | `engine.rs`（主查询与子代理轮次） | `onQueryBegin` | `queryBegin` + `showThinkingAnimation` |
 | 12 | `queryEnd` | `sessionId` | 同上 | `onQueryEnd` | `queryEnd` + `showThinkingAnimation` |

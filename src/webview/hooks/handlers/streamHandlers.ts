@@ -4,6 +4,7 @@ import { profileLog } from '../../debug';
 import { createSessionState, ensureSessionStateWithUsage } from '../../sessionState';
 import { beginThinkingStream, endStream, endStreamsForSession, hasStreamStats, updateStreamChars } from '../../streamStatsStore';
 import { stripOnce } from './shared';
+import { shouldShowThinkingAfterCompact } from '../../thinkingVisibility';
 import { postMessage } from '../../webviewEnv';
 
 /**
@@ -437,7 +438,10 @@ export function handleStreamCompressProgress(
                 restoredActiveQuery = targetState.preCompressHasActiveQuery ?? false;
                 targetState.hasActiveQuery = restoredActiveQuery;
                 targetState.preCompressHasActiveQuery = undefined;
-                targetState.showThinkingAnimation = false;
+                // 自动压缩发生在本轮 aiBegin 之前，收尾时查询仍在进行：不能熄灭
+                // （否则压缩完成到下一轮 aiBegin 之间没有任何过程指示）
+                targetState.showThinkingAnimation =
+                  shouldShowThinkingAfterCompact(restoredActiveQuery);
                 targetState.animationMode = 'thinking';
               }
             }
@@ -451,7 +455,8 @@ export function handleStreamCompressProgress(
             props.setShowThinkingAnimation(true);
             props.setHasActiveQuery(true);
           } else if (msg.status === 'complete') {
-            props.setShowThinkingAnimation(false);
+            // 自动压缩收尾时查询仍在进行（紧接着是下一轮 aiBegin）：保持动画点亮
+            props.setShowThinkingAnimation(shouldShowThinkingAfterCompact(restoredActiveQuery ?? false));
             props.setAnimationMode('thinking');
             // 恢复压缩前的查询状态（自动压缩仍在查询中时保持 true，手动压缩恢复 false）
             props.setHasActiveQuery(restoredActiveQuery ?? false);
@@ -468,7 +473,8 @@ export function handleStreamCompressProgress(
           } else if (msg.status === 'error') {
             // 压缩失败（多见于网络问题）：静默——不置 hasCompactArchive，避免出现一个
             // 点了没反应的「展开压缩」按钮。core 侧已记录错误日志，用户或后续循环会重新触发压缩。
-            props.setShowThinkingAnimation(false);
+            // 失败与成功同口径：自动压缩失败后本轮照常继续，查询仍在进行时保持动画。
+            props.setShowThinkingAnimation(shouldShowThinkingAfterCompact(restoredActiveQuery ?? false));
             props.setAnimationMode('thinking');
             props.setHasActiveQuery(restoredActiveQuery ?? false);
             console.warn(`[Webview] compact failed for session ${targetSessionId}（详见 core 日志与对话内的系统消息）`);

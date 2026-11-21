@@ -59,7 +59,15 @@ export class SessionUiState {
   }
 
   /**
-   * 工具结束：递减并发计数，全部结束后回到 idle。
+   * 工具结束：递减并发计数；最后一个工具结束且本会话查询仍在进行时回到 thinking
+   * （等待下一轮 LLM 调用），查询已收尾才回到 idle。
+   *
+   * 为什么不无条件回 idle：工具收尾到下一轮 `aiBegin` 之间 Core 还要整理工具结果落盘、
+   * 重算 `meta.json` 的消息数、刷新对话列表、组装提示词、估算上下文、必要时自动压缩
+   * （docs/hosts/webview-ui.md 第 6 节）。
+   * 这段期间界面上已经没有转动的工具风车，thinking 是唯一的过程指示；回 idle 会让
+   * 整段表现为「卡住」。
+   *
    * 计数为 0 时调用属于重复结束，直接返回（不掩盖调用方问题，但也不破坏状态）。
    */
   endToolPhase(sessionId: string): void {
@@ -68,7 +76,10 @@ export class SessionUiState {
     const next = count - 1;
     if (next === 0) {
       this.activeToolCounts.delete(sessionId);
-      this.activityPhases.set(sessionId, 'idle');
+      this.activityPhases.set(
+        sessionId,
+        this.isQueryActive(sessionId) ? 'thinking' : 'idle',
+      );
     } else {
       this.activeToolCounts.set(sessionId, next);
     }
@@ -106,8 +117,9 @@ export class SessionUiState {
   /**
    * 该会话**自己的**查询是否在跑（收到 `queryBegin`、尚未收到 `queryEnd`）。
    *
-   * 与 `getActivityPhase` 的区别：活动阶段在轮次之间会短暂回到 `idle`（每轮 `aiEnd`
-   * 之后、下一次 `aiBegin` / 工具阶段之前），本方法在整个查询生命周期内恒为 true。
+   * 与 `getActivityPhase` 的区别：活动阶段表达「此刻显示什么」，查询生命周期内的
+   * 等待段（工具收尾到下一轮 `aiBegin` 之间）也归 `thinking`；本方法表达「查询是否
+   * 还在跑」，用于抑制收尾之后才到达的工具结果把动画重新点亮。
    *
    * 供宿主回答 `conversationLoaded.hasActiveQuery`（webview 据此恢复 thinking 动画）。
    * 不能用 core 的 `sessionRuntime.idle`——那是「会话非空闲」口径，包含后台子代理 /

@@ -147,11 +147,11 @@ Electron 的侧栏「关闭」/ 聊天视图顶栏关闭经 `electron/main.ts` �
 | `onStreamMessage` | `role === 'assistant'` 且 `accumulated` 全为空白时直接丢弃；否则 `sessionUi.markText` / `markThinking` → 投递 `streamMessage` |
 | `onStreamEnd` | 投递 `streamEnd`（含 `usage` / `streamId`） |
 | `onToolCall` | `sessionUi.markToolPhase` → `toolHandler.onToolCall` |
-| `onToolResult` | `sessionUi.endToolPhase` → `toolHandler.onToolResult` |
+| `onToolResult` | `sessionUi.endToolPhase` → 本会话查询仍在进行时 `setThinkingAnimation(true)` → `toolHandler.onToolResult` |
 | `onToolArgsUpdated` | 投递 `updateToolArgs` |
 | `onToolProgress` | `pushToolProgress`（`queryActivity`；推送内容已由工具层按统一上限 4K（前 2K + 后 2K）裁剪，宿主原样转发，不再二次截断） |
 | `onAIBegin` | `markThinking` + `setThinkingAnimation(true)` → 投递 `aiBegin` |
-| `onAIEnd` | `markIdle` + `setThinkingAnimation(false)` → 投递 `aiEnd` → `fetchAndSendBalance`（每轮 LLM 调用后刷新余额） |
+| `onAIEnd` | 查询仍在进行 → `markThinking`（等待下一轮）；查询已收尾 → `markIdle` + `setThinkingAnimation(false)` → 投递 `aiEnd` → `fetchAndSendBalance`（每轮 LLM 调用后刷新余额） |
 | `onMessagesReplaced` | 投递 `messagesReplaced`（整批替换 webview 消息区）；触发方是 `compact` 的压缩后重建（`replayMessagesToUI`）与对话级回退截断。展开归档不走这条：它有自己的 `expandCompactDone`（见第 11 节） |
 
 **控制面 handler**：
@@ -282,12 +282,39 @@ export class SessionUiState {
 | `markText` | `onStreamMessage`（`role === 'assistant'`） | assistant 文本流式输出 |
 | `beginToolPhase` | `requestToolPermission` | 进入工具阶段**并递增**并发计数（含等待用户授权 / 权限检查） |
 | `markToolPhase` | `onToolCall` | 工具调用确认后保持 tool 阶段，不改计数 |
-| `endToolPhase` | `onToolResult` | 递减计数，归零才回 `idle` |
-| `markIdle` | `onAIEnd` / `onQueryEnd` | 每轮 LLM 结束 / 整轮查询结束 |
+| `endToolPhase` | `onToolResult` | 递减计数；归零时还查询仍在进行就回 `thinking`，查询已收尾才回 `idle` |
+| `markThinking` | `onAIEnd` | 本轮 LLM 调用结束后查询仍在进行（工具批次之后还有下一轮） |
+| `markIdle` | `onAIEnd` / `onQueryEnd` | 本轮 LLM 结束且查询已收尾 / 整轮查询结束 |
 
 `beginToolPhase` 与 `endToolPhase` 严格 1:1（同一会话可并发多个工具），所以用**计数**而不是
 布尔：只要还有一个工具没结束，阶段就停在 `tool`。`endToolPhase` 在计数已为 0 时直接返回
 （重复结束不破坏状态）。`markToolPhase` 只改阶段不改计数，因此 `onToolCall` 不会让计数失衡。
+
+**「一轮 LLM 调用」不等于「一次查询」**：工具批次跑完之后 Core 会紧接着发起下一轮。这段
+窗口里工具卡片的风车已经熄灭，thinking 是唯一的过程指示。窗口内的耗时步骤按 Core 的执行
+顺序（`core-rs/src/engine.rs` 的轮次循环）是：
+
+| 次序 | 动作 | 远程 / 并行下的放大点 |
+| --- | --- | --- |
+| 1 | 工具结果进内存并追加到会话 JSONL（`persist_message`） | 远端磁盘写入，一次往返级延迟 |
+| 2 | `announce_message_appended`：读回整份 JSONL 数消息（`touch_metadata` → `load_messages`）后重写 `meta.json`，再广播 `conversationListChanged` | 远端完整读一遍会话文件；文件越大越慢，工具批次里每条结果各一次 |
+| 3 | 宿主收到 `conversationListChanged` → `ConversationManager.refresh()` → `UiRequest.conversationListRequested` → Core 重读整个目录的 `*.meta.json` | 远端目录列举 + 逐条读 meta，`N` 条对话就是 `N+1` 次读；并行会话把它们压在同一条帧通道上，因此 `refresh()` 同一时刻只许一次重读在途（重叠调用合并，见[docs/architecture/contracts.md 第 4 节](../architecture/contracts.md#4-对话相关数据conversationmanager)） |
+| 4 | 下一轮前的前置：排队消息并入（`flush_queued_messages`）、组装系统提示词（`build_system_prompt`）、估算上下文（`estimate_next_context_tokens`） | 首次探测会起子进程（git / which），有进程内缓存；估算按锚点只算尾部 |
+| 5 | 自动压缩判定，命中则整段压缩（`compact_and_apply_messages`） | 一次 LLM 摘要调用 + 整份上下文重写，是窗口里最长的单项 |
+| 6 | 发 `aiBegin` → 宿主 `onAIBegin` 点亮 thinking | 帧经 daemon / SSH 控制通道回到宿主后才会点亮 |
+
+因此：
+
+- 最后一个工具收尾时，只要本会话查询仍在进行（`isQueryActive`），阶段回 `thinking` 而不是
+  `idle`，宿主同一次调用里重新点亮动画；
+- 每轮 `aiEnd` 同理——查询仍在进行时保持点亮，只有查询收尾（`onQueryEnd`）或查询之外的工具
+  路径（Spin 直连工具、收尾后才到的取消结果）才回 `idle` 并关动画；
+- 压缩同样夹在这条链上：自动压缩收尾时查询仍在进行，thinking 不得熄灭；手动压缩压缩前
+  没有活跃查询，收尾必须熄灭。判据抽成纯函数 `shouldShowThinkingAfterCompact`
+  （`src/webview/thinkingVisibility.ts`，输入就是 `preCompressHasActiveQuery` 的恢复值）。
+
+`isQueryActive` 因此有两个消费点：`conversationLoaded.hasActiveQuery`（第 2 节）与上面这个
+「收尾时机」判定。
 
 ## 7. 查询计数：`queryBegin` / `queryEnd` 去重
 

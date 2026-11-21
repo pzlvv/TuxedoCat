@@ -141,7 +141,7 @@ fn shared_fd_lives_beside_slots() {
     assert!(fd.to_string_lossy().contains("fd"));
     // 与 ripgrep 同级：都在产品目录下，只差子目录名
     assert_eq!(
-        fd.parent().map(|p| p.parent()),
+        fd.parent().and_then(|p| p.parent()),
         shared_ripgrep_in(prefix).parent().and_then(|p| p.parent())
     );
 }
