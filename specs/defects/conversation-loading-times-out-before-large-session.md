@@ -34,8 +34,11 @@ status: 已修
 
 ## 期望
 
-1. **加载态只有一个结束条件**：本视图等待的那个会话的 `conversationLoaded` 到达。
-   不存在「等太久就放弃」的出口，因此读盘再久也不会露出新对话空态。
+1. **不存在「等太久就放弃」的出口**：加载态只由事实到达结束——本视图等待的那个会话的
+   `conversationLoaded` 到达，或该会话的装载被 Core 拒绝
+   （`notice.session.lockedOpen`，见
+   [open-locked-conversation-stuck-loading.md](open-locked-conversation-stuck-loading.md)）。
+   时间流逝本身不结束加载，因此读盘再久也不会露出新对话空态。
 2. **完成判据按会话严格匹配**：迟到的旧会话数据不得结束新会话的加载
    （否则同一症状会从「快速连点两个对话」这个入口复现）。
 3. **没有待加载会话时（新对话 / 已加载完成）不进加载态**，空值只有 `null` 一种表示。

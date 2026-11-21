@@ -1,7 +1,9 @@
 /**
  * 会话加载的结束判据（`specs/defects/conversation-loading-times-out-before-large-session.md`）。
  *
- * 加载态只有一个结束条件：**本视图负责的那个会话的 `conversationLoaded` 到达**。
+ * 加载态有两个结束出口，都不是「时间到了」：**本视图负责的那个会话的
+ * `conversationLoaded` 到达**（成功，本模块），或该会话的装载被 Core 拒绝
+ * （`notice.session.lockedOpen`，见 `conversationLoadRejection.ts`）。
  * 不能带「等太久就放弃」的兜底超时——读盘耗时 = 会话大小 / 链路带宽，没有上界：
  * 8MB 会话经 SSH 慢链路读盘实测 24.9s，任何固定值都会在更慢的链路上复发，而放弃的
  * 那一刻消息已被清空，页面就落到「新对话空态」（占位 logo + 工作视图勾选框）。

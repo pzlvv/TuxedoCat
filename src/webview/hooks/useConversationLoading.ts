@@ -11,9 +11,11 @@ export interface ConversationLoadingController {
   /**
    * 收到某个会话的 `conversationLoaded`：本视图负责的那个会话数据已到达，结束加载。
    *
-   * 这是加载态唯一的结束条件——没有「等太久就放弃」的兜底超时。读盘耗时 = 会话大小 /
-   * 链路带宽，没有上界（8MB 会话经慢速 SSH 读盘实测 24.9s），任何固定超时都会在更慢的
-   * 链路上把加载态提前撤掉，让页面落到新对话空态
+   * 加载态的另一条结束出口是「该会话的装载被 Core 拒绝」（`notice.session.lockedOpen`，
+   * `conversationLoadRejection.ts`），它也走本方法收尾。两条都不是「时间到了」——没有
+   * 「等太久就放弃」的兜底超时。读盘耗时 = 会话大小 / 链路带宽，没有上界（8MB 会话经
+   * 慢速 SSH 读盘实测 24.9s），任何固定超时都会在更慢的链路上把加载态提前撤掉，让页面
+   * 落到新对话空态
    * （`specs/defects/conversation-loading-times-out-before-large-session.md`）。
    */
   finish: (sessionId?: string | null) => void;

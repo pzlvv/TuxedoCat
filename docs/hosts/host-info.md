@@ -113,11 +113,12 @@ webview 只按能力渲染，不判断宿主类型：
 有的直接换内容」的双路径不一致（直连路径还会让旧会话内容在 `conversationLoaded` 到达前
 继续显示，且没有进入 loading 状态）。新增跳转入口时必须走 `navigateToSession()`。
 
-加载态只有**一个结束条件**：本视图等待的那个会话的 `conversationLoaded` 到达
-（判据是 `src/webview/conversationLoadingState.ts` 的纯函数 `pendingAfterLoaded`）。不带
-「等太久就放弃」的兜底超时——读盘耗时 = 会话大小 / 链路带宽，没有上界（8MB 会话经慢速
-SSH 读盘实测 24.9s），而 `navigateToSession()` 进 loading 时已清空消息，任何固定超时到点
-都会让页面落到新对话空态
+加载态的结束出口都不是「时间到了」：本视图等待的那个会话的 `conversationLoaded` 到达
+（判据是 `src/webview/conversationLoadingState.ts` 的纯函数 `pendingAfterLoaded`），或该会话
+的装载被 Core 拒绝（`notice.session.lockedOpen`，会话被另一个实例持有，判据是
+`src/webview/conversationLoadRejection.ts` 的 `rejectedLoadSessionOf`）。不带「等太久就放弃」
+的兜底超时——读盘耗时 = 会话大小 / 链路带宽，没有上界（8MB 会话经慢速 SSH 读盘实测 24.9s），
+而 `navigateToSession()` 进 loading 时已清空消息，任何固定超时到点都会让页面落到新对话空态
 （`specs/defects/conversation-loading-times-out-before-large-session.md`）。
 
 ### 3.2 渲染方的运行期切换
