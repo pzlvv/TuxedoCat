@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Client } from 'ssh2';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
@@ -15,7 +16,6 @@ import {
   LOG_FILE_NAME,
 } from '../../src/config/project';
 import { requireSudoPasswordEnvironment } from '../helpers/testEnvironment';
-import { createSshSession } from '../helpers/sshSession';
 
 /**
  * Overlay 挂载代理：真实 SSH 远端的安装、自检与隔离（`specs/051` FR-005 / FR-006 /
@@ -99,29 +99,58 @@ function localCoreFingerprint(): string | null {
   }
 }
 
-/**
- * 远端执行面：**一条复用连接**跑完本文件所有命令。
- *
- * 为什么不再「每条命令一条连接」：本文件 48 处 `sshExec` + 每次 `sshConnect()`，一次完整
- * 车道会建上百条连接，把远端 sshd 的连接数推到 `MaxStartups`（默认 10:30:100）之上，
- * 后续建链被丢弃，表现为 `Connection lost before handshake` / `远程连接超时（3 秒）`，
- * 独占跑能过、整条车道跑就红
- * （`specs/defects/e2e-ssh-per-command-connections-exhaust-sshd.md`）。
- */
-const ssh = createSshSession(SSH);
+function sshConnect(): Client {
+  const client = new Client();
+  client.connect({
+    host: SSH.host,
+    port: SSH.port,
+    username: SSH.user,
+    password: SSH.password,
+    readyTimeout: 20_000,
+  });
+  return client;
+}
 
 /**
- * 在远端执行一条命令。
+ * 在远端执行一条命令（一次性连接，测试脚手架用）。
  *
  * 链路层重试的判据与 `remoteChangeList.spec.ts` 一致：只在命令**还没被远端受理**时重试
  * （`ready` 之前或 exec 通道尚未打开），已开始执行的命令不会跑两遍——被测链路本身不重试，
- * 重试会掩盖缺陷（`e2e/README.md` 已知坑 10）。重试与连接复用都在 `sshSession.ts` 里。
+ * 重试会掩盖缺陷（`e2e/README.md` 已知坑 10）。
  */
 function sshExec(
   command: string,
   timeoutMs = 120_000,
+  attempt = 1,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return ssh.exec(command, timeoutMs);
+  return new Promise((resolve, reject) => {
+    const client = sshConnect();
+    let dispatched = false;
+    const fail = (error: Error): void => {
+      client.end();
+      if (!dispatched && attempt < 3) {
+        setTimeout(() => { sshExec(command, timeoutMs, attempt + 1).then(resolve, reject); }, 500);
+        return;
+      }
+      reject(error);
+    };
+    client.on('error', fail);
+    client.on('ready', () => {
+      client.exec(command, (err, stream) => {
+        if (err) return fail(err);
+        dispatched = true;
+        let stdout = '';
+        let stderr = '';
+        stream.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
+        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+        stream.on('close', (code: number | null) => {
+          client.end();
+          resolve({ stdout, stderr, code });
+        });
+      });
+    });
+    setTimeout(() => fail(new Error(`ssh exec 超时: ${command}`)), timeoutMs);
+  });
 }
 
 /** 远端 shell 片段里的单引号转义 */
@@ -227,8 +256,6 @@ test.afterAll(async () => {
     expect(removed.code, `收尾卸载代理失败：${removed.stderr}`).toBe(0);
   }
   expect((await proxyInstalled()).installed, '收尾后安装位点必须不存在').toBe(false);
-  // 复用连接要显式关闭：Playwright 的 worker 退出前不断开，远端会多留一条 sshd 会话
-  ssh.close();
 });
 
 /** 远端代理是否已安装（只认安装位点，随包产物算未安装——FR-005b） */
@@ -353,8 +380,27 @@ function sshExecWithStdin(
   stdin: string,
   timeoutMs = 60_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  // 复用连接：stdin 在 `sshSession.ts` 里写一行后立即关闭（多余输入会被 sudo 拿去重试）
-  return ssh.execWithStdin(command, stdin, timeoutMs);
+  return new Promise((resolve, reject) => {
+    const client = sshConnect();
+    const fail = (error: Error): void => { client.end(); reject(error); };
+    client.on('error', fail);
+    client.on('ready', () => {
+      client.exec(command, (err, stream) => {
+        if (err) return fail(err);
+        let stdout = '';
+        let stderr = '';
+        stream.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
+        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+        stream.on('close', (code: number | null) => {
+          client.end();
+          resolve({ stdout, stderr, code });
+        });
+        // 写一行后立即关闭（写入多余输入会被 sudo 拿去重试，FR-004 第 3 条）
+        stream.end(stdin);
+      });
+    });
+    setTimeout(() => fail(new Error(`ssh exec(stdin) 超时: ${command}`)), timeoutMs);
+  });
 }
 
 /**
