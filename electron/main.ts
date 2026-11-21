@@ -6191,6 +6191,12 @@ function initCore(): void {
   // 视图销毁序列（closeView / LRU trim / disposeAll）在销毁视图前只卸内存：
   // 指向 WebViewUI.releaseConversation（不回调 closeConversationView，避免与视图销毁互相回调成环）
   chatViews!.closeConversation = (sessionId: string) => ui.releaseConversation(sessionId);
+  // 打开对话的两条落定出口（视图层事实由 ChatViewManager 记账）：
+  // - 内容装载完成 → 这一刻才算「已打开」（侧栏绿点 / UserChoiceQueue 的 open 判据）；
+  // - Core 拒绝打开（同一对话已被另一个实例持有，specs/032 / US-66）→ 撤销本次新建的
+  //   视图并回到打开前那条对话，界面停在原位置（不许停在 loading、不许亮绿点）。
+  ui.onConversationLoaded = (sessionId) => chatViews?.revealOpen(sessionId);
+  ui.onConversationOpenRejected = (sessionId) => chatViews?.rejectPendingOpen(sessionId);
 
   console.log(`[bootstrap] ${JSON.stringify(bootstrapSnapshot())}`);
   // 退出路径（will-quit）复用同一份 core 清理入口

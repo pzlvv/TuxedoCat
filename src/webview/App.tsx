@@ -108,6 +108,7 @@ const App = () => {
    */
   const {
     isLoading: isLoadingConversation,
+    pendingSessionId: pendingConversationLoad,
     begin: beginConversationLoad,
     finish: finishConversationLoad,
     reset: resetConversationLoad,
@@ -628,6 +629,7 @@ const App = () => {
     setProviderConfigured,
     setConfigReady,
     pushNotice,
+    pendingConversationLoad,
     messages,
     currentSessionIdRef, sessionStates, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
@@ -646,7 +648,7 @@ const App = () => {
     currentFile, selectedLines,
     setRewindDialogOpen: (open: boolean) => { if (!open) setRewindTargetUuid(null); },
     onRewindFailed: (message: string) => { setRewindTargetUuid(null); pushNotice('rewind.failed', { message }, 'error'); },
-  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, currentFile, selectedLines, messages, pushNotice]);
+  }), [modelRef, contextLength, settingsDefaults, userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, currentFile, selectedLines, messages, pushNotice, pendingConversationLoad]);
   useMessageHandler(handlerProps);
 
     const appHandlerProps = useMemo(() => ({
