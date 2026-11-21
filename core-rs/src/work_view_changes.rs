@@ -67,12 +67,38 @@ impl ChangeScope {
     }
 }
 
+/// 一条变更条目的状态字母（与宿主 `ChangeStatus` 同一份判别值，specs/055 FR-002）。
+///
+/// 只有三个：`A` 新增（该路径在 HEAD 里没有版本）、`M` 修改（含已暂存）、`R` 重命名。
+/// 已删除的条目不进清单，因此没有 `D`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeStatus {
+    Added,
+    Modified,
+    Renamed,
+}
+
+impl ChangeStatus {
+    /// 序列化用的单字母（与宿主渲染的字母同一个值）
+    pub fn letter(self) -> &'static str {
+        match self {
+            ChangeStatus::Added => "A",
+            ChangeStatus::Modified => "M",
+            ChangeStatus::Renamed => "R",
+        }
+    }
+}
+
 /// 一条变更条目（与宿主 `DocEntry` / `WorkViewChangeEntry` 同构）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeEntry {
     pub path: String,
     pub plus: u64,
     pub minus: u64,
+    /// 状态字母的来源（specs/055 FR-002）：`git diff --name-status` 的事实
+    pub status: ChangeStatus,
+    /// 重命名前的旧路径（工作区相对；仅 `Renamed` 有值）
+    pub old_path: Option<String>,
 }
 
 /// 变更清单的取数结果。`NotAGitWorkspace` 是**事实**而不是界面文案
@@ -294,7 +320,8 @@ impl<'a> Runner<'a> {
         Err(format!("git rev-parse HEAD 失败：{}", stderr.trim()))
     }
 
-    /// 有 HEAD：`diff --numstat -M` + 未跟踪文件，过滤已删除与纯重命名。
+    /// 有 HEAD：`diff --numstat -M` + 未跟踪文件 + `diff --name-status` 的状态事实，
+    /// 过滤已删除；纯重命名保留为 `R` 行（specs/055 FR-003）。
     fn entries_against_head(&mut self, scope: ChangeScope) -> Result<Vec<ChangeEntry>, String> {
         let pathspec = scope.pathspec();
         // `--relative`：工作区是仓库子目录时把路径前缀去掉，输出与 `ls-files --others`
@@ -314,7 +341,54 @@ impl<'a> Runner<'a> {
         if code != 0 {
             return Err(format!("git diff 失败：{}", stderr.trim()));
         }
-        let mut entries = parse_numstat_z(&stdout);
+        // 状态事实（specs/055 FR-002）：与 numstat 同一份 pathspec、同一 `-M`，
+        // 因此条目集一致、按新路径对齐。Core 不在网络往返链路上，多一次同进程 git
+        // 不改变宿主的往返次数契约。
+        let mut status_args = vec![
+            "diff",
+            "--name-status",
+            "-z",
+            "-M",
+            "--relative",
+            "--diff-filter=d",
+            "HEAD",
+            "--",
+        ];
+        status_args.extend_from_slice(pathspec);
+        let (status_code, status_stdout, status_stderr) = self.git(&status_args)?;
+        if status_code != 0 {
+            return Err(format!(
+                "git diff --name-status 失败：{}",
+                status_stderr.trim()
+            ));
+        }
+        let status_by_path: std::collections::HashMap<String, (ChangeStatus, Option<String>)> =
+            parse_name_status_z(&status_stdout)
+                .into_iter()
+                .map(|entry| (entry.path, (entry.status, entry.old_path)))
+                .collect();
+        let mut entries = Vec::new();
+        for entry in parse_numstat_z(&stdout) {
+            let (status, old_path) = status_by_path
+                .get(&entry.path)
+                .cloned()
+                .ok_or_else(|| format!("git 状态事实缺条目：{}", entry.path))?;
+            // 仅文件模式变更（0/0 且非重命名）不列——与宿主 `parseNumstat` 同一口径
+            if entry.plus == 0 && entry.minus == 0 && status != ChangeStatus::Renamed {
+                continue;
+            }
+            entries.push(ChangeEntry {
+                status,
+                old_path: if status == ChangeStatus::Renamed {
+                    old_path.or(entry.old_path)
+                } else {
+                    None
+                },
+                path: entry.path,
+                plus: entry.plus,
+                minus: entry.minus,
+            });
+        }
 
         for rel in self.untracked(scope)? {
             if entries.iter().any(|entry| entry.path == rel) {
@@ -328,6 +402,8 @@ impl<'a> Runner<'a> {
                 path: rel,
                 plus: lines,
                 minus: 0,
+                status: ChangeStatus::Added,
+                old_path: None,
             });
         }
         // 已删除的文件不显示（`--diff-filter=d` 已排除，这里兜住「索引里有、视图里没有」）
@@ -336,7 +412,7 @@ impl<'a> Runner<'a> {
         Ok(entries)
     }
 
-    /// 无 HEAD：索引里的全部按全文新增计。
+    /// 无 HEAD：索引里的全部按全文新增计（状态一律 `A`——相对空树全是新增）。
     fn entries_without_head(&mut self, scope: ChangeScope) -> Result<Vec<ChangeEntry>, String> {
         let mut args = vec!["ls-files", "-z", "--"];
         args.extend_from_slice(scope.pathspec());
@@ -357,6 +433,8 @@ impl<'a> Runner<'a> {
                 path: rel,
                 plus: lines,
                 minus: 0,
+                status: ChangeStatus::Added,
+                old_path: None,
             });
         }
         for rel in self.untracked(scope)? {
@@ -371,6 +449,8 @@ impl<'a> Runner<'a> {
                 path: rel,
                 plus: lines,
                 minus: 0,
+                status: ChangeStatus::Added,
+                old_path: None,
             });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -442,13 +522,26 @@ fn join_reader(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
+/// `git diff --numstat -z` 的一行（状态还没判，由调用方与 `--name-status` 合并）。
+///
+/// 与宿主 `NumstatEntry` 同构：`0/0` 不再在这里丢——纯重命名要作为 `R` 行显示
+/// （specs/055 FR-003），该不该丢取决于 name-status 给的是不是 `R`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NumstatRow {
+    pub path: String,
+    pub plus: u64,
+    pub minus: u64,
+    /// 重命名行在 numstat 里自带旧路径（`<add>\t<del>\t\0<old>\0<new>\0`）
+    pub old_path: Option<String>,
+}
+
 /// `git diff --numstat -z` 的输出解析（实测形态见模块注释与用例）。
 ///
 /// 普通条目：`<add>\t<del>\t<path>\0`；
 /// 重命名条目：`<add>\t<del>\t\0<old>\0<new>\0`（路径在第三段之后另起两项）。
 ///
-/// 重命名取新名；纯重命名（0/0）与二进制（`-`）跳过——与宿主侧 `parseNumstat` 同口径。
-pub fn parse_numstat_z(stdout: &str) -> Vec<ChangeEntry> {
+/// 重命名取新名并带上旧名；二进制（`-`）跳过。`0/0` 保留——见 `NumstatRow`。
+pub fn parse_numstat_z(stdout: &str) -> Vec<NumstatRow> {
     let mut entries = Vec::new();
     let mut parts = stdout.split('\0').filter(|part| !part.is_empty());
     while let Some(head) = parts.next() {
@@ -462,24 +555,94 @@ pub fn parse_numstat_z(stdout: &str) -> Vec<ChangeEntry> {
         let (Ok(plus), Ok(minus)) = (add.parse::<u64>(), del.parse::<u64>()) else {
             continue;
         };
-        let target = if path.is_empty() {
+        let (target, old_path) = if path.is_empty() {
             // 重命名：紧接着的两段是 old / new
-            let _old = parts.next();
+            let old = parts.next().map(str::to_string);
             match parts.next() {
-                Some(new_path) => new_path.to_string(),
+                Some(new_path) => (new_path.to_string(), old.filter(|path| !path.is_empty())),
                 None => continue,
             }
         } else {
-            path.to_string()
+            (path.to_string(), None)
         };
-        if target.is_empty() || (plus == 0 && minus == 0) {
-            continue; // 纯重命名 / 仅位置变更
+        if target.is_empty() {
+            continue;
         }
-        entries.push(ChangeEntry {
+        entries.push(NumstatRow {
             path: target,
             plus,
             minus,
+            old_path,
         });
+    }
+    entries
+}
+
+/// `git diff --name-status -z` 的一条（specs/055 FR-002 的状态事实）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NameStatusRow {
+    pub path: String,
+    pub status: ChangeStatus,
+    pub old_path: Option<String>,
+}
+
+/// `git diff --name-status -z -M` 的输出解析。
+///
+/// 形态：`<状态>\0<新路径>\0`，重命名 / 复制多一段旧路径：`R<score>\0<旧路径>\0<新路径>\0`。
+/// 只认 `A` / `M` / `R`：`D` 已由 `--diff-filter=d` 剔掉，`C`（复制）按「新增」处理
+/// （对用户来说是多了个文件），其它状态不进清单。
+pub fn parse_name_status_z(stdout: &str) -> Vec<NameStatusRow> {
+    let mut entries = Vec::new();
+    let parts: Vec<&str> = stdout.split('\0').collect();
+    let mut index = 0;
+    while index < parts.len() {
+        let raw_status = parts[index].trim_end_matches('\r');
+        index += 1;
+        if raw_status.is_empty() {
+            continue;
+        }
+        let letter = raw_status.as_bytes()[0];
+        if letter == b'R' || letter == b'C' {
+            let old_path = parts.get(index).copied().unwrap_or("");
+            let new_path = parts.get(index + 1).copied().unwrap_or("");
+            index += 2;
+            if new_path.is_empty() {
+                continue;
+            }
+            entries.push(NameStatusRow {
+                path: new_path.to_string(),
+                status: if letter == b'C' {
+                    ChangeStatus::Added
+                } else {
+                    ChangeStatus::Renamed
+                },
+                old_path: if old_path.is_empty() {
+                    None
+                } else {
+                    Some(old_path.to_string())
+                },
+            });
+            continue;
+        }
+        let path = parts.get(index).copied().unwrap_or("");
+        index += 1;
+        if path.is_empty() {
+            continue;
+        }
+        match letter {
+            b'A' => entries.push(NameStatusRow {
+                path: path.to_string(),
+                status: ChangeStatus::Added,
+                old_path: None,
+            }),
+            // `T` = 类型变更（文件 ↔ 符号链接），按内容改动呈现
+            b'M' | b'T' => entries.push(NameStatusRow {
+                path: path.to_string(),
+                status: ChangeStatus::Modified,
+                old_path: None,
+            }),
+            _ => {}
+        }
     }
     entries
 }

@@ -652,6 +652,20 @@ body.sidebar-resizing { cursor: col-resize; }
 }
 .doc-plus { color: #4ade80; margin-right: 5px; }
 .doc-minus { color: #f87171; }
+/* 变更视图行首的状态字母（specs/055 FR-001）：占住 .file-icon 的 14px 槽位，
+   所以三段切换时文件名称列不跳动；A 绿 / M 黄橙 / R 蓝紫 */
+.doc-status {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.doc-status-a { color: #4ade80; }
+.doc-status-m { color: #d4a05e; }
+.doc-status-r { color: #a78bfa; }
+/* 重命名行行内 `旧名 → 新名`（specs/055 FR-003）：旧名与箭头用次级色，新名沿用主色 */
+.doc-rename-old, .doc-rename-arrow { color: #8b8b94; }
+.doc-rename-old { text-decoration: line-through; }
 
 .files-tree {
   padding: 4px 0 8px;
@@ -787,6 +801,12 @@ body.sidebar-resizing { cursor: col-resize; }
   .ficon-image { color: #7d4fc0; }
   .ficon-archive { color: #a06a2c; }
   .ficon-file { color: #6b7280; }
+
+  /* 状态字母的浅色主题档（specs/055 FR-001）：与同一块里的 ficon-* 一样降一档饱和度 */
+  .doc-status-a { color: #15803d; }
+  .doc-status-m { color: #92620f; }
+  .doc-status-r { color: #6d28d9; }
+  .doc-rename-old, .doc-rename-arrow { color: #71717a; }
 
   .file-hint { color: #9ca3af; }
   .file-error { color: #dc2626; }

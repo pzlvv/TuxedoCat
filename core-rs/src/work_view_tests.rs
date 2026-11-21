@@ -706,6 +706,12 @@ fn work_view_changes_lists_view_only_edits() {
         assert_eq!(change_paths(&entries), vec!["created.txt", "f.txt"]);
         let modified = entries.iter().find(|e| e.path == "f.txt").expect("f.txt");
         assert_eq!((modified.plus, modified.minus), (1, 1), "行数按 HEAD 对比");
+        assert_eq!(
+            modified.status,
+            crate::work_view::ChangeStatus::Modified,
+            "改磁盘已有文件的状态是 M（specs/055 FR-002）"
+        );
+        assert_eq!(modified.old_path, None);
         let created = entries
             .iter()
             .find(|e| e.path == "created.txt")
@@ -714,6 +720,11 @@ fn work_view_changes_lists_view_only_edits() {
             (created.plus, created.minus),
             (2, 0),
             "未跟踪按全文新增计行"
+        );
+        assert_eq!(
+            created.status,
+            crate::work_view::ChangeStatus::Added,
+            "视图内新建的状态是 A"
         );
 
         // 磁盘侧看到的是另一份事实：磁盘没改动

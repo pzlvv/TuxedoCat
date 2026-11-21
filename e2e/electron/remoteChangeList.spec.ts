@@ -743,10 +743,50 @@ test('RT-4 远端取数不改写 .git/index，也不触发自己触发的全量�
   await sshExec(`rm -rf ${shQuote(repo)}`).catch(() => undefined);
 });
 
+// ==================== 状态字母（specs/055）：远端与本地同一套字母 ====================
+// 状态由 git 的 `--name-status` 事实给出（不是从行数反推），远端走同一条 SSH 批处理；
+// 本地 / 远端 / Overlay 三条来源的字母与配色是同一份渲染。
+
+test('US-63 specs/055 AC-7 远端差异视图：修改 / 未跟踪 / 重命名三种条目的状态字母与本地一致', async () => {
+  const repo = await initRemoteRepo('statusrepo');
+  await sshExec(
+    `cd ${shQuote(repo)}`
+      + ' && printf "m1\\nm2\\n" > mod.md && printf "b1\\nb2\\n" > before.md'
+      + ' && git add -A && git commit -qm base',
+  );
+  // 修改（M）/ 未跟踪（A）/ 重命名且内容有改动（R）
+  await sshExec(
+    `cd ${shQuote(repo)}`
+      + ' && printf "m1\\nm2\\nm3\\n" > mod.md'
+      + ' && printf "fresh\\n" > fresh.md'
+      + ' && git mv before.md renamed.md && printf "b1\\nB2\\n" > renamed.md',
+  );
+
+  const sb = await launchWithRemoteWorkspace(repo);
+  await openFilesMode(sb, 'changes');
+  await expectRowVisible(sb, 'mod.md');
+  await expectRowVisible(sb, 'fresh.md');
+  await expectRowVisible(sb, 'renamed.md');
+
+  const statusOf = async (rel: string): Promise<string> =>
+    (await sb.locator(`${FILES_TREE} .file-row[data-path="${rel}"] .doc-status`).innerText()).trim();
+  expect(await statusOf('mod.md'), '已跟踪文件改动 → M').toBe('M');
+  expect(await statusOf('fresh.md'), '未跟踪文件 → A').toBe('A');
+  expect(await statusOf('renamed.md'), '重命名 → R').toBe('R');
+
+  // 重命名行显示 `旧名 → 新名` 且不显示行数徽标
+  const renamedRow = sb.locator(`${FILES_TREE} .file-row[data-path="renamed.md"]`);
+  await expect(renamedRow.locator('.file-name')).toContainText('before.md');
+  await expect(renamedRow.locator('.doc-count')).toHaveCount(0);
+  // 字母配色与本地同一套 class（渲染层不分来源）
+  await expect(renamedRow.locator('.doc-status')).toHaveClass(/doc-status-r/);
+
+  await sshExec(`rm -rf ${shQuote(repo)}`).catch(() => undefined);
+});
+
 // ==================== 失败语义不变（非 git 工作区） ====================
 // 取数形态重构不得改变既有判别值：非 git 工作区的「差异」给提示、
 // 「文档」回落记录口径（specs/041 FR-003 / AC-7），而不是静默空列表。
-
 test('RT-5 远端非 git 工作区：差异给 not-a-git-workspace 提示，文档回落记录口径', async () => {
   const plain = `${remoteWs}/plainsub`;
   await sshExec(`rm -rf ${shQuote(plain)} && mkdir -p ${shQuote(plain)} && printf "doc\\n" > ${shQuote(plain)}/plain.md`);

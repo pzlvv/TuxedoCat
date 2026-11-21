@@ -1767,6 +1767,53 @@ fn work_view_file_diff_request_reports_missing_arguments_and_unmounted_view() {
     );
 }
 
+/// 变更条目的序列化把状态与旧路径带出去（specs/055 FR-006）：两个字段必填，
+/// `oldPath` 的「没有」是 `null` 而不是缺字段。
+#[test]
+fn work_view_changes_payload_carries_status_and_old_path() {
+    use crate::work_view::{ChangeEntry, ChangeStatus};
+
+    let payload = work_view_changes_payload(vec![
+        ChangeEntry {
+            path: "new.md".to_string(),
+            plus: 3,
+            minus: 0,
+            status: ChangeStatus::Added,
+            old_path: None,
+        },
+        ChangeEntry {
+            path: "docs/a.md".to_string(),
+            plus: 1,
+            minus: 1,
+            status: ChangeStatus::Modified,
+            old_path: None,
+        },
+        ChangeEntry {
+            path: "c.md".to_string(),
+            plus: 0,
+            minus: 0,
+            status: ChangeStatus::Renamed,
+            old_path: Some("b.md".to_string()),
+        },
+    ]);
+    let entries = payload.as_array().expect("条目是数组");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].get("status").and_then(Value::as_str), Some("A"));
+    assert_eq!(
+        entries[0].get("oldPath"),
+        Some(&Value::Null),
+        "没有旧路径时字段存在且为 null，不是缺字段"
+    );
+    assert_eq!(entries[1].get("status").and_then(Value::as_str), Some("M"));
+    assert_eq!(entries[2].get("status").and_then(Value::as_str), Some("R"));
+    assert_eq!(
+        entries[2].get("oldPath").and_then(Value::as_str),
+        Some("b.md")
+    );
+    // 行数仍随条目回传：重命名行不显示行数由渲染层决定，取数不裁事实
+    assert_eq!(entries[2].get("plus").and_then(Value::as_u64), Some(0));
+}
+
 /// 慢请求清单与帧循环的分流口径一致（specs/046 FR-004 / specs/047）：视图取数要起 git
 /// 子进程，列目录还可能在视图未建立时拉起代理，留在帧循环里会把后续帧全部压在队列后面
 /// （`specs/defects/balance-fetch-blocks-frame-loop` 是同一类问题的先例）。

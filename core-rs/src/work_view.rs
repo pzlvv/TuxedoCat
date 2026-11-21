@@ -38,7 +38,9 @@ pub use imp::{
 mod git_view;
 
 #[cfg_attr(not(test), allow(unused_imports))]
-pub use git_view::{ChangeEntry, ChangeScope, ChangesOutcome, FileDiffOutcome, GitView};
+pub use git_view::{
+    ChangeEntry, ChangeScope, ChangeStatus, ChangesOutcome, FileDiffOutcome, GitView,
+};
 
 /// 取数请求里的相对路径校验（`dir` / `path`）：`'/'` 分隔，不允许绝对路径、`..` 分量
 /// 与反斜杠。

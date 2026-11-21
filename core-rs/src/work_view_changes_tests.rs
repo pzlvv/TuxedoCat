@@ -6,7 +6,9 @@
 //! 模块路径：本文件由 `work_view.rs` 里的 `git_view` 模块以 `#[path]` 引入，`super` 即
 //! 该模块。
 
-use super::{count_lines, parse_numstat_z, parse_paths_z, ChangeScope};
+use super::{
+    count_lines, parse_name_status_z, parse_numstat_z, parse_paths_z, ChangeScope, ChangeStatus,
+};
 
 /// 取数路径的越界校验（specs/046 FR-002）：平台无关、无副作用，因此请求分支能在
 /// **建立视图之前**先拒掉非法请求——非法路径不该触发拉起代理。
@@ -33,24 +35,31 @@ fn parses_plain_numstat_entries() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].path, "f.txt");
     assert_eq!((entries[0].plus, entries[0].minus), (1, 1));
+    assert_eq!(entries[0].old_path, None);
     assert_eq!(entries[1].path, "src/a.ts");
     assert_eq!((entries[1].plus, entries[1].minus), (3, 0));
 }
 
-/// 重命名：`<add>\t<del>\t\0<old>\0<new>\0` —— 取新名。
+/// 重命名：`<add>\t<del>\t\0<old>\0<new>\0` —— 取新名并带上旧名。
 #[test]
 fn parses_renamed_entries_with_new_path() {
     let entries = parse_numstat_z("2\t1\t\0old.txt\0new.txt\0");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].path, "new.txt");
+    assert_eq!(entries[0].old_path.as_deref(), Some("old.txt"));
     assert_eq!((entries[0].plus, entries[0].minus), (2, 1));
 }
 
-/// 纯重命名（0/0）不显示：与宿主 `parseNumstat` 同口径。
+/// 纯重命名（0/0）不再在这里丢：它要作为 `R` 行显示（specs/055 FR-003），
+/// 「该不该丢」由 name-status 判定（`entries_against_head` 里）。
 #[test]
-fn drops_pure_renames() {
-    assert!(parse_numstat_z("0\t0\t\0a.txt\0b.txt\0").is_empty());
-    assert!(parse_numstat_z("0\t0\tsame.txt\0").is_empty());
+fn keeps_pure_renames_for_status_merge() {
+    let entries = parse_numstat_z("0\t0\t\0a.txt\0b.txt\0");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "b.txt");
+    assert_eq!(entries[0].old_path.as_deref(), Some("a.txt"));
+    // 单侧 0/0（仅文件模式变更）也保留，同样交给状态判定
+    assert_eq!(parse_numstat_z("0\t0\tsame.txt\0").len(), 1);
 }
 
 /// 二进制条目（`-\t-`）跳过：行数没有意义。
@@ -76,6 +85,41 @@ fn skips_malformed_entries() {
         parse_numstat_z("1\t1\0").is_empty(),
         "缺路径的重命名条目应跳过"
     );
+}
+
+/// `--name-status -z`：`<状态>\0<新路径>\0`；重命名多一段旧路径。
+#[test]
+fn parses_name_status_entries() {
+    let entries =
+        parse_name_status_z("M\0docs/a.md\0R100\0old.md\0new.md\0A\0fresh.md\0T\0link.md\0");
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].path, "docs/a.md");
+    assert_eq!(entries[0].status, ChangeStatus::Modified);
+    assert_eq!(entries[0].old_path, None);
+    assert_eq!(entries[1].path, "new.md");
+    assert_eq!(entries[1].status, ChangeStatus::Renamed);
+    assert_eq!(entries[1].old_path.as_deref(), Some("old.md"));
+    assert_eq!(entries[2].path, "fresh.md");
+    assert_eq!(entries[2].status, ChangeStatus::Added);
+    // 类型变更（文件 ↔ 符号链接）按内容改动呈现
+    assert_eq!(entries[3].status, ChangeStatus::Modified);
+}
+
+/// 复制按新增（对用户来说是多了个文件），截断的重命名段跳过。
+#[test]
+fn parse_name_status_treats_copy_as_added_and_skips_truncated() {
+    let entries = parse_name_status_z("C100\0src/a.ts\0src/b.ts\0R100\0only-old.md\0");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "src/b.ts");
+    assert_eq!(entries[0].status, ChangeStatus::Added);
+}
+
+/// 状态字母的序列化值与宿主渲染的字母同一个值（specs/055 FR-001 / FR-006）。
+#[test]
+fn change_status_letters_match_the_host() {
+    assert_eq!(ChangeStatus::Added.letter(), "A");
+    assert_eq!(ChangeStatus::Modified.letter(), "M");
+    assert_eq!(ChangeStatus::Renamed.letter(), "R");
 }
 
 /// `ls-files -z`：每段一个路径，空段丢弃。

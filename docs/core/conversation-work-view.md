@@ -57,7 +57,7 @@ Core 忽略它们、只回答自己那份能力。同给时 `sessionId` 优先�
 | 请求 | 载荷 | 应答 |
 | --- | --- | --- |
 | `UiRequest.workViewFilesRequested` | `sessionId`、`dir`（`'/'` 分隔相对路径，`''` 为视图根） | `{ ok: true, entries }` 或 `{ ok: false, error }` |
-| `UiRequest.workViewChangesRequested` | `sessionId`、`scope`（`doc` / `all`，与侧栏同一判别值） | `{ ok: true, entries }` 或 `{ ok: false, kind: 'not-a-git-workspace' \| 'error', error }` |
+| `UiRequest.workViewChangesRequested` | `sessionId`、`scope`（`doc` / `all`，与侧栏同一判别值） | `{ ok: true, entries }` 或 `{ ok: false, kind: 'not-a-git-workspace' \| 'error', error }`；条目带 `path` / `plus` / `minus` / `status`（`A` / `M` / `R`）/ `oldPath`（重命名前的旧路径，无则 `null`） |
 | `UiRequest.workViewFileDiffRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, kind: 'git', before: string \| null, after }`、`{ ok: true, kind: 'not-a-git-workspace', after }` 或 `{ ok: false, error }` |
 
 视图不需要事先建立：三个取数请求在取数前都会把该会话的视图备好
@@ -67,6 +67,11 @@ Core 忽略它们、只回答自己那份能力。同给时 `sessionId` 优先�
 
 `workViewChangesRequested` 列出该对话视图里相对 HEAD 的改动：改磁盘已有文件、对话内新建、
 以及只用 Bash 写出的文件都进清单——判据是「视图内容 vs HEAD」，不是工具旁路的记录。
+条目带状态字母：`A` = 该路径在视图 HEAD 里没有版本（未跟踪 / 已 `git add` 的新文件），
+`M` = 有内容改动，`R` = 视图里的 git 把这一条判为重命名（同时给出旧路径 `oldPath`）。
+状态取自 `git diff --name-status -z -M`，与行数（`--numstat`）同一份 pathspec、同一次取数，
+不从行数反推——纯重命名（numstat `0 0`）因此保留为 `R` 行而不是被剔除。宿主据此渲染与磁盘
+口径同一套字母（[docs/hosts/electron-multi-workspace.md 第 9 节](../hosts/electron-multi-workspace.md#9-侧栏)）。
 `workViewFileDiffRequested` 一次给出两侧原文：`after` 是视图内容、`before` 是**视图里** HEAD
 的版本（`null` = 该文件没有 HEAD 版本）。`not-a-git-workspace` 是事实而不是界面文案
 （[docs/architecture/principles.md 第 6 节](../architecture/principles.md#6-core-描述事实ui-决定表现)）。

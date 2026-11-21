@@ -836,7 +836,13 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   expect(changes, '应能取到 overlay 的变更清单').not.toBeNull();
   const changesResult = changes as {
     ok: boolean;
-    rows?: Array<{ rel: string; plus: number | null; minus: number | null }>;
+    rows?: Array<{
+      rel: string;
+      plus: number | null;
+      minus: number | null;
+      status: 'A' | 'M' | 'R' | null;
+      oldPath: string | null;
+    }>;
     error?: string;
   };
   expect(changesResult.ok, `变更清单必须成功：${changesResult.error ?? ''}`).toBe(true);
@@ -847,6 +853,10 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   ).toContain('overlay-explorer-only.txt');
   const createdRow = changedRows.find((row) => row.rel === 'overlay-explorer-only.txt');
   expect(createdRow?.plus, '新增文件按全文计行（内容一行）').toBe(1);
+  // 状态字母随条目回传（specs/055 FR-006 / AC-7）：视图里 HEAD 没有该路径 → A，
+  // 且与磁盘口径同一套判别值（宿主渲染层直接用这个字母）
+  expect(createdRow?.status, '对话内新建的条目状态是 A').toBe('A');
+  expect(createdRow?.oldPath, '非重命名条目的旧路径是 null').toBeNull();
 });
 
 test('Overlay 对话：Write 的风车必须收起，且工具卡片上屏期间不出现无指示空窗', async () => {

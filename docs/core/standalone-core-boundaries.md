@@ -55,7 +55,7 @@ core 事实的唯一来源是帧通道：宿主不直接读取 core 的磁盘数
 | 智能命名 / 余额 | `UiRequest.smartNamingRequested` / `balanceRequested` |
 | Core 就绪 | `CoreEvent.coreReady` |
 | Overlay 对话的目录列举 | `UiRequest.workViewFilesRequested`（`sessionId` + `dir`；取数前按需建立该会话的视图，建立失败回 `{ ok: false, error }`） |
-| Overlay 对话的变更清单 | `UiRequest.workViewChangesRequested`（`sessionId` + `scope`；`not-a-git-workspace` 与 `error` 分开） |
+| Overlay 对话的变更清单 | `UiRequest.workViewChangesRequested`（`sessionId` + `scope`；`not-a-git-workspace` 与 `error` 分开；条目带 `status`（`A` / `M` / `R`）与 `oldPath`，宿主据此渲染状态字母，不从行数反推） |
 | Overlay 对话的文件两侧原文 | `UiRequest.workViewFileDiffRequested`（`sessionId` + `path`；`before` 为 `null` = 新增） |
 | 远程工作区文件监听注册 | `UiRequest.watchWorkspaceFileRequested`（`watchId` + `workspacePath` + `path`；失败回 `{ ok: false, error }`） |
 | 远程工作区文件监听注销 | `UiRequest.unwatchWorkspaceFileRequested`（`watchId` + `workspacePath`；未知 id 幂等） |

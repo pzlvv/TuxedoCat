@@ -404,15 +404,23 @@ export type WorkViewFilesResult =
   | { ok: false; error: string };
 
 /**
- * Overlay 对话的变更清单条目（`UiRequest.workViewChangesRequested`，specs/047 FR-001）。
+ * Overlay 对话的变更清单条目（`UiRequest.workViewChangesRequested`，specs/047 FR-001 / specs/055 FR-006）。
  *
  * 形态与侧栏磁盘口径的 `DocEntry` 同构：`path` 是工作区相对的 '/' 分隔路径，行数徽标
  * 由界面直接渲染，渲染层不区分来源。
+ *
+ * `status` / `oldPath` 是变更视图行首字母的唯一来源（specs/055 FR-002）：Core 在视图里跑
+ * `git diff --name-status` 得到 `A` / `M` / `R` 与重命名的旧路径，宿主不从行数反推。
+ * Core 只在这条 git 口径下回条目，所以 `status` 不需要 `null`；`oldPath` 的「没有」用 `null`。
  */
 export interface WorkViewChangeEntry {
   path: string;
   plus: number;
   minus: number;
+  /** 变更状态字母：`A` 新增 / `M` 修改 / `R` 重命名 */
+  status: 'A' | 'M' | 'R';
+  /** 重命名前的旧路径（仅 `status === 'R'`） */
+  oldPath: string | null;
 }
 
 /**

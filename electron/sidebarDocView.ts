@@ -12,11 +12,27 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { sortSidebarEntries } from './sidebarFiles.js';
 
-/** 文档视图条目：path 是工作区根相对路径（'/' 分隔）；行数仅 git 口径有值（记录口径 null） */
+/**
+ * 变更条目的状态字母（specs/055 FR-001）。
+ *
+ * 只有三个值：`A` 新增（该路径在 HEAD 里没有版本）、`M` 修改（含已暂存）、`R` 重命名。
+ * 已删除的条目不进清单，因此没有 `D`——清单列的是「工作区里现在有什么值得看」。
+ */
+export type ChangeStatus = 'A' | 'M' | 'R';
+
+/**
+ * 文档视图条目：path 是工作区根相对路径（'/' 分隔）；行数仅 git 口径有值（记录口径 null）。
+ *
+ * `status` / `oldPath` 是 git 事实（specs/055 FR-002）：记录口径没有这个事实，两者都是
+ * `null`（不是可选成员，避免「字段缺省」与「没有状态」两种语义混在一处）。
+ */
 export interface DocEntry {
   path: string;
   plus: number | null;
   minus: number | null;
+  status: ChangeStatus | null;
+  /** 仅 `status === 'R'` 有值：重命名前的旧路径（工作区相对） */
+  oldPath: string | null;
 }
 
 export type DocListResult =
@@ -196,21 +212,49 @@ export function unquoteGitPath(raw: string): string {
 
 /** 重命名路径形态归一到新名：`old => new` 取 new；目录重命名 `a/{o => n}b` 取 `a/nb` */
 export function normalizeRenamedPath(raw: string): string | null {
-  let cleaned = unquoteGitPath(raw);
-  const brace = /^(.*?)\{(.*?) => (.*?)\}(.*)$/.exec(cleaned);
-  if (brace) cleaned = `${brace[1]}${brace[3]}${brace[4]}`;
-  const whole = /^(.*) => (.*)$/.exec(cleaned);
-  if (whole) cleaned = whole[2];
-  return cleaned.length > 0 ? cleaned : null;
+  return splitRenamedPath(raw)?.newPath ?? null;
 }
 
 /**
- * 解析 `git diff --numstat -M` 输出（制表符分隔 `add<TAB>del<TAB>path`）。
- * 跳过二进制行（`-` 计数）与 `0/0` 行——`-M` 下纯重命名 / 仅位置变更呈现为 `0 0`，
- * 正好由这条规则剔除；带修改的重命名行归一到新路径。
+ * 重命名路径形态拆成前后两侧：`old => new` / `a/{o => n}b` 各给完整的前后路径。
+ *
+ * 单侧路径也认（返回 `oldPath: null`）：`--numstat` 把「带改动的重命名」写成单侧新名
+ * 的场合与 `--name-status` 对齐时用得到。空串拒绝（`null`）。
  */
-export function parseNumstat(text: string): DocEntry[] {
-  const entries: DocEntry[] = [];
+export function splitRenamedPath(raw: string): { oldPath: string | null; newPath: string } | null {
+  const cleaned = unquoteGitPath(raw);
+  const brace = /^(.*?)\{(.*?) => (.*?)\}(.*)$/.exec(cleaned);
+  if (brace) {
+    const [, prefix = '', before = '', after = '', suffix = ''] = brace;
+    const newPath = `${prefix}${after}${suffix}`;
+    return newPath.length > 0 ? { oldPath: `${prefix}${before}${suffix}`, newPath } : null;
+  }
+  const whole = /^(.*) => (.*)$/.exec(cleaned);
+  if (whole) {
+    const [, before = '', after = ''] = whole;
+    return after.length > 0 ? { oldPath: before, newPath: after } : null;
+  }
+  return cleaned.length > 0 ? { oldPath: null, newPath: cleaned } : null;
+}
+
+/**
+ * `git diff --numstat -M` 的一行（状态还没判，由 `collectGitEntries` 与 `--name-status` 合并）。
+ *
+ * `parseNumstat` 不再自己剔除 `0/0`：`-M` 下纯重命名与仅位置变更都呈现为 `0 0`，
+ * 而纯重命名要作为 `R` 行显示（specs/055 FR-003）——「该不该丢」取决于 name-status 给
+ * 的是不是 `R`，只看 numstat 分不出来。
+ */
+export interface NumstatEntry {
+  path: string;
+  plus: number;
+  minus: number;
+  /** 重命名行的旧路径（numstat 的 `old => new` 形态自带）；非重命名行为 `null` */
+  oldPath: string | null;
+}
+
+/** 解析 `git diff --numstat -M` 输出（制表符分隔 `add<TAB>del<TAB>path`）；跳过二进制行 */
+export function parseNumstat(text: string): NumstatEntry[] {
+  const entries: NumstatEntry[] = [];
   for (const line of text.split('\n')) {
     // 只跳空行：路径可以首尾是空格，不能整行 trim
     if (line.length === 0) continue;
@@ -222,13 +266,58 @@ export function parseNumstat(text: string): DocEntry[] {
     const plus = Number(addText);
     const minus = Number(delText);
     if (!Number.isFinite(plus) || !Number.isFinite(minus)) continue;
-    if (plus === 0 && minus === 0) continue; // 纯重命名 / 仅位置变更
-    const normalized = normalizeRenamedPath(rawPath);
-    if (normalized === null) continue;
-    entries.push({ path: normalized, plus, minus });
+    const split = splitRenamedPath(rawPath);
+    if (split === null) continue;
+    entries.push({ path: split.newPath, plus, minus, oldPath: split.oldPath });
   }
   return entries;
 }
+
+/**
+ * `git diff --name-status -z -M` 的一条（specs/055 FR-002 的状态事实）。
+ *
+ * 输出形态：`<状态>\0<新路径>\0`，重命名 / 复制两条路径：`R<score>\0<旧路径>\0<新路径>\0`。
+ * 只认 `A` / `M` / `R`：`D` 由 `--diff-filter=d` 事先剔掉，`C`（复制）与其它状态不出现在
+ * 这份清单里（复制按「新增」处理更贴近用户认知，故把 `C` 归 `A`）。
+ */
+export interface NameStatusEntry {
+  path: string;
+  status: ChangeStatus;
+  oldPath: string | null;
+}
+
+/** 解析 `git diff --name-status -z` 输出 */
+export function parseNameStatus(text: string): NameStatusEntry[] {
+  const entries: NameStatusEntry[] = [];
+  const parts = text.split('\0');
+  let index = 0;
+  while (index < parts.length) {
+    const rawStatus = (parts[index] ?? '').replace(/\r$/, '');
+    index += 1;
+    if (rawStatus.length === 0) continue;
+    const letter = rawStatus[0];
+    if (letter === 'R' || letter === 'C') {
+      const oldPath = parts[index] ?? '';
+      const newPath = parts[index + 1] ?? '';
+      index += 2;
+      if (newPath.length === 0) continue;
+      entries.push({
+        path: newPath,
+        status: letter === 'C' ? 'A' : 'R',
+        oldPath: oldPath.length > 0 ? oldPath : null,
+      });
+      continue;
+    }
+    const path = parts[index] ?? '';
+    index += 1;
+    if (path.length === 0) continue;
+    if (letter === 'A') entries.push({ path, status: 'A', oldPath: null });
+    else if (letter === 'M' || letter === 'T') entries.push({ path, status: 'M', oldPath: null });
+    // 其它状态（`D` / `U` 等）不进清单：清单只列「现在有什么值得看」
+  }
+  return entries;
+}
+
 
 /** 解析 `git ls-files` 输出：每行一个路径（C 风格引号按 git 的转义还原）。
  *
@@ -271,10 +360,10 @@ export function gitTail(args: readonly string[]): string[] {
 }
 
 /**
- * 变更清单取数的四条 git 事实，按**固定顺序**拼进一次性批处理。
+ * 变更清单取数的五条 git 事实，按**固定顺序**拼进一次性批处理。
  *
  * 顺序即契约：`collectGitEntries` 按序号取值。集中在这里而不是散在调用点，是因为
- * 「一次往返」的收益全靠这三条同批发出，任何一条单独 `run` 就退回旧形态
+ * 「一次往返」的收益全靠这几条同批发出，任何一条单独 `run` 就退回旧形态
  * （`specs/defects/remote-change-list-n-plus-one-round-trips.md`）。
  */
 export function buildChangeCommands(scope: ChangeScope): string[][] {
@@ -293,6 +382,12 @@ export function buildChangeCommands(scope: ChangeScope): string[][] {
     [...GIT_COMMON_ARGS, 'ls-files', '--', ...pathspec],
     // 3：未跟踪文件（遵循 .gitignore）；行数由 `lineCounts` 另一次批量取回
     [...GIT_COMMON_ARGS, 'ls-files', '--others', '--exclude-standard', '--', ...pathspec],
+    // 4：状态事实（specs/055 FR-002）：`A` / `M` / `R` 与重命名的旧路径。行数分不出这三态，
+    //    所以与 numstat 同一批取回——批处理仍是**一次**往返，远程往返次数不变。
+    [
+      ...GIT_COMMON_ARGS,
+      'diff', '--name-status', '-z', '-M', '--relative', '--diff-filter=d', 'HEAD', '--', ...pathspec,
+    ],
   ];
 }
 
@@ -488,10 +583,14 @@ export function pathspecFor(scope: ChangeScope): string[] {
 /**
  * git 口径取数：与 HEAD 比较（含已暂存与未暂存）+ 未跟踪全文计行。
  *
- * 只读与往返：四条 git 事实（HEAD / diff / 索引 / 未跟踪）合成**一次** `runBatch`，未跟踪文件
- * 的行数由**一次** `lineCounts` 取回，已删除由 git 的 `--diff-filter=d` 自己剔掉——
- * 于是远程工作区上这次取数的网络往返与条目数无关（此前是每个条目一次 SFTP）。
- * 见 `specs/defects/remote-change-list-n-plus-one-round-trips.md`。
+ * 只读与往返：五条 git 事实（HEAD / numstat / 索引 / 未跟踪 / name-status）合成**一次**
+ * `runBatch`，未跟踪文件的行数由**一次** `lineCounts` 取回，已删除由 git 的
+ * `--diff-filter=d` 自己剔掉——于是远程工作区上这次取数的网络往返与条目数无关（此前是
+ * 每个条目一次 SFTP）。见 `specs/defects/remote-change-list-n-plus-one-round-trips.md`。
+ *
+ * 状态合并（specs/055 FR-002）：numstat 只给行数，`A` / `M` / `R` 与重命名的旧路径来自
+ * name-status，两者按**新路径**对齐。纯重命名（numstat `0 0`）在 name-status 里是 `R`，
+ * 因此保留成 `R` 行；`0 0` 且不是 `R`（仅文件模式变更）仍不出现。
  */
 export async function collectGitEntries(
   runner: GitCommandRunner,
@@ -508,7 +607,8 @@ export async function collectGitEntries(
   if (replies.length !== commands.length) {
     return { ok: false, error: `git 批处理回包缺段（期望 ${commands.length} 段，收到 ${replies.length} 段）` };
   }
-  const [head, numstat, indexed, untracked] = replies as [
+  const [head, numstat, indexed, untracked, nameStatus] = replies as [
+    { code: number; stdout: string; stderr: string },
     { code: number; stdout: string; stderr: string },
     { code: number; stdout: string; stderr: string },
     { code: number; stdout: string; stderr: string },
@@ -524,13 +624,34 @@ export async function collectGitEntries(
     if (numstat.code !== 0) {
       return { ok: false, error: `git diff 失败: ${numstat.stderr.trim()}` };
     }
-    for (const entry of parseNumstat(numstat.stdout)) map.set(entry.path, entry);
+    if (nameStatus.code !== 0) {
+      return { ok: false, error: `git diff --name-status 失败: ${nameStatus.stderr.trim()}` };
+    }
+    const statusByPath = new Map(parseNameStatus(nameStatus.stdout).map((e) => [e.path, e]));
+    for (const entry of parseNumstat(numstat.stdout)) {
+      // 两条事实同一批、同一 pathspec、同一 `-M` 取回，条目集必然一致。缺状态说明
+      // 输出解析出现了真正的分歧——如实报错，不按行数猜一个字母（铁律：不过度 fallback，
+      // 也不从派生数据反推事实）。
+      const status = statusByPath.get(entry.path);
+      if (status === undefined) {
+        return { ok: false, error: `git 状态事实缺条目：${entry.path}` };
+      }
+      // 仅文件模式变更（numstat `0 0`、name-status `M`）：既不是内容改动也不是重命名，不列
+      if (entry.plus === 0 && entry.minus === 0 && status.status !== 'R') continue;
+      map.set(entry.path, {
+        path: entry.path,
+        plus: entry.plus,
+        minus: entry.minus,
+        status: status.status,
+        oldPath: status.status === 'R' ? (status.oldPath ?? entry.oldPath) : null,
+      });
+    }
   } else {
     if (indexed.code !== 0) {
       return { ok: false, error: `git ls-files 失败: ${indexed.stderr.trim()}` };
     }
     for (const rel of parseLsFiles(indexed.stdout)) {
-      map.set(rel, { path: rel, plus: 0, minus: 0 });
+      map.set(rel, { path: rel, plus: 0, minus: 0, status: 'A', oldPath: null });
       pendingLineCounts.push(rel);
     }
   }
@@ -540,7 +661,7 @@ export async function collectGitEntries(
   }
   for (const rel of parseLsFiles(untracked.stdout)) {
     if (map.has(rel)) continue;
-    map.set(rel, { path: rel, plus: 0, minus: 0 });
+    map.set(rel, { path: rel, plus: 0, minus: 0, status: 'A', oldPath: null });
     pendingLineCounts.push(rel);
   }
 
@@ -559,13 +680,14 @@ export async function collectGitEntries(
   return { ok: true, mode: 'git', entries };
 }
 
-/** 记录口径取数：`modifiedDocs` 里的现存文件（不显示行数），已删除的过滤 */export async function collectRecordEntries(
+/** 记录口径取数：`modifiedDocs` 里的现存文件（不显示行数，没有状态事实），已删除的过滤 */
+export async function collectRecordEntries(
   paths: readonly string[],
   exists: (rel: string) => Promise<boolean>,
 ): Promise<DocEntry[]> {
   const entries: DocEntry[] = [];
   for (const rel of paths) {
-    if (await exists(rel)) entries.push({ path: rel, plus: null, minus: null });
+    if (await exists(rel)) entries.push({ path: rel, plus: null, minus: null, status: null, oldPath: null });
   }
   entries.sort((a, b) => a.path.localeCompare(b.path));
   return entries;
@@ -581,6 +703,10 @@ export interface DocRow {
   /** 仅文件且 git 口径有值 */
   plus: number | null;
   minus: number | null;
+  /** 状态字母（specs/055 FR-001）：仅 git 口径的文件行有值，目录 / 记录口径为 null */
+  status: ChangeStatus | null;
+  /** 重命名前的旧路径（仅 `status === 'R'`） */
+  oldPath: string | null;
 }
 
 /**
@@ -623,6 +749,8 @@ export function buildDocRows(entries: readonly DocEntry[]): DocRow[] {
         depth,
         plus: file?.entry.plus ?? null,
         minus: file?.entry.minus ?? null,
+        status: file?.entry.status ?? null,
+        oldPath: file?.entry.oldPath ?? null,
       });
       if (item.kind === 'directory') walk(rel, depth + 1);
     }

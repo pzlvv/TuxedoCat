@@ -371,6 +371,25 @@ fn ensure_view_ready(core: &Core, session_id: &str) -> Result<(), String> {
 /// 宿主不直接读 core 的磁盘数据（`docs/core/standalone-core-boundaries.md` 第 2 节）：
 /// 需要「core 的事实」时经帧通道请求，这里应答。未知类型一律报错而不是回空值——
 /// 静默的空结果会让宿主把「契约漂移」误当成「确实没有数据」。
+/// `workViewChangesRequested` 的条目序列化（specs/055 FR-006）：状态与旧路径随条目回传，
+/// 宿主据此渲染与磁盘口径同一套字母，不从行数反推（`A` / `M` / `R` 是 git 的事实）。
+fn work_view_changes_payload(entries: Vec<crate::work_view::ChangeEntry>) -> Value {
+    Value::Array(
+        entries
+            .into_iter()
+            .map(|entry| {
+                json!({
+                    "path": entry.path,
+                    "plus": entry.plus,
+                    "minus": entry.minus,
+                    "status": entry.status.letter(),
+                    "oldPath": entry.old_path,
+                })
+            })
+            .collect(),
+    )
+}
+
 fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
     let request_type = request
         .get("type")
@@ -443,14 +462,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             match crate::work_view::changes(session_id, scope) {
                 Ok(crate::work_view::ChangesOutcome::Ready(entries)) => Ok(json!({
                     "ok": true,
-                    "entries": entries
-                        .into_iter()
-                        .map(|entry| json!({
-                            "path": entry.path,
-                            "plus": entry.plus,
-                            "minus": entry.minus,
-                        }))
-                        .collect::<Vec<Value>>(),
+                    "entries": work_view_changes_payload(entries),
                 })),
                 // 「不在 git 仓库里」是事实而不是错误：宿主据此显示提示态（specs/047 FR-002）
                 Ok(crate::work_view::ChangesOutcome::NotAGitWorkspace) => Ok(json!({

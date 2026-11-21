@@ -854,3 +854,187 @@ test('US-63 specs/041 AC-9/FR-004 提交后全部变更视图自动刷新（与�
   await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(sb.getByText('没有变更的文件')).toBeVisible({ timeout: 15_000 });
 });
+
+/* ═══ specs/055：变更视图行首状态字母 ═══ */
+
+/** 行首状态字母（`.doc-status`）的文本与配色 class，行不存在时返回 null */
+async function statusOf(sb: Page, rel: string): Promise<{ text: string; cls: string } | null> {
+  const badge = sb.locator(`${FILE_ROWS}[data-path="${rel}"] .doc-status`);
+  if ((await badge.count()) === 0) return null;
+  return {
+    text: await badge.innerText(),
+    cls: (await badge.getAttribute('class')) ?? '',
+  };
+}
+
+test('US-63 specs/055 AC-1/AC-8 差异段文件行用状态字母替代类型图标（A 绿 / M 黄橙，槽位与目录树一致）', async () => {
+  await initGitRepo();
+  // 修改已跟踪的 .ts（HEAD 里有版本 → M）
+  await fs.promises.writeFile(path.join(workspaceDir, 'src', 'index.ts'), 'l1\nl2\nl3\n');
+  // 未跟踪的新 .ts（HEAD 里没有 → A）
+  await fs.promises.writeFile(path.join(workspaceDir, 'new.ts'), 'n1\nn2\n');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="new.ts"]`)).toBeVisible({ timeout: 15_000 });
+
+  const added = await statusOf(sb, 'new.ts');
+  expect(added, '新增文件行首应有状态字母').not.toBeNull();
+  expect(added!.text).toBe('A');
+  expect(added!.cls).toContain('doc-status-a');
+  const modified = await statusOf(sb, 'src/index.ts');
+  expect(modified!.text).toBe('M');
+  expect(modified!.cls).toContain('doc-status-m');
+
+  // 文件类型图标（.ficon-code）不再出现在这两行（字母是替代，不是叠加）
+  await expect(sb.locator(`${FILE_ROWS}[data-path="new.ts"] .ficon-code`)).toHaveCount(0);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"] .ficon-code`)).toHaveCount(0);
+
+  // 配色是渲染出来的真颜色（深色主题下 A 绿 / M 黄橙互不相同）
+  const colors = await sb.evaluate(() => {
+    const pick = (path: string): string => {
+      const el = document.querySelector(`#filesTree .file-row[data-path="${path}"] .doc-status`);
+      return el ? getComputedStyle(el).color : '';
+    };
+    return { a: pick('new.ts'), m: pick('src/index.ts') };
+  });
+  expect(colors.a).not.toBe('');
+  expect(colors.a).not.toBe(colors.m);
+
+  // AC-8：三段切换时行首图标槽宽一致（字母与目录树图标占同一个位置）
+  const widthIn = async (mode: string, path: string): Promise<number> => {
+    await sb.locator(`#filesModeSwitch .files-mode-seg[data-mode="${mode}"]`).click();
+    await expect(sb.locator(`${FILE_ROWS}[data-path="${path}"]`)).toBeVisible({ timeout: 15_000 });
+    const box = await sb.locator(`${FILE_ROWS}[data-path="${path}"] .file-icon`).boundingBox();
+    return box?.width ?? 0;
+  };
+  const changesWidth = await widthIn('changes', 'new.ts');
+  const treeWidth = await widthIn('tree', 'new.ts');
+  expect(changesWidth).toBeGreaterThan(0);
+  expect(treeWidth).toBeCloseTo(changesWidth, 1);
+  // 目录行始终是文件夹图标，不换字母
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src"][data-kind="directory"] .ficon-folder`)).toBeVisible({ timeout: 15_000 });
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src"] .doc-status`)).toHaveCount(0);
+});
+
+test('US-63 specs/055 AC-2 已暂存的新文件（HEAD 里没有该路径）标 A 而不是 M', async () => {
+  await initGitRepo();
+  await fs.promises.writeFile(path.join(workspaceDir, 'staged.md'), 's1\ns2\n');
+  await gitExec(workspaceDir, 'add', 'staged.md');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="staged.md"]`)).toBeVisible({ timeout: 15_000 });
+  const staged = await statusOf(sb, 'staged.md');
+  expect(staged!.text).toBe('A');
+});
+
+test('US-63 specs/055 AC-3/AC-4/AC-5 重命名行：R 字母、旧名 → 新名、不显示行数，纯重命名也列出', async () => {
+  await initGitRepo();
+  // 带内容改动的重命名：b.md → c.md（内容改一行）
+  await fs.promises.writeFile(path.join(workspaceDir, 'b.md'), 'b1\nb2\n');
+  await gitExec(workspaceDir, 'add', 'b.md');
+  await gitExec(workspaceDir, 'commit', '-q', '-m', 'add b');
+  await gitExec(workspaceDir, 'mv', 'b.md', 'c.md');
+  await fs.promises.writeFile(path.join(workspaceDir, 'c.md'), 'b1\nB2\n');
+  // 纯重命名（内容零变化）：docs/deep.md → docs/renamed.md
+  await gitExec(workspaceDir, 'mv', 'docs/deep.md', 'docs/renamed.md');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+
+  // AC-3：R 行 + `旧名 → 新名` + 无行数徽标
+  const renamed = sb.locator(`${FILE_ROWS}[data-path="c.md"]`);
+  await expect(renamed).toBeVisible({ timeout: 15_000 });
+  expect((await statusOf(sb, 'c.md'))!.text).toBe('R');
+  await expect(renamed.locator('.file-name')).toContainText('b.md');
+  await expect(renamed.locator('.file-name')).toContainText('c.md');
+  await expect(renamed.locator('.doc-rename-arrow')).toHaveCount(1);
+  await expect(renamed.locator('.doc-count')).toHaveCount(0);
+  // AC-5：悬停提示给完整的前后工作区相对路径
+  expect(await renamed.getAttribute('title')).toBe('b.md → c.md');
+
+  // AC-4：纯重命名也出现（此前这类条目不显示）
+  await expect(sb.locator(`${FILE_ROWS}[data-path="docs/renamed.md"]`)).toBeVisible({ timeout: 15_000 });
+  expect((await statusOf(sb, 'docs/renamed.md'))!.text).toBe('R');
+  expect(await sb.locator(`${FILE_ROWS}[data-path="docs/renamed.md"]`).getAttribute('title'))
+    .toBe('docs/deep.md → docs/renamed.md');
+  await expect(sb.locator(`${FILE_ROWS}[data-path="docs/deep.md"]`)).toHaveCount(0);
+
+  // 跨目录重命名的旧侧取完整相对路径（不是 `a.md → a.md`）
+  await gitExec(workspaceDir, 'mv', 'notes.txt', 'docs/notes-moved.txt');
+  await sb.locator('#filesHeader #filesRefresh').click();
+  const movedRow = sb.locator(`${FILE_ROWS}[data-path="docs/notes-moved.txt"]`);
+  await expect(movedRow).toBeVisible({ timeout: 15_000 });
+  await expect(movedRow.locator('.file-name')).toContainText('notes.txt');
+  expect(await movedRow.getAttribute('title')).toBe('notes.txt → docs/notes-moved.txt');
+});
+
+test('US-63 specs/055 AC-6 非 git 记录口径保留文件类型图标、不出现状态字母', async () => {
+  // 未 initGitRepo：工作区不在 git 仓内 → 文档视图走记录口径
+  await runWriteTool('recorded.md');
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="recorded.md"]`)).toBeVisible({ timeout: 20_000 });
+  await expect(sb.locator(`${FILE_ROWS}[data-path="recorded.md"] .doc-status`)).toHaveCount(0);
+  await expect(sb.locator(`${FILE_ROWS}[data-path="recorded.md"] .ficon-text`)).toBeVisible();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="recorded.md"] .doc-count`)).toHaveCount(0);
+});
+
+/** 关闭全部内置查看器窗口（Monaco / Markdown / 图片），等窗口真的消失 */
+async function closeViewerWindows(): Promise<void> {
+  const closed = await mainEval<string>(app, `(function(){try{
+    const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+    const wins = e.BrowserWindow.getAllWindows().filter(function(w){
+      if (w.isDestroyed()) return false;
+      const url = w.webContents.getURL();
+      return url.indexOf('monaco/') >= 0 || url.indexOf('imageViewer') >= 0;
+    });
+    wins.forEach(function(w){ w.close(); });
+    return String(wins.length);
+  } catch (err) { return 'ERR ' + err.message; }})()`);
+  expect(closed).not.toContain('ERR');
+  await expect
+    .poll(async () => mainEval<number>(app, `(function(){try{
+      const e = process.mainModule ? process.mainModule.require('electron') : require('electron');
+      return e.BrowserWindow.getAllWindows().filter(function(w){
+        if (w.isDestroyed()) return false;
+        const url = w.webContents.getURL();
+        return url.indexOf('monaco/') >= 0 || url.indexOf('imageViewer') >= 0;
+      }).length;
+    } catch (err) { return -1; }})()`), { timeout: 15_000 })
+    .toBe(0);
+}
+
+test('US-63 specs/055 AC-9 A 行双击落全文视图，M 行双击落变更视图', async () => {
+  await initGitRepo();
+  // A 行：未跟踪的新文本文件（HEAD 里没有版本）
+  await fs.promises.writeFile(path.join(workspaceDir, 'fresh.txt'), 'f1\nf2\n');
+  // M 行：已跟踪文件改动
+  await fs.promises.writeFile(path.join(workspaceDir, 'src', 'index.ts'), 'l1\nl2\nl3\n');
+
+  const sb = await sidebar();
+  await expandFiles(sb);
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="fresh.txt"]`)).toBeVisible({ timeout: 15_000 });
+
+  // A 行 → 全文视图（没有可对比的旧版本，DiffEditor 不出现）
+  await sb.locator(`${FILE_ROWS}[data-path="fresh.txt"]`).dblclick();
+  const addedViewer = await app.waitForPage('monaco/index.html', 20_000);
+  await expect(addedViewer.locator('.monaco-editor')).toBeVisible({ timeout: 20_000 });
+  await expect(addedViewer.locator('.monaco-diff-editor')).toHaveCount(0);
+  await closeViewerWindows();
+
+  // M 行 → 变更视图（DiffEditor 直接可见）
+  await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="changes"]').click();
+  await expect(sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`)).toBeVisible({ timeout: 15_000 });
+  await sb.locator(`${FILE_ROWS}[data-path="src/index.ts"]`).dblclick();
+  const changedViewer = await app.waitForPage('monaco/index.html', 20_000);
+  await expect(changedViewer.locator('.monaco-diff-editor')).toBeVisible({ timeout: 20_000 });
+  await closeViewerWindows();
+});

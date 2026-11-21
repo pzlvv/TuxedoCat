@@ -62,7 +62,7 @@ runTests('sidebarDocViewGit', async () => {
     await git(root, 'commit', '-q', '-m', 'base');
 
     writeLines(path.join(root, 'docs/a.md'), ['a1', 'a3', 'n1', 'n2']); // -1 / +2
-    await git(root, 'mv', 'b.md', 'c.md'); // 纯重命名：0/0 跳过
+    await git(root, 'mv', 'b.md', 'c.md'); // 纯重命名：保留为 R 行（specs/055 FR-003）
     fs.rmSync(path.join(root, 'gone/d.md')); // 删除：过滤
     writeLines(path.join(root, 'new.md'), ['x', 'y', 'z']); // 未跟踪：+3/-0
     writeLines(path.join(root, 'ignored.md'), ['i']); // 被忽略：不出现
@@ -70,11 +70,33 @@ runTests('sidebarDocViewGit', async () => {
     const runner = localGitRunner(root);
     const probe = await probeGitWorkspace(runner);
     const result = await collectGitEntries(runner);
-    const listed = result.ok ? result.entries.map((e) => `${e.path} +${e.plus}/-${e.minus}`) : [];
-    check('真实仓：修改 + 未跟踪命中，纯重命名 / 删除 / 忽略不出现',
+    const listed = result.ok
+      ? result.entries.map((e) => `${e.path} +${e.plus}/-${e.minus} ${e.status}${e.oldPath ? `<${e.oldPath}` : ''}`)
+      : [];
+    check('真实仓：修改 / 未跟踪 / 纯重命名的状态与行数，删除与忽略不出现',
       probe === 'yes'
       && result.ok === true
-      && listed.join('|') === 'docs/a.md +2/-1|new.md +3/-0');
+      && listed.join('|') === 'c.md +0/-0 R<b.md|docs/a.md +2/-1 M|new.md +3/-0 A');
+
+    // 已暂存的新文件（HEAD 里没有该路径）状态是 A，不是 M（specs/055 AC-2）
+    writeLines(path.join(root, 'staged-new.md'), ['s1', 's2']);
+    await git(root, 'add', 'staged-new.md');
+    const stagedResult = await collectGitEntries(runner);
+    const stagedEntry = stagedResult.ok
+      ? stagedResult.entries.find((e) => e.path === 'staged-new.md')
+      : undefined;
+    check('真实仓：已暂存的新文件状态为 A（HEAD 里没有该路径）',
+      stagedEntry?.status === 'A' && stagedEntry.plus === 2 && stagedEntry.minus === 0);
+
+    // 跨类型重命名在 doc scope 下只看到新一侧 → A（specs/055 边界第 1 条）
+    await git(root, 'reset', '-q');
+    await git(root, 'mv', 'keep.txt', 'moved.md');
+    const crossType = await collectGitEntries(runner, 'doc');
+    const movedEntry = crossType.ok
+      ? crossType.entries.find((e) => e.path === 'moved.md')
+      : undefined;
+    check('真实仓：跨类型重命名在 doc scope 下呈现为 A',
+      movedEntry?.status === 'A');
 
     const record = await collectRecordEntries(
       ['docs/a.md', 'gone/d.md', 'c.md'],

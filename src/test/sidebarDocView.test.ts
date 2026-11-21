@@ -6,8 +6,10 @@ import {
   gitTail,
   normalizeRenamedPath,
   parseLsFiles,
+  parseNameStatus,
   parseNumstat,
   probeGitWorkspace,
+  splitRenamedPath,
   unquoteGitPath,
   type DocEntry,
   type GitCommandRunner,
@@ -65,7 +67,7 @@ function fakeRunner(scripts: Array<{ match: string[]; code?: number; stdout?: st
 runTests('sidebarDocView', async () => {
   const { check, finish } = createChecker();
 
-  check('parseNumstat：常规行收集、0/0 与二进制跳过、重命名归一到新名',
+  check('parseNumstat：常规行收集、二进制跳过、重命名归一到新名并保留旧名',
     (() => {
       const text = [
         '3\t1\tdocs/a.md',
@@ -75,10 +77,14 @@ runTests('sidebarDocView', async () => {
         '2\t0\tdocs/{old => new}/z.md',
       ].join('\n');
       const entries = parseNumstat(text);
-      return entries.length === 3
+      // `0/0` 不再在这里丢：纯重命名要作为 `R` 行显示，该不该丢由 name-status 决定
+      return entries.length === 4
         && entries[0].path === 'docs/a.md' && entries[0].plus === 3 && entries[0].minus === 1
-        && entries[1].path === 'rename/y.md'
-        && entries[2].path === 'docs/new/z.md';
+        && entries[0].oldPath === null
+        && entries[1].path === 'new.md' && entries[1].oldPath === 'old.md'
+        && entries[1].plus === 0 && entries[1].minus === 0
+        && entries[2].path === 'rename/y.md' && entries[2].oldPath === 'rename/x.md'
+        && entries[3].path === 'docs/new/z.md' && entries[3].oldPath === 'docs/old/z.md';
     })());
 
   // 引号只剥两端、**不做 trim**：文件名允许首尾空格（` lead.md` / `trail.md `），
@@ -130,23 +136,98 @@ runTests('sidebarDocView', async () => {
     && probeNo === 'no'
     && typeof probeErr === 'object' && probeErr.error.includes('weird'));
 
+  check('parseNameStatus：A / M / R 分段解析，重命名带旧路径',
+    (() => {
+      // `-z` 形态：状态段与新路径各一段；重命名 / 复制多一段旧路径
+      const text = 'M\0docs/a.md\0R100\0old.md\0new.md\0A\0fresh.md\0T\0link.md\0';
+      const entries = parseNameStatus(text);
+      return entries.length === 4
+        && entries[0].path === 'docs/a.md' && entries[0].status === 'M' && entries[0].oldPath === null
+        && entries[1].path === 'new.md' && entries[1].status === 'R' && entries[1].oldPath === 'old.md'
+        && entries[2].path === 'fresh.md' && entries[2].status === 'A' && entries[2].oldPath === null
+        && entries[3].path === 'link.md' && entries[3].status === 'M';
+    })());
+
+  check('parseNameStatus：复制按新增、截断的重命名段跳过、中文路径原样保留',
+    (() => {
+      const entries = parseNameStatus('C100\0src/a.ts\0src/b.ts\0R100\0truncated-old.md\0A\0中文.md\0'.slice(0, -'A\0中文.md\0'.length));
+      const withUnicode = parseNameStatus('C100\0src/a.ts\0src/b.ts\0R100\0truncated-old.md\0')
+        .concat(parseNameStatus('A\0中文.md\0'));
+      return entries.length === 1
+        && entries[0].path === 'src/b.ts' && entries[0].status === 'A'
+        && withUnicode.length === 2
+        && withUnicode[1].path === '中文.md' && withUnicode[1].status === 'A';
+    })());
+
+  check('splitRenamedPath：单侧路径给 oldPath=null、目录重命名两侧都补全',
+    (() => {
+      const plain = splitRenamedPath('a.md');
+      const brace = splitRenamedPath('docs/{old => new}/z.md');
+      const whole = splitRenamedPath('x.md => y.md');
+      return plain?.oldPath === null && plain?.newPath === 'a.md'
+        && brace?.oldPath === 'docs/old/z.md' && brace?.newPath === 'docs/new/z.md'
+        && whole?.oldPath === 'x.md' && whole?.newPath === 'y.md'
+        && splitRenamedPath('') === null;
+    })());
+
   const gitFlow = await collectGitEntries(fakeRunner([
     { match: ['rev-parse'], stdout: 'abc123\n' },
     {
+      match: ['diff', '--name-status'],
+      // `-z` 形态（specs/055 FR-002）：状态段 + 新路径；重命名多一段旧路径
+      stdout: 'M\0docs/a.md\0R100\0old.md\0renamed.md\0',
+    },
+    {
       match: ['diff'],
       // 已删除条目不再出现在这里：`--diff-filter=d` 让 git 自己剔掉（RT-1 的 exists=0）
-      stdout: '3\t1\tdocs/a.md\n0\t0\told.md => new.md\n',
+      stdout: '3\t1\tdocs/a.md\n0\t0\told.md => renamed.md\n',
     },
-    { match: ['ls-files', '--others'], stdout: 'new.md\n' },
+    { match: ['ls-files', '--others'], stdout: 'fresh.md\n' },
     { match: ['ls-files'], stdout: '' },
   ]));
-  check('git 口径：numstat 收集 + 未跟踪计行（纯重命名跳过）',
+  check('git 口径：状态字母随条目回传（A / M / R 与旧路径）',
     gitFlow.ok === true
     && gitFlow.mode === 'git'
-    && gitFlow.ok && gitFlow.entries.length === 2
+    && gitFlow.ok && gitFlow.entries.length === 3
     && gitFlow.entries[0].path === 'docs/a.md' && gitFlow.entries[0].plus === 3
-    && gitFlow.entries[1].path === 'new.md' && gitFlow.entries[1].plus === 3 && gitFlow.entries[1].minus === 0
+    && gitFlow.entries[0].status === 'M' && gitFlow.entries[0].oldPath === null
+    && gitFlow.entries[1].path === 'fresh.md' && gitFlow.entries[1].plus === 3
+    && gitFlow.entries[1].status === 'A'
+    && gitFlow.entries[2].path === 'renamed.md' && gitFlow.entries[2].status === 'R'
+    && gitFlow.entries[2].oldPath === 'old.md'
     && !gitFlow.entries.some((e) => e.path === 'old.md'));
+
+  const stagedNew = await collectGitEntries(fakeRunner([
+    { match: ['rev-parse'], stdout: 'abc\n' },
+    { match: ['diff', '--name-status'], stdout: 'A\0staged.md\0' },
+    { match: ['diff'], stdout: '4\t0\tstaged.md\n' },
+    { match: ['ls-files', '--others'], stdout: '' },
+    { match: ['ls-files'], stdout: '' },
+  ]));
+  check('已暂存的新文件（name-status 给 A）标 A 而不是 M',
+    stagedNew.ok === true
+    && stagedNew.ok && stagedNew.entries.length === 1
+    && stagedNew.entries[0].status === 'A' && stagedNew.entries[0].plus === 4);
+
+  const modeOnly = await collectGitEntries(fakeRunner([
+    { match: ['rev-parse'], stdout: 'abc\n' },
+    { match: ['diff', '--name-status'], stdout: 'M\0script.sh\0' },
+    { match: ['diff'], stdout: '0\t0\tscript.sh\n' },
+    { match: ['ls-files', '--others'], stdout: '' },
+    { match: ['ls-files'], stdout: '' },
+  ]));
+  check('仅文件模式变更（0/0 且非 R）仍不出现',
+    modeOnly.ok === true && modeOnly.ok && modeOnly.entries.length === 0);
+
+  const statusFail = await collectGitEntries(fakeRunner([
+    { match: ['rev-parse'], stdout: 'abc\n' },
+    { match: ['diff', '--name-status'], code: 129, stderr: 'status-boom' },
+    { match: ['diff'], stdout: '1\t0\ta.md\n' },
+    { match: ['ls-files', '--others'], stdout: '' },
+    { match: ['ls-files'], stdout: '' },
+  ]));
+  check('状态事实失败转错误态（不猜状态、不静默降级）',
+    statusFail.ok === false && !statusFail.ok && statusFail.error.includes('status-boom'));
 
   const unborn = await collectGitEntries(fakeRunner([
     { match: ['rev-parse'], code: 1, stderr: '' },
@@ -154,10 +235,11 @@ runTests('sidebarDocView', async () => {
     { match: ['ls-files', '--others'], stdout: '' },
     { match: ['ls-files'], stdout: 'staged.md\n' },
   ]));
-  check('无 HEAD 新仓：索引内文件按全文行数计新增',
+  check('无 HEAD 新仓：索引内文件按全文行数计新增且状态为 A',
     unborn.ok === true
     && unborn.ok && unborn.entries.length === 1
-    && unborn.entries[0].path === 'staged.md' && unborn.entries[0].plus === 3 && unborn.entries[0].minus === 0);
+    && unborn.entries[0].path === 'staged.md' && unborn.entries[0].plus === 3 && unborn.entries[0].minus === 0
+    && unborn.entries[0].status === 'A');
 
   const diffFail = await collectGitEntries(fakeRunner([
     { match: ['rev-parse'], stdout: 'abc\n' },
@@ -169,16 +251,19 @@ runTests('sidebarDocView', async () => {
     diffFail.ok === false && (!diffFail.ok && diffFail.error.includes('boom')));
 
   const rows = buildDocRows([
-    { path: 'docs/a.md', plus: 3, minus: 1 },
-    { path: 'docs/sub/x.md', plus: 1, minus: 0 },
-    { path: 'b.md', plus: null, minus: null },
+    { path: 'docs/a.md', plus: 3, minus: 1, status: 'M', oldPath: null },
+    { path: 'docs/sub/x.md', plus: 1, minus: 0, status: 'A', oldPath: null },
+    { path: 'b.md', plus: null, minus: null, status: null, oldPath: null },
+    { path: 'docs/c.md', plus: 0, minus: 0, status: 'R', oldPath: 'docs/z.md' },
   ] as DocEntry[]);
-  check('buildDocRows：目录优先、深度铺平、全部层级展开',
+  check('buildDocRows：目录优先、深度铺平、全部层级展开，状态与旧路径透传',
     (() => {
       const seq = rows.map((r) => `${r.rel}:${r.kind}:${r.depth}`).join('|');
-      return seq === 'docs:directory:0|docs/sub:directory:1|docs/sub/x.md:file:2|docs/a.md:file:1|b.md:file:0'
-        && rows[3].plus === 3 && rows[3].minus === 1
-        && rows[4].plus === null;
+      const cRow = rows.find((r) => r.rel === 'docs/c.md');
+      return seq === 'docs:directory:0|docs/sub:directory:1|docs/sub/x.md:file:2|docs/a.md:file:1|docs/c.md:file:1|b.md:file:0'
+        && rows[3].plus === 3 && rows[3].minus === 1 && rows[3].status === 'M'
+        && rows[5].plus === null && rows[5].status === null
+        && cRow?.status === 'R' && cRow?.oldPath === 'docs/z.md';
     })());
 
   check('buildDocRows：空条目给空行集', buildDocRows([]).length === 0);
@@ -201,11 +286,12 @@ runTests('sidebarDocView', async () => {
     calls.length = 0;
     const allScope = await collectGitEntries(recordingRunner([
       { match: ['rev-parse'], stdout: 'abc\n' },
+      { match: ['diff', '--name-status'], stdout: 'M\0src/app.ts\0' },
       { match: ['diff'], stdout: '1\t1\tsrc/app.ts\n' },
       { match: ['ls-files', '--others'], stdout: 'new.ts\n' },
       { match: ['ls-files'], stdout: '' },
     ]), 'all');
-    const diffCall = calls.find((args) => args.includes('diff')) ?? [];
+    const diffCall = calls.find((args) => args.includes('diff') && !args.includes('--name-status')) ?? [];
     const untrackedCall = calls.find((args) => args.includes('--others')) ?? [];
     check('scope=all：diff 不带 pathspec（`--` 后为空）',
       allScope.ok === true
@@ -219,11 +305,12 @@ runTests('sidebarDocView', async () => {
     calls.length = 0;
     await collectGitEntries(recordingRunner([
       { match: ['rev-parse'], stdout: 'abc\n' },
+      { match: ['diff', '--name-status'], stdout: '' },
       { match: ['diff'], stdout: '' },
       { match: ['ls-files', '--others'], stdout: '' },
       { match: ['ls-files'], stdout: '' },
     ]), 'doc');
-    const docDiffCall = calls.find((args) => args.includes('diff')) ?? [];
+    const docDiffCall = calls.find((args) => args.includes('diff') && !args.includes('--name-status')) ?? [];
     const docUntrackedCall = calls.find((args) => args.includes('--others')) ?? [];
     check('scope=doc：diff 的 pathspec 是 Markdown 两份',
       JSON.stringify(docDiffCall.slice(docDiffCall.indexOf('--')))
@@ -252,27 +339,22 @@ runTests('sidebarDocView', async () => {
       JSON.stringify(lsFilesCall.slice(lsFilesCall.indexOf('--'))) === JSON.stringify(['--']));
   }
   {
-    // `all` 下纯重命名（numstat 0/0）跳过；已删除由 `--diff-filter=d` 交给 git，
-    // 因此 git 的 numstat 输出里本来就没有它（这条断言的是「照样剔得干净」）。
+    // 纯重命名现在保留为 `R` 行（specs/055 FR-003）；仅文件模式变更（0/0 且 name-status
+    // 不是 R）仍不出现。已删除由 `--diff-filter=d` 交给 git，numstat 里本来就没有它。
     const allWithRenames = await collectGitEntries({
       run: async (args: string[]) => {
         const stripped = gitTail(args);
         if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
-        if (stripped[0] === 'diff') {
-          return {
-            code: 0,
-            stdout: '0\t0\told.ts => new.ts\n1\t0\tkept.ts\n',
-            stderr: '',
-          };
-        }
-        if (stripped[0] === 'ls-files') return { code: 0, stdout: '', stderr: '' };
         throw new Error(`未脚本的 git 调用: ${args.join(' ')}`);
       },
       runBatch: async (commands) => commands.map((args) => {
         const stripped = gitTail(args);
         if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
+        if (stripped[0] === 'diff' && args.includes('--name-status')) {
+          return { code: 0, stdout: 'R100\0old.ts\0new.ts\0M\0script.sh\0A\0kept.ts\0', stderr: '' };
+        }
         if (stripped[0] === 'diff') {
-          return { code: 0, stdout: '0\t0\told.ts => new.ts\n1\t0\tkept.ts\n', stderr: '' };
+          return { code: 0, stdout: '0\t0\told.ts => new.ts\n0\t0\tscript.sh\n1\t0\tkept.ts\n', stderr: '' };
         }
         return { code: 0, stdout: '', stderr: '' };
       }),
@@ -280,10 +362,15 @@ runTests('sidebarDocView', async () => {
       lineCounts: async () => new Map(),
       exists: async () => true,
     }, 'all');
-    check('scope=all：纯重命名与已删除文件仍被剔除',
+    const statusOf = (path: string) => allWithRenames.ok
+      ? allWithRenames.entries.find((e) => e.path === path)
+      : undefined;
+    check('scope=all：纯重命名保留为 R 行，仅模式变更仍不出现',
       allWithRenames.ok === true
-      && allWithRenames.entries.length === 1
-      && allWithRenames.entries[0].path === 'kept.ts');
+      && allWithRenames.entries.length === 2
+      && statusOf('new.ts')?.status === 'R' && statusOf('new.ts')?.oldPath === 'old.ts'
+      && statusOf('kept.ts')?.status === 'A'
+      && statusOf('script.sh') === undefined);
   }
 
   // ---------- 远程往返次数（specs/defects/remote-change-list-n-plus-one-round-trips.md） ----------
@@ -308,6 +395,10 @@ runTests('sidebarDocView', async () => {
       const replies = (args: string[]): { code: number; stdout: string; stderr: string } => {
         const stripped = gitTail(args);
         if (stripped[0] === 'rev-parse') return { code: 0, stdout: 'abc\n', stderr: '' };
+        // 状态事实（specs/055）与 numstat 是两条独立的 diff 调用，按 `--name-status` 区分
+        if (stripped[0] === 'diff' && args.includes('--name-status')) {
+          return { code: 0, stdout: 'M\0docs/a.md\0', stderr: '' };
+        }
         if (stripped[0] === 'diff') return { code: 0, stdout: '3\t1\tdocs/a.md\n', stderr: '' };
         if (stripped[0] === 'ls-files') {
           // 索引内容段（无 HEAD 才用）与未跟踪段（`--others`）分开给：未跟踪才有行数
@@ -343,7 +434,7 @@ runTests('sidebarDocView', async () => {
 
     const first = counting();
     const result = await collectGitEntries(first.runner, 'all');
-    check('RT-1 git 口径：四条事实一次往返取回，不再逐条 stat / 逐文件读',
+    check('RT-1 git 口径：五条事实一次往返取回，不再逐条 stat / 逐文件读',
       result.ok === true
       && first.counts.runBatch === 1
       && first.counts.run === 0
@@ -358,11 +449,12 @@ runTests('sidebarDocView', async () => {
         return diffArgs.includes('--diff-filter=d') && diffArgs.includes('--relative');
       })());
 
-    check('RT-2 批处理：四条命令同序（HEAD / diff / 索引 / 未跟踪），一次发出',
+    check('RT-2 批处理：五条命令同序（HEAD / numstat / 索引 / 未跟踪 / name-status），一次发出',
       first.counts.runBatch === 1
-      && first.batchCalls.length === 4
+      && first.batchCalls.length === 5
       && first.batchCalls.map(headOf).slice(0, 3).join(',') === 'rev-parse,diff,ls-files'
-      && first.batchCalls[3].includes('--others'));
+      && first.batchCalls[3].includes('--others')
+      && first.batchCalls[4].includes('--name-status'));
 
     check('RT-3 未跟踪行数：一次批量计行，不逐文件读回内容',
       first.counts.lineCounts === 1
@@ -389,6 +481,7 @@ runTests('sidebarDocView', async () => {
       runBatch: async () => [
         { code: 0, stdout: 'abc\n', stderr: '' },
         { code: 129, stdout: '', stderr: 'boom' },
+        { code: 0, stdout: '', stderr: '' },
         { code: 0, stdout: '', stderr: '' },
         { code: 0, stdout: '', stderr: '' },
       ],

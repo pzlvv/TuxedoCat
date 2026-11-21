@@ -141,6 +141,13 @@ interface DocViewRow {
   /** 仅 git 口径有值（记录口径为 null，渲染层不显示行数） */
   plus: number | null;
   minus: number | null;
+  /**
+   * 状态字母（specs/055 FR-001）：git 口径的文件行有值，目录行与记录口径为 null
+   * （记录口径没有这个事实，见 specs/055 FR-005——它继续用文件类型图标）。
+   */
+  status: 'A' | 'M' | 'R' | null;
+  /** 重命名前的旧路径（仅 `status === 'R'`），行内显示 `旧名 → 新名` 用 */
+  oldPath: string | null;
 }
 
 /** 变更清单取数回执（判别联合）：失败带 error 文案。
@@ -1294,18 +1301,49 @@ function fileRowHtml(files: WorkspaceFilesState, rel: string, name: string, kind
     `${chevron}<span class="file-icon ${icon.cls}">${icon.svg}</span><span class="file-name">${escapeHtml(name)}</span></div>`;
 }
 
-/** 文档视图行（specs/030 FR-003）：行尾 +N/-M 徽标（仅 git 口径）；目录行无折叠箭头
- * （全部层级默认展开，点击只选中、不动普通树的展开记忆） */
+/**
+ * 变更视图行（specs/030 FR-003 / specs/055 FR-001 / FR-003）：行首是状态字母（A / M / R）
+ * 而不是文件类型图标，行尾 +N/-M 徽标（仅 git 口径、且重命名行不显示）；目录行无折叠箭头
+ * （全部层级默认展开，点击只选中、不动普通树的展开记忆）。
+ *
+ * 状态字母占的是 `.file-icon` 那个 14px 槽位——三段切换时文件名称列不左右跳动（AC-8）。
+ */
 function docRowHtml(files: WorkspaceFilesState, row: DocViewRow): string {
   const indent = FILE_ROW_BASE_INDENT + row.depth * FILE_ROW_INDENT;
+  // 行首：目录 → 文件夹图标；git 口径的文件 → 状态字母；记录口径的文件 → 类型图标
+  // （非 git 工作区只知「工具改过」，没有 A / M / R 这个事实，specs/055 FR-005）
   const icon = row.kind === 'directory'
-    ? { cls: 'ficon-folder', svg: FICON_FOLDER }
-    : fileIconFor(row.name);
-  const counts = row.kind === 'file' && row.plus !== null
+    ? `<span class="file-icon ficon-folder">${FICON_FOLDER}</span>`
+    : row.status !== null
+      ? `<span class="file-icon doc-status doc-status-${row.status.toLowerCase()}">${row.status}</span>`
+      : (() => {
+        const typed = fileIconFor(row.name);
+        return `<span class="file-icon ${typed.cls}">${typed.svg}</span>`;
+      })();
+  // 重命名行不显示增删行数：这一条的主要事实是路径变了（specs/055 FR-003）
+  const counts = row.kind === 'file' && row.plus !== null && row.status !== 'R'
     ? `<span class="doc-count"><span class="doc-plus">+${row.plus}</span><span class="doc-minus">-${row.minus}</span></span>`
     : '';
-  return `<div class="file-row${files.selected.has(row.rel) ? ' selected' : ''}" data-path="${escapeHtml(row.rel)}" data-kind="${row.kind}" style="padding-left:${indent}px" title="${escapeHtml(row.rel)}">` +
-    `<span class="file-chevron leaf"></span><span class="file-icon ${icon.cls}">${icon.svg}</span><span class="file-name">${escapeHtml(row.name)}</span>${counts}</div>`;
+  const nameHtml = row.kind === 'file' && row.status === 'R' && row.oldPath !== null
+    ? `<span class="doc-rename-old">${escapeHtml(renameOldName(row.rel, row.oldPath))}</span>`
+      + '<span class="doc-rename-arrow"> → </span>'
+      + `<span class="doc-rename-new">${escapeHtml(row.name)}</span>`
+    : escapeHtml(row.name);
+  // 悬停提示给完整的前后工作区相对路径（AC-5）：行内只显示够区分的那一侧
+  const title = row.status === 'R' && row.oldPath !== null ? `${row.oldPath} → ${row.rel}` : row.rel;
+  return `<div class="file-row${files.selected.has(row.rel) ? ' selected' : ''}" data-path="${escapeHtml(row.rel)}" data-kind="${row.kind}" style="padding-left:${indent}px" title="${escapeHtml(title)}">` +
+    `<span class="file-chevron leaf"></span>${icon}<span class="file-name">${nameHtml}</span>${counts}</div>`;
+}
+
+/**
+ * 重命名行行内显示的旧名（specs/055 FR-003）：新旧父目录相同时只显示旧文件名，
+ * 跨目录（或目录本身被重命名）时显示旧的工作区相对路径——否则会呈现成 `a.md → a.md`。
+ */
+function renameOldName(newRel: string, oldRel: string): string {
+  const newDir = newRel.includes('/') ? newRel.slice(0, newRel.lastIndexOf('/')) : '';
+  const oldDir = oldRel.includes('/') ? oldRel.slice(0, oldRel.lastIndexOf('/')) : '';
+  if (newDir === oldDir) return oldRel.slice(oldRel.lastIndexOf('/') + 1);
+  return oldRel;
 }
 
 function renderFiles(): void {

@@ -262,15 +262,14 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   - 文档视图：`git diff --numstat -M --relative --diff-filter=d HEAD -- '*.md' '*.markdown'` + 未跟踪（按全文计新增），行数徽标；
   - 全部变更：同一套取数与解析，pathspec 置空以覆盖全部类型；非 git 工作区返回
     `not-a-git-workspace` 提示而不是空列表。三态由分区底部的分段 switch 选择（单选框语义，口径见 [host-matrix 第 6 节](host-matrix.md#6-宿主固有差异有意保留)）。
+  两个变更视图的文件行首是**状态字母**（`A` 新增绿 / `M` 修改黄橙 / `R` 重命名蓝紫，占目录树类型图标同一个 14px 槽位，三段切换时行内不跳动；目录行仍是文件夹图标）：`A` / `M` 行尾带 +N / -M 徽标，`R` 行显示 `旧名 → 新名`（悬停给完整前后路径，`electron/sidebar/main.ts` 的 `renameOldName`）且不显示行数。字母取自 `diff --name-status -z -M` 的事实、与 numstat 同批取回按新路径对齐，不由行数反推——纯重命名（numstat `0 0`）因此以 `R` 行显示而不是被剔除；记录口径（非 git 工作区）没有这个事实，继续用类型图标。
   两个变更视图共用同一套失效推送（reasons 同时带 `doc` / `changes`，渲染层按当前模式各取所需），
   触发源是 git 哨兵与工具旁路两条（口径见 [US-61](../features/user-stories/desktop.md#us-61-工具改动自动刷新文件树与变更视图)）。
   数据走 Electron 私有 IPC（`sidebar:files-list` / `sidebar:files-doc-list`（带 `scope`）/
-  `sidebar:files-mode-watch` / `sidebar:files-open`（带 `source`）/
-  `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与记录读取复用 §14.5
-  的共享连接池；取数往返次数与条目数无关（四条 git 事实合成一次远端 exec、未跟踪行数在远端数出，每条 git 调用带只读锁参数避免重写 `.git/index` 触发哨兵，口径见 `specs/defects/remote-change-list-n-plus-one-round-trips.md`）。Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层
+  `sidebar:files-mode-watch` / `sidebar:files-open`（带 `source`）/ `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与记录读取复用 §14.5 的共享连接池；取数往返次数与条目数无关（五条 git 事实合成一次远端 exec、未跟踪行数在远端数出，每条 git 调用带只读锁参数避免重写 `.git/index` 触发哨兵，口径见 `specs/defects/remote-change-list-n-plus-one-round-trips.md`）。Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层
   独立，首连失败后不会自连，不推就停在「读取失败，点击重试」
   （`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
-- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录 / 变更清单 / 打开文件都走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）：目录树 → `sidebar:files-list-overlay`；文档视图 / 全部变更 → `sidebar:files-doc-list-overlay`（磁盘上的 git 看不到只落私有上层目录的改动，Core 在该对话视图里跑 git，行集与徽标和磁盘口径同一套解析与组装）；双击打开 → `sidebar:files-open-overlay`（一次给出视图内容与视图里 HEAD 的版本）。归属变化即清缓存并重取；取数前由 Core 按需建立该对话的视图（用户进对话就展开也能看到叠加视图），Core 不可用 / 视图建不起来 / git 失败显示错误行，不回退磁盘清单。Overlay 来源下不挂磁盘 `.git` 哨兵（HEAD 与改动都在视图里，宿主看不到）。
+- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录 / 变更清单 / 打开文件都走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）：目录树 → `sidebar:files-list-overlay`；文档视图 / 全部变更 → `sidebar:files-doc-list-overlay`（磁盘上的 git 看不到只落私有上层目录的改动，Core 在该对话视图里跑 git，行集、状态字母与徽标和磁盘口径同一套解析与组装）；双击打开 → `sidebar:files-open-overlay`（一次给出视图内容与视图里 HEAD 的版本）。归属变化即清缓存并重取；取数前由 Core 按需建立该对话的视图（用户进对话就展开也能看到叠加视图），Core 不可用 / 视图建不起来 / git 失败显示错误行，不回退磁盘清单。Overlay 来源下不挂磁盘 `.git` 哨兵（HEAD 与改动都在视图里，宿主看不到）。
 
 ### 9.1 空态
 
