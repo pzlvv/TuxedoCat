@@ -109,12 +109,16 @@ fn definitions_cover_every_builtin_tool() {
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"].is_object());
     }
-    // Bash 的 command 是必填项
+    // Bash 的 command 与 description 都是必填项（`description` 供卡片标题 / 后台任务
+    // 清单 / 完成通知使用，模型必须给）
     let bash = definitions
         .iter()
         .find(|tool| tool["name"] == "Bash")
         .expect("Bash definition");
-    assert_eq!(bash["input_schema"]["required"][0], "command");
+    assert_eq!(
+        bash["input_schema"]["required"],
+        json!(["command", "description"])
+    );
 }
 
 #[test]
@@ -147,7 +151,12 @@ fn execute_dispatches_to_the_right_tool() {
         &ctx
     )
     .is_error());
-    assert!(!execute("Bash", &json!({ "command": "echo ok" }), &ctx).is_error());
+    assert!(!execute(
+        "Bash",
+        &json!({ "command": "echo ok", "description": "test command" }),
+        &ctx
+    )
+    .is_error());
     assert!(!execute("TodoWrite", &json!({ "todos": [] }), &ctx).is_error());
 }
 
@@ -337,7 +346,7 @@ fn bash_decodes_gbk_output_to_readable_chinese() {
     let sandbox = Sandbox::new("tools-bash-gbk");
     let outcome = execute(
         "Bash",
-        &json!({ "command": "printf '\\326\\320\\316\\304\\262\\342\\312\\324\\n'" }),
+        &json!({ "command": "printf '\\326\\320\\316\\304\\262\\342\\312\\324\\n'", "description": "test command" }),
         &context(&sandbox),
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -352,7 +361,7 @@ fn bash_decodes_utf8_output_unchanged() {
     let sandbox = Sandbox::new("tools-bash-utf8");
     let outcome = execute(
         "Bash",
-        &json!({ "command": "printf '中文测试 %s\\n' ok" }),
+        &json!({ "command": "printf '中文测试 %s\\n' ok", "description": "test command" }),
         &context(&sandbox),
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -366,7 +375,7 @@ fn bash_does_not_split_multibyte_chars_across_pipe_chunks() {
     let sandbox = Sandbox::new("tools-bash-chunk-boundary");
     let outcome = execute(
         "Bash",
-        &json!({ "command": "python3 -c \"import sys; sys.stdout.write('a'*8190 + '中文')\" 2>/dev/null || perl -e \"print 'a' x 8190; print '中文'\"" }),
+        &json!({ "command": "python3 -c \"import sys; sys.stdout.write('a'*8190 + '中文')\" 2>/dev/null || perl -e \"print 'a' x 8190; print '中文'\"", "description": "test command" }),
         &context(&sandbox),
     );
     let out = text(&outcome);
@@ -391,12 +400,29 @@ fn bash_requires_a_command() {
     assert_eq!(text(&outcome), "Bash: \"command\" is required");
 }
 
+/// `description` 是必填入参（schema / `tool_input` / `run_bash` 三处同口径）：
+/// 卡片标题、后台任务清单与完成通知的事实都来自它。
+#[test]
+fn bash_requires_a_description() {
+    let sandbox = Sandbox::new("tools-bash-missing-description");
+    let outcome = execute("Bash", &json!({ "command": "echo hi" }), &context(&sandbox));
+    assert!(outcome.is_error());
+    assert_eq!(text(&outcome), "Bash: \"description\" is required");
+    // 空串是同一件事：没有可展示的描述
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "echo hi", "description": "" }),
+        &context(&sandbox),
+    );
+    assert_eq!(text(&outcome), "Bash: \"description\" is required");
+}
+
 #[test]
 fn bash_returns_stdout_and_hides_trailing_newline() {
     let sandbox = Sandbox::new("tools-bash-stdout");
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo hello" }),
+        &json!({ "command": "echo hello", "description": "test command" }),
         &context(&sandbox),
     );
     assert!(!outcome.is_error());
@@ -416,7 +442,7 @@ fn bash_runs_with_the_resolved_path() {
         .to_string();
     let outcome = execute(
         "Bash",
-        &json!({ "command": "printf %s \"$PATH\"" }),
+        &json!({ "command": "printf %s \"$PATH\"", "description": "test command" }),
         &context(&sandbox),
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -429,17 +455,29 @@ fn bash_reports_stderr_and_exit_codes() {
     let ctx = context(&sandbox);
 
     // stderr 直接拼接，不额外加标签
-    let stderr = execute("Bash", &json!({ "command": "echo problem 1>&2" }), &ctx);
+    let stderr = execute(
+        "Bash",
+        &json!({ "command": "echo problem 1>&2", "description": "test command" }),
+        &ctx,
+    );
     assert_eq!(text(&stderr), "problem");
 
-    let failing = execute("Bash", &json!({ "command": "echo partial; exit 3" }), &ctx);
+    let failing = execute(
+        "Bash",
+        &json!({ "command": "echo partial; exit 3", "description": "test command" }),
+        &ctx,
+    );
     assert_eq!(text(&failing), "partial\n\nExit code: 3");
     // 非零退出：UI 状态 error，但 tool_result 不带 is_error
     assert!(!failing.is_error());
     assert!(failing.is_status_error());
     assert_eq!(failing.exit_code(), 3);
 
-    let silent = execute("Bash", &json!({ "command": "exit 4" }), &ctx);
+    let silent = execute(
+        "Bash",
+        &json!({ "command": "exit 4", "description": "test command" }),
+        &ctx,
+    );
     assert_eq!(text(&silent), "Exit code: 4");
 }
 
@@ -517,7 +555,7 @@ fn bash_timeout_reminder_mentions_find_for_find_commands() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "find . -name x; sleep 5", "timeout": 300 }),
+        &json!({ "command": "find . -name x; sleep 5", "description": "test command", "timeout": 300 }),
         &context(&sandbox),
     );
     assert!(
@@ -619,18 +657,21 @@ fn concurrency_safety_matches_spec() {
     assert!(is_concurrency_safe("Grep", &json!({ "pattern": "x" })));
     assert!(is_concurrency_safe("Glob", &json!({ "pattern": "*" })));
     // Bash：等同 `isReadOnly(input)`
-    assert!(is_concurrency_safe("Bash", &json!({ "command": "ls -la" })));
     assert!(is_concurrency_safe(
         "Bash",
-        &json!({ "command": "git status --short" })
+        &json!({ "command": "ls -la", "description": "test command" })
+    ));
+    assert!(is_concurrency_safe(
+        "Bash",
+        &json!({ "command": "git status --short", "description": "test command" })
     ));
     assert!(!is_concurrency_safe(
         "Bash",
-        &json!({ "command": "touch x" })
+        &json!({ "command": "touch x", "description": "test command" })
     ));
     assert!(!is_concurrency_safe(
         "Bash",
-        &json!({ "command": "ls && rm -rf build" })
+        &json!({ "command": "ls && rm -rf build", "description": "test command" })
     ));
     // 缺 command / 非字符串：按假值（JS 的 `undefined` 传给 `isReadOnly` 会走空命令分支）
     assert!(!is_concurrency_safe("Bash", &json!({})));
@@ -805,7 +846,7 @@ fn bash_sleep_timeout_is_the_default_deadline_when_below_the_sleep_duration() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "printf 'go\\n'; sleep 0.2" }),
+        &json!({ "command": "printf 'go\\n'; sleep 0.2", "description": "test command" }),
         &ctx,
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -915,7 +956,7 @@ fn bash_abort_kills_a_sleep_command() {
     let started = std::time::Instant::now();
     let outcome = execute(
         "Bash",
-        &json!({ "command": "printf 'go\\n'; sleep 10" }),
+        &json!({ "command": "printf 'go\\n'; sleep 10", "description": "test command" }),
         &ctx,
     );
     let elapsed = started.elapsed();
@@ -948,7 +989,7 @@ fn bash_returns_when_the_shell_exits_even_if_a_grandchild_holds_the_pipe() {
     // `&` 会命中 detach 闸门：本测试构造的是管道持有场景，声明豁免
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo started; sleep 3 &", "detach": true }),
+        &json!({ "command": "echo started; sleep 3 &", "description": "test command", "detach": true }),
         &context(&sandbox),
     );
     let elapsed = started.elapsed();
@@ -1005,7 +1046,7 @@ fn bash_abort_still_lands_while_a_grandchild_holds_the_pipe() {
     // `wait` 让 shell 存活到孙进程退出（否则 shell 毫秒级退出、轮次直接完成）
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo started; sleep 3 & wait", "detach": true }),
+        &json!({ "command": "echo started; sleep 3 & wait", "description": "test command", "detach": true }),
         &ctx,
     );
     let elapsed = started.elapsed();
@@ -1050,7 +1091,7 @@ fn bash_completion_wins_over_a_cancel_that_lands_after_the_shell_exits() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo done; sleep 3 &", "detach": true }),
+        &json!({ "command": "echo done; sleep 3 &", "description": "test command", "detach": true }),
         &ctx,
     );
     let body = text(&outcome);
@@ -1074,7 +1115,7 @@ fn bash_passes_cwd_through_without_expansion() {
     let absolute = sandbox.workspace.join("sub").to_string_lossy().to_string();
     let outcome = execute(
         "Bash",
-        &json!({ "command": "cat marker.txt", "cwd": absolute }),
+        &json!({ "command": "cat marker.txt", "description": "test command", "cwd": absolute }),
         &context(&sandbox),
     );
     assert_eq!(text(&outcome), "here");
@@ -1082,7 +1123,7 @@ fn bash_passes_cwd_through_without_expansion() {
     // 相对路径不再按会话工作目录展开：会话目录下的 sub/ 不会命中
     let outcome = execute(
         "Bash",
-        &json!({ "command": "cat marker.txt", "cwd": "sub" }),
+        &json!({ "command": "cat marker.txt", "description": "test command", "cwd": "sub" }),
         &context(&sandbox),
     );
     assert!(
@@ -1094,7 +1135,7 @@ fn bash_passes_cwd_through_without_expansion() {
     // 空串是假值：回退会话工作目录
     let outcome = execute(
         "Bash",
-        &json!({ "command": "cat sub/marker.txt", "cwd": "" }),
+        &json!({ "command": "cat sub/marker.txt", "description": "test command", "cwd": "" }),
         &context(&sandbox),
     );
     assert_eq!(text(&outcome), "here");
@@ -1106,7 +1147,7 @@ fn bash_spawn_failure_is_reported() {
     // 不存在的 cwd 会让 spawn 失败
     let outcome = execute(
         "Bash",
-        &json!({ "command": "echo x", "cwd": "no/such/dir" }),
+        &json!({ "command": "echo x", "description": "test command", "cwd": "no/such/dir" }),
         &context(&sandbox),
     );
     assert!(outcome.is_error());
@@ -1260,7 +1301,7 @@ fn bash_background_coerces_truthy_values_like_zod() {
     // `z.coerce.boolean()` 是 JS `Boolean(value)`：字符串 "false" 也是真值
     let truthy = execute(
         "Bash",
-        &json!({ "command": "echo x", "run_in_background": "false" }),
+        &json!({ "command": "echo x", "description": "test command", "run_in_background": "false" }),
         &ctx,
     );
     assert!(
@@ -1273,7 +1314,7 @@ fn bash_background_coerces_truthy_values_like_zod() {
     for falsy in [json!(false), json!(0), json!(""), json!(null)] {
         let outcome = execute(
             "Bash",
-            &json!({ "command": "echo foreground", "run_in_background": falsy }),
+            &json!({ "command": "echo foreground", "description": "test command", "run_in_background": falsy }),
             &ctx,
         );
         assert_eq!(text(&outcome), "foreground", "input={falsy}");
@@ -1307,7 +1348,11 @@ fn sleep_moves_to_the_background_when_a_background_task_completes() {
     });
 
     let ctx = background_context(&sandbox, std::sync::Arc::clone(&captured));
-    let outcome = execute("Bash", &json!({ "command": "sleep 5" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "sleep 5", "description": "test command" }),
+        &ctx,
+    );
     let body = text(&outcome);
     assert!(
         body.contains("Command moved to the background after ")
@@ -1360,7 +1405,7 @@ fn foreground_command_needs_three_seconds_before_a_completion_notification_backg
     // 走不到 3 秒门槛（`tail -f` 是等价的长跑普通命令）
     let outcome = execute(
         "Bash",
-        &json!({ "command": "tail -f /dev/null", "timeout": 10_000 }),
+        &json!({ "command": "tail -f /dev/null", "description": "test command", "timeout": 10_000 }),
         &ctx,
     );
     let body = text(&outcome);
@@ -1391,7 +1436,7 @@ fn bash_background_syncs_the_session_background_fact() {
     let ctx = background_context(&sandbox, std::sync::Arc::clone(&captured));
     execute(
         "Bash",
-        &json!({ "command": "echo sync", "run_in_background": true }),
+        &json!({ "command": "echo sync", "description": "test command", "run_in_background": true }),
         &ctx,
     );
     // 注册时同步一次（有运行中的任务），完成后再同步一次（已无运行中任务）
@@ -1414,7 +1459,7 @@ fn bash_drains_output_larger_than_the_pipe_buffer() {
     let sandbox = Sandbox::new("tools-bash-large-output");
     let outcome = execute(
         "Bash",
-        &json!({ "command": "yes x | head -n 100000", "timeout": 20_000 }),
+        &json!({ "command": "yes x | head -n 100000", "description": "test command", "timeout": 20_000 }),
         &context(&sandbox),
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -1487,7 +1532,7 @@ fn bash_reports_streaming_progress() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "printf 'first\\n'; printf 'second\\n' 1>&2" }),
+        &json!({ "command": "printf 'first\\n'; printf 'second\\n' 1>&2", "description": "test command" }),
         &ctx,
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -1532,7 +1577,7 @@ fn bash_progress_preview_is_capped_at_four_kilobytes() {
     // 输出远大于 4K：`fullOutput` 必须带上省略标记，`totalBytes` 仍是完整长度
     let outcome = execute(
         "Bash",
-        &json!({ "command": "for i in $(seq 1 2000); do echo line-$i-xxxxxxxx; done" }),
+        &json!({ "command": "for i in $(seq 1 2000); do echo line-$i-xxxxxxxx; done", "description": "test command" }),
         &ctx,
     );
     assert!(!outcome.is_error(), "got {}", text(&outcome));
@@ -3507,7 +3552,11 @@ fn bash_interrupted_with_no_output_keeps_the_empty_marker() {
     let sandbox = Sandbox::new("tools-bash-abort-empty");
     let mut ctx = context(&sandbox);
     ctx.cancel = Some(cancel_after(200));
-    let outcome = execute("Bash", &json!({ "command": "sleep 5" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "sleep 5", "description": "test command" }),
+        &ctx,
+    );
     assert_eq!(text(&outcome), "(无输出)\nCommand was interrupted");
     // 会话中止：退出码 130
     assert_eq!(outcome.exit_code(), 130);
@@ -3520,7 +3569,11 @@ fn bash_interrupted_with_output_appends_the_marker() {
     // 1.2s 而不是 200ms：取消死线必须留给 Git Bash 启动 + `echo` 落盘的余量
     // （满载的测试进程里几百毫秒不够，断言会退化成对机器速度的断言）。
     ctx.cancel = Some(cancel_after(1200));
-    let outcome = execute("Bash", &json!({ "command": "echo partial; sleep 5" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "echo partial; sleep 5", "description": "test command" }),
+        &ctx,
+    );
     assert_eq!(text(&outcome), "partial\nCommand was interrupted");
     assert_eq!(outcome.exit_code(), 130);
 }
@@ -3539,7 +3592,7 @@ fn auto_background_failure_falls_back_to_exit_code_124() {
     let outcome = execute(
         "Bash",
         // 超时死线给 shell 启动留余量（同 `bash_timeout_applies_after_the_shell_...`）
-        &json!({ "command": "echo partial; sleep 5", "timeout": 1500 }),
+        &json!({ "command": "echo partial; sleep 5", "description": "test command", "timeout": 1500 }),
         &context(&sandbox),
     );
     let body = text(&outcome);
@@ -3843,11 +3896,21 @@ fn format_file_size_matches_javascript_to_fixed() {
 fn validate_input_rejects_empty_and_overlong_bash_commands() {
     // Bash 入参校验文案
     assert_eq!(
-        validate_input("Bash", &json!({ "command": "" }), ".").as_deref(),
+        validate_input(
+            "Bash",
+            &json!({ "command": "", "description": "test command" }),
+            "."
+        )
+        .as_deref(),
         Some("Command cannot be empty")
     );
     assert_eq!(
-        validate_input("Bash", &json!({ "command": "   " }), ".").as_deref(),
+        validate_input(
+            "Bash",
+            &json!({ "command": "   ", "description": "test command" }),
+            "."
+        )
+        .as_deref(),
         Some("Command cannot be empty")
     );
     assert_eq!(
@@ -3856,7 +3919,12 @@ fn validate_input_rejects_empty_and_overlong_bash_commands() {
     );
     // 10000 是允许的上界
     assert!(validate_input("Bash", &json!({ "command": "a".repeat(10_000) }), ".").is_none());
-    assert!(validate_input("Bash", &json!({ "command": "echo hi" }), ".").is_none());
+    assert!(validate_input(
+        "Bash",
+        &json!({ "command": "echo hi", "description": "test command" }),
+        "."
+    )
+    .is_none());
     // 缺 command 不在这里判（交给权限层的 deny）
     assert!(validate_input("Bash", &json!({}), ".").is_none());
     // 其它工具没有 validateInput
@@ -4004,11 +4072,19 @@ mod js_parity_tests {
 fn bash_validate_input_uses_js_whitespace() {
     // U+0085 不是 JS 空白 → 命令合法；U+FEFF 是 JS 空白 → 空命令
     assert_eq!(
-        validate_input("Bash", &json!({ "command": "\u{85}" }), "."),
+        validate_input(
+            "Bash",
+            &json!({ "command": "\u{85}", "description": "test command" }),
+            "."
+        ),
         None
     );
     assert_eq!(
-        validate_input("Bash", &json!({ "command": "\u{feff}" }), "."),
+        validate_input(
+            "Bash",
+            &json!({ "command": "\u{feff}", "description": "test command" }),
+            "."
+        ),
         Some("Command cannot be empty".to_string())
     );
 }
@@ -4051,7 +4127,7 @@ fn bash_abort_kills_the_whole_process_tree() {
     ctx.cancel = Some(cancel_after(1200));
     let outcome = execute(
         "Bash",
-        &json!({ "command": "sleep 3 && touch late.marker" }),
+        &json!({ "command": "sleep 3 && touch late.marker", "description": "test command" }),
         &ctx,
     );
     assert!(
@@ -4082,7 +4158,11 @@ fn bash_abort_stops_reporting_progress_after_the_result() {
         sink.lock().unwrap().push(progress.full_output);
     }));
     ctx.cancel = Some(cancel_after(1200));
-    let outcome = execute("Bash", &json!({ "command": "sleep 3 && echo done" }), &ctx);
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": "sleep 3 && echo done", "description": "test command" }),
+        &ctx,
+    );
     assert!(
         text(&outcome).contains("Command was interrupted"),
         "got {}",
@@ -5075,7 +5155,11 @@ fn find_detach_construct_ignores_heredoc_bodies() {
 fn bash_gate_allows_ampersand_inside_heredoc() {
     let sandbox = Sandbox::new("tools-bash-detach-heredoc");
     let command = "cat > main.c <<'EOF'\nint main(){int x = 1; int *p = &x; return *p;}\nEOF";
-    let outcome = execute("Bash", &json!({ "command": command }), &context(&sandbox));
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": command, "description": "test command" }),
+        &context(&sandbox),
+    );
     assert!(
         !outcome.is_error(),
         "heredoc 正文的 & 不应拦截: {}",
@@ -5086,7 +5170,11 @@ fn bash_gate_allows_ampersand_inside_heredoc() {
     assert!(written.contains("*p = &x;"), "got {written}");
 
     let blocked = "cat > blocked.c <<'EOF'\n&\nEOF\ntrue &";
-    let outcome = execute("Bash", &json!({ "command": blocked }), &context(&sandbox));
+    let outcome = execute(
+        "Bash",
+        &json!({ "command": blocked, "description": "test command" }),
+        &context(&sandbox),
+    );
     assert!(outcome.is_error(), "got {}", text(&outcome));
     assert!(
         text(&outcome).contains("Bash: command uses `&`."),
@@ -5162,7 +5250,7 @@ fn bash_gate_rejects_backgrounding_constructs_with_routing_message() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "nohup server" }),
+        &json!({ "command": "nohup server", "description": "test command" }),
         &context(&sandbox),
     );
     assert!(outcome.is_error(), "got {}", text(&outcome));
@@ -5187,7 +5275,11 @@ fn bash_gate_rejects_backgrounding_constructs_with_routing_message() {
         ("Start-Process server", "Start-Process"),
         ("curl http://x?a=1&b=2", "&"),
     ] {
-        let outcome = execute("Bash", &json!({ "command": command }), &context(&sandbox));
+        let outcome = execute(
+            "Bash",
+            &json!({ "command": command, "description": "test command" }),
+            &context(&sandbox),
+        );
         assert!(outcome.is_error(), "got {}", text(&outcome));
         assert!(
             text(&outcome).contains(&format!("Bash: command uses `{construct}`.")),
@@ -5203,7 +5295,12 @@ fn bash_gate_allows_quoted_ampersand_and_logical_and() {
     let sandbox = Sandbox::new("tools-bash-detach-gate-allow");
     for command in ["echo a && echo b", "echo \"a&b\"", "echo x &> /dev/null"] {
         assert!(
-            !execute("Bash", &json!({ "command": command }), &context(&sandbox)).is_error(),
+            !execute(
+                "Bash",
+                &json!({ "command": command, "description": "test command" }),
+                &context(&sandbox)
+            )
+            .is_error(),
             "不应拦截: {command}"
         );
     }
@@ -5216,20 +5313,20 @@ fn bash_detach_true_bypasses_the_gate_and_is_inert_without_constructs() {
     // 同一命令：缺省被拦、true 放行
     assert!(execute(
         "Bash",
-        &json!({ "command": "nohup true" }),
+        &json!({ "command": "nohup true", "description": "test command" }),
         &context(&sandbox)
     )
     .is_error());
     assert!(!execute(
         "Bash",
-        &json!({ "command": "nohup true", "detach": true }),
+        &json!({ "command": "nohup true", "description": "test command", "detach": true }),
         &context(&sandbox)
     )
     .is_error());
     // 无构造时字段惰性（AC-6）
     assert!(!execute(
         "Bash",
-        &json!({ "command": "echo ok", "detach": true }),
+        &json!({ "command": "echo ok", "description": "test command", "detach": true }),
         &context(&sandbox)
     )
     .is_error());
@@ -5245,7 +5342,7 @@ fn bash_detach_true_foreground_still_auto_backgrounds_on_timeout() {
 
     let outcome = execute(
         "Bash",
-        &json!({ "command": "nohup sleep 5", "detach": true, "timeout": 300 }),
+        &json!({ "command": "nohup sleep 5", "description": "test command", "detach": true, "timeout": 300 }),
         &context(&sandbox),
     );
     let body = text(&outcome);
@@ -5266,7 +5363,7 @@ fn bash_gate_applies_before_run_in_background_branch() {
     let sandbox = Sandbox::new("tools-bash-detach-gate-bg");
     let outcome = execute(
         "Bash",
-        &json!({ "command": "nohup server", "run_in_background": true }),
+        &json!({ "command": "nohup server", "description": "test command", "run_in_background": true }),
         &context(&sandbox),
     );
     assert!(outcome.is_error(), "got {}", text(&outcome));

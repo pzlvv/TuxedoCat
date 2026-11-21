@@ -46,7 +46,7 @@ async function run(): Promise<void> {
 
   // 修复前：取消结果被跳过，tool_use 落成 status='running'、content=''。
   const canceledConversation = [
-    assistantToolUses([{ id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }]),
+    assistantToolUses([{ id: 'toolu_1', name: 'Bash', input: { command: 'ls', description: 'replay probe' } }]),
     userToolResults([
       {
         type: 'tool_result',

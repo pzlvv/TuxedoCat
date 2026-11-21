@@ -118,7 +118,9 @@ US-66 的双实例争用——双实例场景依赖两个宿主进程（electron
 e2e 用例；US-76 / US-78 的 `restricted` 闸门——判定只看命令文本（分隔符、换行、引号、
 纯注释段、heredoc 正文屏蔽），由 core-rs 单测（`tools_tests` 的
 `restricted_gate_rejects_sleep_anywhere` / `restricted_gate_rejects_cd_and_sed_only`
-与 `permission_tests` 的 `restricted_*` 用例）锁定三档模式一致与放行范围，e2e 车道
+与 `permission_tests` 的 `restricted_*` 用例）锁定三档模式一致与放行范围；US-78 的
+「优先用 `Read` 看文件内容」是提示词规则（`cat` 不进闸门），由 `prompt_tests` 的
+`tool_details_prefer_read_over_cat_and_sed` 与 `systemPrompt.json` 对照表锁定；e2e 车道
 不为纯文本判定新增用例）；US-77 的工具 shell PATH 前置与远端部署——端到端验证要真实
 LLM 轮次与四平台产物，由 core-rs 的 `shell_env_tests`（前置顺序 / 去重 / 空表不改 PATH）、
 `prompt_tests`（提示词规则与对照表）、`sshDaemonBootstrap.test.ts`（两份工具补齐）与

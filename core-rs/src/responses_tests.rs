@@ -244,8 +244,8 @@ mod unit_tests {
     #[test]
     fn parse_tool_arguments_keeps_raw_string_on_broken_json() {
         assert_eq!(
-            parse_tool_arguments("{\"command\":\"ls\"}"),
-            json!({ "command": "ls" })
+            parse_tool_arguments("{\"command\":\"ls\",\"description\":\"test command\"}"),
+            json!({ "command": "ls", "description": "test command" })
         );
         assert_eq!(parse_tool_arguments("{broken"), json!("{broken"));
     }

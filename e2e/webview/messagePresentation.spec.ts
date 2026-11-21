@@ -321,7 +321,7 @@ test('once 通知：末位显示、就地更新保留、新节点先删、重开
 
   // 用户消息先行（时间线分组以首条用户消息为段起点），再落一张运行中的工具卡片（「既有节点」）
   await host.send({ type: 'addMessage', sessionId, role: 'user', content: '跑一下' });
-  const card = { type: 'addMessage', sessionId, role: 'toolcall', content: '', toolName: 'Bash', toolArgs: { command: 'ls' }, toolCallId: 'bash-once-1', status: 'running' };
+  const card = { type: 'addMessage', sessionId, role: 'toolcall', content: '', toolName: 'Bash', toolArgs: { command: 'ls', description: 'List files' }, toolCallId: 'bash-once-1', status: 'running' };
   await host.send(card);
 
   // once 通知到达：系统消息样式（info 图标 + 斜体文本）节点显示

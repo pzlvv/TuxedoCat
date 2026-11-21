@@ -270,7 +270,7 @@ fn load_messages_replays_tool_use_updates_in_order() {
             "message": {
                 "role": "assistant",
                 "content": [
-                    { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "old" } },
+                    { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "old", "description": "test command" } },
                     { "type": "tool_use", "id": "t2", "name": "Read", "input": {} }
                 ]
             }
@@ -278,7 +278,7 @@ fn load_messages_replays_tool_use_updates_in_order() {
     });
     let update_one = json!({
         "type": "tool_use_update", "toolUseId": "t1",
-        "input": { "command": "new" }, "meta": { "status": "running" }
+        "input": { "command": "new", "description": "test command" }, "meta": { "status": "running" }
     });
     let update_two = json!({
         "type": "tool_use_update", "toolUseId": "t2",
@@ -554,7 +554,7 @@ fn ensure_tool_results_backfills_missing_tool_results_in_memory() {
                 "role": "assistant",
                 "content": [
                     { "type": "text", "text": "查一下" },
-                    { "type": "tool_use", "id": "call_1", "name": "Bash", "input": { "command": "ls" } },
+                    { "type": "tool_use", "id": "call_1", "name": "Bash", "input": { "command": "ls", "description": "test command" } },
                 ],
             },
         }),

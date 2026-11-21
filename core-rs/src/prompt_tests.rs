@@ -599,6 +599,29 @@ fn tool_details_describe_rules_not_mechanism() {
     );
 }
 
+/// 提示词写明「优先用 `Read` 代替 `cat` / `sed` 看文件内容」
+/// （`docs/features/user-stories/tools.md` 的 US-78）。
+///
+/// 闸门只拦「`cd` + `sed` 读文件」，`cat` 是只读命令、还有 `cat > f <<EOF` 这类写形态，
+/// 不放进闸门；看内容的入口靠这条提示词规则。
+#[test]
+fn tool_details_prefer_read_over_cat_and_sed() {
+    let details = tool_usage_section(&crate::tools::definitions(), None);
+    assert!(
+        details.contains("**Prefer the Read tool**"),
+        "缺少 Read 优先规则"
+    );
+    assert!(
+        details.contains("use `Read` instead of `cat` / `sed`"),
+        "缺少 cat / sed 改用 Read 的规则"
+    );
+    // 管道 / 重定向场景照常放行：规则只在「看内容」时成立
+    assert!(
+        details.contains("only when the content must flow into another command"),
+        "缺少 cat / sed 仍适用的例外"
+    );
+}
+
 /// `fd` 的三条易踩规则写进提示词（specs/044 FR-006）。
 ///
 /// 三条都指向「看似正常的输出」：把搜索根当 pattern、pattern 里带路径分隔符、把空输出

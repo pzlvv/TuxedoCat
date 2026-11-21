@@ -479,7 +479,7 @@ fn chat_messages_convert_tool_use_and_thinking() {
     let messages = vec![json!({ "role": "assistant", "content": [
         { "type": "thinking", "thinking": "先看看" },
         { "type": "text", "text": "我来查一下" },
-        { "type": "tool_use", "id": "call_9", "name": "Bash", "input": { "command": "ls" } }
+        { "type": "tool_use", "id": "call_9", "name": "Bash", "input": { "command": "ls", "description": "test command" } }
     ] })];
     let out = to_chat_messages(&messages);
     assert_eq!(out.len(), 1);
@@ -1168,7 +1168,7 @@ fn anthropic_stream_uses_content_block_start_input_when_no_delta() {
     // `input_json_delta` 时，input 就是最终入参（部分网关不逐字流式传参）。
     let sse = concat!(
         "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
-        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo hi\"}}}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo hi\",\"description\":\"test command\"}}}\n\n",
         "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
         "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2},\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n",
     )
@@ -1196,7 +1196,7 @@ fn anthropic_stream_uses_content_block_start_input_when_no_delta() {
         vec![(
             "toolu_1".to_string(),
             "Bash".to_string(),
-            json!({ "command": "echo hi" })
+            json!({ "command": "echo hi", "description": "test command" })
         )]
     );
 }
@@ -1896,7 +1896,11 @@ fn openai_stream_synthesizes_block_boundaries() {
 
 #[test]
 fn openai_tool_calls_get_their_own_block() {
-    let llm = FakeLlm::fixed(openai_tool_sse("call_1", "Bash", r#"{"command":"ls"}"#));
+    let llm = FakeLlm::fixed(openai_tool_sse(
+        "call_1",
+        "Bash",
+        r#"{"command":"ls", "description": "test command"}"#,
+    ));
     let provider = provider(&llm.base_url, "OpenAI");
     let (result, events) = collect(
         &provider,

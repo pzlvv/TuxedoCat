@@ -334,7 +334,7 @@ fn work_view_bash_writes_stay_in_the_upper_layer() {
         let bash = crate::tools::execute(
             "Bash",
             &serde_json::json!({
-                "command": "echo built > built-by-bash.txt; cat built-by-bash.txt",
+                "command": "echo built > built-by-bash.txt; cat built-by-bash.txt", "description": "test command",
             }),
             &context,
         );

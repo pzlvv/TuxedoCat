@@ -106,9 +106,9 @@ last_reviewed: 2026-11-16
    工具，需要与其它命令组合时用 Bash 的 `rg` / `fd`。
 4. 内置工具缺失时命令由 shell 自身报 `command not found`，普通命令照常执行。
 
-### US-78 sed 读文件改用 Read 工具
+### US-78 读文件优先用 Read 工具
 
-作为用户，我希望模型不要用 `cd` + `sed` 当文件读取器，而是用 `Read` 工具读文件，
+作为用户，我希望模型看文件内容时用 `Read` 而不是 `cat` / `sed`（含 `cd` + `sed`），
 这样读到的内容是结构化结果（行号、范围、xlsx / 图片分支），不是靠 `sed` 猜参数
 （`docs/features/background-bash.md`）。
 
@@ -116,7 +116,12 @@ last_reviewed: 2026-11-16
 
 1. `restricted` 缺省为真时，去掉所有 `cd` 段后只剩 `sed`（读形态 `-n` 与写形态 `-i`
    一视同仁）就使 Bash 调用直接失败，文案引导改用 `Read` 工具；三档工作模式一致。
-2. 有上下游的文本加工照常执行：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
+   闸门不覆盖 `cat`：它是只读命令，还有 `cat > f <<EOF` 这类写形态。
+2. 系统提示词的 Bash 段写明「用 `Read` 代替 `cat` / `sed` 看文件内容」并给出两条对照
+   （`cat a.txt` → `Read` 的 `file_path`；`sed -n '1,40p' f` → `Read` 的
+   `offset` / `limit`），同时保留例外：内容要流进另一条命令（管道 / 重定向）时照常用
+   `cat` / `sed`。
+3. 有上下游的文本加工照常执行：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
    `git diff | sed -n '1,20p'`；`restricted: false` 时回到既有权限路径（`sed` 不在只读
    白名单，`manual` 询问、`risk` / `auto` 放行）。
 
