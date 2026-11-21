@@ -666,12 +666,14 @@ export class WebviewMessageHandler {
   ): Promise<void> {
     if (outcome.kind === 'installed') {
       // FR-012 审计行：主机名 / 落点 / sha256 / 安装者 uid。写进宿主日志，
-      // 不含密码、不含代理内容的其它元数据。
+      // 不含密码、不含代理内容的其它元数据。uid 取**目标机上**代理回显的真实安装者
+      // （不是宿主进程 uid：远端部署时两者是不同账号，Windows 宿主更取不到）
+      // ——`specs/defects/mount-proxy-audit-uid-from-host-process`。
       this.log(auditLine({
         targetHost: target.host,
         installPath: `${CORE_MOUNT_PROXY_DIR}/${CORE_MOUNT_PROXY_NAME}`,
         digest: outcome.digest,
-        uid: outcome.digest.length > 0 ? (process.getuid?.() ?? null) : null,
+        uid: outcome.installerUid,
       }));
       // FR-008：装完**不自己判 ready**，交给 Core 重查能力。按被拦消息的会话问：
       // 部署目标是该会话所属的 Core，重查的必须是同一台机器的能力。

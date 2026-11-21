@@ -134,9 +134,11 @@ function secretThenPayload(credential: Uint8Array, payload: Uint8Array): Uint8Ar
 export type MountProxyDeployOutcome =
   /**
    * 装上且探测到就位（**不**代表 overlay 可用——那是 Core 重查能力的事，FR-008）。
-   * `digest` 是落盘内容的 sha256，供审计行使用（FR-012）。
+   * `digest` 是落盘内容的 sha256、`installerUid` 是目标机上的安装者 uid，供审计行使用
+   * （FR-012）。`installerUid` 为 `null` 表示代理没有回显该行——调用方据此判失败而不是
+   * 写一个占位值（`specs/defects/mount-proxy-audit-uid-from-host-process`）。
    */
-  | { kind: 'installed'; digest: string }
+  | { kind: 'installed'; digest: string; installerUid: number }
   /** 免密不可用，需要用户三选一 */
   | { kind: 'needsCredential'; manualCommand: string }
   /**
@@ -217,6 +219,16 @@ function sanitizeFailure(text: string, secret: string): string {
 /** 代理 `--install` 成功时在 stdout 回显的 sha256（64 位小写 hex） */
 const SHA256_LINE = /^[0-9a-f]{64}$/m;
 
+/**
+ * 代理 `--install` 回显的安装者 uid 行：**目标机上的真实安装者**（`SUDO_UID`，无则
+ * 该机的 `getuid()`）。
+ *
+ * 为什么由代理给而不是宿主自己取：远端部署时两者不是同一个账号（宿主的
+ * `process.getuid()` 是本机进程的 uid，Windows 上根本不存在）。审计行（FR-012）要记
+ * 的是「哪台机器上的谁装的」（`specs/defects/mount-proxy-audit-uid-from-host-process`）。
+ */
+const INSTALLER_UID_LINE = /^installer-uid=(\d+)$/m;
+
 /** 字节的 sha256（小写 hex）。宿主侧不是零依赖环境（代理那侧才要求），用 node:crypto。 */
 export function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -237,8 +249,35 @@ export function verifyInstalledDigest(
   return { ok: match[0] === sha256Hex(payload), digest: match[0] };
 }
 
+/** 安装命令回显的完整报告：落盘内容的 sha256 + 目标机上的安装者 uid */
+export interface InstallReport {
+  /** 落盘内容的 sha256（小写 hex）；空串 = 代理没有回显，无法确认装进去的是发出去的那份 */
+  digest: string;
+  /** 目标机上执行安装的账号 uid；`null` = 代理没有回显这一行 */
+  installerUid: number | null;
+}
+
+/**
+ * 解析 `--install` 的 stdout：sha256 行 + `installer-uid=` 行。
+ *
+ * 两行都由代理在 root 侧算出（`mount-proxy-rs` 的 `install_from_stdin`），宿主只读不猜。
+ * 顺序不参与判定：按行匹配，任何先后与夹杂的其它输出都不影响。
+ */
+export function parseInstallReport(stdout: string, payload: Uint8Array): InstallReport {
+  const digest = verifyInstalledDigest(stdout, payload);
+  const uidMatch = INSTALLER_UID_LINE.exec(stdout);
+  return {
+    digest: digest.digest,
+    installerUid: uidMatch ? Number(uidMatch[1]) : null,
+  };
+}
+
 /**
  * 审计行（FR-012）：主机名、落点、sha256、安装者 uid。
+ *
+ * `uid` 是**目标机上**执行安装的账号 uid（代理回显的 `installer-uid`），不是宿主进程
+ * uid——远端部署时两者是不同机器上的两个账号
+ * （`specs/defects/mount-proxy-audit-uid-from-host-process`）。
  *
  * 不含密码、不含代理内容的其它元数据；`targetHost` 为 `null` 时写 `localhost`。
  */
@@ -246,11 +285,11 @@ export function auditLine(options: {
   targetHost: string | null;
   installPath: string;
   digest: string;
-  uid: number | null;
+  uid: number;
 }): string {
   return (
     `[mount-proxy] installed host=${options.targetHost ?? 'localhost'} ` +
-    `path=${options.installPath} sha256=${options.digest} uid=${options.uid ?? 'unknown'}`
+    `path=${options.installPath} sha256=${options.digest} uid=${options.uid}`
   );
 }
 
@@ -267,17 +306,30 @@ export async function deployWithPasswordlessSudo(
   const proxyBytes = await target.readProxyBytes();
   const result = await target.shell.run(passwordlessInstallCommand(), { stdin: proxyBytes });
   if (result.code === 0) {
-    // FR-005：按内容比对——代理回显的 sha256 必须与喂进去的字节一致
-    const digest = verifyInstalledDigest(result.stdout, proxyBytes);
-    if (!digest.ok) {
+    // FR-005：按内容比对——代理回显的 sha256 必须与喂进去的字节一致。
+    // FR-012：安装者 uid 也从这次回显里取（目标机上的真实安装者）。
+    const report = parseInstallReport(result.stdout, proxyBytes);
+    if (report.digest.length === 0) {
       return {
         kind: 'failed',
-        failure: digest.digest.length === 0
-          ? '安装命令没有回显 sha256，无法确认装进去的是发出去的那份'
-          : `安装后的 sha256 与源内容不一致（落点 ${digest.digest}）`,
+        failure: '安装命令没有回显 sha256，无法确认装进去的是发出去的那份',
       };
     }
-    if (await target.isInstalled()) return { kind: 'installed', digest: digest.digest };
+    if (report.digest !== sha256Hex(proxyBytes)) {
+      return {
+        kind: 'failed',
+        failure: `安装后的 sha256 与源内容不一致（落点 ${report.digest}）`,
+      };
+    }
+    if (report.installerUid === null) {
+      return {
+        kind: 'failed',
+        failure: '安装命令没有回显安装者 uid，审计记录无法落笔',
+      };
+    }
+    if (await target.isInstalled()) {
+      return { kind: 'installed', digest: report.digest, installerUid: report.installerUid };
+    }
     // 退出码 0 却没装上：代理自称成功却没落位，属于实现不一致，不静默放过
     return {
       kind: 'failed',
@@ -321,17 +373,30 @@ export async function deployWithCredential(
     // stdin 已交给子进程；本地缓冲立刻清零（子进程那份由 OS 在 exec 后转手）
     stdin.fill(0);
     if (result.code === 0) {
-      // 与免密路径同口径：回显的 sha256 必须与发出去的字节一致（FR-005）
-      const digest = verifyInstalledDigest(result.stdout, proxyBytes);
-      if (!digest.ok) {
+      // 与免密路径同口径：回显的 sha256 必须与发出去的字节一致（FR-005），
+      // 安装者 uid 也取自同一次回显（FR-012）
+      const report = parseInstallReport(result.stdout, proxyBytes);
+      if (report.digest.length === 0) {
         return {
           kind: 'failed',
-          failure: digest.digest.length === 0
-            ? '安装命令没有回显 sha256，无法确认装进去的是发出去的那份'
-            : `安装后的 sha256 与源内容不一致（落点 ${digest.digest}）`,
+          failure: '安装命令没有回显 sha256，无法确认装进去的是发出去的那份',
         };
       }
-      if (await target.isInstalled()) return { kind: 'installed', digest: digest.digest };
+      if (report.digest !== sha256Hex(proxyBytes)) {
+        return {
+          kind: 'failed',
+          failure: `安装后的 sha256 与源内容不一致（落点 ${report.digest}）`,
+        };
+      }
+      if (report.installerUid === null) {
+        return {
+          kind: 'failed',
+          failure: '安装命令没有回显安装者 uid，审计记录无法落笔',
+        };
+      }
+      if (await target.isInstalled()) {
+        return { kind: 'installed', digest: report.digest, installerUid: report.installerUid };
+      }
     }
     return {
       kind: 'failed',

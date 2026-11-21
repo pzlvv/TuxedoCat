@@ -88,10 +88,16 @@ JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / loc
 ## 测试环境配置（environments.json）
 
 依赖真实外部环境（当前：真实 SSH 远端，`e2e/electron/remoteSshExecution.spec.ts` /
-`remoteTaskSurvival.spec.ts` / `remoteChangeList.spec.ts`）的用例从 `e2e/environments.json`
-读取环境信息；该文件**不入库**（gitignore，内容含 SSH 凭证）。
+`remoteTaskSurvival.spec.ts` / `remoteChangeList.spec.ts` / `overlayMountProxyRemote.spec.ts`）
+的用例从 `e2e/environments.json` 读取环境信息；该文件**不入库**（gitignore，内容含 SSH 凭证）。
 首次使用：复制 `e2e/environments.example.json` 为同目录的 `e2e/environments.json` 并填入
 本机可用的环境。各段字段与含义以 `e2e/helpers/testEnvironment.ts` 的类型与校验为准。
+
+同一台远端上登记**两个账号**（`ssh` 与 `ssh.sudoPasswordRequired`）：挂载代理的两条部署
+通道互斥于账号的 sudoers 配置——免密 `sudo` 可用的账号永远进不到「三选一凭据」分支，反之
+亦然。因此 `ssh` 段是常规账号，`ssh.sudoPasswordRequired` 是同一台机器上**没有 `NOPASSWD`
+规则**的账号（口令式 `sudo -S` 可用），`overlayMountProxyRemote.spec.ts` 跑在后者上；
+它在 `beforeAll` 实测 `sudo -n`，可用即报错（不回退成免密分支、不静默跳过）。
 
 `electron-ssh` 车道的用例文件名单只有一份（`e2e/playwright.config.ts` 的
 `REMOTE_SSH_SPECS`）：`electron-app` 用它做 `testIgnore`、`electron-ssh` 用做
@@ -106,7 +112,7 @@ JDK 25（2026.2 平台类文件为 Java 25；构建脚本按 PYCHARM_JDK25 / loc
 | --- | --- | --- | --- |
 | 产物层 | 配置加载期（`assertArtifact`） | 全部用例 | 缺构建产物 / Core 二进制即整车道报错，附构建命令 |
 | 配置层 | 配置加载期（`assertEnvironmentFileIfPresent`） + 用例文件加载期（`require*`） | 文件存在但形状非法 → 全部用例；依赖的段缺失 / 字段非法 → 该文件用例 | 收集期即失败，错误列出全部问题与复制指引 |
-| 连通层 | 依赖外部环境的用例的 `beforeEach` | 该用例 | 用例开头探测（SSH `uname -sm`），失效立即失败并指明恢复责任在使用者 |
+| 连通层 | 依赖外部环境的用例的 `beforeEach` / `beforeAll` | 该用例 / 该文件 | 用例开头探测（SSH `uname -sm`、本车账号的 `sudo -n` 形态），失效立即失败并指明恢复责任在使用者 |
 
 报错信息只描述「缺什么、去哪补」，环境本身永远由使用者恢复；用例不做任何修复动作
 （测试内的清场与场景预置是 arrange，不是修复）。

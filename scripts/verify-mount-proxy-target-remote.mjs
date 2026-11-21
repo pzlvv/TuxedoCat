@@ -34,7 +34,25 @@ import {
   CORE_MOUNT_PROXY_NAME,
 } from '../out/src/config/project.js';
 
-const env = JSON.parse(readFileSync('e2e/environments.json', 'utf8')).ssh;
+/**
+ * 本脚本验的是「免密不可用 → 三选一凭据」这条通道，因此跑在
+ * `ssh.sudoPasswordRequired` 登记的账号上（同一台机器，host / port 沿用 `ssh` 段）。
+ * 口径与 `e2e/electron/overlayMountProxyRemote.spec.ts` 一致：段缺失直接报错，
+ * 不回退成 `ssh` 段那个（它可能是免密可用的，那条通道另有覆盖）。
+ */
+const sshEnv = JSON.parse(readFileSync('e2e/environments.json', 'utf8')).ssh;
+if (!sshEnv.sudoPasswordRequired?.user || !sshEnv.sudoPasswordRequired?.password) {
+  console.error(
+    'e2e/environments.json 缺少 ssh.sudoPasswordRequired 段（{ user, password }）：\n'
+    + '  本脚本验的是「免密 sudo 不可用 → 三选一凭据」通道，需要一个没有 NOPASSWD 规则的账号。',
+  );
+  process.exit(2);
+}
+const env = {
+  ...sshEnv,
+  user: sshEnv.sudoPasswordRequired.user,
+  password: sshEnv.sudoPasswordRequired.password,
+};
 // 与 Core 同目录、同名于落点（不手抄产品名：`core.mountProxyName` 唯一给出）
 const PROXY_LOCAL = `resources/core/x64-linux/${CORE_MOUNT_PROXY_NAME}`;
 
@@ -176,7 +194,7 @@ async function run() {
     );
     check('暂存位已上传且 sha256 一致', staged.stdout.trim() === proxyDigest, staged.stdout.trim() || 'ABSENT');
 
-    // ── 4. 免密通道：真实远端不可用（已知 sudo -n 需要口令） ──
+    // ── 4. 免密通道：本脚本用的账号没有 NOPASSWD 规则，sudo -n 必然要口令 ──
     console.log('\n── 4. 免密通道（beginDeploy）──');
     const first = await beginDeploy({ target });
     check('免密不可用转三选一', first.kind === 'needsCredential', first.kind);

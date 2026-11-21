@@ -15,7 +15,7 @@ import {
   CORE_MOUNT_PROXY_NAME,
   LOG_FILE_NAME,
 } from '../../src/config/project';
-import { requireSshEnvironment } from '../helpers/testEnvironment';
+import { requireSudoPasswordEnvironment } from '../helpers/testEnvironment';
 
 /**
  * Overlay 挂载代理：真实 SSH 远端的安装、自检与隔离（`specs/051` FR-005 / FR-006 /
@@ -30,12 +30,18 @@ import { requireSshEnvironment } from '../helpers/testEnvironment';
  *   四断言、进程链与回收、代理拒绝面。远端不满足前置时 `test.skip(true, 缺哪一项)` 单列，
  *   **不算通过**——`markSkipped()` 的同一口径。
  *
- * 环境：`e2e/environments.json` 的 ssh 段（本机实测：`Linux x86_64`、用户 `pz` 在 `sudo`
- * 组、**免密 `sudo` 不可用**、口令式 `sudo -S` 可用、`/usr/libexec` 为 `root root 0755`、
- * 文件系统无 `nosuid`、内核支持 `overlay`）。因此本车按「口令分支为默认路径」设计，
- * 免密分支只验失败后的换路；`requiretty` / `nosuid` / 祖先可写 / `/usr/libexec` 不存在
- * 这五类拒绝面由 `src/test/sshDaemonBootstrap.test.ts` 的假 SSH 桩覆盖（改共享真机去
- * 逼近等于污染机器）。
+ * 环境：`e2e/environments.json` 的 `ssh.sudoPasswordRequired` 段——本车跑在**免密 `sudo`
+ * 不可用**的那个账号上（同一台机器，`host` / `port` 沿用 `ssh` 段）。要求的远端形态：
+ * `Linux x86_64`、账号在 `sudo` 组且**没有** `NOPASSWD` 规则、口令式 `sudo -S` 可用、
+ * `/usr/libexec` 为 `root root 0755`、文件系统无 `nosuid`、内核支持 `overlay`。
+ *
+ * 为什么必须换个账号而不是按机器现状分支：本车要用 UI 走完「免密失败 → 三选一 → 提交
+ * 口令」这条路，而机器上那个免密可用的账号永远进不到三选一。两条通道都要覆盖，就得分
+ * 两个账号——`ssh` 段的账号留给免密通道（`e2e/webview/overlayMountProxy.spec.ts` 用假宿主
+ * 覆盖），本车专用这里登记的账号。`beforeAll` 会实测 `sudo -n`：**可用即报错**，不静默
+ * 跳过（那会让这条通道静默地永远不验证）。
+ * `requiretty` / `nosuid` / 祖先可写 / `/usr/libexec` 不存在这五类拒绝面由
+ * `src/test/sshDaemonBootstrap.test.ts` 的假 SSH 桩覆盖（改共享真机去逼近等于污染机器）。
  *
  * 共享机器纪律：用例自建工作区、`afterAll` 整目录清理；装了代理就在收尾卸载，没装则断言
  * 「仍不存在」；不留状态文件。
@@ -43,11 +49,16 @@ import { requireSshEnvironment } from '../helpers/testEnvironment';
  * 运行：`npm run test:e2e:ssh -- overlayMountProxyRemote`
  * 前置：`npm run build:core:linux-x64`（远端是 Linux 时本机必须携带对应产物）；
  * 远端内核需有 overlayfs（`/proc/filesystems` 有 `nodev overlay`，否则产品的
- * `deployable` 探测恒 false）；「已安装」段的用例要先跑过部署用例或手工装机。
+ * `deployable` 探测恒 false）；`ssh.sudoPasswordRequired` 指向的账号要能登录且
+ * `sudo -n` 失败、`sudo -S` 成功；「已安装」段的用例要先跑过部署用例或手工装机。
  */
 
 
-const SSH = requireSshEnvironment();
+/**
+ * 本车跑在**免密 sudo 不可用**的那个账号上（`ssh.sudoPasswordRequired`）：
+ * 三选一凭据通道只有在这个身份下才走得到。
+ */
+const SSH = requireSudoPasswordEnvironment();
 
 test.setTimeout(600_000);
 
@@ -192,6 +203,18 @@ test.beforeAll(async () => {
       auth: { kind: 'sshPassword', password: SSH.password },
     },
   };
+  // 环境有效性（整车道一次）：这个账号必须**免密 sudo 不可用**。可用就说明
+  // `ssh.sudoPasswordRequired` 指错了账号（填成了 `ssh` 段那个），此时整条车道会走到
+  // 免密分支、三选一永远不出现——报错而不是跑出 2 条看不懂的超时。
+  const sudoN = await sshExec('sudo -n true');
+  if (sudoN.code === 0) {
+    throw new Error(
+      `E2E 环境配置无效：${SSH.user}@${SSH.host}:${SSH.port} 的免密 sudo **可用**，`
+      + `而本车要用「免密不可用 → 三选一凭据」这条通道。`
+      + `请把 e2e/environments.json 的 ssh.sudoPasswordRequired 指向同一台机器上`
+      + `没有 NOPASSWD 规则的账号（口令式 sudo -S 可用）。不做修复。`,
+    );
+  }
   await resetRemoteDaemon();
 });
 
@@ -247,9 +270,9 @@ async function proxyInstalled(): Promise<{ installed: boolean; stat: string }> {
 /**
  * 卸载代理（`docs/core/mount-proxy.md` 第 2.1 节的幂等命令，FR-012 / AC-36）。
  *
- * 幂等：位点不存在时也成功退出。口令式 `sudo` 可用、免密不可用（真机实测），因此密码
- * 经**标准输入**喂给 `sudo -S`（不进 argv，specs/051 FR-004 第 3 条同一口径）；收尾用它
- * 把远端恢复成「未装机」——共享机器不能留下一个 setuid root 文件。
+ * 幂等：位点不存在时也成功退出。本车账号的免密 `sudo` 不可用（`beforeAll` 已实测，
+ * 可用即报错），因此密码经**标准输入**喂给 `sudo -S`（不进 argv，specs/051 FR-004 第 3
+ * 条同一口径）；收尾用它把远端恢复成「未装机」——共享机器不能留下一个 setuid root 文件。
  *
  * 必须删**两个**文件：主二进制与它的允许列表 `<落点>.uids`（`--install` 时把调用者 uid
  * 写进去，入口只放行列表内的 uid）。只删主程序会留下一个记录着测试用户 uid 的 sidecar
@@ -272,10 +295,10 @@ async function uninstallProxy(): Promise<{ code: number | null; stdout: string; 
 async function deployProxyViaUi(chatPage: Awaited<ReturnType<AppHandle['chatPage']>>): Promise<void> {
   const dialog = chatPage.locator('[data-mount-proxy-dialog="confirm"]');
   await expect(dialog).toBeVisible({ timeout: 60_000 });
-  // 确认 → 远端免密 sudo 不可用（实测）→ 三选一 → 提交 sudo 密码
+  // 确认 → 远端免密 sudo 不可用（本车账号的前置）→ 三选一 → 提交 sudo 密码
   await dialog.locator('[data-mount-proxy-action="deploy"]').click();
   const passwordAction = dialog.locator('[data-mount-proxy-action="sudo-password"]');
-  await expect(passwordAction, '远端免密 sudo 不可用时应给三选一').toBeVisible({ timeout: 120_000 });
+  await expect(passwordAction, '本车账号的免密 sudo 不可用，应给三选一').toBeVisible({ timeout: 120_000 });
   await passwordAction.click();
   await dialog.locator('input[data-mount-proxy-secret]').fill(SSH.password);
   await chatPage.keyboard.press('Enter');
@@ -582,10 +605,11 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
   // 消息没有进 Core（AC-7）：确认框期间界面上没有用户气泡
   await expect(chatPage.locator('.message-user')).toHaveCount(0);
 
-  // 确认部署 → 远端 sudo 需要密码（实测 `sudo -n` 不可用）→ 三选一 → 提交 sudo 密码
+  // 确认部署 → 本车账号的 sudo 需要密码（`beforeAll` 已实测 `sudo -n` 失败）
+  // → 三选一 → 提交 sudo 密码
   await dialog.locator('[data-mount-proxy-action="deploy"]').click();
   const passwordAction = dialog.locator('[data-mount-proxy-action="sudo-password"]');
-  await expect(passwordAction, '远端免密 sudo 不可用时应给三选一').toBeVisible({ timeout: 120_000 });
+  await expect(passwordAction, '本车账号的免密 sudo 不可用，应给三选一').toBeVisible({ timeout: 120_000 });
   await passwordAction.click();
   await dialog.locator('input[data-mount-proxy-secret]').fill(SSH.password);
   await chatPage.keyboard.press('Enter');
