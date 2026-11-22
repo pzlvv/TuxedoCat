@@ -1,0 +1,76 @@
+# 一次性探查：CI runner 上就地起 sshd 能否满足 electron-ssh 车道的环境前提。
+#
+# 要回答的问题（任一不成立则「跑在本机」方案不成立）：
+#   1. ubuntu-latest 能起 sshd 并允许两个账号**口令登录**（产品用 password 认证）；
+#   2. 免密 sudo 账号 `sudo -n` 成功，口令 sudo 账号 `sudo -n` 失败、`sudo -S` 成功；
+#   3. 内核有 overlayfs（挂载代理的 `deployable` 探测依赖它）、/usr/libexec 为 root 0755；
+#   4. 本机 SFTP 上传 8MB 的耗时（对照跨公网实测 0.01–0.02MB/s）。
+#
+# 用完即删：这不是常规车道。
+name: probe-local-sshd
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: probe-local-sshd
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 起 sshd + 建两个账号
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server sshpass
+          sudo ssh-keygen -A
+          # 账号 A：免密 sudo（常规通道）
+          sudo useradd -m -s /bin/bash e2eplain
+          echo 'e2eplain:E2ePlain-2026' | sudo chpasswd
+          echo 'e2eplain ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/e2eplain >/dev/null
+          # 账号 B：无 NOPASSWD，口令 sudo（三选一凭据通道）
+          sudo useradd -m -s /bin/bash e2esudo
+          echo 'e2esudo:E2eSudo-2026' | sudo chpasswd
+          printf 'Defaults:e2esudo timestamp_timeout=0\n' | sudo tee /etc/sudoers.d/e2esudo >/dev/null
+          sudo chmod 0440 /etc/sudoers.d/e2eplain /etc/sudoers.d/e2esudo
+          sudo mkdir -p /run/sshd
+          sudo tee /etc/ssh/sshd_config.d/99-e2e.conf >/dev/null <<'EOF'
+          Port 2222
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication yes
+          UsePAM yes
+          PubkeyAuthentication yes
+          PermitRootLogin no
+          MaxStartups 100:30:200
+          EOF
+          sudo systemctl restart ssh || sudo /usr/sbin/sshd -f /etc/ssh/sshd_config
+          sleep 2
+          ss -ltnp | grep 2222 || true
+      - name: 校验两个账号的登录与 sudo 形态
+        run: |
+          set -uo pipefail
+          echo "=== A 登录 + sudo -n"
+          sshpass -p 'E2ePlain-2026' ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null e2eplain@127.0.0.1 'id; sudo -n true && echo "A sudo -n OK"'
+          echo "=== B 登录 + sudo -n（应失败）"
+          sshpass -p 'E2eSudo-2026' ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null e2esudo@127.0.0.1 'id; sudo -n true && echo "B sudo -n OK(不应出现)" || echo "B sudo -n 失败（预期）"'
+          echo "=== B 口令 sudo -S（应成功）"
+          sshpass -p 'E2eSudo-2026' ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null e2esudo@127.0.0.1 'echo "E2eSudo-2026" | sudo -S -p "" true && echo "B sudo -S OK"'
+      - name: 校验 overlayfs 与 install 路径前提
+        run: |
+          echo "=== /proc/filesystems overlay"
+          grep -E '^\s*nodev\s+overlay$' /proc/filesystems || echo "缺 overlayfs"
+          echo "=== /usr/libexec"
+          sudo stat -c '%U %G %a %n' /usr/libexec
+          echo "=== mountinfo nosuid 情况（/）"
+          findmnt -no OPTIONS /
+          echo "=== 能否 user namespace 挂 overlay（产品自查口径）"
+          unshare -Ur true && echo "unshare -Ur OK" || echo "unshare -Ur 不可用"
+      - name: 实测 SFTP 上传 8MB（对照跨公网 0.01–0.02MB/s）
+        run: |
+          set -euo pipefail
+          dd if=/dev/urandom of=/tmp/probe-8mb.bin bs=1M count=8 status=none
+          for i in 1 2 3; do
+            /usr/bin/time -f "第 $i 次 8MB: %e 秒" sshpass -p 'E2ePlain-2026' scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/probe-8mb.bin e2eplain@127.0.0.1:/tmp/probe-copy.bin 2>&1 | tail -1
+          done
+          sshpass -p 'E2ePlain-2026' ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null e2eplain@127.0.0.1 'stat -c %s /tmp/probe-copy.bin; rm -f /tmp/probe-copy.bin'
