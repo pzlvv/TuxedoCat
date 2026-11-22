@@ -83,6 +83,6 @@ status: 已修
 | 通道实测（npmmirror 两个域名） | 同上 | 绿 | `npmmirror.com/mirrors/electron/` 13.4MB/s；`cdn.npmmirror.com/binaries/electron/` 14.0MB/s（代理下 14.1MB/s） |
 | 修法验证（`@electron/get` 真实下载） | `ELECTRON_MIRROR=<cdn> ELECTRON_GET_USE_PROXY=true` 跑 `downloadArtifact` | 绿 | 117.1MB / 10.2s = 11.7MB/s；对照：只给代理不给镜像 60s 仍未下完 |
 | 回归用例（修复后，RT-1/2/3） | `npm run test:unit -- e2e-ci-lane` | 绿 | 42 通过 / 0 失败 |
-| runner 端到端（RT-4） | 清 `dist` 后跑修好的 `node scripts/warm-electron.cjs` | not-run | 待 runner 从当前 CI job 释放后执行（见下方待补） |
+| runner 端到端（RT-4，严格版） | runner 上清 `node_modules/electron/dist` ＋ `~/.cache/electron`（缓存不清理会命中缓存秒过、量不到真实下载），带 CI 同款代理跑 `node scripts/warm-electron.cjs` | 绿 | 首次 **12s**（117MB，约 10MB/s）；二次 0.0s（幂等）；`env -u https_proxy...` 无代理环境同样 12s 且不被塞 `ELECTRON_GET_USE_PROXY` |
 | CI 实证（修复前） | run `45042250492` 的 `e2e-ssh` | 红 | `remoteChangeList` job 在 `warm-electron` 步骤 `fetch failed`；`remoteTaskSurvival` job 该步骤挂 10 分钟以上后撞 18 分钟上限 |
 | CI 实证（修复后） | 下一次 `all` run 的 `e2e-ssh` | not-run | 待推送后由 CI 复核 |

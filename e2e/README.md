@@ -172,10 +172,12 @@ runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock
 
 1. **标签**：`self-hosted, linux, x64, e2e-ssh`。`all.yml` 的 `runs-on` 按这组标签取，
    找不到就把整条 ssh 车道挂成待机（不是失败）。
-2. **代理**：机器直连 actions CDN 只有 0.03MB/s，仓库的 checkout / npm / Electron 归档都要
-   经本机 mihomo（`127.0.0.1:7890`，实测 3.5MB/s）。`all.yml` 只给**出网步骤**
+2. **代理**：机器直连 actions CDN 只有 0.03MB/s，仓库的 checkout / npm 都要经本机
+   mihomo（`127.0.0.1:7890`，实测 3.5MB/s）。`all.yml` 只给**出网步骤**
    （`npm ci` / `playwright install-deps` / `warm-electron.cjs`）注入 `https_proxy`，
    不设 job 级——用例进程要连回环上的 mock LLM 与 sshd，全局代理会把它们一起绕进代理。
+   **但 Electron 运行时不该走这条代理**：改走 npmmirror 镜像后直连 14MB/s，
+   经代理几乎没有提升；镜像与 `ELECTRON_GET_USE_PROXY` 的口径见已知坑 22。
 3. **两个 SSH 账号**（`e2e/environments.json` 的 `ssh` 与 `ssh.sudoPasswordRequired`）：
    `ubuntu` 免密 sudo（常规通道），第二个账号（用户名见 `e2e/environments.json` 的
    `ssh.sudoPasswordRequired.user`）无 `NOPASSWD` 但口令式 `sudo -S` 可用
@@ -453,4 +455,20 @@ e2e/
     因此 ssh 车道用 `scripts/download-artifact-parallel.mjs`（Range 分片 + 拼接 + unzip，
     落盘布局与官方 action 一致），`src/test/e2eCiLane.test.ts` 的 RT-15 钉住这个调用点。
     排查时先看这一步的日志行：它打印总大小、并发数、耗时与实测吞吐。
+    CI 实证：`[download] 完成 28.8MB / 87.6s = 336KB/s`（修复前该 job 在下载上耗满 18 分钟）。
+22. **`@electron/get` 读不到 `.npmrc` 的镜像、也不认 `https_proxy`**：两者叠加会让
+    `warm-electron.cjs` 回落到 GitHub Releases 拉 100MB。症状是步骤日志停在
+    `Downloading Electron binary...` 十几分钟不动（job 撞 18 分钟上限），或直接
+    `TypeError: fetch failed` → `Electron failed to install correctly`
+    （run `45042250492` 的两条 ssh job 各中一种）。
+    两个坑各自的成因：
+    - `.npmrc` 的 `electron_mirror` **只在 `npm run` 下生效**——npm 会把它转成
+      `npm_config_electron_mirror` 注入子进程，`@electron/get` 读的是那组变量，不读文件本身。
+      CI 跑的是 `node scripts/warm-electron.cjs`，没有这层转换。
+    - `@electron/get` 用 undici，其 `initializeProxy()` 只在 `ELECTRON_GET_USE_PROXY=true`
+      时被调用，`https_proxy` 不会自动生效。
+    修法在 `scripts/warm-electron.cjs`：自己解析 `.npmrc` 的镜像写进 `ELECTRON_MIRROR`，
+    有代理环境时置 `ELECTRON_GET_USE_PROXY=true`（RT-16 钉住三条）。
+    本机实测：GitHub 直连 30KB/s、经代理 3.5MB/s；`cdn.npmmirror.com/binaries/electron/`
+    直连 14MB/s；走镜像后 `@electron/get` 真实下载 117.1MB / 10.2s = 11.7MB/s。
 
