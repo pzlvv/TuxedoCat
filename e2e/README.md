@@ -172,7 +172,8 @@ runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock
    （`npm ci` / `playwright install-deps` / `warm-electron.cjs`）注入 `https_proxy`，
    不设 job 级——用例进程要连回环上的 mock LLM 与 sshd，全局代理会把它们一起绕进代理。
 3. **两个 SSH 账号**（`e2e/environments.json` 的 `ssh` 与 `ssh.sudoPasswordRequired`）：
-   `ubuntu` 免密 sudo（常规通道），`e2essh` 无 `NOPASSWD` 但口令式 `sudo -S` 可用
+   `ubuntu` 免密 sudo（常规通道），第二个账号（用户名见 `e2e/environments.json` 的
+   `ssh.sudoPasswordRequired.user`）无 `NOPASSWD` 但口令式 `sudo -S` 可用
    （挂载代理的三选一凭据通道）。sshd 开 `PasswordAuthentication yes`——产品走口令认证。
 
 凭证只在 job 内存在：`scripts/write-e2e-environments.mjs` 从 6 个必填 secret 生成
@@ -431,8 +432,8 @@ e2e/
     （`/tmp` 的沙箱 / 锁 / 视图、`/dev/shm` 的 Chromium 段、部署槽位里中断上传留下的
     `*.new`）。手动排障时先跑它再复现；`/dev/shm` 的 `sem.*` 属于系统服务（`barad_age`），
     不属于本车道，不要动。
-    同源现象：`~/.tuxedo-cat/run/` 会留下上一轮 daemon 的状态文件，而「远端就是本机」时
+    同源现象：`~/.<configDir>/run/` 会留下上一轮 daemon 的状态文件，而「远端就是本机」时
     `pgrep -u "$(id -u)"` 是**整个 uid 口径**——手工跑过用例后再跑 `remoteSshExecution`
-    的清理类断言，会看到自己刚才那轮的进程。复现前先 `pkill -u "$(id -u)" -f "[t]uxedo-cat-core"`
-    并删状态文件。
+    的清理类断言，会看到自己刚才那轮的进程。复现前先按已知坑 11 的清场口径
+    （`CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`）杀进程并删状态文件。
 
