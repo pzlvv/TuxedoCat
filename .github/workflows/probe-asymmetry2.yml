@@ -1,0 +1,60 @@
+# 一次性实验（第二版）：全链路走 SSH 隧道，避免依赖云安全组放行。
+#
+# 第一版（run 45025013749）已给出关键结论：runner 直连 GitHub 能到 1.03MB/s、
+# runner 包更是 355MB/s（命中 GitHub CDN），而经 Ubuntu 代理只有 0.10MB/s —— 绕道
+# 代理是负优化。唯一没测准的是「runner→Ubuntu 回环经 SSH 的上行能力」（测速服务
+# 当时已关），本版补齐：全部走隧道，判据是隧道吞吐 vs 代理吞吐。
+name: probe-asymmetry2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_host:
+        description: '远端 Ubuntu 地址'
+        required: true
+      ssh_port:
+        description: 'SSH 端口'
+        required: true
+        default: '22'
+      ssh_user:
+        description: 'SSH 用户'
+        required: true
+        default: 'ubuntu'
+
+jobs:
+  probe:
+    name: probe-asymmetry2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 隧道吞吐 vs 代理吞吐
+        env:
+          H: ${{ inputs.ssh_host }}
+          P: ${{ inputs.ssh_port }}
+          U: ${{ inputs.ssh_user }}
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+        run: |
+          set -uo pipefail
+          sudo apt-get install -y -qq sshpass >/dev/null 2>&1
+          sshpass -p "$E2E_SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ExitOnForwardFailure=yes -p "$P" -f -N \
+            -L 17890:127.0.0.1:7890 -L 18099:127.0.0.1:8099 "$U@$H"
+          echo "隧道 OK"
+
+          run() {
+            local label="$1"; shift
+            local out
+            out=$(curl -s -o /dev/null -w "%{speed_download} %{time_total} %{size_download} %{http_code}" \
+                  --max-time 60 "$@" 2>/dev/null) || out="0 60 0 ERR"
+            printf '%-34s %s\n' "$label" "$(echo "$out" | awk '{printf "%8.3f MB/s  %6.1fs  %9dB  http=%s", $1/1048576, $2, $3, $4}')"
+          }
+
+          echo "=== runner → Ubuntu（经 SSH 隧道，代表回环转发能力）"
+          run "8MB 经隧道" "http://127.0.0.1:18099/blob8m.bin"
+          echo "=== runner → GitHub（直连 vs 经 Ubuntu 代理）"
+          run "codeload 直连" -L "https://codeload.github.com/actions/checkout/tar.gz/v4"
+          run "codeload 经代理" -x "http://127.0.0.1:17890" -L "https://codeload.github.com/actions/checkout/tar.gz/v4"
+          run "npm 包直连" -L "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz"
+          run "npm 包经代理" -x "http://127.0.0.1:17890" -L "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz"
+          pkill -f "ssh.*17890" || true
