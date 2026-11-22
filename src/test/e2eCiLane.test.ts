@@ -545,6 +545,32 @@ runTests('e2eCiLane', () => {
     missingWarm.length === 0,
   );
 
+  // RT-16：预热脚本必须自己解析 `.npmrc` 的镜像并开 `@electron/get` 的代理开关。
+  //
+  // 两个坑叠在一起才让下载变回「一小时」（run `45042250492` 实证）：
+  // 1. `.npmrc` 的 `electron_mirror` 只在 `npm run` 下被 npm 转成
+  //    `npm_config_electron_mirror`；`node scripts/warm-electron.cjs` 读不到，回落
+  //    GitHub Releases（自托管机器 30KB/s）；
+  // 2. `@electron/get` 用 undici，默认不感知 `https_proxy`，要显式
+  //    `ELECTRON_GET_USE_PROXY=true`。
+  // 缺任一条，100MB 都要一小时、撞穿 18 分钟 job 上限——而症状是
+  // `Downloading Electron binary...` 之后长时间静默，看起来像 runner 卡死。
+  const warmSource = fs.readFileSync(warmScript, 'utf-8');
+  check(
+    '预热脚本自己解析 .npmrc 的 electron_mirror（不依赖 npm run 的变量注入）',
+    /\.npmrc/.test(warmSource) && /electron_mirror/.test(warmSource),
+  );
+  check(
+    '预热脚本按环境代理开 ELECTRON_GET_USE_PROXY',
+    /ELECTRON_GET_USE_PROXY/.test(warmSource),
+  );
+  check(
+    '.npmrc 的 electron_mirror 指向镜像而不是 GitHub Releases',
+    /^\s*electron_mirror\s*=\s*https?:\/\/(?!github\.com)/m.test(
+      fs.readFileSync(path.join(REPO_ROOT, '.npmrc'), 'utf-8'),
+    ),
+  );
+
   // RT-15：自托管车道必须用并发分片脚本取产物，不能用 actions/download-artifact。
   //
   // 原因：官方 action 用**单条连接**拉 blob，而自托管机器到 `*.blob.core.windows.net`
