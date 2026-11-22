@@ -30,6 +30,10 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SKIP_DIRS = new Set([
   '.git',
   '.zcode',
+  // `.github/workflows/` 要显式写出环境变量名（如 `<envPrefix>_E2E_CONNECT_PROBE_MS`）：
+  // GitHub Actions 无法在 `env:` 的键里做字符串拼接，前缀只能写实。这是 CI 编排对产品
+  // 契约的必要引用，不是散落的品牌字面量（产品名本身仍不许出现——扫描代码侧照旧）。
+  '.github',
   'node_modules',
   'out',
   'dist',
