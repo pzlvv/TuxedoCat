@@ -85,4 +85,4 @@ status: 已修
 | 回归用例（修复后，RT-1/2/3） | `npm run test:unit -- e2e-ci-lane` | 绿 | 42 通过 / 0 失败 |
 | runner 端到端（RT-4，严格版） | runner 上清 `node_modules/electron/dist` ＋ `~/.cache/electron`（缓存不清理会命中缓存秒过、量不到真实下载），带 CI 同款代理跑 `node scripts/warm-electron.cjs` | 绿 | 首次 **12s**（117MB，约 10MB/s）；二次 0.0s（幂等）；`env -u https_proxy...` 无代理环境同样 12s 且不被塞 `ELECTRON_GET_USE_PROXY` |
 | CI 实证（修复前） | run `45042250492` 的 `e2e-ssh` | 红 | `remoteChangeList` job 在 `warm-electron` 步骤 `fetch failed`；`remoteTaskSurvival` job 该步骤挂 10 分钟以上后撞 18 分钟上限 |
-| CI 实证（修复后） | 下一次 `all` run 的 `e2e-ssh` | not-run | 待推送后由 CI 复核 |
+| CI 实证（修复后） | run `45046252618` 的 `e2e-ssh` | 绿 | 两条 job 的 `warm-electron` 各 1.8s / 1.9s（命中缓存，镜像日志可见），随后用例跑完（`8 passed (49.4s)` / `14 passed (2.4m)`）；不再出现 `fetch failed` 或长时间静默 |

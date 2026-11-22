@@ -76,4 +76,4 @@ status: 已修
 | 分片下载实跑（RT-2，真实脚本） | runner 上在 `scripts/` 原位跑 `node scripts/download-artifact-parallel.mjs`，`ARTIFACT_DEST=/tmp/env-verify` | 绿 | `28.8MB / 86.2s = 342KB/s`；解压后三个目录自检全 OK（76M）；产物落地路径与官方 action 一致 |
 | 类型与静态检查 | `npm run check-types:e2e` / `npm run lint` | 绿 | e2e 的 tsc 与 eslint 无输出 |
 | CI 实证（修复前） | run `45027408803` / `45030636920` 的 ssh job | 红 | 四个 job 都停在 `download-artifact` 撞 18 分钟上限，`chmod` 报缺 `dist/resources/core` |
-| CI 实证（修复后，RT-3） | 下一次 `all` run 的 `e2e-ssh` | not-run | 待推送后由 CI 复核 |
+| CI 实证（修复后，RT-3） | run `45046252618` 的 `e2e-ssh` | 绿 | 分片下载在 CI 稳定：`28.8MB / 53.0s = 555KB/s` 与 `28.8MB / 56.3s = 523KB/s`；两条 job 跑完整份用例（`8 passed (49.4s)` / `14 passed (2.4m)`），`chmod` 不再报缺目录 |
