@@ -345,4 +345,13 @@ e2e/
     `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的应用进程：沙箱实例的可执行
     文件在仓库的 node_modules 下，真实安装的在用户目录的 Programs 下）；Linux 用
     `ps -o pid,etimes,args -u "$(id -u)" | grep electron` 看是否有跨用例存活的进程。
+18. **用「回投文案计数」推进 mock 轮次在单核 runner 上会反序**：`subagentConcurrency.spec.ts`
+    的 US-49 用父会话上下文里 `Agent [Master] queued` 出现次数决定「该发任务 5 / 该发任务 6」。
+    任务 5 的排队结果是**工具结果回投**，回投与下一轮驱动之间存在竞态——单核 runner 上
+    下一轮可能先于回投到达，`queued` 仍为 0，于是任务 6 先被发出、断言读到 `[6, 5]`
+    （期望 `[5, 6]`，run `44962124641` 实证）。本机 6/6 全绿、单条稳定 3.8s，**不是产品
+    缺陷**：Rust 侧槽位 FIFO 由 `VecDeque` + 预留转移保证（`core-rs/src/subagent.rs` 的
+    `waiters` / `enter_slot_queue`），顺序本身没错，错的是用例把「跨轮」当成时序保证。
+    这类断言要么锚定产品侧可观测的排队序号，要么放宽为集合比较——不要靠「上一轮一定先
+    落地」推进脚本。
 
