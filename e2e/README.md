@@ -57,6 +57,39 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 排查：`E2E_DEBUG=1 npm run test:e2e:electron` 会把应用主进程日志透传到测试输出；
 失败时 Playwright 输出 trace（`npx playwright show-trace <zip>`）。
 
+## 时间预算（实测基线）
+
+判断「是环境慢还是用例有问题」先看这张表，别凭感觉归因。数值来自 run
+`44962124641`（托管 runner 1 核 + 真实 SSH 远端）与本机（Windows）的同一批用例。
+
+| 指标 | 实测 | 说明 |
+| --- | --- | --- |
+| 本机→远端 TCP 握手 RTT | 16ms | 网络不是瓶颈 |
+| 本机→远端 SSH 建链 + `exec true` | ~350ms | SSH 不是瓶颈 |
+| sshd 反向 DNS 解析 | 关闭（`no`） | 无反向 DNS 拖慢（曾是被怀疑项） |
+
+单条用例的 CI / 本机放大倍数随「是否启 Electron」分档：
+
+| 用例类型 | 本机 | CI | 倍数 |
+| --- | --- | --- | --- |
+| 只走 `sshExec`（不启 Electron） | 8.5s | 12.4s | 1.46× |
+| 启 Electron + 恢复远程工作区 | 13.4s | 31.9s | 2.38× |
+| `overlayMountProxyRemote` 全 17 条 | — | 中位 31.9s / 最长 49.1s | — |
+
+**放大集中在 Electron 冷启动，不在网络。** 结构性原因是每条用例都完整走一遍
+`startMockLlm`（开反向隧道）→ `launchApp` → 等远程工作区恢复 → `afterEach` 的
+`resetRemoteDaemon`（轮询远端 Core 退出，间隔固定 2s）。`workers: 1` +
+`fullyParallel: false` 让这些开销逐条叠加。
+
+超时预算：`timeout: 180_000`（整条用例）/ `expect.timeout: 30_000`（单个断言）。
+上表最长的 49.1s 离 180s 很远——**用例超时不是「环境慢」的信号，是链路真的断了**。
+真出现超时时按已知坑 10 / 11 / 17 的顺序查：先看是否远端残留 daemon 拖住建链，再看
+是否 `launchApp` 的 CDP 握手全超时（3 次 × 60s）留下了垂死的 Electron 进程树。
+
+整轮墙钟（同一 run）：`prepare` 3.5min → 四个车道并行，`e2e-electron` 13min，
+`e2e-ssh` 四个 spec **串行** 共 43min（`max-parallel: 1`，见「CI 车道」一节），
+全程 47min。
+
 ## CI 车道（`.github/workflows/all.yml`）
 
 e2e 在全量回归工作流 `all.yml` 里跑：合入 main 后整点定时（每小时）+ 手动 dispatch。
@@ -70,11 +103,21 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 | `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
 | `electron` | `electron-app` | xvfb + openbox（Linux 无显示；裸 X 没有窗口管理器）+ Chromium 运行时库（`playwright install-deps`）+ artifact 下载后补可执行位（已知坑 6） |
 | `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
-| `ssh` | `electron-ssh` | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位 |
+| `ssh` | `electron-ssh`，**按 spec 文件拆成 4 个矩阵任务** | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位 |
 
 失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
 `electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，任何机器都能直接跑；
 后者缺 `environments.json` 时在收集期报错（无效直接报错，不做兜底）。
+
+`electron-ssh` 拆矩阵的原因（run `44962124641` 之前的实证）：整条车道串行跑 44 条用例时，
+**单文件 15/17 通过、整条车道却 16 条失败**，每条都在 2 分钟左右超时。成因不是用例本身——
+是串行累积下远端 SSH 连接与 Core/daemon 残留逐条堆积（已知坑 10 / 11 / 17 的叠加），
+越往后越容易命中。按 spec 文件拆成 4 个 job 后每个 job 都是干净的 runner 与干净远端状态，
+四个 spec 全绿，单 job 8–13 分钟。
+
+**`max-parallel: 1` 是必须的**：四个 spec 同时跑会翻倍远端并发，比不拆更糟（实测）。
+串行的代价是墙钟 43 分钟，换来的是确定性——远端是共享云主机（`maxstartups 10:30:100` /
+`maxsessions 10`），并发一上来就退化。
 
 `electron-ssh` 在 CI 里由 **GitHub 托管 runner 当宿主**（跑 Electron + mock LLM），SSH 远端
 仍是真实那台测试机。runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock LLM 经
