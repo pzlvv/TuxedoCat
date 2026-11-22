@@ -195,7 +195,18 @@ jobs:
   ssh:
     name: e2e-ssh（${{ matrix.spec }}）
     needs: prepare
-    runs-on: ubuntu-latest
+    # 本车道跑在**自托管的 Ubuntu 测试机**上，而不是 GitHub 托管 runner：SSH 远端就是
+    # 这台机器自己的 localhost（`e2e/environments.json` 由 secrets 现写成 127.0.0.1）。
+    #
+    # 为什么搬：托管 runner 到远端只有 0.01–0.02MB/s 上行（实测见
+    # `scripts/diag-upload.mjs` 的 run 45017484821：8MB 产物 180s 只走到 2.3MB），
+    # 每次冷部署把 Core 传过去要 6 分钟以上，直接撞穿 60s 单用例上限——`remoteSshExecution`
+    # 的五条用例在 run 45007017025 里全部「Test timeout of 60000ms exceeded」。
+    # 跑在远端本机时这条链路是回环，同一个上传实测 5.8MB/s（本机 Windows 同口径 5–6MB/s）。
+    #
+    # 代价与前提：这台机器的 GitHub 下载要靠本机代理（直连 actions CDN 只有 0.03MB/s），
+    # 部署口径见 e2e/README.md 的「自托管 runner」一节；它下线时本车道整条待机。
+    runs-on: [self-hosted, linux, x64, e2e-ssh]
     # 单个 spec 文件的墙钟 = 准备（npm ci ~1min + chmod + 写环境文件 + apt ~30s +
     # install-deps ~10s）约 2.5min + 用例本身。实测最长的是
     # `remoteTaskSurvival`：11.2 分钟（含 180s sleep 的三条长任务用例）。
@@ -231,8 +242,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+      # 自托管机器直连 actions CDN 只有 0.03MB/s（实测），经本机 mihomo 代理后 3.5MB/s。
+      # 代理**只注入到需要出网的步骤**，不设 job 级：用例进程要连的是远端回环上的
+      # mock LLM 与 sshd，全局代理会把它们一起绕进代理（回环连接会被代理反转成外网）。
       - run: npm ci
+        env:
+          https_proxy: http://127.0.0.1:7890
+          http_proxy: http://127.0.0.1:7890
       - uses: actions/download-artifact@v4
         with:
           name: e2e-artifacts
@@ -251,15 +267,22 @@ jobs:
           E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
           E2E_SSH_LLM_ADVERTISE_HOST: ${{ secrets.E2E_SSH_LLM_ADVERTISE_HOST }}
         run: node scripts/write-e2e-environments.mjs
+      # 机器上已装（这份清单只保证「装过」；重复安装时 apt 直接跳过）
       - uses: ./.github/actions/apt-install
         with:
           packages: xvfb openbox
       - run: npx playwright install-deps chromium
+        env:
+          https_proxy: http://127.0.0.1:7890
+          http_proxy: http://127.0.0.1:7890
       # 与 electron 车道同一个理由预热 Electron 二进制：`node_modules/electron` 没有
-      # postinstall，第一次 `require('electron')` 才现下 ~100MB。落在用例里就是前几条
-      # 用例各烧掉 20–40s 墙钟、撞上 60s 单用例上限后整条车道被失败早停掐掉
-      # （run `44998731954` 的两个 ssh job 实证）。
+      # postinstall，第一次 `require('electron')` 才现下 ~100MB（自托管机器上这一步走
+      # Electron 的 release CDN，同样要代理）。落在用例里就是前几条用例各烧掉 20–40s
+      # 墙钟、撞上 60s 单用例上限后整条车道被失败早停掐掉（run `44998731954` 实证）。
       - run: node scripts/warm-electron.cjs
+        env:
+          https_proxy: http://127.0.0.1:7890
+          http_proxy: http://127.0.0.1:7890
       # Electron 起点同 electron 车道：Linux 无显示要 xvfb，裸 X 没有 WM（最大化 / 焦点
       # 语义不成立）要 openbox。SSH 远端由用例自己经 ssh2 建链，不依赖本节点的 ssh 客户端
       #

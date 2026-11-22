@@ -164,23 +164,21 @@ test('US-49 前台中止：排队中的 2 个调用取消、不创建子代理�
     const text = lastUserText(req.body.messages);
     const subTask = /^并发任务(\d+)：慢慢回答$/.exec(text);
     if (subTask) {
-      if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
-        return { kind: 'text', text: '子代理任务完成。' };
-      }
-      return {
-        kind: 'tool',
-        name: 'Reply',
-        args: { message: `并发任务${subTask[1]}完成` },
-        delayMs: 5_000,
-      };
+      // 子代理首轮**一直挂着**（`hang` 不回首字）：本用例要断言的「4 个子代理
+      // 还在跑」必须是一个不会自己到期的状态。用有限延迟（此前 5s）撑窗口时，
+      // 慢 runner 上 4 个子会话创建完就已经过期，中止点击后的快照是
+      // `queryRunning=false` / `subAgentRunning=false`（灰、不可点），
+      // 断言读到的是「没有后台工作」，与 US-49 要锁的语义无关
+      // （run `45007017025` 实证）。
+      return { kind: 'hang' };
     }
     if (text === '并发派活') {
       if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
-        // 收尾轮挂起 30s：排队结果立即返回后，父会话的工具批很快结束——
-        // 若无这一拍，中止点击时父会话往往已空闲，首击会走「中止范围」
-        // （连已运行的子代理一起中止）而不是前台中止，用例锁定的事件就不是
-        // US-49 的「排队派发随前台取消」了。挂起保证中止落在前台阶段。
-        return { kind: 'text', text: '已中止。', delayMs: 30_000 };
+        // 父会话收尾轮同样一直挂着：排队结果立即返回后父会话的工具批很快结束，
+        // 若这一轮按有限延迟收尾，中止点击会落到「前台已空闲」那一档——首击走
+        // 「中止范围」（连已运行的子代理一起中止），用例锁定的事件就不再是
+        // US-49 的「排队派发随前台取消」。挂起保证中止**确定**落在前台阶段。
+        return { kind: 'hang' };
       }
       return {
         kind: 'tools',
@@ -204,7 +202,7 @@ test('US-49 前台中止：排队中的 2 个调用取消、不创建子代理�
     .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 30_000 })
     .toBe(5);
 
-  // 首击只停前台：父会话收尾轮被 mock 挂起（30s），此刻仍是前台在跑；
+  // 首击只停前台：父会话收尾轮被 mock 挂住（不回首字），此刻仍是前台在跑；
   // 前台中止置会话取消标记，已排队未启动的 2 个派发随之放弃
   const abortButton = chatPage.locator('button[title="终止"]');
   await abortButton.click();
