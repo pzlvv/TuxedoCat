@@ -90,6 +90,9 @@
  *     测试名或追溯矩阵行引用——防「spec 重排编号后既有测试名引用悬空」。
  *
  * `tmp_*` 临时文件、`docs/archive/` 冻结档案与 `specs/_templates/` 模板不参与校验；
+ * 仓库顶层「按设计不入库」的目录（判据取 `.gitignore`，如本机草稿目录）整棵不参与扫描——
+ * 扫描面只由入库内容决定，不随这台机器有没有本地草稿而变
+ * （`specs/defects/docs-lint-scans-local-only-dirs.md`）；
  * 代码块（fenced / 行内反引号）不参与
  * 文档侧扫描——块内是示例与引用样本，不是文档结构的一部分（例外：第 16 项对标注 `src=` 的
  * fenced 块做与真实文件的比对）。
@@ -148,13 +151,36 @@ function readText(rel: string): string {
   return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
 }
 
+/**
+ * 仓库顶层「按设计不入库」的目录名（判据只看 `.gitignore`，见 `helpers/docPathExistence.ts`）。
+ *
+ * 只在**顶层**判定一次：递归判定会给每个子目录起一个 `git check-ignore` 进程（本机实测
+ * 7s+），而顶层已豁免的目录整棵必然也在忽略范围内。`SKIP_DIRS` 里的名字本来就不进扫描，
+ * 先滤掉可以省掉它们各自的判定进程。
+ *
+ * 为什么必须排除：本机草稿目录（`exp/`，放诊断脚本与截图）里的脚本常提到各种外部库符号，
+ * 让它参与扫描，第 15 组「反引号标识符存活」的全集就随「本机有没有草稿」膨胀——文档里写
+ * 一个只在草稿里出现的名字，本地绿、干净克隆与 CI 红
+ * （`specs/defects/docs-lint-scans-local-only-dirs.md`）。
+ */
+function localOnlyTopLevelDirs(): Set<string> {
+  const names = fs
+    .readdirSync(REPO_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !SKIP_DIRS.has(entry.name))
+    .map((entry) => entry.name);
+  return new Set(names.filter((name) => isLocalOnlyPath(name)));
+}
+
 /** 列出仓库内参与扫描的文件（相对根的 POSIX 路径）；`tmp_*` 临时文件不属于文档体系 */
 function listFiles(): string[] {
   const out: string[] = [];
+  const localOnlyDirs = localOnlyTopLevelDirs();
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('tmp_')) continue;
       if (entry.name === '_templates') continue; // specs/_templates/ 模板不参与校验（保留目录名）
+      // 顶层本机专属目录整棵不扫（文件级不豁免：被忽略的单文件照常扫，宁可多报）
+      if (dir === REPO_ROOT && entry.isDirectory() && localOnlyDirs.has(entry.name)) continue;
       if (entry.name === 'docs' && dir === REPO_ROOT) {
         // docs 全目录参与（README 地图与规格互相引用要校验），archive 除外
         for (const sub of fs.readdirSync(path.join(dir, entry.name), { withFileTypes: true })) {
