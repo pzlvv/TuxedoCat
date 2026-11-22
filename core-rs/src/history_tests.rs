@@ -136,6 +136,46 @@ fn delete_conversation_removes_all_related_files() {
     delete_conversation("s1", PROJECT).unwrap();
 }
 
+/// 删除后由在途写盘触发建档不得让会话复活
+/// （`specs/defects/deleted-conversation-meta-resurrected-by-inflight-persist.md`）。
+///
+/// 机制：删除只置取消标志、不 join 在途查询线程，线程随后的 `touch_metadata` /
+/// `append_message` 会以「meta 缺失即兜底建档」的语义把文件写回来。修复后墓碑挡住这些写。
+#[test]
+fn deleted_conversation_is_not_resurrected_by_late_writes() {
+    let sandbox = Sandbox::new("history-delete-tombstone");
+    create_conversation("s1", PROJECT, json!({ "sessionId": "s1" })).unwrap();
+    append_message("s1", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    let dir = sandbox.conversation_dir(PROJECT);
+    delete_conversation("s1", PROJECT).unwrap();
+
+    // 模拟在途线程的迟到写：两条落盘入口都不该重建文件
+    append_message("s1", PROJECT, &user_message("late", "u2"), None).unwrap();
+    touch_metadata(
+        "s1",
+        PROJECT,
+        true,
+        &SessionCreator::User,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
+    update_metadata(
+        "s1",
+        PROJECT,
+        || json!({ "sessionId": "s1", "title": "复活" }),
+        |metadata| {
+            metadata["title"] = json!("复活");
+        },
+    )
+    .unwrap();
+
+    assert!(
+        !dir.join("s1.meta.json").exists(),
+        "迟到的 meta 写盘不得重建文件"
+    );
+    assert!(!dir.join("s1.jsonl").exists(), "迟到的消息落盘不得重建文件");
+}
+
 #[test]
 fn delete_conversation_also_removes_sub_conversations() {
     // 沿 `parentSessionId` 递归删除子孙对话

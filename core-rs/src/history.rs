@@ -4,7 +4,9 @@
 //! JSONL 每行一条 `StoredMessage`（`uuid` / `parentUuid` / `timestamp` / `message`），
 //! `tool_use_update` 记录按顺序回放覆盖已写入的 tool_use block。
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use serde_json::{json, Map, Value};
@@ -14,6 +16,44 @@ use crate::util;
 
 /// 同一会话文件的写操作串行化
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// 已删除会话的墓碑（`specs/defects/deleted-conversation-meta-resurrected-by-inflight-persist.md`）。
+///
+/// 删除不是「删完就完」：删盘时可能还有在途查询线程，它们随后的 `touch_metadata` /
+/// `update_title_if_needed` 会以「meta 缺失即兜底建档」的语义把 `.meta.json` 写回来，
+/// 会话在盘上复活。查询线程是 detach 的、没有可 join 的句柄，因此用墓碑做闸门：
+/// 删除时登记，落盘路径见到墓碑一律跳过。
+///
+/// 键是**项目对话目录 + 会话 id**而不是裸 id：同一 id 在不同项目目录下是不同会话
+/// （沙箱测试里每条用例都建新目录、都叫 `s1`），只按 id 记会跨目录误挡。
+///
+/// 进的是 `WRITE_LOCK` 保护的范围（`delete_conversation` 与各写入口都持锁），
+/// 所以墓碑的读写与「删盘 / 建档」互斥，不存在检查通过后又被另一线程补档案的窗口。
+static DELETED_SESSIONS: LazyLock<Mutex<HashSet<(PathBuf, String)>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// (目录, id) 是否已被删除（墓碑命中即视为「不该再落盘」）
+fn is_deleted_in(dir: &std::path::Path, session_id: &str) -> bool {
+    DELETED_SESSIONS
+        .lock()
+        .unwrap()
+        .contains(&(dir.to_path_buf(), session_id.to_string()))
+}
+
+/// 登记墓碑。仅供 `delete_conversation` 调用——与删盘在同一个 `WRITE_LOCK` 临界区里，
+/// 保证「登记」先于任何后续写入口的检查。
+fn mark_deleted(dir: &std::path::Path, session_id: &str) {
+    DELETED_SESSIONS
+        .lock()
+        .unwrap()
+        .insert((dir.to_path_buf(), session_id.to_string()));
+}
+
+/// 清空墓碑（测试用：同一进程内的用例复用会话 id）。
+#[cfg(test)]
+pub fn reset_deleted_sessions() {
+    DELETED_SESSIONS.lock().unwrap().clear();
+}
 
 /// 校验会话 id。id 由宿主生成并经帧通道传入（信任边界），
 /// 它会直接拼进文件名，因此禁止路径分隔符与 `.` / `..`，避免越出会话目录。
@@ -351,7 +391,17 @@ pub fn update_metadata(
     mutator: impl FnOnce(&mut Value),
 ) -> Result<Value, String> {
     let _guard = WRITE_LOCK.lock().unwrap();
+    // 用 ensure_ 版本解析目录：它与后面写盘用的是同一个（可能刚建出来的）路径，
+    // 墓碑按路径比对，两边必须一致
     let dir = config::ensure_project_conversation_dir(project)?;
+    // 已删除的会话不再建档：删盘时可能还有在途线程，它们的 `touch_metadata` /
+    // `update_title_if_needed` 会以「meta 缺失即兜底建档」的语义把会话写回来
+    // （specs/defects/deleted-conversation-meta-resurrected-by-inflight-persist.md）。
+    // 这里直接返回调用方给的兜底值：调用方只把它当「当前 meta 快照」用，
+    // 不落盘即等价于「会话已不存在」，不会再派生别的写入。
+    if is_deleted_in(&dir, session_id) {
+        return Ok(fallback());
+    }
     let path = dir.join(session_file_name(session_id, ".meta.json")?);
     let mut metadata = util::read_to_string_lossy(&path)
         .ok()
@@ -570,6 +620,9 @@ pub fn delete_conversation(session_id: &str, project: &str) -> Result<(), String
     let _guard = WRITE_LOCK.lock().unwrap();
     let dir = config::project_conversation_dir(project)?;
     for id in conversation_closure_in(&dir, session_id) {
+        // 先登记墓碑再删盘（同一把 WRITE_LOCK）：此后任何在途线程的写入口都会跳过该会话，
+        // 不会把刚删掉的 meta 重新建出来
+        mark_deleted(&dir, &id);
         delete_single_conversation(&dir, &id)?;
     }
     Ok(())
@@ -967,7 +1020,13 @@ pub fn append_compact_archive(
 /// 追加一行 JSONL 到该会话的消息文件
 fn append_record(session_id: &str, project: &str, record: &Value) -> Result<(), String> {
     let _guard = WRITE_LOCK.lock().unwrap();
+    // 同 `update_metadata` 的墓碑闸门：已删除的会话不再重建 `.jsonl`。
+    // 返回 Ok 而不是 Err——调用方（在途轮次）随后就会被自身的取消检查收尾，
+    // 这里再抛错只会变成一条无意义的「落盘失败」噪声。
     let dir = config::ensure_project_conversation_dir(project)?;
+    if is_deleted_in(&dir, session_id) {
+        return Ok(());
+    }
     let path = dir.join(session_file_name(session_id, ".jsonl")?);
     let line = serde_json::to_string(record).map_err(|err| err.to_string())?;
     use std::io::Write;
