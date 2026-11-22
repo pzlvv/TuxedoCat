@@ -19,9 +19,15 @@ if (!fs.existsSync(envFile)) {
 }
 const ssh = JSON.parse(fs.readFileSync(envFile, 'utf8')).ssh;
 
-const LOCAL = 'dist/resources/core/x64-linux/tuxedo-cat-core';
-if (!fs.existsSync(LOCAL)) {
-  console.error(`缺少本地 Core 产物 ${LOCAL}（先跑 npm run build:core:linux-x64）`);
+// 构建脚本的产物落在 `resources/core/<dir>/`（`scripts/build-core.mjs` 的 `outDir`）；
+// `dist/resources/core/` 只有本机打包后才有，CI 上不存在。
+const CANDIDATES = [
+  'resources/core/x64-linux/tuxedo-cat-core',
+  'dist/resources/core/x64-linux/tuxedo-cat-core',
+];
+const LOCAL = CANDIDATES.find((p) => fs.existsSync(p));
+if (!LOCAL) {
+  console.error(`缺少本地 Core 产物，试过：\n  ${CANDIDATES.join('\n  ')}\n先跑 npm run build:core:linux-x64`);
   process.exit(1);
 }
 const size = fs.statSync(LOCAL).size;
