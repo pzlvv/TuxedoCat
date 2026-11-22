@@ -1,0 +1,80 @@
+# 一次性实验：验证「runner 经 Ubuntu 代理拉 GitHub」相比直连是否有收益。
+#
+# 端口在云安全组上未放行（7890 / 8099 从外网连不通），因此本 workflow 用 **SSH 远端
+# 转发**把 Ubuntu 的代理与测速服务映射到 runner 的回环——走的仍是同一条公网路径，
+# 结论对「安全组放行后直连」同样成立（只差 SSH 加解密开销）。
+#
+# 要回答的是链路是否不对称：
+#   A. runner → Ubuntu 直连下载 8MB（上行能力，即原 ssh 车道撞的那面墙）
+#   B. runner → Ubuntu 经同一台 Ubuntu 的代理
+#   C. runner → GitHub(codeload) 直连
+#   D. runner → GitHub(codeload) 经 Ubuntu 代理（= 提案要验证的形态）
+#
+# 用完即删。
+name: probe-asymmetry
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_host:
+        description: '远端 Ubuntu 公网地址（探针用；e2e 的 E2E_SSH_HOST 已改指向回环）'
+        required: true
+      ssh_port:
+        description: 'SSH 端口'
+        required: true
+        default: '22'
+      ssh_user:
+        description: 'SSH 用户'
+        required: true
+        default: 'ubuntu'
+
+jobs:
+  probe:
+    name: probe-asymmetry
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 经 SSH 隧道测四个方向
+        env:
+          E2E_SSH_HOST: ${{ inputs.ssh_host }}
+          E2E_SSH_PORT: ${{ inputs.ssh_port }}
+          E2E_SSH_USER: ${{ inputs.ssh_user }}
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+        run: |
+          set -uo pipefail
+          sudo apt-get install -y -qq sshpass >/dev/null 2>&1
+
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ExitOnForwardFailure=yes"
+          # 注意：这里连的是真远端（云端那台），而 e2e/environments.json 现在写的是 127.0.0.1。
+          # 本探针只做链路测速，用 runner 侧直连远端主机名即可。
+          REMOTE="$E2E_SSH_USER@$E2E_SSH_HOST"
+
+          sshpass -p "$E2E_SSH_PASSWORD" ssh $SSH_OPTS -p "$E2E_SSH_PORT" -f -N \
+            -L 17890:127.0.0.1:7890 -L 18099:127.0.0.1:8099 "$REMOTE"
+          echo "隧道已建立（17890=代理, 18099=测速 HTTP）"
+
+          run() { # $1=标签 $2...=curl 参数
+            local label="$1"; shift
+            local out
+            out=$(curl -s -o /dev/null -w "%{speed_download} %{time_total} %{size_download} %{http_code}" \
+                  --max-time 90 "$@" 2>/dev/null) || out="0 90 0 ERR"
+            printf '%-40s %s\n' "$label" "$(echo "$out" | awk '{printf "%8.2f MB/s  %6.1fs  %9dB  http=%s", $1/1048576, $2, $3, $4}')"
+          }
+
+          echo
+          echo "=== A. runner → Ubuntu 直连（上行能力）"
+          run "8MB 直连" "http://$E2E_SSH_HOST:8099/blob8m.bin"
+          echo "=== A'. 同一文件经 SSH 隧道（等价于经代理转发）"
+          run "8MB 经隧道" "http://127.0.0.1:18099/blob8m.bin"
+          echo
+          echo "=== C. runner → GitHub 直连"
+          run "codeload 直连" -L "https://codeload.github.com/actions/checkout/tar.gz/v4"
+          echo "=== D. runner → GitHub 经 Ubuntu 代理（提案形态）"
+          run "codeload 经 Ubuntu 代理" -x "http://127.0.0.1:17890" -L "https://codeload.github.com/actions/checkout/tar.gz/v4"
+          echo
+          echo "=== E. 大包的同一对照（约 200MB 会超时，看速率即可）"
+          run "runner 包 直连" -L --max-time 45 "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz"
+          run "runner 包 经代理" -x "http://127.0.0.1:17890" -L --max-time 45 "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz"
+
+          pkill -f "ssh.*17890" || true
