@@ -40,7 +40,8 @@ import { requireSshEnvironment } from '../helpers/testEnvironment';
 
 const SSH = requireSshEnvironment();
 
-test.setTimeout(300_000);
+// 单用例上限由 project 给（`electron-ssh` = 60s，见 `e2e/playwright.config.ts`），
+// 只有确实要等长任务的三条在用例体内放宽——文件级放宽等于放弃这层闸门。
 
 function sshConnect(): Client {
   const client = new Client();
@@ -348,6 +349,8 @@ function localFingerprint(): string {
 }
 
 test('冷部署：槽位与共享 ripgrep 全部缺失时首次连接完成部署并可用', async () => {
+  // 这一轮要把 36.5MB 的 Core 整份传到远端（跨公网），实测整轮 48.6s
+  test.setTimeout(180_000);
   const fingerprint = localFingerprint();
   // 清场：杀残留 daemon / 删本指纹槽位与共享 ripgrep / 删状态文件——模拟「第一次连这台机器」
   // pkill 模式带 []：不匹配执行这条命令的远端 shell 自身（否则 pkill 杀掉自己的父 shell，清场半途而废）
@@ -391,6 +394,9 @@ test('冷部署：槽位与共享 ripgrep 全部缺失时首次连接完成部�
 });
 
 test('客户端强杀后远端清理：workspace Core 秒级退出、daemon 30s 空闲退出且清状态文件', async () => {
+  // 要等 daemon 走完 30s 空闲退出倒计时再断言进程消失：实测整轮 58.2s，贴着 60s 档，
+  // 慢机必然超时——给 120s。
+  test.setTimeout(120_000);
   const fingerprint = localFingerprint();
   const chatPage = await launchWithRemoteWorkspace();
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
@@ -539,7 +545,8 @@ test('US-42 远程（SSH）文件浏览：树来自远端、悬停显示修改�
  * 条目——现状下它停在「读取失败，点击重试」。
  */
 test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读取失败）', async () => {
-  test.setTimeout(600_000);
+  // 起本地 TCP 代理造「先断后通」+ 等重连就绪后树自动重读：实测整轮 46.5s（贴近 60s 档）
+  test.setTimeout(180_000);
   /** 转发开关：false = 掐断（远端不可用），true = 正常连到真实 sshd */
   let forwarding = false;
   /** 活的客户端 socket：收尾时先销毁，否则 proxy.close() 在仍有连接时永不回调 */
@@ -803,7 +810,8 @@ test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行�
 // 与 specs/defects/ssh-reconnect-send-dropped-before-connection-ready（RT-1）共用本用例。
 
 test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返', async () => {
-  test.setTimeout(600_000);
+  // 链路沉默判定（≤10s）+ 重连 + 三段往返：实测整轮 108s
+  test.setTimeout(240_000);
   // 三工作区（远程活动 + 两个本地）：远程死亡标红时其余两个 Connection 仍在
   // （Client 无「唯一连接」退路），旧会话释放路由必抛——孤儿视图滞留 + 恢复后
   // 旧会话的每次发送都持续抛「No Connection owns session」，对应真实用户

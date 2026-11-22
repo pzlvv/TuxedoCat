@@ -60,7 +60,8 @@ import { requireSudoPasswordEnvironment } from '../helpers/testEnvironment';
  */
 const SSH = requireSudoPasswordEnvironment();
 
-test.setTimeout(600_000);
+// 单用例上限由 project 给（`electron-ssh` = 60s，见 `e2e/playwright.config.ts`）。
+// 本文件的用例整轮实测最长 49.1s，全部落在 60s 档内，不做文件级放宽。
 
 /** 远端安装位点（产物名与目录的唯一来源是 `src/config/project.json`） */
 const REMOTE_PROXY_PATH = `${CORE_MOUNT_PROXY_DIR}/${CORE_MOUNT_PROXY_NAME}`;

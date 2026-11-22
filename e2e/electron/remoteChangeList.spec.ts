@@ -67,7 +67,8 @@ const SSH = requireSshEnvironment();
  */
 process.env[`${ENV_PREFIX}_E2E_REMOTE_GIT_OPS`] = '1';
 
-test.setTimeout(600_000);
+// 单用例上限由 project 给（`electron-ssh` = 60s，见 `e2e/playwright.config.ts`）。
+// 两条要造上百条远端改动 / 反复重扫的用例整轮跑满也不止 60s，在各自用例体内放宽。
 
 function sshConnect(): Client {
   const client = new Client();
@@ -467,6 +468,8 @@ async function expectBadge(
 // 条目数线性增长（≥几十倍），新形态接近 1（远端 git 扫 120 个文件的自身耗时才是主项）。
 
 test('RT-1/RT-2/RT-3 远端 120 条改动一次取数：往返次数与条目数解耦，行数口径与本地一致', async () => {
+  // 造 120 个远端文件 + 两种规模各取数一轮：实测整轮 72s，超出 project 的 60s 档
+  test.setTimeout(180_000);
   const repo = await initRemoteRepo('manyrepo');
   // 基线：60 个已跟踪 md + 1 个已跟踪非 md（用来验证 --diff-filter=d 之外的正常条目）
   await sshExec(
@@ -703,6 +706,8 @@ test('RT-7 工作区是仓库子目录：改动行仍在清单里且 data-path �
 // 反复重扫导致的失败行累积。
 
 test('RT-4 远端取数不改写 .git/index，也不触发自己触发的全量重扫', async () => {
+  // 要等哨兵在全量重扫后安静下来并回读日志：实测整轮 66s，超出 project 的 60s 档
+  test.setTimeout(180_000);
   const repo = await initRemoteRepo('sentinelrepo');
   await sshExec(
     `cd ${shQuote(repo)} && printf "a1\\na2\\n" > a.md && printf "b1\\n" > b.md`

@@ -280,5 +280,232 @@ runTests('e2eCiLane', () => {
     !/upload-artifact/.test(job) || !/path:\s*\|?\s*\n?\s*test-results/.test(job),
   );
 
+  // ---------- 整条 all 在 30 分钟内出结论 ----------
+  //
+  // 事故形态：`all.yml` 的某个 job 不设上限时 GitHub 给 6 小时，一个挂死的步骤
+  // （实测 `electron-ssh` 的 remoteChangeList 卡 50 分钟）会把整条车道连同排队的一起
+  // 拖住。下面四条把「30 分钟内必出结论」拆成可对照的编排事实：
+  //   1. 每个 job 都有 `timeout-minutes`，且不超过总预算；
+  //   2. ssh 矩阵不串行（串行的墙钟是四个文件之和 = 43 分钟，装不进预算）；
+  //   3. Playwright 侧有单用例 / 整轮 / 失败早停三道闸门；
+  //   4. 失败不重试（重试把失败用例的墙钟翻倍）。
+
+  /** 顶层 job 名 → job 文本块（`  <name>:` 到下一个顶层 job 键为止，只看 `jobs:` 之后） */
+  const jobBlocks = ((): Map<string, string> => {
+    const lines = workflow.split(/\r?\n/);
+    const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+    if (jobsAt < 0) throw new Error('all.yml 里找不到 jobs:');
+    const blocks = new Map<string, string>();
+    let current: string | null = null;
+    let body: string[] = [];
+    const flush = (): void => {
+      if (current !== null) blocks.set(current, body.join('\n'));
+    };
+    for (const line of lines.slice(jobsAt + 1)) {
+      const key = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+      if (key) {
+        flush();
+        current = key[1];
+        body = [line];
+        continue;
+      }
+      if (current !== null) body.push(line);
+    }
+    flush();
+    return blocks;
+  })();
+
+  /** job 里 `timeout-minutes:` 的取值（没有则 null） */
+  const jobTimeout = (block: string): number | null => {
+    const match = /^\s{4}timeout-minutes:\s*(\d+)\s*$/m.exec(block);
+    return match ? Number(match[1]) : null;
+  };
+
+  // RT-10：每个 job 都有显式上限；且**关键路径**（prepare + 最慢 e2e 车道）不超过
+  // 30 分钟总预算。单看每个 job 都「≤ 30」是弱判据：prepare 25 + ssh 25 也满足，
+  // 实际墙钟却是 50 分钟。这里按依赖关系算真实关键路径。
+  const ALL_LANE_BUDGET_MINUTES = 30;
+  const missingTimeout = [...jobBlocks.entries()]
+    .filter(([name, block]) => name !== 'smoke' && jobTimeout(block) === null)
+    .map(([name]) => name);
+  check(
+    `all.yml 的每个 job 都有 timeout-minutes（缺：${missingTimeout.join('、') || '无'}）`,
+    missingTimeout.length === 0,
+  );
+  const overBudget = [...jobBlocks.entries()]
+    .filter(([, block]) => {
+      const value = jobTimeout(block);
+      return value !== null && value > ALL_LANE_BUDGET_MINUTES;
+    })
+    .map(([name, block]) => `${name}=${jobTimeout(block)}min`);
+  check(
+    `all.yml 的 job 上限都不超过 ${ALL_LANE_BUDGET_MINUTES} 分钟（超：${overBudget.join('、') || '无'}）`,
+    overBudget.length === 0,
+  );
+
+  // 关键路径 = prepare + 它下游最慢的那个 e2e 车道（smoke 与 prepare 并行，不是瓶颈）
+  const workTime = (name: string): number | null => {
+    const block = jobBlocks.get(name);
+    return block ? jobTimeout(block) : null;
+  };
+  /** `needs: prepare` 的车道（e2e 的四个 + 矩阵展开的 ssh） */
+  const e2eLanes = [...jobBlocks.entries()]
+    .filter(([, block]) => /^\s{4}needs:\s*prepare\s*$/m.test(block))
+    .map(([name]) => name);
+  const e2eCaps = e2eLanes.map((name) => workTime(name));
+  const criticalPath = (workTime('prepare') ?? Number.POSITIVE_INFINITY)
+    + Math.max(...e2eCaps.map((cap) => cap ?? Number.POSITIVE_INFINITY));
+  check(
+    `all.yml 的关键路径（prepare ${workTime('prepare')}min + 最慢车道 `
+      + `${Math.max(...e2eCaps.map((cap) => cap ?? 0))}min = ${criticalPath}min）不超过 `
+      + `${ALL_LANE_BUDGET_MINUTES} 分钟`,
+    e2eLanes.length >= 4 && criticalPath <= ALL_LANE_BUDGET_MINUTES,
+  );
+
+  // 单车道上限不能低于 Playwright 的整轮上限：低了对应用例还没被杀就先被 job 杀掉，
+  // 拿不到「哪条用例挂住」的日志，只剩一句 job 超时。
+  const runTimeout = ((): number | null => {
+    const minutes = /const RUN_TIMEOUT_MS = ([0-9_]+) \* 60_000/.exec(playwrightConfig);
+    return minutes ? Number(minutes[1].replace(/_/g, '')) : null;
+  })();
+  const tooTight = e2eLanes.filter((name) => {
+    const cap = workTime(name);
+    return runTimeout === null || cap === null || cap < runTimeout;
+  });
+  check(
+    `每个 e2e 车道的 job 上限都不低于 Playwright 整轮上限 ${runTimeout ?? '?'} 分钟`
+      + `（低：${tooTight.join('、') || '无'}）`,
+    tooTight.length === 0,
+  );
+
+  // RT-11：ssh 矩阵必须并行——串行的墙钟是四个文件之和（实测 43 分钟），30 分钟装不进
+  check(
+    'all.yml 的 ssh 矩阵不限制 max-parallel（四路并行，否则墙钟超预算）',
+    !/max-parallel:/.test(job),
+  );
+  // 也接受「显式并行但小于四」的折中（墙钟 2 批约 24 分钟）——只拒绝串行与非法值
+  const maxParallel = /max-parallel:\s*(\d+)/.exec(job);
+  check(
+    'all.yml 的 ssh 矩阵若显式给 max-parallel，取值必须 ≥ 2',
+    maxParallel === null || Number(maxParallel[1]) >= 2,
+  );
+
+  // RT-12：Playwright 侧三道闸门——单用例分档 / 整轮上限 / 5 条失败即停，且不重试
+  check(
+    'playwright 配置的 CI 整轮上限由 RUN_TIMEOUT_MS 派生（globalTimeout）',
+    /globalTimeout:\s*process\.env\.CI\s*\?\s*RUN_TIMEOUT_MS\s*:\s*0/.test(playwrightConfig),
+  );
+  const globalTimeoutMinutes = ((): number | null => {
+    const match = /const RUN_TIMEOUT_MS = ([0-9_]+) \* 60_000/.exec(playwrightConfig);
+    return match ? Number(match[1].replace(/_/g, '')) : null;
+  })();
+  check(
+    `playwright 配置的整轮上限在 15 分钟内（当前：${globalTimeoutMinutes ?? '未声明'} 分钟）`,
+    globalTimeoutMinutes !== null && globalTimeoutMinutes <= 15,
+  );
+  check(
+    'playwright 配置失败 5 条即停（maxFailures）',
+    /maxFailures:\s*process\.env\.CI\s*\?\s*5\s*:\s*0/.test(playwrightConfig),
+  );
+  check('playwright 配置 CI 上不重试（retries: 0）', /retries:\s*0[,]/.test(playwrightConfig));
+  // 单用例默认档 = 30s；重车道各自有 project 级覆盖（断言存在，不锁具体数值）
+  check(
+    'playwright 配置的默认单用例上限是 30s（快车道）',
+    /const FAST_TEST_TIMEOUT_MS = 30_000;/.test(playwrightConfig),
+  );
+  check(
+    'electron-app / electron-ssh 两个重车道各有 project 级 timeout 覆盖',
+    /timeout:\s*ELECTRON_APP_TEST_TIMEOUT_MS/.test(playwrightConfig)
+      && /timeout:\s*SSH_TEST_TIMEOUT_MS/.test(playwrightConfig),
+  );
+
+  // RT-13：**每个 project 块**的取值。
+  //
+  // 上面几条读的是整个文件的文本，能拦住「删掉一行」，拦不住「写错位置」——把
+  // `timeout` 写到 project 外、把档位常量改成只被注释引用、「30s 档」被误改成 90s
+  // 而断言只看「有没有 timeout」，都会静默通过。这里按 project 切块对照：默认档常量
+  // 的取值、两个重车道的 project 覆盖、前端三个车道不覆盖（沿用默认档）。
+  const constantValue = (name: string): number | null => {
+    const match = new RegExp(`const ${name} = ([^;]+);`).exec(playwrightConfig);
+    if (!match) return null;
+    // 只认「数字字面量」与「数字 * 60_000」两种写法，避免引入表达式求值
+    const literal = /^([0-9][0-9_]*)$/.exec(match[1].trim());
+    if (literal) return Number(literal[1].replace(/_/g, ''));
+    const minutes = /^([0-9][0-9_]*)\s*\*\s*60_000$/.exec(match[1].trim());
+    return minutes ? Number(minutes[1].replace(/_/g, '')) * 60_000 : null;
+  };
+
+  /**
+   * project 块：`name: '<name>'` 起到**下一个 project 的 `name:`** 为止。
+   *
+   * 不用花括号配对——project 里嵌了 `use: { … }`，配对要写完整的括号扫描；而
+   * 「下一个 `name:` 之前」对本目录的判据（有没有 `timeout:`）是精确的，且对
+   * 单行对象（`electron-ssh`）与多行对象（`electron-app`）同样成立。
+   */
+  const projectBlock = (name: string): string | null => {
+    const start = playwrightConfig.indexOf(`name: '${name}'`);
+    if (start < 0) return null;
+    const rest = playwrightConfig.slice(start + 1);
+    const next = rest.search(/[{,]\s*\n?\s*name: '/);
+    return next > 0 ? playwrightConfig.slice(start, start + 1 + next) : playwrightConfig.slice(start);
+  };
+
+  check(
+    '默认档常量 = 30s（FAST_TEST_TIMEOUT_MS）',
+    constantValue('FAST_TEST_TIMEOUT_MS') === 30_000,
+  );
+  check(
+    '整轮上限常量 = 15 分钟（RUN_TIMEOUT_MS）',
+    constantValue('RUN_TIMEOUT_MS') === 15 * 60_000,
+  );
+  check(
+    '整应用档常量 = 60s（ELECTRON_APP_TEST_TIMEOUT_MS）',
+    constantValue('ELECTRON_APP_TEST_TIMEOUT_MS') === 60_000,
+  );
+  check(
+    '真实 SSH 档常量 = 60s（SSH_TEST_TIMEOUT_MS）',
+    constantValue('SSH_TEST_TIMEOUT_MS') === 60_000,
+  );
+
+  const electronAppBlock = projectBlock('electron-app');
+  const electronSshBlock = projectBlock('electron-ssh');
+  check(
+    'electron-app project 块内设置 timeout（不是只写了常量）',
+    electronAppBlock !== null && /timeout:\s*ELECTRON_APP_TEST_TIMEOUT_MS/.test(electronAppBlock),
+  );
+  check(
+    'electron-ssh project 块内设置 timeout（不是只写了常量）',
+    electronSshBlock !== null && /timeout:\s*SSH_TEST_TIMEOUT_MS/.test(electronSshBlock),
+  );
+  const fastLaneBlocks = ['webview-ui', 'remote-workspace-ui', 'terminal-ui']
+    .map((name) => projectBlock(name));
+  check(
+    '前端三个车道不覆盖 timeout（沿用 30s 默认档）',
+    fastLaneBlocks.every((block) => block !== null && !/\btimeout:/.test(block)),
+  );
+
+  // 用例体内放宽必须写明理由：放宽本身是允许的，静默放宽才是漏洞。
+  // 判据取「同一文件里 `test.setTimeout(` 的每一处，前面 3 行内都有注释」——
+  // 长任务用例的写法见 `remoteTaskSurvival.spec.ts`。
+  const sshSpecs = [
+    'e2e/electron/remoteSshExecution.spec.ts',
+    'e2e/electron/remoteChangeList.spec.ts',
+    'e2e/electron/remoteTaskSurvival.spec.ts',
+    'e2e/electron/overlayMountProxyRemote.spec.ts',
+  ];
+  const undocumented: string[] = [];
+  for (const rel of sshSpecs) {
+    const lines = read(path.join(REPO_ROOT, rel)).split(/\r?\n/);
+    lines.forEach((line, index) => {
+      if (!/test\.setTimeout\(/.test(line)) return;
+      const context = lines.slice(Math.max(0, index - 3), index).join('\n');
+      if (!/\/\/|\*/.test(context)) undocumented.push(`${rel}:${index + 1}`);
+    });
+  }
+  check(
+    `真实 SSH 车道的每处 test.setTimeout 都带注释说明（缺：${undocumented.join('、') || '无'}）`,
+    undocumented.length === 0,
+  );
+
   finish();
 });

@@ -35,7 +35,8 @@ import { requireSshEnvironment } from '../helpers/testEnvironment';
 
 const SSH = requireSshEnvironment();
 
-test.setTimeout(300_000);
+// 单用例上限由 project 给（`electron-ssh` = 60s，见 `e2e/playwright.config.ts`）。
+// 本文件的三条用例要等 180s 的远端 sleep 任务跨孤儿期跑完，各自在用例体内放宽。
 
 function sshConnect(): Client {
   const client = new Client();
@@ -232,6 +233,8 @@ function armSleepTaskHandler(mockLlm: MockLlm): void {
 }
 
 test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消）、后台运行后远端 Core 存活', async () => {
+  // 起一个 180s 的远端 sleep 任务并跨「标签页关闭 → 重开认领」窗口：实测整轮 108s
+  test.setTimeout(180_000);
   const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
@@ -283,6 +286,8 @@ test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消�
 });
 
 test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、任务继续完成', async () => {
+  // 孤儿期要跑满远端 sleep（180s）后等终答：实测整轮 210s
+  test.setTimeout(300_000);
   const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
@@ -343,6 +348,7 @@ test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、
 });
 
 test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色未读完成灯（AC-4）', async () => {
+  // 孤儿期要等 sleep 跑完 + daemon 空退（30s）+ 重开认领：实测整轮 294s
   test.setTimeout(420_000);
   const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);

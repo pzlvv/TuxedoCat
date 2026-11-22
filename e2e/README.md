@@ -81,14 +81,32 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 `resetRemoteDaemon`（轮询远端 Core 退出，间隔固定 2s）。`workers: 1` +
 `fullyParallel: false` 让这些开销逐条叠加。
 
-超时预算：`timeout: 180_000`（整条用例）/ `expect.timeout: 30_000`（单个断言）。
-上表最长的 49.1s 离 180s 很远——**用例超时不是「环境慢」的信号，是链路真的断了**。
+整应用车道另有一个**已知未定位**的固定开销：凡是「加第二个工作区再切回去」的用例，
+CI 上稳定多花约 30s（`fileExplorer.spec.ts` 的五条、`sessions.spec.ts:203`、
+`desktopShell.spec.ts:339`，实测 30–34.3s；同一份用例在 Windows 开发机 2–4s）。它不是
+断言里的合法等待——`e2e-debug` 车道单跑其中一条耗时 42.3s，主进程日志在最后 30s
+里完全静止。已知坑列表暂无它的根因条目；在那之前 60s 档就是为它留的。
+
+超时预算（`e2e/playwright.config.ts`）分三档，**用例超时是「链路断了」的信号，不是
+「环境慢」的信号**：
+
+| 闸门 | 取值 | 覆盖 |
+| --- | --- | --- |
+| 单用例（默认档） | 30s | `webview-ui` / `remote-workspace-ui` / `terminal-ui`：实测最长 13.1s |
+| 单用例（整应用） | 60s | `electron-app`：实测 p90 12.3s，最长 34.3s（上一条的固定开销） |
+| 单用例（真实 SSH） | 60s | `electron-ssh`：实测中位 41s；确需长等待的用例在**用例体内** `test.setTimeout()` 放宽并写明实测值 |
+| 单用例（安装程序 / PyCharm） | 5min | `tui-installer` 的 `beforeAll` 要 cargo 构建安装器（project 的 `timeout` 才是 `beforeAll` 的预算）；`pycharm-plugin` 要起 IDE |
+| 单断言 | 30s | 全部 project |
+| 整轮 | 15min（仅 CI） | `globalTimeout`：一个 Playwright 调用 = 一个 CI 车道 |
+| 失败早停 | 5 条（仅 CI） | `maxFailures`；`retries: 0`——重试会把失败墙钟翻倍 |
+
 真出现超时时按已知坑 10 / 11 / 17 的顺序查：先看是否远端残留 daemon 拖住建链，再看
 是否 `launchApp` 的 CDP 握手全超时（3 次 × 60s）留下了垂死的 Electron 进程树。
 
-整轮墙钟（同一 run）：`prepare` 3.5min → 四个车道并行，`e2e-electron` 13min，
-`e2e-ssh` 四个 spec **串行** 共 43min（`max-parallel: 1`，见「CI 车道」一节），
-全程 47min。
+整轮墙钟（30 分钟预算，run `44962124641` 的实测分项）：`smoke` 与 `prepare` 并行，
+`prepare` 3.5min → 四个车道并行，`e2e-electron` 13min，`e2e-tui` 2.5min，
+`e2e-ui` 4min，`e2e-ssh` 四个 spec **并行**共等于最慢一个（约 12min），全程约 17min。
+最坏情况由 job 上限兜住：`prepare` 8 + 车道 18 = 26 分钟。
 
 ## CI 车道（`.github/workflows/all.yml`）
 
@@ -115,9 +133,20 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 越往后越容易命中。按 spec 文件拆成 4 个 job 后每个 job 都是干净的 runner 与干净远端状态，
 四个 spec 全绿，单 job 8–13 分钟。
 
-**`max-parallel: 1` 是必须的**：四个 spec 同时跑会翻倍远端并发，比不拆更糟（实测）。
-串行的代价是墙钟 43 分钟，换来的是确定性——远端是共享云主机（`maxstartups 10:30:100` /
-`maxsessions 10`），并发一上来就退化。
+四个 job **并行**跑（`all.yml` 里不再设 `max-parallel: 1`）：目标是整条 `all` 在 30 分钟内
+出结论，而串行时四个文件的墙钟相加是 43 分钟。并行压的是「远端并发连接数」，判据是
+「每个 job 自己建多少条链」——每个 job 只跑一个 spec 文件、一条干净链路（单文件的连接形态
+在 run `44962124641` 已四个全绿）。远端是共享云主机（`maxstartups 10:30:100` /
+`maxsessions 10`），旧形态「四个文件塞进一个 job、脚手架每命令建一次链」才把它压垮
+（实测 39 条）。**若四路并行真的出现 `Connection lost before handshake`，把 `max-parallel`
+降到 2，不要退回串行**（2 路墙钟约 24 分钟，仍在预算内；串行必然超时）。
+
+每个车道的时间闸门见本文件「时间预算」一节。`all.yml` 的 job 上限按**关键路径**取值
+（`prepare` 8 + 最慢 e2e 车道 18 = 26 分钟 ≤ 30 分钟预算）：`prepare` 8 分钟，
+`ui` / `electron` / `tui` / `ssh` 四个车道各 18 分钟。四个 e2e 车道取同一个值的理由——
+**job 上限必须高于 Playwright 的整轮上限（15min）**，否则某条用例挂住时是 job 先被杀，
+只剩一句「job 超时」，拿不到 Playwright 报的那条用例名。`src/test/e2eCiLane.test.ts`
+把关键路径、每个 job 的上限、以及「车道上限 ≥ 整轮上限」都做成了断言。
 
 `electron-ssh` 在 CI 里由 **GitHub 托管 runner 当宿主**（跑 Electron + mock LLM），SSH 远端
 仍是真实那台测试机。runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock LLM 经

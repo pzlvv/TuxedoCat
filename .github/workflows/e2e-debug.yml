@@ -28,8 +28,10 @@ jobs:
   debug:
     name: e2e-debug
     runs-on: ubuntu-latest
-    # 单用例调试不该跑太久：20 分钟没结论说明前置就有问题
-    timeout-minutes: 30
+    # 定位一处失败只需要跑 1-2 条用例（约 2 分钟），但把 `file` 留空时会退化成跑整个
+    # project（electron-app 123 条实测 13 分钟）+ 产物构建约 5 分钟。上限 20 分钟＝
+    # 两段之和，既容得下「顺手跑整条车道」，又保证调试车道本身不会再变成新的挂死出口。
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
