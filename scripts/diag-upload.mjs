@@ -19,11 +19,16 @@ if (!fs.existsSync(envFile)) {
 }
 const ssh = JSON.parse(fs.readFileSync(envFile, 'utf8')).ssh;
 
+// 产物名从 `src/config/project.json` 派生，不写字面量（`docs/hosts/product-identity.md`）：
+// 改名只动那一个文件，脚本跟着走。
+const project = JSON.parse(fs.readFileSync('src/config/project.json', 'utf8'));
+const CORE_BINARY = project.core.binaryName;
+
 // 构建脚本的产物落在 `resources/core/<dir>/`（`scripts/build-core.mjs` 的 `outDir`）；
 // `dist/resources/core/` 只有本机打包后才有，CI 上不存在。
 const CANDIDATES = [
-  'resources/core/x64-linux/tuxedo-cat-core',
-  'dist/resources/core/x64-linux/tuxedo-cat-core',
+  `resources/core/x64-linux/${CORE_BINARY}`,
+  `dist/resources/core/x64-linux/${CORE_BINARY}`,
 ];
 const LOCAL = CANDIDATES.find((p) => fs.existsSync(p));
 if (!LOCAL) {
