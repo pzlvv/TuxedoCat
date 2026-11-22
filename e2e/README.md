@@ -148,18 +148,39 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 只剩一句「job 超时」，拿不到 Playwright 报的那条用例名。`src/test/e2eCiLane.test.ts`
 把关键路径、每个 job 的上限、以及「车道上限 ≥ 整轮上限」都做成了断言。
 
-`electron-ssh` 在 CI 里由 **GitHub 托管 runner 当宿主**（跑 Electron + mock LLM），SSH 远端
-仍是真实那台测试机。runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock LLM 经
-SSH 反向隧道暴露到远端回环（`e2e/README.md` 的「运行」一节），因此 runner 在 NAT 后不影响
-链路。选托管 runner 而不是在那台机器上跑自托管 runner：远端是共享云主机（4 vCPU），
-宿主侧编译与 Electron 都更吃单核性能，而 SSH 用例的瓶颈在 WAN 往返与远端部署。
+`electron-ssh` 跑在**自托管的 Ubuntu 测试机**上（`runs-on: [self-hosted, linux, x64, e2e-ssh]`），
+SSH 远端就是这台机器自己的 `127.0.0.1`：宿主与远端同机，部署链路是回环而不是跨公网 WAN。
+runner 只负责宿主侧：远端 Core 由用例经 ssh2 上传并引导，mock LLM 经 SSH 反向隧道暴露到
+远端回环（本文件「运行」一节）。
+
+早前用的是 GitHub 托管 runner + 独立远端机器，这条组合栽在**上传吞吐**上：托管 runner 到
+远端只有 0.01–0.02MB/s（`scripts/diag-upload.mjs` 的 run `45017484821` 实测 1MB 花 62.7s、
+8.2MB 整份 180s 只走到 2.3MB），而每次远端引导都要把 Core 产物传进部署槽位——8.2MB 要
+6 分钟以上，直接撞穿 60s 单用例档，表现为每个 spec 文件的前几条用例全部
+`Test timeout of 60000ms exceeded`（run `45007017025` / `45000752679` / `44973531021`）。
+同一份产物经回环上传实测 5.8MB/s，快约 300 倍。
+
+### 自托管 runner 的部署口径
+
+机器是那台长期存在的 Ubuntu 测试机（`ubuntu-e2e` runner），已装为 systemd 服务
+（`~/actions-runner/svc.sh`，开机自启）。三件事需要随机器维护，换机器时照此重建：
+
+1. **标签**：`self-hosted, linux, x64, e2e-ssh`。`all.yml` 的 `runs-on` 按这组标签取，
+   找不到就把整条 ssh 车道挂成待机（不是失败）。
+2. **代理**：机器直连 actions CDN 只有 0.03MB/s，仓库的 checkout / npm / Electron 归档都要
+   经本机 mihomo（`127.0.0.1:7890`，实测 3.5MB/s）。`all.yml` 只给**出网步骤**
+   （`npm ci` / `playwright install-deps` / `warm-electron.cjs`）注入 `https_proxy`，
+   不设 job 级——用例进程要连回环上的 mock LLM 与 sshd，全局代理会把它们一起绕进代理。
+3. **两个 SSH 账号**（`e2e/environments.json` 的 `ssh` 与 `ssh.sudoPasswordRequired`）：
+   `ubuntu` 免密 sudo（常规通道），`e2essh` 无 `NOPASSWD` 但口令式 `sudo -S` 可用
+   （挂载代理的三选一凭据通道）。sshd 开 `PasswordAuthentication yes`——产品走口令认证。
 
 凭证只在 job 内存在：`scripts/write-e2e-environments.mjs` 从 6 个必填 secret 生成
 `e2e/environments.json`（`ssh` 段的 `host` / `port` / `user` / `password` 与
 `sudoPasswordRequired` 段的 `user` / `password`），可选 `E2E_SSH_LLM_ADVERTISE_HOST`
 对应 `ssh.llmAdvertiseHost`。缺任何一项即报错退出，不补默认值、不跳过用例；文件按 0600
 落盘、内容不打印。这段形状与 `e2e/helpers/testEnvironment.ts` 的类型、`e2e/environments.example.json`
-的示例同源。
+的示例同源。自托管车道下 `E2E_SSH_HOST` 是 `127.0.0.1`（宿主与远端同机）。
 
 `pycharm-plugin` 仍是**本地车道**：要本机 PyCharm（`environments.json` 的 `pycharm` 段，
 至少 `idePath`）与 `npm run package:pycharm` 产出的分发 zip，托管 runner 两者皆无。前置：
