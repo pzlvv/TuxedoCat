@@ -207,8 +207,8 @@ jobs:
     # 代价与前提：这台机器的 GitHub 下载要靠本机代理（直连 actions CDN 只有 0.03MB/s），
     # 部署口径见 e2e/README.md 的「自托管 runner」一节；它下线时本车道整条待机。
     runs-on: [self-hosted, linux, x64, e2e-ssh]
-    # 单个 spec 文件的墙钟 = 准备（npm ci ~1min + chmod + 写环境文件 + apt ~30s +
-    # install-deps ~10s）约 2.5min + 用例本身。实测最长的是
+    # 单个 spec 文件的墙钟 = 准备（npm ci ~1min + 并行取产物 + 写环境文件 + apt ~30s +
+    # install-deps ~10s）约 3min + 用例本身。实测最长的是
     # `remoteTaskSurvival`：11.2 分钟（含 180s sleep 的三条长任务用例）。
     # 上限 18 分钟 = 实测最长 × 1.6，同时满足 `prepare(8) + 18 = 26 ≤ 30` 的总预算。
     # 超过它说明用例挂住了，杀掉比等下去更有价值。
@@ -227,6 +227,11 @@ jobs:
     #
     # `fail-fast: false`：四个文件跑的是不同的产品面，一个红了不该让另外三个被取消
     # （它们的结论对定位「是不是同一条链路的共同故障」是必要信息）。
+    #
+    # **症状与排队的关系**：自托管标签目前只有一台机器（`ubuntu-e2e`）注册，它一次只
+    # 接一个 job——这个矩阵的四路并行在容量上退化成串行排队（实测 run 45030636920：
+    # 四个 job 依次 14:08 → 14:26 → 14:44 → 15:03 启动，每段都撞 18 分钟上限）。
+    # 编排仍保留并行：补第二台同标签机器后无需改 workflow 即可真正并起来。
     strategy:
       fail-fast: false
       matrix:
@@ -249,9 +254,20 @@ jobs:
         env:
           https_proxy: http://127.0.0.1:7890
           http_proxy: http://127.0.0.1:7890
-      - uses: actions/download-artifact@v4
-        with:
-          name: e2e-artifacts
+      # **不能用 actions/download-artifact**：它用单条连接拉 blob，而本机到
+      # `*.blob.core.windows.net` 的单连接吞吐只有 ~25KB/s（实测 25–31KB/s；banana 代理
+      # 各节点 4–35KB/s，加代理更差）。30MB 的 e2e-artifacts 要 20 分钟，四个 job
+      # 全撞 18 分钟上限红在下载这一步，产物目录根本没落出来（run 45027408803 /
+      # 45030636920 的 `chmod: cannot access 'dist/resources/core'` 即此）。
+      # 瓶颈在单连接而非线路：同一份 blob 切成 32 段并发取，聚合实测 363KB/s（1/4/8/
+      # 16/32 路 = 25/102/204/181/363KB/s），30MB 约 1.5 分钟。
+      # 换成 `scripts/download-artifact-parallel.mjs` 后落盘布局与官方 action 一致。
+      - name: 并行取 e2e 产物
+        run: node scripts/download-artifact-parallel.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_NAME: e2e-artifacts
+          ARTIFACT_DEST: .
       # 同 electron 车道：artifact 上传把文件落成 644，Core 与自带 ripgrep 要 spawn，
       # 不补回 +x 就是 EACCES（已知坑 6）
       - run: chmod -R u+x dist/resources/core resources/core

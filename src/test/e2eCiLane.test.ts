@@ -545,5 +545,30 @@ runTests('e2eCiLane', () => {
     missingWarm.length === 0,
   );
 
+  // RT-15：自托管车道必须用并发分片脚本取产物，不能用 actions/download-artifact。
+  //
+  // 原因：官方 action 用**单条连接**拉 blob，而自托管机器到 `*.blob.core.windows.net`
+  // 的单连接吞吐只有 ~25KB/s（实测 25–31KB/s；banana 代理各节点 4–35KB/s 更差）。
+  // 30MB 产物要 20 分钟，四个 ssh job 全撞 18 分钟上限红在下载这一步，产物目录根本
+  // 没落出来（run 45027408803 / 45030636920 的
+  // `chmod: cannot access 'dist/resources/core'` 即此）。切成 32 段并发后实测 165s。
+  //
+  // 退回官方 action 就等于退回那个 20 分钟，而红在下载这一步的症状（缺产物目录）
+  // 与「构建漏了某产物」不易区分——所以这里把调用点钉住。
+  const downloadScript = 'scripts/download-artifact-parallel.mjs';
+  check(
+    `存在并发分片下载脚本（${downloadScript}）`,
+    fs.existsSync(path.join(REPO_ROOT, downloadScript)),
+  );
+  check(
+    'all.yml 的 ssh job 用并行分片脚本取产物',
+    job.includes(`node ${downloadScript}`),
+  );
+  check(
+    'all.yml 的 ssh job 不再用单连接的 actions/download-artifact',
+    // 只认「实际用到该 action 的步骤行」；注释里提到它是正当的（说明为什么不用）
+    !/^\s*-?\s*uses:\s*actions\/download-artifact@/m.test(job),
+  );
+
   finish();
 });

@@ -13,8 +13,9 @@ import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLl
  * 前台中止时已排队尚未启动的派发放弃（不创建子代理会话）。
  *
  * 超上限的 `Agent` 调用**立即返回排队文案**（"Agent [Master] queued"），创建
- * 由 Core 在槽位空出后自动进行——排队不再占用父会话的轮次。跨轮扇出的脚本
- * 由此同时数 created（"Sub-agent created with ID"）与 queued 两种结果文本。
+ * 由 Core 在槽位空出后自动进行——排队不再占用父会话的轮次。跨轮扇出的脚本按
+ * 「助手是否已发出该任务的 tool_use」推进轮次，不数工具结果文案：回投与下一轮
+ * 驱动之间存在竞态（e2e/README.md 的已知坑 18）。
  *
  * 并发观测原理：mock 服务器的 `delayMs` 在写响应前 setTimeout 让出事件循环，
  * 期间其他连接的请求可以进来被解析——子代理首请求的 [startedAt, finishedAt]
@@ -86,13 +87,17 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
       // 父会话请求（上下文必然携带首条用户消息；子代理上下文没有）。
       // 不用 lastUserText 判轮次：子代理回投并入后父会话的最后一条 user 消息
       // 是回投文本。跨轮扇出：第 1 轮 4 个（直取满槽），任务 5 / 任务 6 各自
-      // 单独一轮发起——排队结果的脚本推进按「已排队数」判轮：任务 5 / 6 的
-      // 调用立即返回排队文案、不再阻塞轮次，created 计数停在 4，只有 queued
-      // 计数能区分「该发 5」「该发 6」「该收尾」这三种轮次（FIFO 断言依此成立）
+      // 单独一轮发起——排队结果的脚本推进按「该任务是否已被派发过」判轮。
+      //
+      // 判据只能用**助手自己那条 tool_use**（它一发出就永久留在历史里），不能用
+      // 工具结果文案：排队结果的回投与下一轮驱动之间有竞态，单核 runner 上下一轮
+      // 可能先于回投到达，按文案计数会把「该发 5」误判成「还没排队、再发一次」，
+      // 于是任务 6 先被发出、断言读到 `[6, 5]`（run `45027408803` / `45030636920`
+      // 实证，e2e/README.md 的已知坑 18 记的是同一现象）。
       const context = JSON.stringify(req.body.messages);
-      const created = context.split('Sub-agent created with ID').length - 1;
-      const queued = context.split('Agent [Master] queued').length - 1;
-      if (created === 0) {
+      /** 该任务是否已被派发过（tool_use 的 args 里带完整提示词，一进历史就不再消失） */
+      const issued = (n: number): boolean => context.includes(`并发任务${n}：慢慢回答`);
+      if (![1, 2, 3, 4].some(issued)) {
         return {
           kind: 'tools',
           calls: [1, 2, 3, 4].map((n) => ({
@@ -101,14 +106,14 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
           })),
         };
       }
-      if (queued === 0) {
+      if (!issued(5)) {
         return {
           kind: 'tool',
           name: 'Agent',
           args: { prompt: '并发任务5：慢慢回答', agentRole: 'Master', description: '任务5' },
         };
       }
-      if (queued === 1) {
+      if (!issued(6)) {
         return {
           kind: 'tool',
           name: 'Agent',

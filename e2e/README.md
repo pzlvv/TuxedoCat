@@ -121,7 +121,7 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 | `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
 | `electron` | `electron-app` | xvfb + openbox（Linux 无显示；裸 X 没有窗口管理器）+ Chromium 运行时库（`playwright install-deps`）+ artifact 下载后补可执行位（已知坑 6） |
 | `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
-| `ssh` | `electron-ssh`，**按 spec 文件拆成 4 个矩阵任务** | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位 |
+| `ssh` | `electron-ssh`，**按 spec 文件拆成 4 个矩阵任务** | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位；产物经 `scripts/download-artifact-parallel.mjs` 并发分片取（见已知坑 21） |
 
 失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
 `electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，任何机器都能直接跑；
@@ -140,6 +140,11 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 `maxsessions 10`），旧形态「四个文件塞进一个 job、脚手架每命令建一次链」才把它压垮
 （实测 39 条）。**若四路并行真的出现 `Connection lost before handshake`，把 `max-parallel`
 降到 2，不要退回串行**（2 路墙钟约 24 分钟，仍在预算内；串行必然超时）。
+
+矩阵声明为并行，但**并行度受 runner 数量约束**：`e2e-ssh` 标签下目前只有一台
+`ubuntu-e2e`，一台 runner 一次只接一个 job，四路会退化成串行排队（run `45030636920`
+实证：四个 job 依次 14:08 → 14:26 → 14:44 → 15:03 启动，每段都撞 18 分钟上限）。
+编排保留并行是为了「补第二台同标签机器后无需改 workflow 即可真并行」。
 
 每个车道的时间闸门见本文件「时间预算」一节。`all.yml` 的 job 上限按**关键路径**取值
 （`prepare` 8 + 最慢 e2e 车道 18 = 26 分钟 ≤ 30 分钟预算）：`prepare` 8 分钟，
@@ -436,4 +441,16 @@ e2e/
     `pgrep -u "$(id -u)"` 是**整个 uid 口径**——手工跑过用例后再跑 `remoteSshExecution`
     的清理类断言，会看到自己刚才那轮的进程。复现前先按已知坑 11 的清场口径
     （`CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`）杀进程并删状态文件。
+21. **自托管机器取 artifact 必须并发分片，官方 action 会慢到撞穿 job 上限**：
+    `actions/download-artifact` 用**单条连接**拉 blob。本机到
+    `*.blob.core.windows.net` 的单连接吞吐只有 25–31KB/s（直连实测），
+    30MB 的 `e2e-artifacts` 要 20 分钟——四个 ssh job 依次撞 18 分钟上限，
+    失败点是 `chmod: cannot access 'dist/resources/core': No such file or directory`：
+    下载没完成，产物目录根本没落出来，症状与「构建漏了某产物」几乎一样。
+    经 banana 代理更差（各节点 4–35KB/s，实测最优的新加坡 B2S 也才 35KB/s），**加代理无效**。
+    瓶颈在单连接而不是线路：同一份 blob 切 32 段并发取，聚合到 363KB/s，
+    实测整个 30MB 用 165s 取完且 zip 完整。
+    因此 ssh 车道用 `scripts/download-artifact-parallel.mjs`（Range 分片 + 拼接 + unzip，
+    落盘布局与官方 action 一致），`src/test/e2eCiLane.test.ts` 的 RT-15 钉住这个调用点。
+    排查时先看这一步的日志行：它打印总大小、并发数、耗时与实测吞吐。
 
