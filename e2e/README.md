@@ -85,7 +85,7 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 CI 上稳定多花约 30s（`fileExplorer.spec.ts` 的五条、`sessions.spec.ts:203`、
 `desktopShell.spec.ts:339`，实测 30–34.3s；同一份用例在 Windows 开发机 2–4s）。它不是
 断言里的合法等待——`e2e-debug` 车道单跑其中一条耗时 42.3s，主进程日志在最后 30s
-里完全静止。已知坑列表暂无它的根因条目；在那之前 60s 档就是为它留的。
+里完全静止。排查方向见已知坑 19；在那之前 60s 档就是为它留的。
 
 超时预算（`e2e/playwright.config.ts`）分三档，**用例超时是「链路断了」的信号，不是
 「环境慢」的信号**：
@@ -383,4 +383,19 @@ e2e/
     `waiters` / `enter_slot_queue`），顺序本身没错，错的是用例把「跨轮」当成时序保证。
     这类断言要么锚定产品侧可观测的排队序号，要么放宽为集合比较——不要靠「上一轮一定先
     落地」推进脚本。
+19. **「加第二个工作区」在 CI 上稳定多花约 30s（根因未定位）**：凡是「加第二个工作区
+    再切回去」的整应用用例，CI 上整条耗时固定在 30–34.3s（`fileExplorer.spec.ts` 的
+    142/181/485/674/812 五条、`sessions.spec.ts:203`、`desktopShell.spec.ts:339`），
+    同一份用例在 Windows 开发机 2–4s。`e2e-debug` 车道单跑 `fileExplorer.spec.ts:142`
+    耗时 42.3s，`E2E_DEBUG=1` 的主进程日志在最后 30s 里完全静止（没有任何一条 IPC /
+    视图事件），因此**不是断言里的合法等待**——它卡在某个没人打日志的同步点上。
+    多工作区的 open 走 `addWorkspaceRefs` → `activateWorkspace` → `syncChatAreaForActiveWorkspace`
+    → `ChatViewManager.setActiveWorkspace`，加上主窗口启动时为非活动工作区调度的
+    `preloadWorkspace`（`400 + index * 250` ms 错开）。候选方向：本地工作区的
+    `preloadWorkspace` 与紧随其后的 `setActiveWorkspace` 竞争、或 `syncTitlebarWorkspaces`
+    的诊断落盘在慢盘上同步阻塞。**排查入口**：在 `activateWorkspace` /
+    `setActiveWorkspace` / `writeWorkspaceState` 三处加临时时标日志，用 `e2e-debug`
+    车道复现；定位后按【修复后删掉本条、另立条目】处理。
+    在这之前**不要**为了这 30s 把整应用车道降到 30s 档：7 条用例会稳定超时，
+    60s 档（`ELECTRON_APP_TEST_TIMEOUT_MS`）就是为它留的。
 
