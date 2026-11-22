@@ -13,14 +13,14 @@ status: 已修
 
 - 触发链：CI 各 Electron 车道在跑用例前执行 `node scripts/warm-electron.cjs`；
   脚本 `require('electron')` → `node_modules/electron/index.js` 发现 `dist/` 缺失 →
-  同步 spawn `install.js` → `@electron/get` 的 `downloadArtifact`。
+ 同步 spawn `install.js` → `@electron/get` 的 downloadArtifact。
 - `@electron/get@4.x` 的 `dist/artifact-utils.js` 里 `mirrorVar()` 依次读
   npm_config_electron_mirror（大小写两种写法）/ npm_package_config_electron_mirror /
   `ELECTRON_MIRROR`，最后回落到内置 GitHub Releases 地址。
   它**不读 `.npmrc` 文件本身**——是 npm 在 `npm run` 时把 `.npmrc` 转成
   npm_config_* 环境变量。直接 `node scripts/warm-electron.cjs` 没有这层转换。
 - `@electron/get` 的 `dist/proxy.js`：`initializeProxy()` 只在
-  `ELECTRON_GET_USE_PROXY=true` 时被调用；它用 undici 的 `EnvHttpProxyAgent`，
+  `ELECTRON_GET_USE_PROXY=true` 时被调用；它用 undici 的 EnvHttpProxyAgent，
   **不会**自动跟随 `https_proxy`。
 - 实证（run `45042250492`，`e2e-ssh` 的 `remoteTaskSurvival` job）：
 
@@ -81,7 +81,7 @@ status: 已修
 | 回归用例（修复前，RT-1/2/3） | `npm run test:unit -- e2e-ci-lane` | 红 | 加断言后首跑报三条 FAIL：脚本不含 `.npmrc` 解析、不含 `ELECTRON_GET_USE_PROXY` |
 | 通道实测（GitHub 直连 / 代理） | runner 上 `curl` 5s 计时 | 红 | 30KB/s（直连）/ 3.5MB/s（代理）——100MB 直连要一小时 |
 | 通道实测（npmmirror 两个域名） | 同上 | 绿 | `npmmirror.com/mirrors/electron/` 13.4MB/s；`cdn.npmmirror.com/binaries/electron/` 14.0MB/s（代理下 14.1MB/s） |
-| 修法验证（`@electron/get` 真实下载） | `ELECTRON_MIRROR=<cdn> ELECTRON_GET_USE_PROXY=true` 跑 `downloadArtifact` | 绿 | 117.1MB / 10.2s = 11.7MB/s；对照：只给代理不给镜像 60s 仍未下完 |
+| 修法验证（`@electron/get` 真实下载） | `ELECTRON_MIRROR=<cdn> ELECTRON_GET_USE_PROXY=true` 跑 downloadArtifact | 绿 | 117.1MB / 10.2s = 11.7MB/s；对照：只给代理不给镜像 60s 仍未下完 |
 | 回归用例（修复后，RT-1/2/3） | `npm run test:unit -- e2e-ci-lane` | 绿 | 42 通过 / 0 失败 |
 | runner 端到端（RT-4，严格版） | runner 上清 `node_modules/electron/dist` ＋ `~/.cache/electron`（缓存不清理会命中缓存秒过、量不到真实下载），带 CI 同款代理跑 `node scripts/warm-electron.cjs` | 绿 | 首次 **12s**（117MB，约 10MB/s）；二次 0.0s（幂等）；`env -u https_proxy...` 无代理环境同样 12s 且不被塞 `ELECTRON_GET_USE_PROXY` |
 | CI 实证（修复前） | run `45042250492` 的 `e2e-ssh` | 红 | `remoteChangeList` job 在 `warm-electron` 步骤 `fetch failed`；`remoteTaskSurvival` job 该步骤挂 10 分钟以上后撞 18 分钟上限 |
