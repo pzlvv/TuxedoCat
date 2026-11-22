@@ -66,6 +66,9 @@ jobs:
         with:
           packages: xvfb openbox
       - run: npx playwright install-deps chromium
+      # 与 all.yml 同口径：先预热 Electron 二进制，否则第一条用例要替整个 job 付
+      # ~100MB 的下载（`node_modules/electron` 没有 postinstall，首次 require 才现下）
+      - run: node scripts/warm-electron.cjs
       # 把应用主进程日志透传到测试输出：调试车道就是要看这些
       - name: 跑用例（E2E_DEBUG=1 透传主进程日志）
         env:

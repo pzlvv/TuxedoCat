@@ -142,6 +142,11 @@ jobs:
         with:
           packages: xvfb openbox
       - run: npx playwright install-deps chromium
+      # Electron 二进制由 npm 包按需现下（`node_modules/electron` 没有 postinstall，
+      # 第一次 `require('electron')` 才同步 spawn install.js 拉 ~100MB）。不预热时它
+      # 会落在**第一条用例**的墙钟里：实测 20–40s，单用例上限 60s 的那条因此直接超时。
+      # 预热把这段挪进 job 准备期（幂等，已就位时 3ms）。
+      - run: node scripts/warm-electron.cjs
       - run: xvfb-run -a bash -c "openbox >/dev/null 2>&1 & exec npx playwright test -c e2e/playwright.config.ts --project=electron-app"
       # 失败时保留 Playwright trace（npx playwright show-trace <zip>）
       - uses: actions/upload-artifact@v4
@@ -250,6 +255,11 @@ jobs:
         with:
           packages: xvfb openbox
       - run: npx playwright install-deps chromium
+      # 与 electron 车道同一个理由预热 Electron 二进制：`node_modules/electron` 没有
+      # postinstall，第一次 `require('electron')` 才现下 ~100MB。落在用例里就是前几条
+      # 用例各烧掉 20–40s 墙钟、撞上 60s 单用例上限后整条车道被失败早停掐掉
+      # （run `44998731954` 的两个 ssh job 实证）。
+      - run: node scripts/warm-electron.cjs
       # Electron 起点同 electron 车道：Linux 无显示要 xvfb，裸 X 没有 WM（最大化 / 焦点
       # 语义不成立）要 openbox。SSH 远端由用例自己经 ssh2 建链，不依赖本节点的 ssh 客户端
       #

@@ -134,6 +134,11 @@ async function sendOneTurn(workspaceIncludes: string, text: string): Promise<voi
   await chat.fill('textarea.input-textarea', text);
   await chat.press('textarea.input-textarea', 'Enter');
   await expect(chat.getByText(/收到：/).first()).toBeVisible({ timeout: 60_000 });
+  // 终答落屏 ≠ 会话已 idle：core 的 `sessionRuntimeChanged`（全量快照）是另一条推送，
+  // 慢机上会晚到（run `44998731954` 实证：菜单里「关闭所有空闲会话」置灰，因为宿主缓存
+  // 的还是 running）。右键菜单的置灰判定直接读那份快照，所以先等按钮转灰（= 快照已到
+  // idle），再弹菜单——否则这条断言测的是推送时序，不是菜单逻辑。
+  await expect(chat.locator('button[data-abort-state="none"]')).toBeVisible({ timeout: 30_000 });
 }
 
 test('US-48 单工作区本地：条目集合、置灰终态与「打开命令行」快捷键同源展示', async () => {

@@ -507,5 +507,43 @@ runTests('e2eCiLane', () => {
     undocumented.length === 0,
   );
 
+  // RT-14：Electron 二进制必须在**用例开始前**就位。
+  //
+  // `node_modules/electron` 没有 postinstall：第一次 `require('electron')` 才同步 spawn
+  // `install.js` 现下 ~100MB。落在用例里时它吃掉的是单用例预算——run `44998731954` 的
+  // 两个 ssh job 里前 5 条用例各烧 60s 后因 5 条失败早停整条掐掉，日志特征就是
+  // `Downloading Electron binary...`。预热脚本与它在每条车道里的调用点都要在：
+  // 少一处就会让那条车道重演同一个故障。
+  const warmScript = path.join(REPO_ROOT, 'scripts', 'warm-electron.cjs');
+  check(
+    '存在 Electron 预热脚本（scripts/warm-electron.cjs）',
+    fs.existsSync(warmScript),
+  );
+  const packageJson = JSON.parse(read(path.join(REPO_ROOT, 'package.json'))) as {
+    scripts: Record<string, string>;
+  };
+  const unwarmedScripts = ['test:e2e', 'test:e2e:local', 'test:e2e:electron', 'test:e2e:ssh']
+    .filter((name) => !/warm-electron\.cjs/.test(packageJson.scripts[name] ?? ''));
+  check(
+    `跑 Electron 的 npm 脚本都先预热（缺：${unwarmedScripts.join('、') || '无'}）`,
+    unwarmedScripts.length === 0,
+  );
+  // 两个直接调 npx playwright 的 workflow 步骤（all.yml 的 electron / ssh、e2e-debug）
+  const workflowNeedsWarm = [
+    ['.github/workflows/all.yml', 2],
+    ['.github/workflows/e2e-debug.yml', 1],
+  ] as const;
+  const missingWarm = workflowNeedsWarm
+    .filter(([rel, count]) => {
+      const text = read(path.join(REPO_ROOT, rel));
+      const hits = [...text.matchAll(/node scripts\/warm-electron\.cjs/g)].length;
+      return hits < count;
+    })
+    .map(([rel]) => rel);
+  check(
+    `all.yml（electron + ssh 两处）与 e2e-debug.yml 都在跑用例前预热 Electron（缺：${missingWarm.join('、') || '无'}）`,
+    missingWarm.length === 0,
+  );
+
   finish();
 });
