@@ -1,0 +1,45 @@
+# 一次性诊断：从 GitHub runner 实测 SFTP 上传 36MB Core 的稳定性。
+#
+# 背景：`e2e-ssh（remoteSshExecution）` 的冷部署用例要传 34.3MB 的 Core 到远端，
+# 实测远端留下 8 个半成品 `.new`（98KB–31MB，完整是 34.3MB），说明上传反复中断。
+# 本机（Windows）5/5 成功、约 6.5MB/s，所以差异在 runner 的网络路径上——这里量它。
+#
+# 用完即删：这不是常规车道。
+name: upload-diag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    name: upload-diag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
+      - run: npm run build:core:linux-x64
+      - name: 写 e2e/environments.json
+        env:
+          E2E_SSH_HOST: ${{ secrets.E2E_SSH_HOST }}
+          E2E_SSH_PORT: ${{ secrets.E2E_SSH_PORT }}
+          E2E_SSH_USER: ${{ secrets.E2E_SSH_USER }}
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+          E2E_SSH_SUDO_USER: ${{ secrets.E2E_SSH_SUDO_USER }}
+          E2E_SSH_SUDO_PASSWORD: ${{ secrets.E2E_SSH_SUDO_PASSWORD }}
+          E2E_SSH_LLM_ADVERTISE_HOST: ${{ secrets.E2E_SSH_LLM_ADVERTISE_HOST }}
+        run: node scripts/write-e2e-environments.mjs
+      - name: 实测 SFTP 上传稳定性
+        run: node scripts/diag-upload.mjs
