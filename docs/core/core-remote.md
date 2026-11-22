@@ -167,9 +167,11 @@ last_reviewed: 2026-10-17
   实体在 `run_start_daemon` 入口再换成 `util::install_panic_hook_with_file`——除 stderr
   外**直接追加**写同一份日志文件，手动从终端拉起（stderr 不是文件）时崩溃照样留痕。
   daemon 的启动 / 停止、控制连接接入 / 关闭、Core 子进程启动（含 pid）与信号终止
-  （Unix）各落一行锚点。release 构建不 strip 并保留行号表（`core-rs/Cargo.toml` 的
-  `[profile.release]`；Windows 的行号表在 `.pdb` 里，由 `scripts/build-core.mjs` 落在
-  可执行文件旁，只供本地诊断、不随分发包走），栈帧才能符号化出函数名与行号。
+  （Unix）各落一行锚点。release 构建删除调试信息段、保留符号表（`core-rs/Cargo.toml`
+  的 `[profile.release]`），栈帧据此符号化出**函数名**——没有源码行号，取舍见
+  [docs/core/core-artifact-size.md](core-artifact-size.md)。Windows 的函数名来自构建
+  产物旁的 `.pdb`（`scripts/build-core.mjs` 落在可执行文件旁，只供本地诊断、不随分发
+  包走）。
 
 ### 2.6 远端目录选择
 

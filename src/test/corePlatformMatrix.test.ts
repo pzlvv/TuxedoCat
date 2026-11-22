@@ -33,6 +33,9 @@ import {
 import { CORE_BINARY_NAME, CORE_RESOURCE_DIR } from '../config/project';
 import { createChecker, runTests } from './helpers/harness';
 
+/** 仓库根（读各 crate 的 Cargo.toml 用） */
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+
 /** `build-core.mjs` 里一条目标登记 */
 interface TargetEntry {
   platform: string;
@@ -289,6 +292,97 @@ async function run(): Promise<void> {
           || (fs.existsSync(binary) && tools.every((tool) => fs.existsSync(tool)) && fs.existsSync(fingerprint)),
       );
     }
+  }
+
+  // ---------- 调试信息段的取舍（docs/core/standalone-core.md 第 3.1 节） ----------
+  //
+  // release 产物保留符号表（panic 钩子的调用栈要能解析出函数名）、删除 `.debug_*`
+  // （运行时不用，却占过 76% 体积，且是被 SFTP 整份上传到远端的那份字节）。
+  // 判据写成三条，防的是「为了崩溃诊断顺手改回 strip=true / debug=2」：
+  //   1. 两个 crate 的 release profile 都声明 `strip = "debuginfo"`；
+  //   2. 都不声明 `strip = true`（那会连符号表一起删，栈退化成裸地址）；
+  //   3. 已构建的 Linux 产物实测 `.debug_*` 为 0 且 `.symtab` 非空。
+  const releaseProfiles = ['core-rs', 'mount-proxy-rs'].map((crate) => {
+    const manifest = fs.readFileSync(path.join(REPO_ROOT, crate, 'Cargo.toml'), 'utf8');
+    const match = /\[profile\.release\]([\s\S]*?)(?=\n\[|$)/.exec(manifest);
+    return { crate, block: match ? match[1] : '' };
+  });
+  // 匹配的是**行首的配置项**（去掉注释行）：注释里会提到 `strip = true` 这个反例，
+  // 光按子串搜会把解释性文字当成真的配置。
+  const activeLines = (block: string): string =>
+    block.split(/\r?\n/).filter((line) => !/^\s*#/.test(line)).join('\n');
+  check(
+    '两个 crate 的 release profile 都声明 strip = "debuginfo"',
+    releaseProfiles.every(({ block }) => /^\s*strip\s*=\s*"debuginfo"\s*$/m.test(activeLines(block))),
+  );
+  check(
+    '两个 crate 的 release profile 都没有 strip = true（会连符号表一起删）',
+    releaseProfiles.every(({ block }) => !/^\s*strip\s*=\s*true\s*$/m.test(activeLines(block))),
+  );
+  // asan 必须反向覆写：它要 `.debug_*` 做报告符号化
+  const asanProfile = /\[profile\.asan\]([\s\S]*?)(?=\n\[|$)/.exec(
+    fs.readFileSync(path.join(REPO_ROOT, 'core-rs', 'Cargo.toml'), 'utf8'),
+  );
+  check(
+    'core-rs 的 asan profile 覆写 strip = "none"（ASAN 报告要 .debug_*）',
+    asanProfile !== null && /strip\s*=\s*"none"/.test(asanProfile[1]),
+  );
+
+  // 已构建的产物实测：`.debug_*` 为 0 且 `.symtab` 非空。
+  //
+  // 上面三条读的是 Cargo.toml 的声明，拦不住「声明对了但构建走的是另一条路」
+  // （比如某个 profile 名漂移、或产物是从旧 target 目录拷过来的）。这里直接解 ELF
+  // 段头——只在已构建该目标时检查，没构建就跳过（与文件存在性断言同一口径）。
+  const readElfSections = (file: string): Map<string, number> | null => {
+    let buf: Buffer;
+    try {
+      buf = fs.readFileSync(file);
+    } catch {
+      return null;
+    }
+    // 只处理 64 位小端 ELF（本仓库的 Linux 目标都是）
+    if (buf.length < 64 || buf[0] !== 0x7f || buf[1] !== 0x45 || buf[2] !== 0x4c || buf[3] !== 0x46) {
+      return null;
+    }
+    if (buf[4] !== 2 || buf[5] !== 1) return null;
+    const shoff = Number(buf.readBigUInt64LE(0x28));
+    const shentsize = buf.readUInt16LE(0x3a);
+    const shnum = buf.readUInt16LE(0x3c);
+    const shstrndx = buf.readUInt16LE(0x3e);
+    const strOff = Number(buf.readBigUInt64LE(shoff + shstrndx * shentsize + 0x18));
+    const sections = new Map<string, number>();
+    for (let i = 0; i < shnum; i += 1) {
+      const entry = shoff + i * shentsize;
+      const nameOff = buf.readUInt32LE(entry);
+      let name = '';
+      for (let p = strOff + nameOff; buf[p] !== 0; p += 1) name += String.fromCharCode(buf[p]);
+      sections.set(name, Number(buf.readBigUInt64LE(entry + 0x20)));
+    }
+    return sections;
+  };
+  for (const entry of targets.filter((t) => t.platform === 'linux')) {
+    const dir = path.join(REPO_ROOT, 'resources', CORE_RESOURCE_DIR, entry.dir);
+    const sections = readElfSections(path.join(dir, `${CORE_BINARY_NAME}${entry.ext}`));
+    if (sections === null) continue;
+    // `.debug_gdb_scripts` 是链接器写进去的 GDB 脚本指针（x64-linux 实测 34 字节），
+    // 不含任何符号 / 行号 / 类型数据，也不是体积项；判据只查真正承载调试信息的段。
+    const DEBUG_PAYLOAD_SECTIONS = [
+      '.debug_info', '.debug_abbrev', '.debug_str', '.debug_line', '.debug_line_str',
+      '.debug_loc', '.debug_ranges', '.debug_rnglists', '.debug_loclists',
+      '.debug_aranges', '.debug_addr', '.debug_frame', '.debug_types',
+    ];
+    const presentDebug = DEBUG_PAYLOAD_SECTIONS
+      .filter((name) => (sections.get(name) ?? 0) > 0)
+      .map((name) => `${name}=${sections.get(name)}`);
+    const symbolBytes = (sections.get('.symtab') ?? 0) + (sections.get('.strtab') ?? 0);
+    check(
+      `${entry.dir} 产物不含调试信息段（残留：${presentDebug.join('、') || '无'}）`,
+      presentDebug.length === 0,
+    );
+    check(
+      `${entry.dir} 产物保留符号表（.symtab + .strtab = ${Math.round(symbolBytes / 1024)}KB）`,
+      symbolBytes > 0,
+    );
   }
 
   finish();

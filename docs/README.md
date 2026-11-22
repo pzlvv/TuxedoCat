@@ -70,6 +70,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | 文档 | 范围 |
 | --- | --- |
 | `docs/core/standalone-core.md` | Core（Rust）：形态、平台矩阵、构建指纹、契约、传输与生命周期 |
+| `docs/core/core-artifact-size.md` | Core 产物体积与调试符号：release 删调试段保留符号表的取舍、体积构成、ASAN 例外 |
 | `docs/core/tool-read-guard.md` | Read 与 Edit / Write 的时效契约：内容指纹、失效判定、拒绝文案与记录生命周期 |
 | `docs/core/conversation-work-view.md` | 对话隔离工作视图：能力判据、overlay 结构、命名空间、工具语义与生命周期 |
 | `docs/core/mount-proxy.md` | Overlay 挂载代理：分发与安装判据、特权阶段时序、代执行协议、进程链、失败路径与威胁模型 |

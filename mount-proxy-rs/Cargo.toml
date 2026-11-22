@@ -22,5 +22,10 @@ path = "src/main.rs"
 opt-level = 3
 lto = true
 codegen-units = 1
-# 崩溃诊断：setuid 程序排障需要行号（线上没有 debugger 可挂）
+# 崩溃诊断：**去掉调试信息段，保留符号表**（与 `core-rs` 同一口径，理由见那里的注释）。
+#
+# 本产物会被部署到远端机器（`docs/features/` 的 overlay 挂载代理规格），远端上传量
+# 与分发包体积都要算账：3.4MB 里 2.6MB 是 `.debug_*`。setuid 程序排障要的「栈里
+# 能看出是哪个函数」由 `.symtab` 提供，源码行号只在本地用调试器时才需要。
 debug = "line-tables-only"
+strip = "debuginfo"

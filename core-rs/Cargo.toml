@@ -59,14 +59,32 @@ zip = "8"
 opt-level = 3
 lto = true
 codegen-units = 1
-# 崩溃诊断：不 strip 并保留行号表——daemon / Core 异常退出时，panic 钩子强制捕获的
-# 调用栈（写进 core-daemon 日志 / 宿主诊断日志）才能符号化出函数名与行号。
-# 只带行号表不带变量信息，体积增量远小于完整 debug 信息；Windows（MSVC）的
-# 行号表在构建产物旁的 .pdb 里，由 scripts/build-core.mjs 一并部署。
+# 崩溃诊断：**去掉调试信息段，保留符号表**。
+#
+# 判据是「哪部分数据真的被用到了」：daemon / Core 异常退出时，panic 钩子
+# （`util::install_panic_hook`）强制捕获的调用栈要能符号化出**函数名**，靠的是
+# `.symtab` / `.strtab`；`.debug_*` 那些段（DWARF 行号表与类型信息）只在用
+# `addr2line` / debugger 事后解析「源码行号」时才需要，运行时完全不参与加载。
+#
+# 体积账（x64-linux 实测，见 `docs/core/standalone-core.md` 的「产物体积」一节）：
+# 34.3MB 里 26.2MB 是 .debug_*、1.0MB 是符号表、7.1MB 是运行所需段。`strip="debuginfo"`
+# 只删前者，产物降到约 8MB——这直接决定远端部署要上传多少字节（SSH 车道的冷部署
+# 走 SFTP 整份上传）。
+#
+# 为什么不是 `strip = true`：那会连 `.symtab` 一起删，栈退化成裸地址，崩溃诊断
+# 能力真正丢失。两档的差别就是「函数名」与「源码行号」，取前者。
+#
+# Windows（MSVC）的对应物是构建产物旁的 `.pdb`（构建脚本另存，不随分发包走）：
+# `strip="debuginfo"` 在 PE 上是空操作，exe 本来就不内嵌 DWARF。
 debug = "line-tables-only"
+strip = "debuginfo"
 
 # ASAN 插桩构建（`npm run build:core:asan` / `npm run package:asan`）：
 # 继承 release 的优化与行号表（asan 报告要符号化），产物落 target/<triple>/asan/，
 # 与 release 产物互不覆写；由构建脚本配 nightly 的 -Zsanitizer=address 编译。
+#
+# **asan 不继承 strip**：ASAN 报告要的是 `.debug_*`（它按 PC 查源码行号与变量所在
+# 位置），删掉就只能报地址。这个 profile 不进分发包、也不走远端部署，体积不是约束。
 [profile.asan]
 inherits = "release"
+strip = "none"
