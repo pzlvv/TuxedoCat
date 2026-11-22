@@ -178,6 +178,9 @@ async function launch(mockLlm: MockLlm): Promise<Awaited<ReturnType<AppHandle['c
     workspaceDir: remoteWs,
     openWorkspaces: [remoteRef],
     agentMode: 'auto',
+    // 与下面 chatPage 的 180s 预算对齐（`specs/defects/
+    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）
+    startupChatWaitMs: 180_000,
   });
   const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-survival' }, 180_000);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });

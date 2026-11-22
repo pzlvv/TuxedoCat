@@ -250,6 +250,9 @@ async function launchWithRemoteWorkspace(remotePath: string): Promise<Awaited<Re
     workspaceDir: remotePath,
     openWorkspaces: [ref],
     agentMode: 'auto',
+    // 与下面 chatPage 的 240s 预算对齐（`specs/defects/
+    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）
+    startupChatWaitMs: 240_000,
   });
   // 远程工作区冷部署（SSH 引导上传 Core / ripgrep）要走完整预算
   try {

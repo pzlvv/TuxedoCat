@@ -164,6 +164,10 @@ async function launchWithRemoteWorkspace(remotePath = remoteWs): Promise<Awaited
     workspaceDir: remotePath,
     openWorkspaces: [ref],
     agentMode: 'auto',
+    // 远端恢复（建链 → 引导 daemon → 起 Core → 会话树）在 CI 慢机上可能远超 45s；
+    // 与下面 chatPage 的 180s 预算对齐（`specs/defects/
+    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）
+    startupChatWaitMs: 180_000,
   });
   const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 180_000);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
@@ -453,6 +457,9 @@ test('manual 权限模式：远程 Bash 弹确认、允许后在远端执行', a
     workspaceDir: remoteWs,
     openWorkspaces: [remoteRef],
     agentMode: 'manual',
+    // 与下面 chatPage 的 120s 预算对齐（`specs/defects/
+    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）
+    startupChatWaitMs: 120_000,
   });
   const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 120_000);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
@@ -818,6 +825,9 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
     workspaceDir: remoteWs,
     openWorkspaces: [remoteRef, localDirA, localDirB],
     agentMode: 'auto',
+    // 与下面 chatPage 的 180s 预算对齐（`specs/defects/
+    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）
+    startupChatWaitMs: 180_000,
   });
   const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-ssh' }, 180_000);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });

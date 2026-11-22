@@ -321,6 +321,18 @@ export async function launchApp(options: {
   reuseHomeDir?: string;
   /** close 时不清理沙箱 home（跨重启用例第一段启动用，见 `spawnApp` 同名注释） */
   keepHomeOnClose?: boolean;
+  /**
+   * 启动后等第一个聊天视图的上限（缺省 45s）。
+   *
+   * 远端工作区要先建链、引导 daemon、起 Core，再恢复会话树，CI 慢机上可能远超 45s：
+   * `remoteSshExecution.spec.ts` 这类车道的恢复预算是 180s，但它写在
+   * `chatPage(opts, timeoutMs)` 上——`launchApp` 返回前的这次等待必须先给足，
+   * 否则调用方的预算根本走不到（`specs/defects/
+   * e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）。
+   *
+   * 缺省仍是 45s：不碰远端的车道（`electron-app`）视图启动即就绪，保持快速失败。
+   */
+  startupChatWaitMs?: number;
 }): Promise<AppHandle> {
   const spawned = await spawnApp(options);
 
@@ -468,7 +480,14 @@ export async function launchApp(options: {
       void poll();
     });
 
-  const chatPage = await waitForChatPage();
+  // 启动后等第一个聊天视图：预算由调用方给（`startupChatWaitMs`），缺省 45s。
+  // 这里**不能**写死超时——远端车道的恢复预算是 180s，写死 45s 会让它在 CI 慢机上
+  // 先于调用方的预算失败（`specs/defects/
+  // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）。
+  //
+  // opts 保持空对象：启动这一刻还不知道目标工作区/会话，只要求「有个聊天视图能输入」；
+  // 具体是哪个视图由调用方随后用 `chatPage({ workspaceIncludes })` 精确解析。
+  const chatPage = await waitForChatPage({}, options.startupChatWaitMs);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
 
   /** 按会话 id 等视图（`sessionPage`；判据见接口注释） */
