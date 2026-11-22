@@ -419,4 +419,20 @@ e2e/
     车道复现；定位后按【修复后删掉本条、另立条目】处理。
     在这之前**不要**为了这 30s 把整应用车道降到 30s 档：7 条用例会稳定超时，
     60s 档（`ELECTRON_APP_TEST_TIMEOUT_MS`）就是为它留的。
+20. **自托管机器长期跑会累积沙箱，最终让 Electron 启动即崩**：症状是某条用例报
+    `等待输出超时: /DevTools listening on/` 或 `browserType.connectOverCDP: ECONNREFUSED`，
+    换个用例重跑又正常——**不是产品缺陷，是环境毒化**。实测（ubuntu-e2e，跑了两天）：
+    `/tmp` 积了 961 个 `playwright*` 沙箱目录 + 804 个 `*-e2e-home-*`，`/dev/shm` 用到
+    81%，此时直接 spawn Electron 会停在 `[main] waiting for app ready` 然后以 SIGTRAP
+    退出（信号名不进反引号：docsLint 会把反引号里的名字当仓库标识符校验），
+    而同一份产物在清理后立刻正常启动（完整走完 `requestTheme` / `startNewConversation`
+    等启动序列）。
+    清理：`/etc/cron.daily/tuxedo-e2e-cleanup` 每日清 mtime > 1 天的自有产物
+    （`/tmp` 的沙箱 / 锁 / 视图、`/dev/shm` 的 Chromium 段、部署槽位里中断上传留下的
+    `*.new`）。手动排障时先跑它再复现；`/dev/shm` 的 `sem.*` 属于系统服务（`barad_age`），
+    不属于本车道，不要动。
+    同源现象：`~/.tuxedo-cat/run/` 会留下上一轮 daemon 的状态文件，而「远端就是本机」时
+    `pgrep -u "$(id -u)"` 是**整个 uid 口径**——手工跑过用例后再跑 `remoteSshExecution`
+    的清理类断言，会看到自己刚才那轮的进程。复现前先 `pkill -u "$(id -u)" -f "[t]uxedo-cat-core"`
+    并删状态文件。
 
