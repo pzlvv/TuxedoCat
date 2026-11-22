@@ -34,6 +34,10 @@ jobs:
   prepare:
     name: 构建 e2e 产物
     runs-on: ubuntu-latest
+    # 每个 job 都要显式上限：不设时 GitHub 默认给 6 小时，一个挂死的步骤（实测
+    # `electron-ssh` 的 remoteChangeList 在 CI 上卡 50 分钟仍未结束）会把整条车道
+    # 连同后面排队的所有 job 一起拖住，一小时一班的定时回归直接串成一条长龙。
+    timeout-minutes: 25
     steps:
       # resources/** 走 LFS（Core 自带的 ripgrep 产物）：不开 lfs 时 checkout 留下的是
       # 指针桩，Grep / Glob 与远端部署拿到的不是可执行文件
@@ -72,6 +76,8 @@ jobs:
     name: e2e-ui（webview / 远端目录选择器 / 终端页面）
     needs: prepare
     runs-on: ubuntu-latest
+    # 实测整轮 4 分钟；20 分钟没结论说明前置或某个用例挂死
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,6 +104,8 @@ jobs:
     name: e2e-electron（整应用）
     needs: prepare
     runs-on: ubuntu-latest
+    # 实测 123 条用例约 13 分钟；35 分钟给重试与慢机留余量
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -135,6 +143,8 @@ jobs:
     name: e2e-tui（安装程序）
     needs: prepare
     runs-on: ubuntu-latest
+    # 实测约 2.5 分钟（用例内 cargo 构建安装器）；25 分钟给构建留余量
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -168,6 +178,11 @@ jobs:
     name: e2e-ssh（${{ matrix.spec }}）
     needs: prepare
     runs-on: ubuntu-latest
+    # 单文件实测 8–13 分钟。不设上限时一个挂死的用例会拖到 GitHub 的 6 小时默认值：
+    # 实测 remoteChangeList 在 CI 上卡 50 分钟仍未结束，而矩阵是 `max-parallel: 1`
+    # 串行，后面的 spec 只能一直排队——整条车道失去收尾能力。40 分钟＝实测最长
+    # 13 分钟 × 3 倍余量，足够吸收重试与慢机。
+    timeout-minutes: 40
     # 按 spec 文件拆开跑：整条车道 43 条用例连着跑时，测试脚手架的上百次建链会把远端
     # sshd 的连接数推到 `MaxStartups`（默认 10:30:100）之上，后半程开始出现
     # `Connection lost before handshake` / `Channel open failure`，表现为大面积失败；
