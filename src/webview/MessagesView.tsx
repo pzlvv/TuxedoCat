@@ -2764,36 +2764,44 @@ const MessagesView = memo(({
         style={isEmpty ? undefined : { display: 'flex', flexDirection: 'column' }}
       >
       {isEmpty ? (
-        <div className="flex flex-col items-center justify-center h-full gap-3">
-          {showThinkingAnimation ? (
-            <div
-              className="thinking-animation-wrapper"
-              style={{ color: colors.textSystem, fontSize: uiFontSizePx(13) }}
-            >
-              <ThinkingAnimation isVisible={showThinkingAnimation} isDark={isDark} mode={animationMode} />
-            </div>
-          ) : (
-            <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
-          )}
-          {/* Overlay 对话入口（specs/051 FR-002）：只在**新对话、还没发过消息**时出现，
-              位置固定在 logo 正下方。渲染判据是 `isolatedWorkView || deployable`——当下
-              可用、或可经部署变得可用；两者都不成立时整块不渲染（不给「勾了却静默无效」
-              的形态）。入口本身不带任何前置提示：需要部署时由宿主在发第一条消息时弹确认
-              （FR-003），知情同意在那一刻给出。 */}
-          {showWorkViewOption ? (
-            <label
-              className="flex items-center gap-2 cursor-pointer select-none"
-              style={{ color: colors.textSystem, fontSize: uiFontSizePx(12) }}
-            >
-              <input
-                type="checkbox"
-                data-work-view-option
-                checked={workViewSelected === true}
-                onChange={(event) => onWorkViewChange?.(event.target.checked)}
-              />
-              {t('app.workViewOption')}
-            </label>
-          ) : null}
+        /* 装饰图与入口叠在同一层：入口按 `.empty-state-entry` 绝对定位在装饰图下方，
+           不占用居中布局的高度——入口出现 / 消失时 360px 的装饰图位置保持不变，否则
+           多出的那一行会把 logo 整体顶上去（「勾选框一出现，logo 就跳」）。 */
+        <div className="flex flex-col items-center justify-center h-full">
+          <div className="empty-state-stack">
+            {showThinkingAnimation ? (
+              <div
+                className="thinking-animation-wrapper"
+                style={{ color: colors.textSystem, fontSize: uiFontSizePx(13) }}
+              >
+                <ThinkingAnimation isVisible={showThinkingAnimation} isDark={isDark} mode={animationMode} />
+              </div>
+            ) : (
+              <DecorativeLogo src={getPlaceholderLogoUri()} variant="empty" opacity={0.8} />
+            )}
+            {/* Overlay 对话入口（specs/051 FR-002）：只在**新对话、还没发过消息**时出现，
+                位置固定在 logo 正下方。渲染判据是 `isolatedWorkView || deployable`——当下
+                可用、或可经部署变得可用；两者都不成立时整块不渲染（不给「勾了却静默无效」
+                的形态）。入口本身不带任何前置提示：需要部署时由宿主在发第一条消息时弹确认
+                （FR-003），知情同意在那一刻给出。 */}
+            {showWorkViewOption ? (
+              /* 外层只管定位与居中（不接鼠标），命中区仍是 label 自身 */
+              <div className="empty-state-entry">
+                <label
+                  className="flex items-center gap-2 cursor-pointer select-none"
+                  style={{ color: colors.textSystem, fontSize: uiFontSizePx(12) }}
+                >
+                  <input
+                    type="checkbox"
+                    data-work-view-option
+                    checked={workViewSelected === true}
+                    onChange={(event) => onWorkViewChange?.(event.target.checked)}
+                  />
+                  {t('app.workViewOption')}
+                </label>
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : (
         <>

@@ -2278,6 +2278,20 @@ function sendToTitlebar(channel: string, payload: unknown): void {
 }
 
 /**
+ * 清掉标题栏里残留的 hover 高亮。
+ *
+ * 原生 `Menu.popup` 弹出期间鼠标输入被菜单独占，标题栏页面收不到 `mouseout`；
+ * 菜单关掉时（点别处 / 选完条目）鼠标已经不在按钮上，按钮的 `:hover` 却还停在
+ * 点开那一刻——表现为「菜单关了，加号 / 标签页仍然亮着」。补一次 `mouseLeave`
+ * 让 Chromium 重新计算 hover 命中。
+ */
+function clearTitlebarHover(): void {
+  const wc = titlebarView?.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  wc.sendInputEvent({ type: 'mouseLeave', x: 0, y: 0 });
+}
+
+/**
  * 该 IPC 是否来自应用自有的标题栏 / 菜单视图。
  * titlebar:* 与 titlebar-menu:* 能触发退出、切工作区、改窗口模式等动作，
  * 不能仅凭「有 ipcRenderer 就能调」放行。
@@ -3363,6 +3377,9 @@ async function openWorkspaceDialog(): Promise<void> {
  *
  * 最近列表本地与远程同形态，点开即打开（远程项按落盘的凭证重新连接）。
  * 用原生菜单在当前鼠标位置弹出；标题栏页面只发一条 IPC，不自己渲染菜单。
+ *
+ * `callback` 是菜单关闭的唯一出口（点条目 / 点别处 / Esc 都走它）：在这里丢掉标题栏
+ * 残留的 hover 高亮，否则「加号点开菜单、点别处关掉」之后加号一直亮着。
  */
 function popupWorkspaceMenu(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -3388,7 +3405,7 @@ function popupWorkspaceMenu(): void {
       submenu: recentItems,
     },
   ]);
-  menu.popup({ window: mainWindow });
+  menu.popup({ window: mainWindow, callback: clearTitlebarHover });
 }
 
 /**
@@ -3548,7 +3565,8 @@ function popupTabContextMenu(ref: WorkspaceRef): void {
           click: () => { openRemoteTerminalFor(ref); },
         },
   ]);
-  menu.popup({ window: mainWindow });
+  // 右键菜单关闭后同样丢掉标签页残留的 hover 高亮（与加号菜单同一处理）
+  menu.popup({ window: mainWindow, callback: clearTitlebarHover });
 }
 
 /** 「打开远程工作区」窗口（连接远端 daemon → 选择远端目录） */

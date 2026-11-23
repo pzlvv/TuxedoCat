@@ -269,6 +269,32 @@ textarea::-webkit-scrollbar-thumb:hover {
   border-radius: 10px;
 }
 
+/* 空态装饰图 + 其下方入口的叠层（docs/hosts/webview-ui.md 第 11 节）：
+   入口绝对定位挂在装饰图外框下方，不占居中布局的高度——入口出现 / 消失时装饰图
+   位置不动。装饰图宽 360px（窄侧栏按容器收缩），所以入口按 `top: 100%` 贴它的
+   底边，而不是用固定像素偏移（收窄时同样贴住）。 */
+.empty-state-stack {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 占满消息区宽度：装饰图自身的 `max-width: 100%` 才会按容器收缩（窄侧栏），
+     入口的 `left: 50%` 也就落在这条中线上。 */
+  width: 100%;
+}
+
+.empty-state-entry {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
 /* Transparent background for markdown */
 .markdown-body {
   background: transparent !important;

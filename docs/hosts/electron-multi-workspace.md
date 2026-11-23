@@ -136,6 +136,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   主进程 `Menu.popup` 在光标处弹出，与「添加工作区」加号菜单同形态），条目、候选与
   置灰规则见 [docs/hosts/workspace-close-menus.md](workspace-close-menus.md)；终端类
   条目见第 14.1 节。原生菜单无法被 Playwright 驱动，交互按 US-48 豁免人工验证。
+  菜单关闭时补发 `mouseLeave`，否则触发按钮的 hover 高亮会留在原地（见 [docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主固有差异有意保留)的「菜单关闭」行）。
 - 标签页支持拖拽调整顺序：拖到目标标签页前半 / 后半即插到其前 / 后，顺序写入打开集合并持久化。
 - 快捷键切换相邻标签页：「下一标签」（默认 Ctrl+Tab）/「上一标签」（默认 Ctrl+Shift+Tab）
   按打开集合顺序把活动项移向相邻一项，末项向后环绕回首项、首项向前环绕到末项；
