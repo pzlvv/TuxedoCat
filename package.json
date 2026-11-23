@@ -131,7 +131,8 @@
     "package:pycharm": "node scripts/build-pycharm.mjs",
     "test:e2e:tui": "playwright test -c e2e/playwright.config.ts --project=tui-installer",
     "test:mount-proxy": "cargo test --manifest-path mount-proxy-rs/Cargo.toml",
-    "verify:mount-proxy": "node scripts/verify-mount-proxy-remote.mjs"
+    "verify:mount-proxy": "node scripts/verify-mount-proxy-remote.mjs",
+    "test:core:shard": "node scripts/test-core-shard.mjs --all-crates"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

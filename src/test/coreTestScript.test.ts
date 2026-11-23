@@ -50,6 +50,62 @@ runTests('coreTestScript', async () => {
     testCoreScript.includes('core-rs/Cargo.toml') && testCoreScript.includes('mount-proxy-rs/Cargo.toml'),
   );
 
+  // ---------- CI 分片入口（specs 见 smoke.yml 的 rust-tests 矩阵） ----------
+  //
+  // 这一组锁的是「分片真的覆盖全集」这件事本身，因为分片的失效方式全是静默的：
+  // - 忘了 `--exact`：`engine::foo` 会连带跑 `engine::foo_bar`，各片重叠、有人被跑两遍；
+  // - 分片选项只追加到 `test:core` 的第二条命令：core-rs 那半边每片都跑全量，
+  //   四片各 197s，比不分片更慢——所以 CI 必须用 `test:core:shard` 而不是
+  //   `test:core -- --shard-index`；
+  // - 两个 crate 只分了一个：另一半静默不跑。
+  const shardSyntax = spawnSync(
+    process.execPath,
+    ['--check', 'scripts/test-core-shard.mjs'],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  );
+  check('test-core-shard.mjs 语法合法（node --check）', shardSyntax.status === 0);
+
+  const shardScriptRaw = spawnSync(process.execPath, ['-e', `
+    const pkg = require('./package.json');
+    console.log(pkg.scripts['test:core:shard'] ?? '');
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const shardScript = (shardScriptRaw.stdout ?? '').trim();
+  check(
+    'test:core:shard 走 test-core-shard.mjs 且覆盖两个 crate',
+    shardScript.includes('test-core-shard.mjs') && shardScript.includes('--all-crates'),
+  );
+
+  // 分片脚本必须用 `--exact`：否则按子串匹配会跨片重叠
+  const exactProbe = spawnSync(process.execPath, ['-e', `
+    const fs = require('fs');
+    console.log(fs.readFileSync('scripts/test-core-shard.mjs', 'utf8').includes("'--exact'") ? 'exact' : 'no-exact');
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  check(
+    '分片按 --exact 点名（不带它会跨片重叠）',
+    (exactProbe.stdout ?? '').trim() === 'exact',
+  );
+
+  // smoke.yml 的 rust-tests 矩阵必须调 `test:core:shard`，不能调 `test:core -- ...`
+  const smokeRaw = spawnSync(process.execPath, ['-e', `
+    const fs = require('fs');
+    const text = fs.readFileSync('.github/workflows/smoke.yml', 'utf8');
+    const usesShard = /npm run test:core:shard/.test(text);
+    const usesPlainWithArgs = /npm run test:core --/.test(text);
+    const hasMatrix = /shard: \\[0, 1, 2, 3\\]/.test(text);
+    const failFastOff = /fail-fast: false/.test(text);
+    console.log(JSON.stringify({ usesShard, usesPlainWithArgs, hasMatrix, failFastOff }));
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  let smokeCheck = { usesShard: false, usesPlainWithArgs: true, hasMatrix: false, failFastOff: false };
+  try {
+    smokeCheck = JSON.parse((smokeRaw.stdout ?? '{}').trim()) as typeof smokeCheck;
+  } catch {
+    // 解析失败即视为未配置（下面的断言会红，不会静默通过）
+  }
+  check('smoke.yml 用 test:core:shard 分片（不是 test:core -- 追加参数）',
+    smokeCheck.usesShard && !smokeCheck.usesPlainWithArgs);
+  check('smoke.yml 的 rust-tests 是 4 片矩阵', smokeCheck.hasMatrix);
+  check('分片矩阵 fail-fast: false（一片红不掐掉其余片）', smokeCheck.failFastOff);
+
   // ---------- 宿主工具链判据与构建脚本同源 ----------
   // test-core.mjs 不自己复制一份判据，而是 import build-core.mjs 的 crossToolchainEnv。
   const sourceProbe = spawnSync(

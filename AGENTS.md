@@ -148,10 +148,11 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   的冒烟闸门，docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节
   引用，tests job 跑 check-types / lint / `fmt:rust:check` / `test:unit` / `test:core` /
   `check-types:e2e`，并先构建 Linux Core 让 `standalone*` 系列测试驱动真实二进制而不是 skip）。
-  tests job 内两条轨道并行：轨道 A 先构建发布形态 Linux Core 再跑 `test:unit` 与前端类型 / lint，
-  轨道 B 用独立 `CARGO_TARGET_DIR` 跑 `test:core`——release 与 debug 是两份互不依赖的 cargo
-  产物，串行等于把两份编译时间相加。`npm ci` 统一走 `.github/actions/npm-ci`（缓存
-  `node_modules` 而不只是 `~/.npm`）。
+  tests job 内两条轨道并行：本 job 先构建发布形态 Linux Core 再跑 `test:unit` 与前端类型 / lint，
+  `rust-tests` 矩阵用 4 片并行跑 `test:core:shard`——core-rs 的 1256 条用例是串行吞吐
+  （CI 实测 197s），只能靠多进程切时间，且与本 job 的产物零依赖。`npm ci` 统一走
+  `.github/actions/npm-ci`（缓存 `node_modules` 而不只是 `~/.npm`），Rust 编译走
+  `Swatinem/rust-cache`（依赖产物跨 checkout 复用，release 构建实测 136s → 75s）。
   MR 必须冒烟全绿才可合入：分支保护里把 docs-lint / tests 设为必填 check。
 - **全量回归进 CI**（`.github/workflows/all.yml`）：main 整点定时（每小时）+ 手动
   dispatch，复用 smoke.yml 的两个 job，另跑 e2e 四车道：`prepare` 构建产物，之后

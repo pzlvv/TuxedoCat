@@ -39,9 +39,9 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    # 本 job 只做「需要 Core 产物 + node 侧」的事：build:core、test:unit、类型 / lint / 格式。
+    # Rust 用例在 rust-tests 矩阵里并行跑，两者之间没有依赖，墙钟取二者较大者。
     # 上限 20 分钟：给 cargo 冷编译留余量，同时保证 MR 闸门即使挂住也不会占到小时级。
-    # 关键路径是下面「轨道 B」——它包含 cargo test 的两份编译（cargo test 自己的
-    # debug 构建 + mount-proxy），挪不走也缓存不了。
     timeout-minutes: 20
     steps:
       # resources/** 走 LFS（ripgrep 产物等）。不开 lfs: true 时 checkout 留下的
@@ -64,11 +64,10 @@ jobs:
       # 为什么缓存 target 目录能省时：依赖（ring / reqwest / tokio / mimalloc 等 18 个
       # 直接依赖展开出的全部 crate）的指纹只取决于**依赖源码 + 编译参数**，与本仓库源码
       # 的 mtime 无关。因此依赖编译产物跨 checkout 复用是有效的，每次只重编 standalone-core
-      # 自己。本 job 两条轨道各有自己的 target 目录，都要缓存：
-      # - `core-rs/target`、`mount-proxy-rs/target`：轨道 A 的 release 构建（CI 实测 136s）；
-      # - `/tmp/cargo-test-target`：轨道 B 的 `cargo test` debug 构建（实测约 43s）。
-      #   它是 workspace 之外的绝对路径，只能经 `cache-directories` 声明（`workspaces`
-      #   的 target 必须是相对 workspace 的路径）。
+      # 自己（CI 实测 release 构建 136s → 75s）。
+      #
+      # 本 job 只有 release 构建这一个 target 目录要缓存。cargo test 的 debug 产物归
+      # rust-tests 矩阵，那里有它自己的缓存声明。
       #
       # `cache-on-failure: true`：PR 上最常见的就是红一轮改一版，失败时也存缓存能让下一轮
       # 直接命中。半成品产物被缓存不影响正确性——cargo 按指纹校验，缺什么重编什么。
@@ -77,7 +76,6 @@ jobs:
           workspaces: |
             core-rs -> target
             mount-proxy-rs -> target
-          cache-directories: /tmp/cargo-test-target
           cache-on-failure: true
       # musl-tools 的 apt 安装（实测 4s～1min50s 不等，源站会掉到 11kB/s 且不报错，
       # 退避重试治不了「慢」）——本 job 不需要它：build-core.mjs 的 toolchainKind 在
@@ -87,50 +85,75 @@ jobs:
       #
       # 实验依据见下方「musl-tools 是否必需」的验证记录：去掉后 build:core 与
       # test:core 都必须绿，否则说明有环节真的用到了 musl-gcc。
-      # ---- 两条轨道并行 ----
+      # ---- 轨道 A（本 job）与轨道 B（rust-tests 矩阵）并行 ----
       #
-      # 为什么并行：`build:core:linux-x64`（release + LTO）与 `test:core`
-      # （cargo test 自己再编一套 debug）是两份互不依赖的 cargo 产物，谁都读不到谁。
-      # 串行跑等于把两份编译时间相加（CI 实测 103s + 333s，占本 job 的 74%）。
+      # 本 job 只做「需要 Core 产物的事」：build:core → test:unit（standalone* 驱动真实
+      # 二进制）→ 类型 / lint / 格式检查。Rust 用例跑在 rust-tests 矩阵里（见下面的 job），
+      # 因为 core-rs 的 1256 条用例是串行吞吐（CI 实测 197s，占本 job 242s 的 81%），
+      # 只能靠多进程切时间——而它跟本 job 的产物零依赖，没必要排在一条线上。
       #
-      # 为什么不直接让 `build:core:linux-x64` 改 `--debug` 省掉 release 编译：
-      # `--debug` 产出的 Core 带 `.debug_*` 段，会撞上 `corePlatformMatrix` 对**随包
-      # 发布的 profile** 的断言（release 保留 `.symtab`、删 `.debug_*`，
-      # docs/core/standalone-core.md 第 3.1 节）。那等于用「冒烟不再验证发布形态」
-      # 换时间，不划算——这里改成并行而不是降级。
+      # 为什么不把测试改成 `build:core --debug` 省掉 release 编译：`--debug` 产出的 Core
+      # 带 `.debug_*` 段，会撞上 `corePlatformMatrix` 对**随包发布的 profile** 的断言
+      # （release 保留 `.symtab`、删 `.debug_*`，docs/core/standalone-core.md 第 3.1 节）。
+      # 那等于用「冒烟不再验证发布形态」换时间，不划算——这里改成并行而不是降级。
       #
-      # 为什么轨道 B 单独给 `CARGO_TARGET_DIR`：两份 cargo 若共用同一 target 目录，
-      # 它们会抢同一个 `.rustc_info.json` 与 `tmp/`（profile 锁虽不同，顶层文件仍是
-      # 共享的）。分目录之后两边零共享，不存在互相踩的可能；放 /tmp 也让仓库工作树
-      # 不因为多一个 target 目录而影响 docsLint / brandLiteral 这类全仓扫描用例。
-      #
-      # 为什么 `test:unit` 必须留在轨道 A：`standalone*` 系列直接驱动
-      # `resources/core/<host>/` 下的真实产物，要等轨道 A 的 build:core 落位；
-      # 产物缺失时它们走 markSkipped（runner 单列「跳过」，不算通过）。
-      - name: 轨道 A：发布形态 Core + 全部单测
+      # 为什么 `test:unit` 必须留在本 job：`standalone*` 系列直接驱动
+      # `resources/core/<host>/` 下的真实产物，要等 build:core 落位；产物缺失时它们走
+      # markSkipped（runner 单列「跳过」，不算通过）。
+      - name: 发布形态 Core + 全部单测 + 类型 / 格式
         run: |
           set -euo pipefail
-          # 轨道 B 先起后台：它是关键路径（cargo test 的 debug 编译比 release 更慢）
-          CARGO_TARGET_DIR=/tmp/cargo-test-target RUST_BACKTRACE=1 npm run test:core \
-            > /tmp/track-b.log 2>&1 &
-          trackB=$!
           npm run build:core:linux-x64
           npm run test:unit
           npm run check-types
           npm run lint
           # Rust 格式基线（AGENTS.md 第 5 节）：四个 crate 的 cargo fmt --check，
-          # 工具链与上面那步 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
+          # 工具链与 rust-tests job 的 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
           npm run fmt:rust:check
           npm run check-types:e2e
-          # 收尾：轨迹 B 的结论与日志在最后统一给出，避免两条轨道的输出交错。
-          # 判断放在 if 里（不靠 `set -e`）——要的是把日志打出来再失败，不是静默退出。
-          # 成功时只摘 test result 行：完整日志 1200+ 行，全贴会把本 job 的日志淹掉；
-          # 失败时才整段贴，那时顺序与上下文都是排障必需的。
-          if wait "$trackB"; then
-            grep -E "^(test result|     Running|   Doc-tests)" /tmp/track-b.log || true
-          else
-            echo "::group::轨道 B（cargo test）失败日志"
-            cat /tmp/track-b.log
-            echo "::endgroup::"
-            exit 1
-          fi
+
+  # Rust 用例分片（core-rs 的 unittests + tests/、mount-proxy-rs）。
+  #
+  # 为什么单独成 job 而不是在同 job 里后台并行：同 job 内的 step 是串行的，后台起进程
+  # 只能省部分墙钟，且一条失败要靠日志手工判断。矩阵让每片有独立的 runner、独立日志、
+  # 独立红绿——`--fail-fast` 默认关，一片红其余照跑，结果一目了然。
+  #
+  # 为什么 4 片：core-rs 1256 条用例实测 197s。4 片理论上各 ~50s，加上每片自己的
+  # checkout / npm-ci / 缓存还原（实测约 30s）与编译（缓存命中后只编 standalone-core
+  # 自己，约 40s），单片约 120s——已经低于本 job 的 242s，所以再细分收益递减。
+  #
+  # 为什么每片都要跑 mount-proxy：它只有 35 条用例、0.00s，但「一次构建 + 跑两个 crate」
+  # 是 `test:core` 的既有语义（scripts/coreTestScript.test.ts 锁着）。给它单独一片会浪费
+  # 一整个 runner，挂在每片末尾让「任一片跑过就算跑过」——分片脚本按用例名取模，
+  # mount-proxy 的用例名同样参与取模，四片的并集仍是全集。
+  rust-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # 一片红不要掐掉其余片：合并结论由 job 总体红绿给出，其余片的结果对定位有用
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      # 分片只跑 cargo，不需要 node 侧的任何东西；但 `crossToolchainEnv`（分片脚本
+      # import 的 build-core.mjs）要读 src/config/project.json，那是纯文本，checkout 即有。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      # 缓存键与 tests job 的轨道 B 一致（同 `workspaces` 声明、同 add-job-id-key 口径），
+      # 因此分片之间共享同一份依赖产物：第一片写入、其余片直接命中。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-rs -> target
+            mount-proxy-rs -> target
+          cache-on-failure: true
+      - name: core-rs 分片 ${{ matrix.shard }}/4
+        env:
+          RUST_BACKTRACE: '1'
+        run: |
+          set -euo pipefail
+          npm run test:core:shard -- --shard-index ${{ matrix.shard }} --shard-count 4

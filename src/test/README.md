@@ -31,7 +31,8 @@ CI 的 tests job 先构建 Linux Core，所以真实在跑。Rust 侧的引擎 /
 ```bash
 npm run test:all                        # 全部单测（先 tsc 编译再逐个跑）
 npm run test:all -- edit-diff bus       # 只跑名字匹配的（camelCase / kebab-case 都认）
-npm run test:core                       # cargo test（core-rs）
+npm run test:core                       # cargo test（core-rs + mount-proxy-rs）
+npm run test:core:shard -- --shard-index 0 --shard-count 4   # 只跑第 0/4 片（CI 用法）
 npm run test:coverage                   # c8 覆盖率（文本 + html，产物在 coverage/）
 npm test                                # 宿主冒烟（会先跑 check-types + esbuild + lint）
 
@@ -41,6 +42,16 @@ node scripts/run-tests.mjs --jobs 2     # 限并发数
 node scripts/run-tests.mjs --serial     # 全部串行
 node scripts/run-tests.mjs --help
 ```
+
+**Rust 用例分片**：`test:core` 的 core-rs 半边是 1256 条用例的串行吞吐（CI 实测
+197s），与编译无关，只能靠多进程切时间。`scripts/test-core-shard.mjs` 按
+`cargo test -- --list` 列出的用例名排序后取 `index % count === shard-index`，用
+重复的 `--exact` 逐个点名——按名字而不是按模块：`engine` 与 `tools` 两个模块就占 30%，
+按模块切会让某片明显更慢。CI 用 4 片矩阵并行，本地调试一般不需要分片。
+
+**不能用 `npm run test:core -- --shard-index ...`**：`test:core` 是两条 `cargo test`
+命令用 `&&` 串起来的，`--` 之后的参数只会追加到**第二条**，core-rs 那半边拿不到分片
+参数、每片都跑全量。分片入口是 `test:core:shard`（`--all-crates` 展开成两个 crate）。
 
 `test:all` 会先执行 `tsc -p tsconfig.test.json`（编译到 `out/`，已被 gitignore）。
 `scripts/run-tests.mjs` 从**源码**目录发现用例，所以新增文件只要放对位置就会自动被跑到——
