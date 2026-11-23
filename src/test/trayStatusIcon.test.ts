@@ -1,8 +1,11 @@
-import { deriveTrayStatusFromStates } from '../../electron/trayStatusIcon';
+// 从 `src/shared/trayStatus` 而不是 `electron/trayStatusIcon`：后者顶层 import electron，
+// 首载会同步下载约 100MB 二进制（`node_modules/electron` 没有 postinstall），一条 20ms
+// 的纯函数真值表用例要白付 9s。`electron/trayStatusIcon.ts` 仍重导出同一份实现。
+import { deriveTrayStatusFromStates } from '../shared/trayStatus';
 import { createChecker, runTests } from './helpers/harness';
 
 /**
- * 托盘状态点的聚合口径（`electron/trayStatusIcon.ts` 的 `deriveTrayStatusFromStates`）。
+ * 托盘状态点的聚合口径（`src/shared/trayStatus.ts` 的 `deriveTrayStatusFromStates`）。
  *
  * US-33 验收 1（绿=全部空闲 / 红=运行中 / 黄=等待用户确认）只有这一处派生：托盘图标
  * 颜色、闪烁相位与提示文案都由它决定。真实托盘图标渲染与 OS 交互无法被 Playwright

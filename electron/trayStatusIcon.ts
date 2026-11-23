@@ -16,9 +16,12 @@
  */
 
 import { nativeImage, type NativeImage } from 'electron';
-import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
+import { deriveTrayStatusFromStates, type TrayStatus } from '../src/shared/trayStatus.js';
 
-export type TrayStatus = 'idle' | 'running' | 'waiting';
+// 聚合口径（`deriveTrayStatusFromStates`）住在 `src/shared/trayStatus.ts`：它不含
+// Electron API，放在这里会让单测为了验一张真值表就得加载本模块、连带同步下载
+// 100MB 的 Electron 二进制。这里只做**重导出**，调用方仍然从托盘图标模块拿。
+export { deriveTrayStatusFromStates, type TrayStatus };
 
 /** 状态圆点颜色（sRGB） */
 const DOT_COLORS: Record<TrayStatus, readonly [number, number, number]> = {
@@ -178,22 +181,4 @@ export function createTrayStatusIcon(
     image.addRepresentation({ scaleFactor: 1, width: SMALL_SIZE, height: SMALL_SIZE, buffer: small });
   }
   return image;
-}
-
-/**
- * 从会话状态流聚合托盘状态：waiting > running > idle。
- *
- * 忙闲判定收敛在 core 的 `sessionBusyLevel`（与标签页流水灯 / 关闭确认同一份派生）；
- * 这里只做聚合（任一会话 waiting 即托盘 waiting，否则任一非 idle 即 running）。
- * 托盘是聚合状态，吃 SessionRuntimeState[] 全量推送，不从对话列表（磁盘元数据）
- * 推导（docs/architecture/contracts.md 第 4 节规则 8）。
- */
-export function deriveTrayStatusFromStates(states: ReadonlyArray<{ idle?: boolean; waiting?: boolean }>): TrayStatus {
-  let running = false;
-  for (const item of states) {
-    const level = sessionBusyLevel({ idle: item.idle ?? true, waiting: item.waiting ?? false });
-    if (level === 'waiting') return 'waiting';
-    if (level === 'running') running = true;
-  }
-  return running ? 'running' : 'idle';
 }

@@ -299,8 +299,11 @@ Electron 的 `sidebar:get-conversations` 直接读它，切换标签页不再每
 **托盘状态点与「任务结束」闪烁提醒**属于 `statusListener` 这条流：它吃的是**会话状态流**，
 挂在 `ElectronConversationManager.setStatusListener` 上（`electron/main.ts`）。颜色与闪烁分两步：
 
-- **颜色**（静态与闪烁相位共用）吃**聚合**状态：`deriveTrayStatusFromStates(states)` 按
-  `waiting` > `running`（`idle === false`）> `idle` 聚合出黄 / 红 / 绿点；
+- **颜色**（静态与闪烁相位共用）吃**聚合**状态：`deriveTrayStatusFromStates(states)`
+  （实现在 `src/shared/trayStatus.ts`，`electron/trayStatusIcon.ts` 重导出）按
+  `waiting` > `running`（`idle === false`）> `idle` 聚合出黄 / 红 / 绿点。聚合是纯派生、
+  不含 Electron API，因此单测直接打 `src/shared/trayStatus.ts`，不加载托盘图标模块
+  （后者顶层 `import electron` 首次加载会同步下载运行时二进制）；
 - **闪烁**（任务结束提醒）由 `diffSessionEndEvents`（`electron/trayAttention.ts`）对**相邻两次**
   全量推送按 sessionId 差分：任一会话从运行中结束（running → idle 完成、running → waiting
   等用户）且窗口处于后台就闪，**不看聚合状态是否变化**——两个对话在跑时其中一个完成同样

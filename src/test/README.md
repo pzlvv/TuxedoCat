@@ -37,12 +37,20 @@ npm test                                # 宿主冒烟（会先跑 check-types +
 
 node scripts/run-tests.mjs --list       # 只列出会被跑的用例
 node scripts/run-tests.mjs --bail       # 首个失败即停
+node scripts/run-tests.mjs --jobs 2     # 限并发数
+node scripts/run-tests.mjs --serial     # 全部串行
 node scripts/run-tests.mjs --help
 ```
 
 `test:all` 会先执行 `tsc -p tsconfig.test.json`（编译到 `out/`，已被 gitignore）。
 `scripts/run-tests.mjs` 从**源码**目录发现用例，所以新增文件只要放对位置就会自动被跑到——
 如果加了文件却忘了编译，runner 会直接报缺编译产物，而不是静默跳过。
+
+**并发**：runner 默认同时跑 `min(4, CPU 核数)` 个文件（`--jobs N` / `<envPrefix>_TEST_JOBS`
+可改）。一文件一进程本来就是隔离边界，并发只多出一条要求：**不要在仓库工作树里写文件**，
+否则会与并发文件的输入互相踩。确实要写的（如 `docsLint` 的两个文件）登记在
+`scripts/run-tests.mjs` 的 `SERIAL_FILES`，它们先串行跑完，其余文件才进来。并发下每个文件
+的 stdout / stderr 先缓冲、跑完再整段打印，失败现场仍按文件名顺序可读。
 
 ## 目录结构
 

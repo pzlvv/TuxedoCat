@@ -148,6 +148,10 @@ npm run electron      # 启动 Electron（调试用 --inspect 走 npm run electr
   的冒烟闸门，docs-lint 与 tests 两个 job 都不过滤路径——docsLint 还扫描代码注释里的章节
   引用，tests job 跑 check-types / lint / `fmt:rust:check` / `test:unit` / `test:core` /
   `check-types:e2e`，并先构建 Linux Core 让 `standalone*` 系列测试驱动真实二进制而不是 skip）。
+  tests job 内两条轨道并行：轨道 A 先构建发布形态 Linux Core 再跑 `test:unit` 与前端类型 / lint，
+  轨道 B 用独立 `CARGO_TARGET_DIR` 跑 `test:core`——release 与 debug 是两份互不依赖的 cargo
+  产物，串行等于把两份编译时间相加。`npm ci` 统一走 `.github/actions/npm-ci`（缓存
+  `node_modules` 而不只是 `~/.npm`）。
   MR 必须冒烟全绿才可合入：分支保护里把 docs-lint / tests 设为必填 check。
 - **全量回归进 CI**（`.github/workflows/all.yml`）：main 整点定时（每小时）+ 手动
   dispatch，复用 smoke.yml 的两个 job，另跑 e2e 四车道：`prepare` 构建产物，之后

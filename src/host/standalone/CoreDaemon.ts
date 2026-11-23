@@ -71,6 +71,14 @@ const DAEMON_HEARTBEAT_INTERVAL_MS = 1_000;
 const LINK_SILENCE_DEADLINE_MS = 9_000;
 /** 沉默探针的宽限：探针 ping 发出后等这么久，仍无入站字节才判死 */
 const LINK_SILENCE_RECHECK_MS = 900;
+/**
+ * 「断连在 10s 内落成 fatal」这条对外指标的上界（`docs/core/core-remote.md` 第 2.5 节）。
+ *
+ * 单测断言的是**这两个常量之和 ≤ 本值**，而不是真跑一条 9s 的端到端往返：后者能把
+ * 指标钉在墙钟上，但每跑一次就白占 10 秒，而它验证的关系完全由常量决定（定时器的
+ * 迟到由 Node 的事件循环保证，不是本模块的自由度）。
+ */
+export const LINK_SILENCE_DEADLINE_BUDGET_MS = LINK_SILENCE_DEADLINE_MS + LINK_SILENCE_RECHECK_MS;
 /** 握手超时默认值（Core 进程启动后未回 `ready` 视为失败） */
 export const DEFAULT_DAEMON_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** 控制通道就绪超时默认值（连不上 / daemon 无应答） */

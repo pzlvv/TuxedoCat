@@ -1,0 +1,45 @@
+# `npm ci` + node_modules 缓存。
+#
+# 为什么 setup-node 的 `cache: npm` 不够：它缓存的是 `~/.npm`（registry 的压缩包），
+# 命中之后**仍然要**把 1152 个包解开、链接进 `node_modules`——CI 实测这一步 53–65s，
+# 占冒烟 job 的 9%。缓存 `node_modules` 本身时，命中即解压即用。
+#
+# 为什么 key 里带 os / arch / lock 哈希：`node_modules` 里有平台相关的二进制
+# （esbuild / rollup / @rollup/rollup-linux-x64-*），跨平台复用会直接崩。「lock 变了就
+# 重装」是唯一安全的判据——不按分支或时间失效，避免「为什么我这台机器装的包不一样」。
+#
+# 缓存体积约 150–300MB（压缩后），同 lock 的条目会一直复用；GitHub 的 10GB 仓库配额
+# 由 actions/cache 的 LRU 自动回收旧条目，不需要手写清理。
+#
+# 为什么 `--no-audit --no-fund`：这两项在 CI 上零信息量（audit 结论没人看、funding 只是
+# 打印），却各要一次 registry 往返。`npm audit` 属于单独的安全车道，不塞进闸门。
+name: npm-ci
+description: 带 node_modules 缓存的 npm ci
+
+runs:
+  using: composite
+  steps:
+    - name: 计算 package-lock 哈希
+      id: lock
+      shell: bash
+      run: |
+        set -euo pipefail
+        # 用 POSIX 工具而不是 node -e：composite action 的 run 里再嵌一层引号很容易写坏，
+        # 而这一步只是取摘要。sha256sum 在 ubuntu / macOS 上有，Windows Git Bash 也带。
+        hash="$(sha256sum package-lock.json | cut -c1-16)"
+        echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+
+    # node_modules 是「由 lock 文件唯一确定」的产物，因此缓存键只需要 lock 哈希 + 平台
+    - name: 恢复 node_modules
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: node_modules
+        key: node-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.hash }}
+
+    # 命中即 node_modules 已就位：`npm ci` 会先把目录整个删掉重装，所以必须跳过它。
+    # 缓存键含 lock 哈希，命中就意味着这份 node_modules 与当前 lock 完全对应。
+    - name: npm ci
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: npm ci --no-audit --no-fund

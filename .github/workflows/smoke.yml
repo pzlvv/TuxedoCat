@@ -32,14 +32,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # 走 composite action 而不是裸 `npm ci`：setup-node 只缓存 ~/.npm（registry 压缩包），
+      # 命中后仍要解包 + 链接 1152 个包（实测 53–65s）。这个 action 直接缓存 node_modules。
+      - uses: ./.github/actions/npm-ci
       - run: npm run test:unit -- docs-lint
 
   tests:
     runs-on: ubuntu-latest
-    # 实测约 4 分钟（含 build:core:linux-x64 / check-types / lint / fmt:rust:check /
-    # test:unit / test:core / check-types:e2e）。上限 20 分钟：给 cargo 冷编译留余量，
-    # 同时保证 MR 闸门即使挂住也不会占跑到小时级。
+    # 上限 20 分钟：给 cargo 冷编译留余量，同时保证 MR 闸门即使挂住也不会占到小时级。
+    # 关键路径是下面「轨道 B」——它包含 cargo test 的两份编译（cargo test 自己的
+    # debug 构建 + mount-proxy），挪不走也缓存不了。
     timeout-minutes: 20
     steps:
       # resources/** 走 LFS（ripgrep 产物等）。不开 lfs: true 时 checkout 留下的
@@ -52,7 +54,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - uses: ./.github/actions/npm-ci
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -62,17 +64,50 @@ jobs:
       - uses: ./.github/actions/apt-install
         with:
           packages: musl-tools
-      # 先产出 Linux Core 产物：standalone* 系列测试按宿主平台解析并驱动真实二进制，
-      # 产物缺失会显式跳过（runner 汇总单列「跳过」）——CI 上必须真的跑
-      - run: npm run build:core:linux-x64
-      - run: npm run check-types
-      - run: npm run lint
-      # Rust 格式基线（AGENTS.md 第 5 节）：三个 crate 的 cargo fmt --check，
-      # 工具链与 tests job 的 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
-      - run: npm run fmt:rust:check
-      - run: npm run test:unit
-      # 偶发失败的后台线程 panic（如子代理槽位配对）需要完整回溯定位
-      - run: npm run test:core
-        env:
-          RUST_BACKTRACE: 1
-      - run: npm run check-types:e2e
+      # ---- 两条轨道并行 ----
+      #
+      # 为什么并行：`build:core:linux-x64`（release + LTO）与 `test:core`
+      # （cargo test 自己再编一套 debug）是两份互不依赖的 cargo 产物，谁都读不到谁。
+      # 串行跑等于把两份编译时间相加（CI 实测 103s + 333s，占本 job 的 74%）。
+      #
+      # 为什么不直接让 `build:core:linux-x64` 改 `--debug` 省掉 release 编译：
+      # `--debug` 产出的 Core 带 `.debug_*` 段，会撞上 `corePlatformMatrix` 对**随包
+      # 发布的 profile** 的断言（release 保留 `.symtab`、删 `.debug_*`，
+      # docs/core/standalone-core.md 第 3.1 节）。那等于用「冒烟不再验证发布形态」
+      # 换时间，不划算——这里改成并行而不是降级。
+      #
+      # 为什么轨道 B 单独给 `CARGO_TARGET_DIR`：两份 cargo 若共用同一 target 目录，
+      # 它们会抢同一个 `.rustc_info.json` 与 `tmp/`（profile 锁虽不同，顶层文件仍是
+      # 共享的）。分目录之后两边零共享，不存在互相踩的可能；放 /tmp 也让仓库工作树
+      # 不因为多一个 target 目录而影响 docsLint / brandLiteral 这类全仓扫描用例。
+      #
+      # 为什么 `test:unit` 必须留在轨道 A：`standalone*` 系列直接驱动
+      # `resources/core/<host>/` 下的真实产物，要等轨道 A 的 build:core 落位；
+      # 产物缺失时它们走 markSkipped（runner 单列「跳过」，不算通过）。
+      - name: 轨道 A：发布形态 Core + 全部单测
+        run: |
+          set -euo pipefail
+          # 轨道 B 先起后台：它是关键路径（cargo test 的 debug 编译比 release 更慢）
+          CARGO_TARGET_DIR=/tmp/cargo-test-target RUST_BACKTRACE=1 npm run test:core \
+            > /tmp/track-b.log 2>&1 &
+          trackB=$!
+          npm run build:core:linux-x64
+          npm run test:unit
+          npm run check-types
+          npm run lint
+          # Rust 格式基线（AGENTS.md 第 5 节）：四个 crate 的 cargo fmt --check，
+          # 工具链与上面那步 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
+          npm run fmt:rust:check
+          npm run check-types:e2e
+          # 收尾：轨迹 B 的结论与日志在最后统一给出，避免两条轨道的输出交错。
+          # 判断放在 if 里（不靠 `set -e`）——要的是把日志打出来再失败，不是静默退出。
+          # 成功时只摘 test result 行：完整日志 1200+ 行，全贴会把本 job 的日志淹掉；
+          # 失败时才整段贴，那时顺序与上下文都是排障必需的。
+          if wait "$trackB"; then
+            grep -E "^(test result|     Running|   Doc-tests)" /tmp/track-b.log || true
+          else
+            echo "::group::轨道 B（cargo test）失败日志"
+            cat /tmp/track-b.log
+            echo "::endgroup::"
+            exit 1
+          fi
