@@ -58,6 +58,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+      # Rust 编译缓存。必须在 rust-toolchain 之后：缓存键含 rustc 版本，工具链没定下来
+      # 时算出来的键没有意义。
+      #
+      # 为什么缓存 target 目录能省时：依赖（ring / reqwest / tokio / mimalloc 等 18 个
+      # 直接依赖展开出的全部 crate）的指纹只取决于**依赖源码 + 编译参数**，与本仓库源码
+      # 的 mtime 无关。因此依赖编译产物跨 checkout 复用是有效的，每次只重编 standalone-core
+      # 自己。本 job 两条轨道各有自己的 target 目录，都要缓存：
+      # - `core-rs/target`、`mount-proxy-rs/target`：轨道 A 的 release 构建（CI 实测 136s）；
+      # - `/tmp/cargo-test-target`：轨道 B 的 `cargo test` debug 构建（实测约 43s）。
+      #   它是 workspace 之外的绝对路径，只能经 `cache-directories` 声明（`workspaces`
+      #   的 target 必须是相对 workspace 的路径）。
+      #
+      # `cache-on-failure: true`：PR 上最常见的就是红一轮改一版，失败时也存缓存能让下一轮
+      # 直接命中。半成品产物被缓存不影响正确性——cargo 按指纹校验，缺什么重编什么。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-rs -> target
+            mount-proxy-rs -> target
+          cache-directories: /tmp/cargo-test-target
+          cache-on-failure: true
       # musl 目标的 ring（C / 汇编）与分配器 mimalloc 都需要 C 编译器（build-core.mjs 的
       # crossToolchainEnv 在 Linux 宿主上不注入 zig，直接用系统 cc）。
       # 走 composite action 而不是裸 apt-get：runner 的源解析会抖（`.github/actions/apt-install`）
