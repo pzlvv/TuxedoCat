@@ -86,7 +86,7 @@ status: 已修
 | 归因（修复前） | `CC="zig cc" CFLAGS="--target=aarch64-windows-msvc" cargo test --manifest-path core-rs/Cargo.toml --release subagent` | 绿 | 手动注入后 15 个 `subagent::tests` 全过（含 `waiters_wake_in_fifo_order`）——证明缺的只是注入，不是代码 |
 | 回归用例（修复后） | `npm run test:unit -- coreTestScript` | 绿 | 5 通过 / 0 失败（RT-1 / RT-2 / RT-3） |
 | 真实入口（注入生效） | `npm exec -- node scripts/test-core.mjs --manifest-path core-rs/Cargo.toml subagent` | 绿 | 日志报出注入 `CC_aarch64_pc_windows_msvc` / `CFLAGS_aarch64_pc_windows_msvc`；`test result: ok. 15 passed; 0 failed`（含 `waiters_wake_in_fifo_order`） |
-| 真实入口（全量） | `npm run test:core` | not-run | 本机 debug 全量编译超过 20 分钟（CI 的 `tests` job 同口径覆盖 `test:core`）；注入是否生效已由上一行的定向运行与注入日志证实 |
+| 真实入口（全量） | `npm run test:core` | 绿 | exit 0：core-rs `1228 passed; 0 failed`（268.89s）、mount-proxy-rs `9 passed; 0 failed`；注入日志见上一行 |
 | 入口形态（Windows） | 上述两条 + `npm run test:core` | 绿 | 脚本自给 `cargo.exe`、不设 `shell: true`：`shell: true` 会走 cmd.exe，而 cmd 只认 Windows 格式 PATH——本机实测在 Git Bash 下报「'cargo' 不是内部或外部命令」 |
 | 既有回归（构建判据） | `npm run test:unit -- core-build-toolchain` | 绿 | 16 项全过：`build-core.mjs` 的判据与导出未受影响 |
 | 类型检查 | `npm run check-types` | 绿 | — |
