@@ -1,9 +1,12 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
+import path from 'node:path';
 import { startMockLlm, lastUserText } from '../helpers/mockLlmServer';
 import { launchApp, makeWorkspace } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLlmServer';
+import { parseTaskNumber, queuedGrantViolations } from '../helpers/subagentGrantOrder';
+import { CONFIG_DIR_NAME } from '../../src/config/project';
 
 /**
  * US-49 子代理并发上限（specs/005）
@@ -20,6 +23,14 @@ import type { MockLlm, RecordedRequest, ScriptDecision } from '../helpers/mockLl
  * 并发观测原理：mock 服务器的 `delayMs` 在写响应前 setTimeout 让出事件循环，
  * 期间其他连接的请求可以进来被解析——子代理首请求的 [startedAt, finishedAt]
  * 区间重叠数就是真实的并行子代理数。
+ *
+ * **FIFO 的观测点不在 mock 的请求时刻**（specs/defects/
+ * us49-fifo-assertion-reads-first-request-order.md）：产品的 FIFO 保证点是槽位预留
+ * 转移（`core-rs/src/subagent.rs` 的 `enter_slot_queue` / `hand_off_reservation`），
+ * 而首请求要经过「后台线程 → 建 meta / 注册 / emit → 再起驱动线程 → 组提示词」
+ * 若干段没有顺序依赖的链路，CI 上因此概率性读到 `[6, 5]`。排队顺序改读子会话 id 里的
+ * `now_millis()` 前缀（`sub_<millis>_<suffix>`，即授予预留后建会话的时刻），
+ * 判定在 `helpers/subagentGrantOrder.ts`，由 `src/test/subagentGrantOrder.test.ts` 锁定。
  */
 
 let mockLlm: MockLlm;
@@ -51,6 +62,33 @@ function maxOverlap(requests: RecordedRequest[]): number {
     best = Math.max(best, overlap);
   }
   return best;
+}
+
+/**
+ * 从沙箱 home 读取子代理会话的落盘事实（`description` + 子会话 id）。
+ *
+ * 只认带 `parentSessionId` 的 meta.json：父会话没有该键，工作区清单
+ * （`workspace.meta.json`）另有过滤，两者都不该混进来。
+ */
+function readSubAgentGrants(): Array<{ description: string; sessionId: string }> {
+  const conversationsRoot = path.join(app.homeDir, CONFIG_DIR_NAME, 'conversations');
+  const grants: Array<{ description: string; sessionId: string }> = [];
+  for (const project of fs.readdirSync(conversationsRoot)) {
+    const projectDir = path.join(conversationsRoot, project);
+    if (!fs.statSync(projectDir, { throwIfNoEntry: false })?.isDirectory()) continue;
+    for (const file of fs.readdirSync(projectDir)) {
+      if (!file.endsWith('.meta.json') || file === 'workspace.meta.json') continue;
+      const meta = JSON.parse(fs.readFileSync(path.join(projectDir, file), 'utf-8')) as {
+        sessionId?: unknown;
+        title?: unknown;
+        parentSessionId?: unknown;
+      };
+      if (typeof meta.parentSessionId !== 'string') continue;
+      if (typeof meta.sessionId !== 'string' || typeof meta.title !== 'string') continue;
+      grants.push({ description: meta.title, sessionId: meta.sessionId });
+    }
+  }
+  return grants;
 }
 
 test.beforeEach(async () => {
@@ -154,12 +192,23 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
   const firsts = subFirstRequests([1, 2, 3, 4, 5, 6]);
   expect(maxOverlap(firsts)).toBe(4);
 
-  // FIFO：任务 1-4 先启动（第 1 轮）；任务 5、6 跨轮先后发起，启动顺序必为 5 → 6
-  const ordered = [...firsts].sort((a, b) => a.startedAt - b.startedAt);
-  const taskOf = (req: RecordedRequest): number =>
-    Number(/^并发任务(\d+)：/.exec(lastUserText(req.body.messages))?.[1]);
-  expect(ordered.slice(4).map(taskOf)).toEqual([5, 6]);
+  // FIFO（US-49 验收 2）：任务 5、6 跨轮先后发起，槽位预留必须按 5 → 6 授予。
+  // 观测点是子会话 id 里的授予时刻，不是 mock 的请求到达顺序——后者在产品链路上
+  // 没有任何顺序保证（本文件头部注释与 specs/defects/
+  // us49-fifo-assertion-reads-first-request-order.md）。
+  // 首轮并发直取的任务 1–4 之间本就不承诺顺序，不参与比较。
+  const grants = readSubAgentGrants();
+  const queuedTasks = [5, 6];
+  expect(queuedGrantViolations(grants, queuedTasks)).toEqual([]);
+  // 反向确认判据确实读到两个排队者的授予事实：否则「缺席」会被上一条的空数组
+  // 误读成「顺序正确」
+  const grantedTasks = grants
+    .map((grant) => parseTaskNumber(grant.description))
+    .filter((task): task is number => task !== null);
+  expect([5, 6].every((task) => grantedTasks.includes(task))).toBe(true);
+
   // 排队者只能在槽位释放后启动：任务 5 的首请求不早于前 4 个中最早的完成
+  const ordered = [...firsts].sort((a, b) => a.startedAt - b.startedAt);
   const earliestFinish = Math.min(...ordered.slice(0, 4).map((req) => req.finishedAt ?? 0));
   expect(ordered[4].startedAt).toBeGreaterThanOrEqual(earliestFinish);
 });
