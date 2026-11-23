@@ -40,8 +40,6 @@ export interface TerminalAPI {
   closeWindow(): void;
   /** 剪贴板写（复制选区；走主进程 clipboard 模块，不依赖渲染端剪贴板权限） */
   copyText(text: string): void;
-  /** 剪贴板读（粘贴；空串表示无可粘贴内容） */
-  pasteText(): Promise<string>;
   onTabs(listener: (tabs: readonly TerminalTab[]) => void): void;
   onOutput(listener: (tabId: number, data: Uint8Array) => void): void;
   onTheme(listener: (isDark: boolean) => void): void;

@@ -71,8 +71,9 @@ const FAKE_API_INIT = `
       setTimeout(() => { tab.status = 'ready'; tab.failure = null; emitTabs(); emitOutput(tab.id, 'reconnected\\r\\n'); }, 30);
     },
     closeWindow: () => { state.closeWindowCalled = true; },
-    copyText: (text) => { state.clipboard = text; },
-    pasteText: async () => state.clipboard,
+    // 与主进程 clipboard.writeText 同口径：假 API 也写到真实系统剪贴板，粘贴侧
+    // （xterm 原生 paste，读的是系统剪贴板）才与复制侧对得上
+    copyText: (text) => { state.clipboard = text; return navigator.clipboard.writeText(text); },
     onTabs: (fn) => state.listeners.tabs.push(fn),
     onOutput: (fn) => state.listeners.output.push(fn),
     onTheme: (fn) => state.listeners.theme.push(fn),
@@ -326,6 +327,54 @@ test('复制选区与粘贴快捷键', async () => {
   // Ctrl+Shift+V 把剪贴板内容原样送进 stdin
   await page.keyboard.press('Control+Shift+v');
   await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain(copied);
+});
+
+test('粘贴只发生一次：Ctrl+Shift+V 只产生一条 input（系统剪贴板是唯一数据源）', async () => {
+  const { page } = handle;
+  await page.locator('#pane-1').click();
+  // 假 API 的 clipboard 初值是 'pwd'：写入点若仍走渲染端自读（terminal:paste），
+  // 送进 input 的就会是 'pwd' 而不是这里写的系统剪贴板内容
+  await page.evaluate(() => navigator.clipboard.writeText('paste-once'));
+  await page.keyboard.press('Control+Shift+v');
+  // 等足两种路径都可能落地的窗口（原生 paste 同步、渲染端自读要走一次 IPC）
+  await page.waitForTimeout(500);
+  const inputs = await page.evaluate(() => (window as unknown as TerminalTestWindow)
+    .__terminalState.inputs.filter((i) => i.tabId === 1).map((i) => i.data));
+  expect(inputs).toEqual(['paste-once']);
+});
+
+test('多行粘贴走 xterm 原生路径：换行归一为 CR、对端开启 bracketed paste 时加括号', async () => {
+  const { page } = handle;
+  // 远端 shell 打开 bracketed paste（CSI ? 2004 h）：只有 xterm 自己的 paste 处理会加括号
+  await page.evaluate(() => (window as unknown as TerminalTestWindow).__terminalCtl.emitOutput(1, '\x1b[?2004h'));
+  // xterm 的写入是排队异步的：等这一帧模式确实进了解析器再按键
+  await page.waitForTimeout(200);
+  await page.locator('#pane-1').click();
+  await page.evaluate(() => navigator.clipboard.writeText('line1\nline2'));
+  await page.keyboard.press('Control+Shift+v');
+  await page.waitForTimeout(500);
+  const inputs = await page.evaluate(() => (window as unknown as TerminalTestWindow)
+    .__terminalState.inputs.filter((i) => i.tabId === 1).map((i) => i.data));
+  expect(inputs).toEqual(['\x1b[200~line1\rline2\x1b[201~']);
+});
+
+test('Ctrl+/ 发 ^_（撤销）：只写一条 input，且不与 xterm 自带映射重复', async () => {
+  const { page } = handle;
+  await page.locator('#pane-1').click();
+  await page.keyboard.press('Control+Slash');
+  await page.waitForTimeout(300);
+  const inputs = await page.evaluate(() => (window as unknown as TerminalTestWindow)
+    .__terminalState.inputs.filter((i) => i.tabId === 1).map((i) => i.data));
+  // 0x1F = ^_：readline 的 undo、vim / emacs 的撤销；传统终端把 Ctrl+/ 编成同一个字节
+  expect(inputs).toEqual(['\u001f']);
+
+  // xterm 自己就能映射的组合（Ctrl+7 也是 ^_）不能被补映射表打重
+  await page.evaluate(() => { (window as unknown as TerminalTestWindow).__terminalState.inputs.length = 0; });
+  await page.keyboard.press('Control+Digit7');
+  await page.waitForTimeout(300);
+  const afterDigit = await page.evaluate(() => (window as unknown as TerminalTestWindow)
+    .__terminalState.inputs.filter((i) => i.tabId === 1).map((i) => i.data));
+  expect(afterDigit).toEqual(['\u001f']);
 });
 
 test('选中即复制：拖选即写剪贴板，取消选中不覆盖', async () => {
