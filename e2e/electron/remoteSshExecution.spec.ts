@@ -212,7 +212,7 @@ test('Bash 在远端执行：输出来自目标机器（uname=Linux、pwd=远端
 
   await chatPage.fill('textarea.input-textarea', '远端探针');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('BASH-ROUND-DONE').first()).toBeVisible({ timeout: 90_000 });
+  await expect(chatPage.getByText('BASH-ROUND-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   const result = lastToolResult(mockLlm!.requests[1]);
   // 宿主是 Windows：uname 输出 Linux、pwd 是远端路径，才能证明命令真的在远端执行
@@ -241,7 +241,7 @@ test('Write 写进远端工作区：SFTP 直读核实内容', async () => {
 
   await chatPage.fill('textarea.input-textarea', '写远端文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('WRITE-ROUND-DONE').first()).toBeVisible({ timeout: 90_000 });
+  await expect(chatPage.getByText('WRITE-ROUND-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   const result = lastToolResult(mockLlm!.requests[1]);
   expect(result, `Write 的 tool_result 不应是错误：${result}`).not.toContain('error');
@@ -271,7 +271,7 @@ test('Grep 用自带 ripgrep 在远端搜索：命中 seed 文件', async () => 
 
   await chatPage.fill('textarea.input-textarea', '远端搜索');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('GREP-ROUND-DONE').first()).toBeVisible({ timeout: 90_000 });
+  await expect(chatPage.getByText('GREP-ROUND-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   const result = lastToolResult(mockLlm!.requests[1]);
   expect(result).toContain('hello.txt');
@@ -297,7 +297,7 @@ test('Read 读远端文件：内容来自目标机器', async () => {
 
   await chatPage.fill('textarea.input-textarea', '读远端文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('READ-ROUND-DONE').first()).toBeVisible({ timeout: 90_000 });
+  await expect(chatPage.getByText('READ-ROUND-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   const result = lastToolResult(mockLlm!.requests[1]);
   expect(result).toContain('remote grep target line');
@@ -450,7 +450,7 @@ test('陈旧状态文件：daemon 被强杀后按「没有 daemon」重新引导
   });
   await chatPage.fill('textarea.input-textarea', '陈旧状态探针');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('STALE-STATE-DONE').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('STALE-STATE-DONE').first()).toBeVisible({ timeout: 45_000 });
   const result = lastToolResult(mockLlm!.requests[1]);
   expect(result).toContain('stale-state-ok');
 });
@@ -491,7 +491,7 @@ test('manual 权限模式：远程 Bash 弹确认、允许后在远端执行', a
   await expect(overlay).toBeVisible({ timeout: 60_000 });
   await overlay.getByRole('button', { name: /允许/ }).first().click();
 
-  await expect(chatPage.getByText('MANUAL-PERM-DONE').first()).toBeVisible({ timeout: 90_000 });
+  await expect(chatPage.getByText('MANUAL-PERM-DONE').first()).toBeVisible({ timeout: 45_000 });
   const result = lastToolResult(mockLlm.requests[1]);
   expect(result).toContain('manual-perm-ok');
   expect(result).toContain('Linux');
@@ -504,7 +504,7 @@ test('US-42 远程（SSH）文件浏览：树来自远端、悬停显示修改�
 
   // 根层来自远端 SFTP 读盘：notes 目录在
   const notesDir = sb.locator('#filesTree .file-row[data-path="notes"]');
-  await expect(notesDir).toBeVisible({ timeout: 90_000 });
+  await expect(notesDir).toBeVisible({ timeout: 45_000 });
   await notesDir.click();
 
   // 懒加载下一层：远端文件行
@@ -637,7 +637,7 @@ test('US-42 远程重连就绪后侧栏文件树自动重读（不再停在读�
     await placeholder.locator('#reconnectBtn').click();
     // 判据取主进程日志（标签页的 .ws-tab-loading 只因 connecting 消失，可用 / 不可用都成立）
     await expect
-      .poll(() => /connection ready: ssh:\/\/[^\n]*tuxedo-e2e-ssh/.test(appLog()), { timeout: 240_000, intervals: [1_000] })
+      .poll(() => /connection ready: ssh:\/\/[^\n]*tuxedo-e2e-ssh/.test(appLog()), { timeout: 120_000, intervals: [1_000] })
       .toBe(true);
 
     // 4) 就绪即推一次 tree 失效（用户不必去点「读取失败，点击重试」）
@@ -727,7 +727,7 @@ test('US-54 真实 SSH 终端：右键打开终端连上远端 shell、标题含
   const termPage = await openRemoteTerminal();
 
   // 首标签自动建立并连上远端 shell
-  await expect(termPage.locator('.tab')).toHaveCount(1, { timeout: 90_000 });
+  await expect(termPage.locator('.tab')).toHaveCount(1, { timeout: 45_000 });
   await expect(termPage.locator('#pane-1 .xterm')).toBeVisible({ timeout: 60_000 });
 
   // 窗口标题 = ssh://user@host + 远端工作区路径
@@ -779,7 +779,7 @@ test('US-63 远程文档视图：远端 git 口径列出变更 md 与增删行�
   await launchWithRemoteWorkspace(repo);
   const sb = await app!.sidebarPage();
   await sb.locator('#filesHeader').click();
-  await expect(sb.locator('#filesTree .file-row[data-path="a.md"]')).toBeVisible({ timeout: 90_000 });
+  await expect(sb.locator('#filesTree .file-row[data-path="a.md"]')).toBeVisible({ timeout: 45_000 });
 
   // 切到文档视图：git 判定与行数统计在远端执行（ssh exec），记录经 SFTP 读
   await sb.locator('#filesModeSwitch .files-mode-seg[data-mode="doc"]').click();

@@ -801,12 +801,12 @@ test('RT-5 远端非 git 工作区：差异给 not-a-git-workspace 提示，文�
 
   const sb = await launchWithRemoteWorkspace(plain);
   await openFilesMode(sb, 'changes');
-  await expect(sb.getByText('不在 git 仓库内，无法列出变更')).toBeVisible({ timeout: 120_000 });
+  await expect(sb.getByText('不在 git 仓库内，无法列出变更')).toBeVisible({ timeout: 45_000 });
   await expect(sb.getByText('没有变更的文件')).toHaveCount(0);
 
   // 文档视图回落记录口径：没有 conversation 记录过改动 → 记录口径空态文案
   await openFilesMode(sb, 'doc');
-  await expect(sb.getByText('没有记录的修改文档')).toBeVisible({ timeout: 120_000 });
+  await expect(sb.getByText('没有记录的修改文档')).toBeVisible({ timeout: 45_000 });
 
   await sshExec(`rm -rf ${shQuote(plain)}`).catch(() => undefined);
 });

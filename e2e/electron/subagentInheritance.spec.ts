@@ -108,7 +108,7 @@ test('子代理继承主对话的思考强度：落盘 / 重开显示 / 请求�
   await chatPage.fill('textarea.input-textarea', PARENT_PROMPT);
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect
-    .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 90_000 })
+    .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 45_000 })
     .toBe(2);
 
   // RT-1：子会话 meta.json 落齐继承值（修复前 thinkingMode / webSearch 缺失）

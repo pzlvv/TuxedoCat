@@ -507,6 +507,111 @@ runTests('e2eCiLane', () => {
     undocumented.length === 0,
   );
 
+  // RT-16：用例体内的等待预算不得超过它的可用预算。
+  //
+  // 事故形态（specs/defects/e2e-inline-wait-exceeds-test-budget.md）：AC-31 写着
+  // `toBeVisible({ timeout: 120_000 })`，而 `electron-ssh` project 上限 60s——断言永远
+  // 等不满自己声明的时候，用例先被 project 上限杀掉，日志把成因报成「元素没出现」。
+  // 排查者于是去找产品缺陷，而真实事实是「这条用例只有 60s」。
+  //
+  // 判据：可用预算 = 用例体内 `test.setTimeout()`（没有则取所属目录的 project 上限），
+  // 体内任一 `timeout:` / 脚手架轮询的毫秒数都不得超过它。project 上限从
+  // `e2e/playwright.config.ts` 的常量读，不在这里手抄第二份。
+  const projectTimeoutOf = (projectName: string): number | null => {
+    const block = projectBlock(projectName);
+    const direct = block === null ? null : /timeout:\s*([A-Z0-9_]+)/.exec(block);
+    if (!direct) return projectName === 'webview-ui' || projectName === 'remote-workspace-ui'
+      || projectName === 'terminal-ui' ? 30_000 : null;
+    return constantValue(direct[1]);
+  };
+  /** e2e 目录 → 跑它的 project（一个目录可能被多个 project 覆盖，取最宽松的那档） */
+  const laneBudgets = [
+    { dir: 'e2e/webview', projects: ['webview-ui'] },
+    { dir: 'e2e/remoteWorkspace', projects: ['remote-workspace-ui'] },
+    { dir: 'e2e/terminal', projects: ['terminal-ui'] },
+    { dir: 'e2e/electron', projects: ['electron-app', 'electron-ssh'] },
+    { dir: 'e2e/tui', projects: ['tui-installer'] },
+    { dir: 'e2e/pycharm', projects: ['pycharm-plugin'] },
+  ];
+
+  interface WaitOverBudget {
+    where: string;
+    budget: number;
+    waited: number;
+    widened: boolean;
+  }
+  const overBudgetWaits: WaitOverBudget[] = [];
+  let examinedTests = 0;
+  for (const lane of laneBudgets) {
+    const dir = path.join(REPO_ROOT, lane.dir);
+    if (!fs.existsSync(dir)) continue;
+    const caps = lane.projects.map(projectTimeoutOf);
+    if (caps.some((cap) => cap === null)) continue;
+    // 同一目录下的 spec 可能只属于其中一个 project（`electron/` 分成整应用与真实 SSH
+    // 两档），静态检查无法判定归属时取较大的一档：宁可放过，也不误报合法用例。
+    const cap = Math.max(...caps.map((value) => value ?? 0));
+    for (const name of fs.readdirSync(dir).filter((f) => f.endsWith('.spec.ts')).sort()) {
+      const rel = `${lane.dir}/${name}`;
+      const lines = read(path.join(dir, name)).split(/\r?\n/);
+      let index = 0;
+      while (index < lines.length) {
+        if (!/^ {0,2}test(\.\w+)?\(\s*['"`]/.test(lines[index])) {
+          index += 1;
+          continue;
+        }
+        const startLine = index + 1;
+        // 用例体 = 本行起、到下一个用例声明（`test('<标题>'`）/ `test.describe(` / 文件尾。
+        // 必须要求「声明后紧跟标题字符串」：`test.setTimeout(...)` 也以 `test.` 开头，
+        // 按 `test(` 前缀切会把用例体切在放宽语句那一行上，放宽值因此永远读不到
+        // （`remoteSshExecution` 的重连用例就是这样漏检的）。
+        let end = index + 1;
+        while (end < lines.length
+          && !/^ {0,2}test(\.\w+)?\(\s*['"`]/.test(lines[end])
+          && !/^ {0,2}test\.describe\(/.test(lines[end])) {
+          end += 1;
+        }
+        const body = lines.slice(index, end);
+        examinedTests += 1;
+        const widen = body
+          .map((line) => /test\.setTimeout\(\s*([0-9_]+)\s*\)/.exec(line))
+          .find((match) => match !== null);
+        const widened = widen !== null && widen !== undefined
+          ? Number(widen[1].replace(/_/g, ''))
+          : null;
+        const budget = widened ?? cap;
+        body.forEach((line, offset) => {
+          // 本行自己就是放宽语句，不是等待
+          if (/test\.setTimeout\(/.test(line)) return;
+          for (const match of line.matchAll(/timeout:\s*([0-9][0-9_]*)_000/g)) {
+            const waited = Number(match[1].replace(/_/g, '')) * 1000;
+            if (waited > budget) {
+              overBudgetWaits.push({
+                where: `${rel}:${startLine}（等待在第 ${index + offset + 1} 行）`,
+                budget,
+                waited,
+                widened: widened !== null,
+              });
+            }
+          }
+        });
+        index = end;
+      }
+    }
+  }
+  check(
+    `e2e 用例体内的等待预算都不超过可用预算（扫了 ${examinedTests} 条用例；超：`
+      + `${overBudgetWaits.length} 条）`,
+    overBudgetWaits.length === 0,
+  );
+  if (overBudgetWaits.length > 0) {
+    for (const item of overBudgetWaits) {
+      console.error(
+        `     ${item.where}：等待 ${item.waited / 1000}s > 可用预算 ${item.budget / 1000}s`
+          + `（${item.widened ? 'test.setTimeout 放宽值' : 'project 单用例上限'}）`,
+      );
+    }
+  }
+
   // RT-14：Electron 二进制必须在**用例开始前**就位。
   //
   // `node_modules/electron` 没有 postinstall：第一次 `require('electron')` 才同步 spawn

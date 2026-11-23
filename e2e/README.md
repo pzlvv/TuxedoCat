@@ -103,9 +103,17 @@ CI 上稳定多花约 30s（`fileExplorer.spec.ts` 的五条、`sessions.spec.ts
 真出现超时时按已知坑 10 / 11 / 17 的顺序查：先看是否远端残留 daemon 拖住建链，再看
 是否 `launchApp` 的 CDP 握手全超时（3 次 × 60s）留下了垂死的 Electron 进程树。
 
-整轮墙钟（30 分钟预算，run `44962124641` 的实测分项）：`smoke` 与 `prepare` 并行，
-`prepare` 3.5min → 四个车道并行，`e2e-electron` 13min，`e2e-tui` 2.5min，
-`e2e-ui` 4min，`e2e-ssh` 四个 spec **并行**共等于最慢一个（约 12min），全程约 17min。
+整轮墙钟（30 分钟预算，run `45140464709` 与 `45177031308` 的实测分项）：`smoke` 与
+`prepare` 并行，`prepare` 3.9–4.0min → 四个车道并行，`e2e-electron` 12.8–14.7min，
+`e2e-tui` 2.1–2.5min，`e2e-ui` 4.5–4.9min。
+
+`e2e-ssh` 的墙钟由**自托管 runner 的数量**决定，不由编排决定：标签下只有一台机器，
+四个矩阵 job 串行排队，合计 25.4–25.7min（run `45177031308` 的四个 job 依次
+12:47:46 → 12:52:26 → 12:57:18 → 13:01:51 启动），因此这条车道就是整条 `all` 的关键路径，
+全程 29.9min。其中每个 job 的固定开销（npm ci + 分片取产物 + apt + install-deps）约
+2.5–3.5min，乘以四份；`ARTIFACT_CACHE_DIR` 让后三个 job 复用第一个 job 下好的产物，
+省掉每轮三份重复下载（实测单份 22.7–149.5s）。
+
 最坏情况由 job 上限兜住：`prepare` 8 + 车道 18 = 26 分钟。
 
 ## CI 车道（`.github/workflows/all.yml`）
@@ -121,7 +129,7 @@ MR 的合入闸门是冒烟工作流 `smoke.yml`（文档守卫 + 编译类检�
 | `ui` | `webview-ui` / `remote-workspace-ui` / `terminal-ui` | `npx playwright install --with-deps chromium` |
 | `electron` | `electron-app` | xvfb + openbox（Linux 无显示；裸 X 没有窗口管理器）+ Chromium 运行时库（`playwright install-deps`）+ artifact 下载后补可执行位（已知坑 6） |
 | `tui` | `tui-installer` | rust + musl 工具链（用例内 cargo 构建安装器） |
-| `ssh` | `electron-ssh`，**按 spec 文件拆成 4 个矩阵任务** | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位；产物经 `scripts/download-artifact-parallel.mjs` 并发分片取（见已知坑 21） |
+| `ssh` | `electron-ssh`，**按 spec 文件拆成 4 个矩阵任务** | 远端凭证经 secrets 现写 `e2e/environments.json`（下节）+ xvfb + openbox + 补可执行位；产物经 `scripts/download-artifact-parallel.mjs` 并发分片取（见已知坑 21），后三个 job 复用第一个 job 落盘的本地缓存 |
 
 失败时每个车道把 test-results/ 作为 artifact 上传（`npx playwright show-trace <zip>`）。
 `electron-app` 与 `electron-ssh` 是两个 project：前者不碰外部环境，任何机器都能直接跑；
@@ -463,6 +471,14 @@ e2e/
     落盘布局与官方 action 一致），`src/test/e2eCiLane.test.ts` 的 RT-15 钉住这个调用点。
     排查时先看这一步的日志行：它打印总大小、并发数、耗时与实测吞吐。
     CI 实证：`[download] 完成 28.8MB / 87.6s = 336KB/s`（修复前该 job 在下载上耗满 18 分钟）。
+
+    **同 run 的四个 job 会重复下同一份产物**：标签下只有一台机器，它们串行排队在同一台
+    机器上，每个都付一遍 22.7–149.5s（run `45177031308` 实测）。`ARTIFACT_CACHE_DIR`
+    让产物按 `run-<runId>-<attempt>` 落在 `runner.workspace` 下（**不能是 `runner.temp`**：
+    后者每个 job 开头会被清掉），后三个 job 直接复用。复用前校验三个必备目录齐全，
+    不齐就走下载——被打断的那一轮留下的半个目录不会被当成产物。
+    `src/test/artifactCache.test.ts` 的 RT-1 / RT-2 / RT-3 分别钉住「命中即复用」
+    「换 run 不命中」「槽位不完整不复用」。
 22. **`@electron/get` 读不到 `.npmrc` 的镜像、也不认 `https_proxy`**：两者叠加会让
     `warm-electron.cjs` 回落到 GitHub Releases 拉 100MB。症状是步骤日志停在
     `Downloading Electron binary...` 十几分钟不动（job 撞 18 分钟上限），或直接
