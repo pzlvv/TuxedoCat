@@ -539,9 +539,12 @@ async function run(): Promise<void> {
         logMessages(core.recording).includes('ui:userMessageSubmitted'),
       ),
     );
+    // 必须自己等：假 Core 收到一帧会先 `record('ui:...')` 再 `record('seq:...')`，
+    // 上一条断言只看得到前者。此处若直接查后者，就是在赌第二行日志已落地——并发跑
+    // 时（`src/test/README.md` 的并发说明）这条会偶发红，而它与被测逻辑无关。
     check(
       'userMessageSubmitted carries the session id',
-      logMessages(core.recording).includes('seq:s1'),
+      await waitFor(() => logMessages(core.recording).includes('seq:s1')),
     );
     await core.bus.shutdown();
   }

@@ -302,11 +302,13 @@ fn detached_events() -> (Sender<DaemonEvent>, Receiver<DaemonEvent>) {
 fn outbound_write_returns_without_blocking_on_a_stalled_peer() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
     let address = listener.local_addr().expect("addr");
-    // 客户端连上后立刻停读：不在 socket 上做任何 recv
+    // 对端连接的生命周期由测试掌握：连上后进入「永不读取」，等测试给出释放信号再
+    // 断开。不用 `sleep(5s)` 保持连接——那 5s 会原样计进用例墙钟，而用例真正要断言
+    // 的是「写侧不阻塞」（下面 2s 的判据），连接活多久无关。
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let client = thread::spawn(move || {
         let stream = TcpStream::connect(address).expect("connect");
-        // 保持连接存在（daemon 侧要能写），但永不读取
-        thread::sleep(Duration::from_secs(5));
+        let _ = release_rx.recv_timeout(Duration::from_secs(30));
         drop(stream);
     });
     let (server_stream, _) = listener.accept().expect("accept");
@@ -328,6 +330,7 @@ fn outbound_write_returns_without_blocking_on_a_stalled_peer() {
          同步写会把 daemon 主循环拖住，pong / closeWorkspace / 心跳死线全部失效"
     );
 
+    let _ = release_tx.send(());
     client.join().expect("client thread");
 }
 
@@ -804,10 +807,13 @@ fn stop_daemon_reports_unreachable() {
 fn stop_daemon_reports_unresponsive_when_the_server_never_answers() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let address = listener.local_addr().unwrap();
-    // 假 daemon：只 accept，从不读——写进来的 shutdown 永远没人处理
+    // 假 daemon：只 accept，从不读——写进来的 shutdown 永远没人处理。accept 之后
+    // 挂着等测试释放，而不是 `sleep(10s)`：用例断言的是 `stop_daemon` 的 300ms 超时
+    // 分支，与这对端活多久无关，等满 10s 只是把 `cargo test` 墙钟拉长 10 秒。
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let holder = thread::spawn(move || {
         let (_stream, _) = listener.accept().expect("accept");
-        thread::sleep(Duration::from_secs(10));
+        let _ = release_rx.recv_timeout(Duration::from_secs(30));
     });
     let state = DaemonState {
         endpoint: address.to_string(),
@@ -816,6 +822,7 @@ fn stop_daemon_reports_unresponsive_when_the_server_never_answers() {
         stop_daemon(&state, Duration::from_millis(300)),
         StopOutcome::Unresponsive
     );
+    let _ = release_tx.send(());
     holder.join().expect("holder thread");
 }
 

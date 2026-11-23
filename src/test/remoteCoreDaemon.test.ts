@@ -13,6 +13,7 @@ import { createServer, type Server, type Socket } from 'net';
 import {
   CoreDaemon,
   DirectoryOperationError,
+  LINK_SILENCE_DEADLINE_BUDGET_MS,
   type CoreDaemonLink,
   type CoreDaemonLinkOpener,
 } from '../host/standalone/CoreDaemon';
@@ -629,42 +630,19 @@ async function run(): Promise<void> {
     await fake.close();
   }
 
-  // ---------- 默认常数下的判死时限（断连 10s 内感知的端到端锚点） ----------
+  // ---------- 默认常数下的判死时限（断连 10s 内感知的对外指标） ----------
+  //
+  // 这里断言**常量**而不是再跑一遍端到端：上一段的真实链路用例（注入 60ms / 40ms）
+  // 已经把「到期 → 补发探针 → 再宽限 → fatal → 断开链路」整条链走通，那段与常数取值
+  // 无关；剩下的自由度只有「默认常数之和够不够 10s」。真跑一遍要白等 9s + 1.2s，
+  // 而它验证的关系完全由两个常量决定。
   {
-    const fake = await startFakeRemote({ pong: true });
-    const daemon = new CoreDaemon({
-      log: () => undefined,
-      handshakeTimeoutMs: 2_000,
-      shutdownTimeoutMs: 1_000,
-      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
-    });
-    const ref = remoteWorkspaceRef(
-      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
-      '/home/dev/repo',
+    check(
+      '默认常数：死线 + 宽限 ≤ 10s（断连 10s 内感知的对外指标）',
+      LINK_SILENCE_DEADLINE_BUDGET_MS <= 10_000,
     );
-    const transport = daemon.openChannel(ref);
-    const failure: { error: Error | null } = { error: null };
-    transport.hooks = {
-      ...NOOP_CORE_CHANNEL_HOOKS,
-      onFatal: (error: Error) => {
-        failure.error = error;
-      },
-    };
-    transport.start();
-    check('默认常数：链路就绪', await waitFor(() => transport.isReady()));
-    // 等首个 ping 发出 + 一个心跳周期（1s）让 pong 落地武装沉默判定
-    check('心跳 ping 已发出', await waitFor(() => fake.received().some((line) => line.includes('"kind":"ping"'))));
-    await sleep(1_200);
-    const silenceAt = Date.now();
-    fake.setPong(false);
-    const fatalArrived = await waitFor(() => failure.error !== null, 11_000);
-    // 判死上限 = 死线 9s + 宽限 0.9s，加定时器松弛后必须落在 10s 量级内
-    check('默认常数下沉默判死发生', fatalArrived && failure.error !== null
-      && /silent for/.test(failure.error.message));
-    check('默认常数判死 ≤ 10.5s（10s 指标 + 定时器松弛）', Date.now() - silenceAt < 10_500);
-    await daemon.shutdown();
-    await fake.close();
   }
+
 
   // ---------- daemon 不回 pong：沉默判定不武装，长静默不误杀 ----------
   {

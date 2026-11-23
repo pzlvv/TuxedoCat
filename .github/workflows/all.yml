@@ -65,6 +65,17 @@ jobs:
       - uses: ./.github/actions/apt-install
         with:
           packages: musl-tools
+      # Rust 编译缓存（与 smoke.yml 的 tests job 同一口径）：release 构建的依赖产物
+      # 跨 checkout 复用，每次只重编 standalone-core 自己。必须在 rust-toolchain 之后
+      # ——缓存键含 rustc 版本。`shared-key: prepare` 与 smoke 的键区分开：两边缓存内容
+      # 一致（都是 x64-linux release），但用不同键能让 eviction 与命中互不影响。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-rs -> target
+            mount-proxy-rs -> target
+          shared-key: prepare
+          cache-on-failure: true
       # playwright.config.ts 在配置加载期校验 Core 产物（Linux 宿主必查），先建
       - run: npm run build:core:linux-x64
       - run: npm run build:webview

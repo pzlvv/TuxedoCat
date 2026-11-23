@@ -32,14 +32,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # 走 composite action 而不是裸 `npm ci`：setup-node 只缓存 ~/.npm（registry 压缩包），
+      # 命中后仍要解包 + 链接 1152 个包（实测 53–65s）。这个 action 直接缓存 node_modules。
+      - uses: ./.github/actions/npm-ci
       - run: npm run test:unit -- docs-lint
 
   tests:
     runs-on: ubuntu-latest
-    # 实测约 4 分钟（含 build:core:linux-x64 / check-types / lint / fmt:rust:check /
-    # test:unit / test:core / check-types:e2e）。上限 20 分钟：给 cargo 冷编译留余量，
-    # 同时保证 MR 闸门即使挂住也不会占跑到小时级。
+    # 本 job 只做「需要 Core 产物 + node 侧」的事：build:core、test:unit、类型 / lint / 格式。
+    # Rust 用例在 rust-tests 矩阵里并行跑，两者之间没有依赖，墙钟取二者较大者。
+    # 上限 20 分钟：给 cargo 冷编译留余量，同时保证 MR 闸门即使挂住也不会占到小时级。
     timeout-minutes: 20
     steps:
       # resources/** 走 LFS（ripgrep 产物等）。不开 lfs: true 时 checkout 留下的
@@ -52,27 +54,120 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - uses: ./.github/actions/npm-ci
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      # musl 目标的 ring（C / 汇编）与分配器 mimalloc 都需要 C 编译器（build-core.mjs 的
-      # crossToolchainEnv 在 Linux 宿主上不注入 zig，直接用系统 cc）。
-      # 走 composite action 而不是裸 apt-get：runner 的源解析会抖（`.github/actions/apt-install`）
+      # Rust 编译缓存。必须在 rust-toolchain 之后：缓存键含 rustc 版本，工具链没定下来
+      # 时算出来的键没有意义。
+      #
+      # 为什么缓存 target 目录能省时：依赖（ring / reqwest / tokio / mimalloc 等 18 个
+      # 直接依赖展开出的全部 crate）的指纹只取决于**依赖源码 + 编译参数**，与本仓库源码
+      # 的 mtime 无关。因此依赖编译产物跨 checkout 复用是有效的，每次只重编 standalone-core
+      # 自己（CI 实测 release 构建 136s → 75s）。
+      #
+      # 本 job 只有 release 构建这一个 target 目录要缓存。cargo test 的 debug 产物归
+      # rust-tests 矩阵，那里有它自己的缓存声明。
+      #
+      # `cache-on-failure: true`：PR 上最常见的就是红一轮改一版，失败时也存缓存能让下一轮
+      # 直接命中。半成品产物被缓存不影响正确性——cargo 按指纹校验，缺什么重编什么。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-rs -> target
+            mount-proxy-rs -> target
+          cache-on-failure: true
+      # musl-tools 必须装：`ring` 的 build.rs 经 cc-rs 找 C 编译器，而 cc-rs 按**目标
+      # 三元组**推导工具名——目标是 `x86_64-unknown-linux-musl` 时它找的是
+      # `x86_64-linux-musl-gcc`，不是宿主上的 `cc`/`gcc`。`build-core.mjs` 的
+      # `toolchainKind` 返回 'none' 只表示**不注入 CC**，不代表 cc-rs 不需要 C 编译器。
+      #
+      # 这条曾被误判过一轮：去掉 apt 后某次构建反而绿了，于是记成「不需要」。真相是
+      # 那次 rust 缓存命中了 ring 的编译产物，压根没走 cc-rs；等缓存键变化（依赖动了）
+      # 重新编 ring 就报 `failed to find tool "x86_64-linux-musl-gcc"`。**缓存会掩盖
+      # 缺失的工具链**——判据必须是「缓存 miss 时也能编过」，不能拿命中轮当证据。
+      #
+      # 走 composite action 而不是裸 apt-get：源站实测会掉到 11kB/s 且不报错
+      # （`Fetched 1053 kB in 1min 33s`），退避重试治不了「慢」，只能靠 action 里的
+      # 已装判定与递增退避。它是本 job 最大的时间方差来源（4s～110s）。
       - uses: ./.github/actions/apt-install
         with:
           packages: musl-tools
-      # 先产出 Linux Core 产物：standalone* 系列测试按宿主平台解析并驱动真实二进制，
-      # 产物缺失会显式跳过（runner 汇总单列「跳过」）——CI 上必须真的跑
-      - run: npm run build:core:linux-x64
-      - run: npm run check-types
-      - run: npm run lint
-      # Rust 格式基线（AGENTS.md 第 5 节）：三个 crate 的 cargo fmt --check，
-      # 工具链与 tests job 的 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
-      - run: npm run fmt:rust:check
-      - run: npm run test:unit
-      # 偶发失败的后台线程 panic（如子代理槽位配对）需要完整回溯定位
-      - run: npm run test:core
+      # ---- 轨道 A（本 job）与轨道 B（rust-tests 矩阵）并行 ----
+      #
+      # 本 job 只做「需要 Core 产物的事」：build:core → test:unit（standalone* 驱动真实
+      # 二进制）→ 类型 / lint / 格式检查。Rust 用例跑在 rust-tests 矩阵里（见下面的 job），
+      # 因为 core-rs 的 1256 条用例是串行吞吐（CI 实测 197s，占本 job 242s 的 81%），
+      # 只能靠多进程切时间——而它跟本 job 的产物零依赖，没必要排在一条线上。
+      #
+      # 为什么不把测试改成 `build:core --debug` 省掉 release 编译：`--debug` 产出的 Core
+      # 带 `.debug_*` 段，会撞上 `corePlatformMatrix` 对**随包发布的 profile** 的断言
+      # （release 保留 `.symtab`、删 `.debug_*`，docs/core/standalone-core.md 第 3.1 节）。
+      # 那等于用「冒烟不再验证发布形态」换时间，不划算——这里改成并行而不是降级。
+      #
+      # 为什么 `test:unit` 必须留在本 job：`standalone*` 系列直接驱动
+      # `resources/core/<host>/` 下的真实产物，要等 build:core 落位；产物缺失时它们走
+      # markSkipped（runner 单列「跳过」，不算通过）。
+      - name: 发布形态 Core + 全部单测 + 类型 / 格式
+        run: |
+          set -euo pipefail
+          npm run build:core:linux-x64
+          npm run test:unit
+          npm run check-types
+          npm run lint
+          # Rust 格式基线（AGENTS.md 第 5 节）：四个 crate 的 cargo fmt --check，
+          # 工具链与 rust-tests job 的 dtolnay/rust-toolchain@stable 同源，不会因版本漂移误报
+          npm run fmt:rust:check
+          npm run check-types:e2e
+
+  # Rust 用例分片（core-rs 的 unittests + tests/、mount-proxy-rs）。
+  #
+  # 为什么单独成 job 而不是在同 job 里后台并行：同 job 内的 step 是串行的，后台起进程
+  # 只能省部分墙钟，且一条失败要靠日志手工判断。矩阵让每片有独立的 runner、独立日志、
+  # 独立红绿——`--fail-fast` 默认关，一片红其余照跑，结果一目了然。
+  #
+  # 为什么 4 片：core-rs 1256 条用例实测 197s。4 片理论上各 ~50s，加上每片自己的
+  # checkout / npm-ci / 缓存还原（实测约 30s）与编译（缓存命中后只编 standalone-core
+  # 自己，约 40s），单片约 120s——已经低于本 job 的 242s，所以再细分收益递减。
+  #
+  # 为什么每片都要跑 mount-proxy：它只有 35 条用例、0.00s，但「一次构建 + 跑两个 crate」
+  # 是 `test:core` 的既有语义（scripts/coreTestScript.test.ts 锁着）。给它单独一片会浪费
+  # 一整个 runner，挂在每片末尾让「任一片跑过就算跑过」——分片脚本按用例名取模，
+  # mount-proxy 的用例名同样参与取模，四片的并集仍是全集。
+  rust-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # 一片红不要掐掉其余片：合并结论由 job 总体红绿给出，其余片的结果对定位有用
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      # 分片只跑 cargo，不需要 node 侧的任何东西；但 `crossToolchainEnv`（分片脚本
+      # import 的 build-core.mjs）要读 src/config/project.json，那是纯文本，checkout 即有。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      # 缓存键与 tests job 的轨道 B 一致（同 `workspaces` 声明、同 add-job-id-key 口径），
+      # 因此分片之间共享同一份依赖产物：第一片写入、其余片直接命中。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-rs -> target
+            mount-proxy-rs -> target
+          cache-on-failure: true
+      # musl-tools 与 tests job 同一个理由：cc-rs 按目标三元组找 `x86_64-linux-musl-gcc`
+      # 编 ring 的 C / 汇编。缓存命中时这段被跳过，所以**只在缓存 miss 时才暴露**
+      # ——不能拿命中轮绿了当作不需要它的证据（本 PR 曾因此误判一轮）。
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
+      - name: core-rs 分片 ${{ matrix.shard }}/4
         env:
-          RUST_BACKTRACE: 1
-      - run: npm run check-types:e2e
+          RUST_BACKTRACE: '1'
+        run: |
+          set -euo pipefail
+          npm run test:core:shard -- --shard-index ${{ matrix.shard }} --shard-count 4

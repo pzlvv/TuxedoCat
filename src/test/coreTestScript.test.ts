@@ -50,6 +50,98 @@ runTests('coreTestScript', async () => {
     testCoreScript.includes('core-rs/Cargo.toml') && testCoreScript.includes('mount-proxy-rs/Cargo.toml'),
   );
 
+  // ---------- CI 分片入口（specs 见 smoke.yml 的 rust-tests 矩阵） ----------
+  //
+  // 这一组锁的是「分片真的覆盖全集」这件事本身，因为分片的失效方式全是静默的：
+  // - 忘了 `--exact`：`engine::foo` 会连带跑 `engine::foo_bar`，各片重叠、有人被跑两遍；
+  // - 分片选项只追加到 `test:core` 的第二条命令：core-rs 那半边每片都跑全量，
+  //   四片各 197s，比不分片更慢——所以 CI 必须用 `test:core:shard` 而不是
+  //   `test:core -- --shard-index`；
+  // - 两个 crate 只分了一个：另一半静默不跑。
+  const shardSyntax = spawnSync(
+    process.execPath,
+    ['--check', 'scripts/test-core-shard.mjs'],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  );
+  check('test-core-shard.mjs 语法合法（node --check）', shardSyntax.status === 0);
+
+  const shardScriptRaw = spawnSync(process.execPath, ['-e', `
+    const pkg = require('./package.json');
+    console.log(pkg.scripts['test:core:shard'] ?? '');
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const shardScript = (shardScriptRaw.stdout ?? '').trim();
+  check(
+    'test:core:shard 走 test-core-shard.mjs 且覆盖两个 crate',
+    shardScript.includes('test-core-shard.mjs') && shardScript.includes('--all-crates'),
+  );
+
+  // 分片脚本必须用 `--exact`：否则按子串匹配会跨片重叠
+  const exactProbe = spawnSync(process.execPath, ['-e', `
+    const fs = require('fs');
+    console.log(fs.readFileSync('scripts/test-core-shard.mjs', 'utf8').includes("'--exact'") ? 'exact' : 'no-exact');
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  check(
+    '分片按 --exact 点名（不带它会跨片重叠）',
+    (exactProbe.stdout ?? '').trim() === 'exact',
+  );
+
+  // smoke.yml 的 rust-tests 矩阵必须调 `test:core:shard`，不能调 `test:core -- ...`
+  const smokeRaw = spawnSync(process.execPath, ['-e', `
+    const fs = require('fs');
+    const text = fs.readFileSync('.github/workflows/smoke.yml', 'utf8');
+    const usesShard = /npm run test:core:shard/.test(text);
+    const usesPlainWithArgs = /npm run test:core --/.test(text);
+    const hasMatrix = /shard: \\[0, 1, 2, 3\\]/.test(text);
+    const failFastOff = /fail-fast: false/.test(text);
+    console.log(JSON.stringify({ usesShard, usesPlainWithArgs, hasMatrix, failFastOff }));
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  let smokeCheck = { usesShard: false, usesPlainWithArgs: true, hasMatrix: false, failFastOff: false };
+  try {
+    smokeCheck = JSON.parse((smokeRaw.stdout ?? '{}').trim()) as typeof smokeCheck;
+  } catch {
+    // 解析失败即视为未配置（下面的断言会红，不会静默通过）
+  }
+  check('smoke.yml 用 test:core:shard 分片（不是 test:core -- 追加参数）',
+    smokeCheck.usesShard && !smokeCheck.usesPlainWithArgs);
+  check('smoke.yml 的 rust-tests 是 4 片矩阵', smokeCheck.hasMatrix);
+  check('分片矩阵 fail-fast: false（一片红不掐掉其余片）', smokeCheck.failFastOff);
+
+  // ---------- 每个跑 cargo 的 job 都要装 musl-tools ----------
+  //
+  // 为什么这条必须单独锁：cc-rs 按**目标三元组**找 C 编译器，musl 目标上找的是
+  // `x86_64-linux-musl-gcc`，不是宿主的 `cc`。`build-core.mjs` 的 `toolchainKind`
+  // 在 Linux 宿主返回 'none' 只表示「不注入 CC」，**不代表不需要 C 编译器**。
+  //
+  // 这个坑有一次真实的误判：本 PR 曾把 apt-install 删掉，某一轮反而绿了，于是记成
+  // 「musl-gcc 不需要」。真相是那轮 rust 缓存命中了 ring 的编译产物，压根没走 cc-rs；
+  // 等缓存键变化（依赖动了）重新编 ring，立刻报 `failed to find tool
+  // "x86_64-linux-musl-gcc"`。**缓存命中会掩盖缺失的工具链**——所以判据写成静态
+  // 断言「每个跑 cargo 的 job 都有 apt-install musl-tools」，而不是拿某轮绿了当证据。
+  const muslProbe = spawnSync(process.execPath, ['-e', `
+    const fs = require('fs');
+    const text = fs.readFileSync('.github/workflows/smoke.yml', 'utf8');
+    // 按顶层 job 切块（两个空格的缩进），逐块看「有没有 cargo 构建」与「有没有装 musl-tools」
+    const blocks = text.split(/\\n(?=  [a-z][a-z0-9-]*:\\n)/).slice(1);
+    const problems = [];
+    for (const block of blocks) {
+      const name = /^  ([a-z][a-z0-9-]*):/.exec(block)?.[1] ?? '?';
+      // 该 job 是否会触发 C 依赖的 cargo 构建（build:core / cargo test 都要）
+      const runsCargo = /npm run (build:core|test:core)/.test(block);
+      if (runsCargo && !/apt-install/.test(block)) problems.push(name);
+    }
+    console.log(JSON.stringify({ problems, jobs: blocks.length }));
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  let muslCheck = { problems: ['__unparsed__'], jobs: 0 };
+  try {
+    muslCheck = JSON.parse((muslProbe.stdout ?? '{}').trim()) as typeof muslCheck;
+  } catch {
+    // 解析失败即按「有问题」处理，不让它静默通过
+  }
+  check(
+    `跑 cargo 的 job 都装了 musl-tools（缺：${muslCheck.problems.join('、') || '无'}）`,
+    muslCheck.problems.length === 0,
+  );
+
   // ---------- 宿主工具链判据与构建脚本同源 ----------
   // test-core.mjs 不自己复制一份判据，而是 import build-core.mjs 的 crossToolchainEnv。
   const sourceProbe = spawnSync(
