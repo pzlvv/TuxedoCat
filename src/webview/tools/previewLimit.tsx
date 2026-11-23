@@ -56,10 +56,21 @@ export interface PreviewLimitOptions {
    * Bash 输出传 115：输出框与流式滚动容器同高，缩略/展开卡片总高度都不变。
    */
   contentHeight?: number;
+  /**
+   * 测量口径。
+   *
+   * - `children`（缺省）：逐行元素实测累加。用于**会折行**的预览——一个逻辑行
+   *   可能占多个视觉行，只能按真实高度累加（Edit diff / Write 内容）。
+   * - `line-box`：内容是一整段不折行的等宽文本（`white-space: pre`），所有视觉行
+   *   盒同高，放得下的整行数直接由行高算出。Bash 输出用它：整段渲染只有**一个**
+   *   子节点，逐行实测无从下手，而行高与渲染了多少行无关——顺带消掉了
+   *   「实测 → 少渲染 → 实测」的自锁与振荡（见 `Bash.tsx` 的渲染形态说明）。
+   */
+  measurement?: 'children' | 'line-box';
 }
 
 export interface PreviewLimit {
-  /** 挂到「逐行元素」的容器上，用于测量折行后的真实高度 */
+  /** 挂到「预览框内容」的容器上，用于测量真实高度（`line-box` 口径下只读行高） */
   contentRef: React.RefObject<HTMLDivElement>;
   /** 需要渲染的行数：缩略态为候选行数，展开态为全部行 */
   visibleLines: number;
@@ -85,14 +96,20 @@ export interface PreviewLimit {
  *   此时必须渲染全部；用户确认后 status 变为 running/success，
  *   forceExpand 回到 false，卡片自动恢复缩略。
  *   注意这是**行级**展开，与「工具行箭头收起整块预览」是两回事。
- * @param options     revision（触发重测）与 onExpand（展开回调）
+ * @param options     revision（触发重测）、onExpand（展开回调）、contentHeight
+ *   （内容区限高）与 measurement（`children` 逐行实测 / `line-box` 整段行盒）
  */
 export function usePreviewLimit(
   totalLines: number,
   forceExpand = false,
   options: PreviewLimitOptions = {},
 ): PreviewLimit {
-  const { revision, onExpand, contentHeight = PREVIEW_CONTENT_HEIGHT } = options;
+  const {
+    revision,
+    onExpand,
+    contentHeight = PREVIEW_CONTENT_HEIGHT,
+    measurement = 'children',
+  } = options;
   // 用 ref 持有回调，避免其身份变化导致 expand 每次重建、进而让依赖它的
   // handleBoxClick 变化，最终触发不必要的重渲染。
   const onExpandRef = useRef(onExpand);
@@ -118,6 +135,41 @@ export function usePreviewLimit(
     if (!el) return;
 
     const measure = () => {
+      if (measurement === 'line-box') {
+        // ── 整段不折行文本：所有视觉行盒同高，行数由行高算出 ──
+        // 读的是**行高**而不是内容总高：内容被 maxHeight 裁切后总高恒等于框高，
+        // 拿它反推行数会在「裁到边界」时来回抖（123px 内容 vs 115px 框）。
+        // 行高与框高都只读一次，且与渲染了多少行无关，因此不存在
+        // 「实测 → 少渲染 → 再实测」的自锁。
+        //
+        // 行高挂在**文本所在的元素**上（调用方把 `lineHeight` 设在整段 <pre> 里），
+        // 容器本身只负责限高，继承来的是 `normal`——直接读容器会算错。
+        const textEl = (el.firstElementChild as HTMLElement | null) ?? el;
+        const style = getComputedStyle(textEl);
+        // `normal` 时退回「内容总高 / 行数」（整段已全部渲染，这个比值就是行高）；
+        // 再退一步按字号估算。
+        let lineHeight = parseFloat(style.lineHeight);
+        if (!Number.isFinite(lineHeight) && totalLines > 0) {
+          lineHeight = el.scrollHeight / totalLines;
+        }
+        if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+          lineHeight = parseFloat(style.fontSize) * 1.2;
+        }
+        if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+          // 连字号都读不出来（未挂载 / 隐藏）：保持当前结论，别把行数打到 0
+          return;
+        }
+        const capacity = Math.max(1, Math.floor((contentHeight + 0.5) / lineHeight));
+        const lines = Math.min(totalLines, capacity);
+        setFit((prev) =>
+          prev.lines === lines && Math.abs(prev.height - lines * lineHeight) < 0.5
+            && prev.overflow === (totalLines > lines)
+            ? prev
+            : { lines, height: lines * lineHeight, overflow: totalLines > lines },
+        );
+        return;
+      }
+
       const children = el.children;
       const limit = Math.min(children.length, PREVIEW_LINES);
       let used = 0;
@@ -165,14 +217,19 @@ export function usePreviewLimit(
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [totalLines, expanded, revision, contentHeight]);
+  }, [totalLines, expanded, revision, contentHeight, measurement]);
 
   // 是否还有内容没显示：
-  //   - 逻辑行数超过上限（无论怎么折行都不可能全放下）；
-  //   - 或前 PREVIEW_LINES 行按真实高度已经放不下。
-  const hasMore = fit.overflow || totalLines > PREVIEW_LINES;
+  //   - 前 PREVIEW_LINES 行按真实高度已经放不下（两种口径都有）；
+  //   - 逻辑行数超过上限（无论怎么折行都不可能全放下）。这一条只对 `children`
+  //     口径成立：它限制的是**渲染了多少行**；`line-box` 口径下内容始终整段
+  //     渲染、没被切开，放不放得下已经由`fit.overflow` 表达。
+  const hasMore = fit.overflow || (measurement === 'children' && totalLines > PREVIEW_LINES);
   const truncated = !expanded && hasMore;
-  const visibleLines = expanded ? totalLines : Math.min(totalLines, PREVIEW_LINES);
+  // `line-box` 口径不分段渲染，行数恒为全部；`children` 口径缩略态只渲染候选段。
+  const visibleLines = measurement === 'line-box' || expanded
+    ? totalLines
+    : Math.min(totalLines, PREVIEW_LINES);
 
   const expand = useCallback(() => {
     setShowAll(true);

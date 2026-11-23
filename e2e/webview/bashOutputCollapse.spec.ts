@@ -3,13 +3,16 @@ import { openWebviewView } from '../helpers/webviewHarness';
 import type { WebviewHandle } from '../helpers/webviewHarness';
 
 /**
- * US-14 Bash 输出折叠（与 Edit/Write 预览同一套 usePreviewLimit 实现，
- * 限高为输出框常量高度）：执行完成后缩略态只显示**末尾**实测放得下的整行
+ * US-14 Bash 输出折叠（与 Edit/Write 预览同一套 usePreviewLimit，限高为输出框
+ * 常量高度，测量口径是整段行盒）：执行完成后缩略态只显示**末尾**放得下的整行
  * （overflow hidden 不出现滚动条，可见窗口钉在底部）；提示条在输出框**上方**
  * （tail 变体，chevron 朝上），整条铺满命令卡片、只自绘下边那一条作为与输出框之间的
  * 分割线（上 / 左 / 右三边正好落在卡片已有的线条上，自绘就是双圈）；
  * 点击提示条展开后**提示条让位**：输出框接管它的高度（卡片总高不变），换成框内
  * 滚动条，初始视点仍在底部、可向上滚动。
+ *
+ * 三态（流式 / 缩略 / 展开）渲染的是同一段 <pre>，因此这里的量测都从 `pre`
+ * 定位输出容器、用 Range 的 client rect 取具体视觉行。
  *
  * 工具卡片挂在「用户消息开头的 segment」里渲染，注入方式与
  * bashBackgroundButton.spec.ts 同形（用户消息 → toolcall → updateToolStatus）。
@@ -61,7 +64,12 @@ async function addCompletedBashCard(): Promise<void> {
   });
 }
 
-/** 读取输出容器（末行 div 的父层）与相邻提示条（位于容器上方）的折叠态指标 */
+/**
+ * 读取输出容器与相邻提示条（位于容器上方）的折叠态指标。
+ *
+ * 内容是一整段 <pre>（三态同一套渲染，见 `Bash.tsx` 的 blockStyle 注释），
+ * 末行不是独立的 div：用 Range 取**最后一个视觉行盒**的矩形来定位末行。
+ */
 async function readCollapseState(): Promise<{
   overflowY: string;
   boxHeight: number;
@@ -76,20 +84,24 @@ async function readCollapseState(): Promise<{
   hintBorderBottomStyle: string;
 }> {
   return handle.page.evaluate(() => {
-    const lastLine = Array.from(document.querySelectorAll('div'))
-      .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
-    if (!lastLine) throw new Error('末行未渲染');
-    const box = lastLine.parentElement as HTMLElement;
+    const pre = Array.from(document.querySelectorAll('pre'))
+      .find((n) => (n.textContent || '').includes('line-060-END')) as HTMLElement | undefined;
+    if (!pre) throw new Error('末行未渲染');
+    const box = pre.parentElement as HTMLElement;
     // 提示条是输出容器（`px-3 py-2` 那层）的**前一个兄弟**——它整条铺满命令卡片，
     // 不随输出框一起内缩。
     const hint = (box.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
     const boxRect = box.getBoundingClientRect();
-    const lineRect = lastLine.getBoundingClientRect();
+    // 末行的行盒：整段文本的最后一个 client rect（每个视觉行一个）
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    const rects = Array.from(range.getClientRects());
+    const lastRect = rects[rects.length - 1];
     return {
       overflowY: getComputedStyle(box).overflowY,
       boxHeight: boxRect.height,
       boxWidth: boxRect.width,
-      lastLineBottom: lineRect.bottom,
+      lastLineBottom: lastRect ? lastRect.bottom : NaN,
       boxBottom: boxRect.bottom,
       hintTop: hint ? hint.getBoundingClientRect().top : NaN,
       boxTop: boxRect.top,
@@ -105,12 +117,25 @@ test('US-14 完成态缩略：框高恒定、只显示末尾整行、无滚动�
   const { page } = handle;
   await addCompletedBashCard();
 
-  // 提示条计数与实际可见整行数一致（行数随字号档位实测，不硬编码）
+  // 提示条计数与实际可见整行数一致（行数随字号档位由行高算出，不硬编码）
   await expect(page.getByText(/仅显示末尾 \d+ 行 \/ 共 60 行，点击显示全部/)).toBeVisible({ timeout: 15_000 });
-  // 头部行不进 DOM：渲染的是末尾段而非开头段
-  await expect(page.getByText('line-001', { exact: false })).toHaveCount(0);
 
   const state = await readCollapseState();
+  // 缩略态是「整段 <pre> + 固定框高 + overflow hidden」：首行留在 DOM 里，
+  // 但被裁在框上方（视点钉底，看到的是末尾几行）
+  const headClipped = await page.evaluate(() => {
+    const pre = Array.from(document.querySelectorAll('pre'))
+      .find((n) => (n.textContent || '').includes('line-060-END')) as HTMLElement | undefined;
+    if (!pre) throw new Error('末行未渲染');
+    const box = pre.parentElement as HTMLElement;
+    const boxTop = box.getBoundingClientRect().top;
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    const rects = Array.from(range.getClientRects());
+    const firstRect = rects[0];
+    return { firstTop: firstRect ? firstRect.top : NaN, boxTop };
+  });
+  expect(headClipped.firstTop).toBeLessThan(headClipped.boxTop);
   // overflow hidden：结构上不可能出现滚动条
   expect(state.overflowY).toBe('hidden');
   // 框高恒定（与流式容器同高 115px + 1 容差），总高度与流式期间一致
@@ -126,10 +151,10 @@ test('US-14 完成态缩略：框高恒定、只显示末尾整行、无滚动�
   expect(state.hintBorderRightStyle).toBe('none');
   expect(state.hintBorderBottomStyle).toBe('solid');
   const divider = await page.evaluate(() => {
-    const lastLine = Array.from(document.querySelectorAll('div'))
-      .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
-    if (!lastLine) throw new Error('末行未渲染');
-    const container = lastLine.parentElement?.parentElement as HTMLElement | null;
+    const pre = Array.from(document.querySelectorAll('pre'))
+      .find((n) => (n.textContent || '').includes('line-060-END')) as HTMLElement | undefined;
+    if (!pre) throw new Error('末行未渲染');
+    const container = pre.parentElement?.parentElement as HTMLElement | null;
     const hint = container?.previousElementSibling as HTMLElement | null;
     if (!hint) throw new Error('提示条未渲染');
     const style = getComputedStyle(hint);
@@ -162,10 +187,10 @@ test('US-14 点击提示条展开：提示条让位、框高增加、出现框�
   await expect(hint).toBeVisible({ timeout: 15_000 });
   // 折叠态：提示条 + 输出框（展开后提示条让位，这段高度整体交给输出框）
   const collapsed = await page.evaluate(() => {
-    const lastLine = Array.from(document.querySelectorAll('div'))
-      .find((n) => n.textContent === 'line-060-END') as HTMLElement | undefined;
-    if (!lastLine) throw new Error('末行未渲染');
-    const box = lastLine.parentElement as HTMLElement;
+    const pre = Array.from(document.querySelectorAll('pre'))
+      .find((n) => (n.textContent || '').includes('line-060-END')) as HTMLElement | undefined;
+    if (!pre) throw new Error('末行未渲染');
+    const box = pre.parentElement as HTMLElement;
     const hintEl = (box.parentElement as HTMLElement).previousElementSibling as HTMLElement | null;
     return {
       boxHeight: box.getBoundingClientRect().height,
@@ -175,11 +200,11 @@ test('US-14 点击提示条展开：提示条让位、框高增加、出现框�
   expect(collapsed.hintHeight).toBeGreaterThan(0);
 
   await hint.click();
-  // 全部行渲染（整段 pre）；提示条不再渲染——它让出的高度归输出框
+  // 全部行渲染（同一段 pre）；提示条不再渲染——它让出的高度归输出框
   await expect(page.getByText('line-001', { exact: false })).toBeVisible();
   await expect(page.getByText('共 60 行，已显示全部')).toHaveCount(0);
 
-  // 展开态量测：经 line-001 所在 pre 找输出容器（展开态无逐行 div）
+  // 展开态量测：经 line-001 所在 pre 找输出容器
   const state = await page.evaluate(() => {
     const pre = Array.from(document.querySelectorAll('pre'))
       .find((n) => n.textContent?.includes('line-001'));
@@ -210,11 +235,11 @@ test('US-14 点击提示条展开：提示条让位、框高增加、出现框�
 });
 
 /**
- * CRLF 回归：PowerShell 风格输出带 \r\n 且段间有空行。行 div 对孤立 \r 不产生
- * 换行（0px 高），整段 <pre> 里 \r\n 是真实换行——若源文本不归一，同一输出在
- * 「缩略候选段」与「整段 pre」两种形态下高度不等，实测围绕「放得下 ↔ 放不下」
- * 每帧翻转，框高 115 ↔ 自然高度来回跳，整页后半部分跟着闪烁。
- * 修复：previewText 归一 CRLF 后两形态等价。这里以逐帧高度采样锁死不回归。
+ * CRLF 回归：PowerShell 风格输出带 \r\n 且段间有空行。行盒对孤立 \r 不产生
+ * 换行（0px 高），而 \r\n 在 `white-space: pre` 里是真实换行——若源文本不归一，
+ * 同一份输出的行数会随解析路径变化，框高围绕「放得下 ↔ 放不下」每帧翻转
+ * （115 ↔ 自然高度），整页后半部分跟着闪烁。
+ * 修复：previewText 归一 CRLF。这里以逐帧高度采样锁死不回归。
  */
 const CRLF_LINES = [
   '=== nvlddmkm service ===',
@@ -278,6 +303,96 @@ test('US-14 CRLF 输出（含空行）折叠框高度稳定不振荡', async () 
   expect(max - min, `40 帧内输出框高度必须稳定，实际 ${JSON.stringify([...new Set(heights)])}`).toBeLessThanOrEqual(1);
   // 稳定在折叠态（框高与流式容器同高），而不是稳定在某个错误形态
   expect(max).toBeLessThanOrEqual(116);
+});
+
+/**
+ * 只含 ANSI 转义的行：渲染后不产出任何节点、在 <pre> 里不占行盒，于是同一份
+ * 输出「有多少行」在逐行形态与整段形态下不等（此前缩略态逐行 <div>、展开态整段
+ * <pre>，两套实现），框高围绕 115 ↔ 自然高度逐帧翻转、整页跟着闪。
+ *
+ * 现在三态只有一套整段渲染，且逐行按「去掉 ANSI 后是否为空」补 \u00A0 占位，
+ * 行数与行高严格一致。这里逐帧采样锁死高度恒定，并核对提示条行数与实际行盒数。
+ */
+const ANSI_ONLY_LINES = [
+  '=== apt-get upgrade ===',
+  '\u001b[32m\u001b[0m',
+  'Reading package lists...',
+  '\u001b[2K',
+  'Building dependency tree...',
+  '\u001b[0m',
+  'Reading state information...',
+  '\u001b[32m\u001b[0m',
+  '0 upgraded, 0 newly installed.',
+  '\u001b[0m',
+];
+
+test('US-14 含只读 ANSI 转义行的输出：折叠框高度稳定、行数与行盒一致', async () => {
+  const { host, page } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: '升级一下' });
+  await host.send({
+    type: 'addMessage',
+    sessionId,
+    role: 'toolcall',
+    content: '',
+    toolName: 'Bash',
+    toolArgs: { command: 'apt-get upgrade -y', description: 'ANSI only lines' },
+    toolCallId: 'bash-collapse-ansi',
+    status: 'running',
+  });
+  await host.send({
+    type: 'updateToolStatus',
+    sessionId,
+    toolCallId: 'bash-collapse-ansi',
+    output: ANSI_ONLY_LINES.join('\n'),
+    status: 'success',
+  });
+
+  // 10 行全部计入（含 4 行只含转义序列的空行）
+  await expect(page.getByText(/共 10 行/)).toBeVisible({ timeout: 15_000 });
+
+  // 逐帧采样：40 帧内框高恒定。修复前两形态行数不等，实测在 115 ↔ 自然高度
+  // （10 行 ≈ 176px）之间翻转，任何采样窗口内都会出现 ≥2 个高度值。
+  const heights = await page.evaluate(() => {
+    return new Promise<number[]>((resolve) => {
+      const boxes = Array.from(
+        document.querySelectorAll<HTMLElement>('div[title="点击查看完整输出"]'),
+      );
+      const box = boxes.find((b) => (b.textContent || '').includes('apt-get upgrade'));
+      if (!box) throw new Error('ANSI 输出框未渲染');
+      const out: number[] = [];
+      let i = 0;
+      const step = () => {
+        out.push(Math.round(box.getBoundingClientRect().height * 2) / 2);
+        i += 1;
+        if (i < 40) requestAnimationFrame(step);
+        else resolve(out);
+      };
+      requestAnimationFrame(step);
+    });
+  });
+  expect(heights.length).toBe(40);
+  const min = Math.min(...heights);
+  const max = Math.max(...heights);
+  expect(max - min, `40 帧内输出框高度必须稳定，实际 ${JSON.stringify([...new Set(heights)])}`).toBeLessThanOrEqual(1);
+  // 稳定在折叠态（框高与流式容器同高）
+  expect(max).toBeLessThanOrEqual(116);
+
+  // 展开后行盒数等于逻辑行数：只含 ANSI 的行也各占一行（逐行补占位的结果）
+  await page.getByText(/仅显示末尾 \d+ 行 \/ 共 10 行，点击显示全部/).click();
+  await expect(page.getByText('0 upgraded, 0 newly installed.')).toBeVisible();
+  const lineBoxes = await page.evaluate(() => {
+    const pre = Array.from(document.querySelectorAll('pre'))
+      .find((n) => (n.textContent || '').includes('apt-get upgrade')) as HTMLElement | undefined;
+    if (!pre) throw new Error('展开内容未渲染');
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    // 每个视觉行一个 client rect；按 top 去重防止同一行被切成多个片段
+    const tops = new Set(Array.from(range.getClientRects()).map((r) => Math.round(r.top)));
+    return tops.size;
+  });
+  expect(lineBoxes).toBe(ANSI_ONLY_LINES.length);
 });
 
 /**

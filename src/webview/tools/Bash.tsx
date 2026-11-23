@@ -4,7 +4,7 @@ import { ToolCallProps } from './Types';
 import { ToolHeader } from './ToolHeader';
 import { postMessage, getWindowSessionId } from '../webviewEnv';
 import { t } from '../i18n';
-import { AnsiText, hasAnsi, renderAnsiToNodes } from '../ansi';
+import { hasAnsi, renderAnsiToNodes, stripAnsi } from '../ansi';
 import { formatSize, parsePersistedOutput } from './persistedOutput';
 import { usePreviewLimit, PreviewMoreHint, TAIL_HINT_HEIGHT } from './previewLimit';
 
@@ -33,10 +33,11 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
   const command = args.command || '';
   const description = args.description || '';
 
-  // 两个互斥的输出形态，输出框高度三态一致（OUTPUT_BOX_HEIGHT）：
+  // 两个互斥的输出形态，输出框高度三态一致（OUTPUT_BOX_HEIGHT），且**渲染形态
+  // 只有一套**（整段 <pre>，见 renderOutputContent 的 blockStyle 注释）：
   //   流式（isStreaming && running）：滚动容器 + 自动滚到底部，实时跟随最新输出；
-  //   完成 / 历史加载：与 Edit / Write 预览同一套折叠实现（usePreviewLimit）——
-  //   逐行实测在框高内放得下的整行数，缩略态只显示**末尾** fittedLines 行
+  //   完成 / 历史加载：与 Edit / Write 预览同一套折叠实现（usePreviewLimit），
+  //   按行高算出框高内放得下的整行数，缩略态只显示**末尾** fittedLines 行
   //   （overflow hidden，无滚动条）；点击上方提示条展开：框高不变，只是换成
   //   overflow auto 出现框内滚动条，内容渲染全部行、初始视点仍在底部，可向上
   //   滚动查看更早输出。取末尾而非开头：与流式期间「最新输出在底部」的阅读
@@ -99,12 +100,27 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     return arr;
   }, [previewText]);
 
-  // 与 Edit / Write 同一套预览折叠（usePreviewLimit）：逐行实测真实高度、
-  // 只显示放得下的整行，宽度变化时自动重测。Bash 行不折行（超宽行走省略号），
-  // 实测主要兜字号缩放等行高变化。展开状态由 hook 持有（不可逆，与卡片共存亡）。
+  // 整段渲染的文本：**逐行**给「渲染后没有字形」的行补一个 \u00A0。
+  //
+  // 判据是「去掉 ANSI 转义之后是否为空」，不是「原始串是否为空串」：一行只含
+  // `\x1b[32m\x1b[0m` 这类序列时原始串非空，但 `renderAnsiToNodes` 不产出任何
+  // 节点，于是它在整段 <pre> 里**不占行盒**——行数比 rawLines 少，行高与提示条
+  // 行数都对不上。补上 \u00A0 后每一行都有一个行盒，逐行形态与整段形态的行高
+  // 严格一致，输出框不会再围绕「放得下 ↔ 放不下」反复变高变矮（闪烁）。
+  //
+  // 末行的空行同样要补：`white-space: pre` 只保留中间的空行，末尾那一个换行
+  // 不产生行盒（实测 `"a\n"` 与 `"a"` 同高）。
+  const blockText = useMemo(
+    () => rawLines.map((line) => (stripAnsi(line) === '' ? `${line}\u00A0` : line)).join('\n'),
+    [rawLines],
+  );
+
+  // 与 Edit / Write 同一套预览折叠（usePreviewLimit），但测量口径是 `line-box`：
+  // Bash 输出框里的文本不折行（`white-space: pre`，超宽行走省略号），所有视觉
+  // 行盒同高，放得下的整行数由行高算出，不逐行实测。展开状态由 hook 持有
+  // （不可逆，与卡片共存亡）。
   const {
     contentRef,
-    visibleLines,
     fittedLines,
     hasMore,
     expanded,
@@ -113,23 +129,24 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
     revision: previewText,
     // 输出框与流式滚动容器同高（115），缩略/展开卡片总高度都不变
     contentHeight: OUTPUT_BOX_HEIGHT,
+    measurement: 'line-box',
     // 展开会让消息区出现滚动条交互，通知外层暂停自动滚动（与 Edit / Write 一致）
     onExpand: () => onExpandToggle?.(true),
   });
 
   // 完成态输出框钉在底部（流式容器由上方 outputRef effect 负责）：
-  //   缩略态 overflow hidden、程序滚动——实测放得下的行数少于候选数时
-  //   （字号放大等），可见窗口仍落在候选段的**末尾** fittedLines 行；
+  //   缩略态 overflow hidden、程序滚动——框高装不下的行被裁在上方，
+  //   可见窗口仍落在整段内容的**末尾** fittedLines 行；
   //   展开态换成 overflow auto 出滚动条，同样先钉在底部——与缩略态视点
   //   连续（看到的就是刚才那几行），之后由用户向上滚动查看更早输出。
-  // 内容/行高变化（ fittedLines、previewText）或状态切换时重新钉一次；
+  // 内容或行数变化（fittedLines、blockText）或状态切换时重新钉一次；
   // 用户手动滚动后依赖不变，不会被拽回底部。
   useLayoutEffect(() => {
     if (!hasMore) return;
     const el = contentRef.current;
     if (!el) return;
     el.scrollTop = SCROLL_TO_BOTTOM;
-  }, [hasMore, expanded, fittedLines, previewText, contentRef]);
+  }, [hasMore, expanded, fittedLines, blockText, contentRef]);
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -187,14 +204,6 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
   const renderOutputContent = () => {
     if (!output) return null;
 
-    // 逐行 div 样式：流式与缩略态共用。每行独立 ellipsis（超宽行末尾省略号
-    // 而不是横向溢出），行高与整段渲染的 <pre> 一致。
-    const lineStyle: React.CSSProperties = {
-      whiteSpace: 'pre',
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      lineHeight: '1.6',
-    };
     const cursorStyle: React.CSSProperties = {
       display: 'inline-block',
       verticalAlign: 'text-bottom',
@@ -204,46 +213,39 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
       animation: 'bashCursorBlink 1s step-end infinite',
     };
 
-    // 统一行渲染（withCursor 用于流式末尾光标）
-    const renderLines = (lines: string[], withCursor: boolean) => (
-      <>
-        {lines.map((line, idx) => (
-          <div key={idx} style={lineStyle}>
-            {line ? <AnsiText text={line} /> : '\u00A0'}
-            {/* 光标内联在最后一行末尾，不额外占一行，保证高度与完成态一致 */}
-            {withCursor && idx === lines.length - 1 && <span style={cursorStyle} />}
-          </div>
-        ))}
-      </>
-    );
-
-    // ─── 整段渲染（展开态 / 行数未超上限）─────────────────────────────
-    // 逐行 <div> 的唯一作用是承载 line-height 与「逐行独立解析 ANSI」。
-    // 实测 4248 个输出行里只有 1.5% 含 ANSI 转义，为这 1.5% 让每行都付一个
-    // div + 一个文本节点的代价并不划算。因此输出定型后（执行完成 / 从历史
-    // 加载）改为整段渲染：
-    //   不含 ANSI → 只有一个文本节点
-    //   含 ANSI   → 只给着色片段包 <span>，其余仍是文本节点
-    // 空行由 <pre> 的 white-space:pre 自然保留（无需 \u00A0 占位）。
-    // 注意：整段解析意味着 ANSI 状态会跨行延续，这与真实终端一致
-    //（逐行解析时每行都会重置，属于旧实现的副作用）。
+    // ─── 唯一的渲染形态：整段 <pre> ──────────────────────────────────
+    // 流式 / 完成缩略 / 完成展开三态渲染的是**同一个** `<pre>`、同一份文本节点
+    // 结构，区别只有外层框高与 overflow（见下方各分支）。此前缩略态是
+    // 「逐行 <div> + 空行用 \u00A0 占位」，展开与流式是整段 <pre>，两套实现的
+    // 行数口径一旦不同（一行只含 ANSI 转义时渲染后不产出任何节点、不占行盒），
+    // 高度就围绕「放得下 ↔ 放不下」逐帧翻转，输出框 115 ↔ 自然高度来回跳、
+    // 整页跟着闪。现在两形态合一，这个差异在结构上不存在。
+    //
+    // 段落内不折行（`white-space: pre`），超宽行由 ellipsis 在行末收尾——
+    // 多行 <pre> 的省略号逐行生效，与逐行 <div> 逐一省略的视觉结果一致。
+    // 整段解析意味着 ANSI 状态跨行延续，这与真实终端一致。
     const blockStyle: React.CSSProperties = {
       // 只覆盖 font-family（<pre> 的 UA 样式是 monospace，不继承）；
       // 不能用 `font: inherit` 简写——它会连带把 line-height 重置成继承值
-      // （实测 16.5px vs 逐行 div 的 17.6px，每行差 1.1px 会让整卡位移）。
+      // （实测 16.5px vs 17.6px，每行差 1.1px 会让整卡位移）。
       fontFamily: 'inherit',
       margin: 0,
       padding: 0,
       whiteSpace: 'pre',
       overflow: 'hidden',
-      // 与逐行 div 一致：超宽行末尾显示省略号而不是溢出
+      // 超宽行末尾显示省略号而不是溢出
       textOverflow: 'ellipsis',
       lineHeight: '1.6',
     };
 
-    const renderBlock = (text: string) => (
+    /**
+     * 整段渲染。`withCursor` 在末尾内联一个光标块（流式态）：光标紧跟最后一行
+     * 末尾、不额外占行，因此流式与完成态的行高始终一致。
+     */
+    const renderBlock = (text: string, withCursor: boolean) => (
       <pre style={blockStyle}>
         {hasAnsi(text) ? renderAnsiToNodes(text) : text}
+        {withCursor && <span style={cursorStyle} />}
       </pre>
     );
 
@@ -257,7 +259,8 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
             color: colors.textSystem,
           }}
         >
-          {/* 流式输出内容：自动滚动到底部，末尾显示闪烁光标 */}
+          {/* 流式输出内容：自动滚动到底部，末尾显示闪烁光标。空输出时
+              <pre> 里只剩光标块，高度仍是一行。 */}
           <div
             ref={outputRef}
             className="overflow-auto cursor-pointer inner-scrollbar"
@@ -265,31 +268,24 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
             onClick={handleOutputClick}
             title={t('tool.bash.clickFullOutput')}
           >
-            {rawLines.length === 0 ? (
-              <span style={cursorStyle} />
-            ) : (
-              renderLines(rawLines, true)
-            )}
+            {renderBlock(blockText, true)}
           </div>
         </div>
       );
     }
 
     // ─── 完成态（含历史加载）：与流式同高的折叠框，卡片总高度不变 ────
-    // 缩略：渲染 min(total, PREVIEW_LINES) 行**候选段**（取末尾，逐行 div 供
-    //       usePreviewLimit 实测），框高固定 OUTPUT_BOX_HEIGHT、overflow
-    //       hidden，由钉底 effect 让可见窗口落在末尾 fittedLines 行 → 行数
-    //       再多也不出滚动条；
+    // 两个分支渲染的都是整段 <pre>（与流式同一份实现、同一份文本），只有外层
+    // 框高与 overflow 不同：
+    // 缩略：框高固定 OUTPUT_BOX_HEIGHT、overflow hidden，由钉底 effect 让可见
+    //       窗口落在末尾 fittedLines 行 → 行数再多也不出滚动条；
     // 展开：提示条隐藏、输出框接管它的高度（缩略高度 + 提示条高度），
-    //       卡片总高不变；overflow 换成 auto 出现框内滚动条，内容整段 <pre>
-    //       渲染全部行（见 blockStyle 注释），初始视点仍在底部、可向上滚；
+    //       卡片总高不变；overflow 换成 auto 出现框内滚动条，初始视点仍在
+    //       底部、可向上滚；
     // 提示条在输出框**上方**（tail 变体，chevron 朝上）：Bash 显示的是末尾，
     // 更多内容在上方，展开即向上滚。
     // 内容上限已在工具层统一执行（4K，前 2K + 后 2K）。
-    // 注意：候选段必须按 visibleLines 渲染满（不能按 fittedLines 切小）——
-    // hook 的实测只看已渲染的行，切小会让「实测 → 少渲染 → 实测」自锁在 1 行。
     const collapsed = hasMore && !expanded;
-    const candidateLines = collapsed ? rawLines.slice(-visibleLines) : rawLines;
     // 展开态输出框高度：提示条不再占位，由输出框接管它的高度，卡片总高不变
     const boxHeight = hasMore ? (expanded ? OUTPUT_BOX_EXPANDED_HEIGHT : OUTPUT_BOX_HEIGHT) : undefined;
 
@@ -307,7 +303,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
           overflow: expanded ? 'auto' : 'hidden',
         }}
       >
-        {collapsed ? renderLines(candidateLines, false) : renderBlock(rawLines.join('\n'))}
+        {renderBlock(blockText, false)}
       </div>
     );
 
