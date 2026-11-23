@@ -136,6 +136,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   主进程 `Menu.popup` 在光标处弹出，与「添加工作区」加号菜单同形态），条目、候选与
   置灰规则见 [docs/hosts/workspace-close-menus.md](workspace-close-menus.md)；终端类
   条目见第 14.1 节。原生菜单无法被 Playwright 驱动，交互按 US-48 豁免人工验证。
+  菜单关闭时补发 `mouseLeave`，否则触发按钮的 hover 高亮会留在原地（见 [docs/hosts/host-matrix.md 第 6 节](host-matrix.md#6-宿主固有差异有意保留)的「菜单关闭」行）。
 - 标签页支持拖拽调整顺序：拖到目标标签页前半 / 后半即插到其前 / 后，顺序写入打开集合并持久化。
 - 快捷键切换相邻标签页：「下一标签」（默认 Ctrl+Tab）/「上一标签」（默认 Ctrl+Shift+Tab）
   按打开集合顺序把活动项移向相邻一项，末项向后环绕回首项、首项向前环绕到末项；
@@ -408,9 +409,9 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   焦点不被标签表推送抢走；断开 / 连接中的标签不在可输入态，焦点不落到覆盖层底下。
 - 窗口尺寸变化实时同步远端 PTY（`setWindow`）：通道建立以发起时刻的窗口尺寸为 PTY 初值，
   就绪前的 resize 先记账、就绪后补齐。滚动回看缓冲不少于 1000 行。
-- 剪贴板：选中即复制（PuTTY 惯例）——拖选 / 双击选词产生的非空选区即时写入剪贴板，取消
-  选中不写、保留最近一次选区内容；快捷键复制 / 粘贴照旧：Windows / Linux `Ctrl+Shift+C` / `Ctrl+Shift+V`，
-  macOS 沿 `Cmd+C` / `Cmd+V`（有选区才拦复制）；读写走主进程 `clipboard`（渲染端剪贴板权限不可依赖）。
+- 剪贴板：选中即复制（PuTTY 惯例）——拖选 / 双击选词产生的非空选区即时写入剪贴板，取消选中不写、
+  保留最近一次选区内容；快捷键复制（Windows / Linux `Ctrl+Shift+C`、macOS `Cmd+C`，有选区才拦）写走
+  主进程 `clipboard`；粘贴由 xterm 原生 `paste` 处理，不经宿主（[defect](../../specs/defects/terminal-ctrl-shift-v-pastes-twice.md)）。
 - 标签切换快捷键：「下一标签 / 上一标签」（与工作区标签页同一组合与改键偏好，见第 5 节）
   在终端窗口内切相邻终端标签，环绕规则同一份纯函数（`selectAdjacentId`）；不足 2 个标签
   或活动标签不在表里时不动作。终端窗口是独立窗口、无菜单栏，组合键由主进程

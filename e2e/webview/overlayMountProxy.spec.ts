@@ -90,6 +90,41 @@ test('FR-002 可部署但未就绪时渲染 Overlay 勾选框', async ({ browser
   await expect(handle.page.locator(WORK_VIEW_OPTION)).toBeVisible({ timeout: 15_000 });
 });
 
+/**
+ * 入口渲染在装饰图**下方**且不移动装饰图（docs/hosts/webview-ui.md 第 11 节
+ * 「新对话空态布局」）：入口是装饰图的绝对定位兄弟层，出现 / 消失都不改装饰图位置。
+ * 判据取几何事实——装饰图中心与容器中心同高（居中不受入口影响）、入口整体落在
+ * 装饰图下边界之下。
+ */
+test('FR-002 入口出现在 logo 下方且不影响 logo 位置', async ({ browser }) => {
+  handle = await openWithCapabilities(browser, DEPLOYABLE);
+  const { page } = handle;
+  const logo = page.locator('.placeholder-logo');
+  const entry = page.locator(WORK_VIEW_OPTION);
+  await expect(entry).toBeVisible({ timeout: 15_000 });
+
+  const geometry = await page.evaluate(() => {
+    const logoEl = document.querySelector('.placeholder-logo');
+    const entryEl = document.querySelector('input[data-work-view-option]');
+    const container = document.querySelector('.messages-container-empty');
+    if (!logoEl || !entryEl || !container) throw new Error('空态节点缺失');
+    const logoBox = logoEl.getBoundingClientRect();
+    const entryBox = entryEl.getBoundingClientRect();
+    const containerBox = container.getBoundingClientRect();
+    return {
+      logoCenterY: logoBox.top + logoBox.height / 2,
+      containerCenterY: containerBox.top + containerBox.height / 2,
+      logoBottom: logoBox.bottom,
+      entryTop: entryBox.top,
+    };
+  });
+
+  // 入口在装饰图下方，且留出了间距（不是压在图上）
+  expect(geometry.entryTop).toBeGreaterThan(geometry.logoBottom);
+  // 装饰图仍按容器中线居中：入口作为绝对定位层不占布局高度
+  expect(Math.abs(geometry.logoCenterY - geometry.containerCenterY)).toBeLessThanOrEqual(1);
+});
+
 test('FR-002 不可部署时整块入口不渲染', async ({ browser }) => {
   // AC-5：非 Linux 或内核无 overlayfs → deployable false，整块入口不渲染
   handle = await openWithCapabilities(browser, {

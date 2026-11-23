@@ -72,6 +72,7 @@ last_reviewed: 2026-11-16
 | `e2e/webview/userChoicePaging.spec.ts` | US-58（分页进度 / 单选翻页 / 多选与其他并存 / Enter 语义 / answers 载荷） | webview UI |
 | `e2e/webview/spinModeInput.spec.ts` | US-39（spin 输入禁用的渲染层：禁用 + placeholder + 停止按钮转黄 + 单向不退出） | webview UI |
 | `e2e/electron/tabContextMenu.spec.ts` | US-48（菜单条目与顺序 / 置灰终态 / 关闭动作 / 复制工作区路径 / 他区忙碌汇总确认） | Electron 整应用 |
+| `e2e/electron/titlebarMenuHover.spec.ts` | US-48（原生菜单关闭后触发按钮不残留 hover 高亮：`popup` 的 `callback` 补发 `mouseLeave`） | Electron 整应用 |
 | `e2e/electron/remoteTaskSurvival.spec.ts` | US-64（三选对话框 / 后台运行存活的远端 Core / 立即关闭终止 / 退出确认链取消中止）、US-65（认领原 Core / 孤儿期间内容可见 / 任务继续完成 / 离场完成后重开绿灯） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 | `e2e/electron/completionAfterRestart.spec.ts` | US-65（离场完成的未读绿灯：重开按 `unreadCompletions` 补武装 / 打开即阅读清除） | Electron 整应用（本地车道，meta.json 计数预置） |
 | `e2e/pycharm/pluginPackage.spec.ts` | US-68（zip 内 jar / 四平台 Core + fingerprint + ripgrep / webview 资源 / 图标 / plugin.xml 身份派生 / 无外部运行时引用） | PyCharm 插件分发（本地车道） |
