@@ -403,15 +403,22 @@ e2e/
     `--multi-instance=` 的沙箱实例（**不要**误杀用户真实运行的应用进程：沙箱实例的可执行
     文件在仓库的 node_modules 下，真实安装的在用户目录的 Programs 下）；Linux 用
     `ps -o pid,etimes,args -u "$(id -u)" | grep electron` 看是否有跨用例存活的进程。
-18. **用「回投文案计数」推进 mock 轮次在单核 runner 上会反序**：`subagentConcurrency.spec.ts`
-    的 US-49 用父会话上下文里 `Agent [Master] queued` 出现次数决定「该发任务 5 / 该发任务 6」。
-    任务 5 的排队结果是**工具结果回投**，回投与下一轮驱动之间存在竞态——单核 runner 上
-    下一轮可能先于回投到达，`queued` 仍为 0，于是任务 6 先被发出、断言读到 `[6, 5]`
-    （期望 `[5, 6]`，run `44962124641` 实证）。本机 6/6 全绿、单条稳定 3.8s，**不是产品
-    缺陷**：Rust 侧槽位 FIFO 由 `VecDeque` + 预留转移保证（`core-rs/src/subagent.rs` 的
-    `waiters` / `enter_slot_queue`），顺序本身没错，错的是用例把「跨轮」当成时序保证。
-    这类断言要么锚定产品侧可观测的排队序号，要么放宽为集合比较——不要靠「上一轮一定先
-    落地」推进脚本。
+18. **US-49 的排队顺序不能读 mock 的请求到达时刻**：`subagentConcurrency.spec.ts` 的 US-49
+    曾经两层都踩过。第一层是**推进轮次**：父会话上下文里 `Agent [Master] queued` 出现次数
+    决定「该发任务 5 / 该发任务 6」，而排队结果是工具结果回投，回投与下一轮驱动之间有竞态，
+    单核 runner 上下一轮可能先于回投到达、`queued` 仍为 0，于是任务 6 先被发出
+    （run `44962124641` 实证）。第二层是**FIFO 断言本身**：改成按「助手是否发出过该任务的
+    tool_use」推进轮次后仍在 CI 读到 `[6, 5]`（run `45089008241` / `45082033033`），因为
+    `ordered.slice(4)` 排序用的是 mock 的 `startedAt`——那是「首个 LLM 请求到达」的时刻。
+    产品侧的 FIFO 保证点是**槽位预留转移**（`core-rs/src/subagent.rs` 的 `waiters` /
+    `enter_slot_queue` / `hand_off_reservation`），预留之后还要经过「后台线程 → 建 meta /
+    注册 / emit → 再起驱动线程 → 组提示词（首次探测 26 个命令，带进程级缓存）」若干段没有
+    顺序依赖的链路，`startedAt` 的顺序因此没有任何保证。
+    结论：排队顺序只读**槽位授予时刻**（子会话 id 的 `sub_<millis>_<suffix>` 前缀，也是
+    `meta.json` 的创建时刻），判定在 `helpers/subagentGrantOrder.ts`，由
+    `src/test/subagentGrantOrder.test.ts` 确定性锁定（含「首请求倒序时判定不变」）。首轮并发
+    直取的那批相互之间本就不承诺顺序，不要断言它们的先后——详见
+    [specs/defects/us49-fifo-assertion-reads-first-request-order.md](../specs/defects/us49-fifo-assertion-reads-first-request-order.md)。
 19. **「加第二个工作区」在 CI 上稳定多花约 30s（根因未定位）**：凡是「加第二个工作区
     再切回去」的整应用用例，CI 上整条耗时固定在 30–34.3s（`fileExplorer.spec.ts` 的
     142/181/485/674/812 五条、`sessions.spec.ts:203`、`desktopShell.spec.ts:339`），
