@@ -99,6 +99,46 @@ fn kill(pid: u32) {
     let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
 }
 
+/// 中间 shell 的收割守卫：**无论用例怎么结束**都杀掉并 `wait` 它。
+///
+/// 为什么需要：`spawn` 之后要跑一串可能 panic 的断言（等 pid 文件、等「已武装」诊断）。
+/// 任何一条提前失败，句柄就随栈展开丢掉——而 shell 里的 `exec sleep 90` 会继续在
+/// runner 上存在 90 秒。`kill` + `wait` 放在 `Drop` 里，成功路径与失败路径走同一段。
+struct ShellGuard {
+    child: std::process::Child,
+    /// 成功路径上测试会主动杀掉它；记下退出状态供断言「父进程是被杀的、不是自然到期」
+    status: Option<std::process::ExitStatus>,
+}
+
+impl ShellGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self {
+            child,
+            status: None,
+        }
+    }
+
+    /// 杀掉父进程并收割它（成功路径调用一次；`Drop` 里不会重复收割）
+    fn kill_and_reap(&mut self) -> std::process::ExitStatus {
+        let pid = self.child.id();
+        kill(pid);
+        let status = self.child.wait().expect("reap intermediate shell");
+        self.status = Some(status);
+        status
+    }
+}
+
+impl Drop for ShellGuard {
+    fn drop(&mut self) {
+        // 已收割过就不再动：`status` 有值说明成功路径已经 kill + wait 过
+        if self.status.is_some() {
+            return;
+        }
+        kill(self.child.id());
+        let _ = self.child.wait();
+    }
+}
+
 #[test]
 fn core_exits_when_parent_process_disappears() {
     let exe = env!("CARGO_BIN_EXE_standalone-core");
@@ -134,19 +174,30 @@ fn core_exits_when_parent_process_disappears() {
         .open(&fifo)
         .expect("open fifo");
 
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "exec \"{}\" stdio < \"{}\" > \"{}\" 2>&1 & echo $! > \"{}\"; echo $$ > \"{}\"; sleep 90",
-            exe,
-            fifo.display(),
-            log_file.display(),
-            pid_file.display(),
-            parent_file.display()
-        ))
-        .status()
-        .expect("spawn intermediate shell");
-    assert!(status.success(), "intermediate shell failed");
+    // `spawn()` 而不是 `status()`：`status()` 会阻塞到 shell 退出，也就是等满末尾那句
+    // `sleep`——用例的 90s 全花在这上面，而那时父 shell 已经自己到期退出，下面那句
+    // `kill(parent_pid)` 杀的是死 pid（甚至可能是被复用的 pid），「先武装、后失父」的
+    // 顺序完全没被验证到。改成 spawn 拿到句柄就往下走，父进程活多久由测试显式杀死
+    // 决定（成功路径上它一定活不到 sleep 结束）。
+    //
+    // 末尾用 `exec sleep`：让 sh **被 sleep 取代**（同一个 PID），下面 `kill(parent_pid)`
+    // 杀的就是它本身。不 exec 的话 sleep 是 sh 的子进程，SIGKILL 掉 sh 只会把 sleep
+    // 变成孤儿——每次跑这条用例都在 runner 上留一个睡 90 秒的进程。
+    let mut shell = ShellGuard::new(
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "exec \"{}\" stdio < \"{}\" > \"{}\" 2>&1 & echo $! > \"{}\"; echo $$ > \"{}\"; exec sleep 90",
+                exe,
+                fifo.display(),
+                log_file.display(),
+                pid_file.display(),
+                parent_file.display()
+            ))
+            .spawn()
+            .expect("spawn intermediate shell"),
+    );
+    assert!(shell.child.id() > 0, "intermediate shell failed to start");
 
     let pid: u32 =
         wait_for_pid(&pid_file, Duration::from_secs(5)).expect("core pid file was not written");
@@ -157,7 +208,7 @@ fn core_exits_when_parent_process_disappears() {
 
     // 等「看门狗已武装」诊断（Core 记录父 PID 之后的第一个动作）：它出现前杀父
     // 进程就是在赌启动耗时。满载下 Core 启动可慢于任何固定时钟，宽限给足 60s
-    // （父进程 sleep 90 活得更久，先看武装后杀父的顺序不被打破）。
+    // （父 shell 的 `sleep 90` 仍在跑，测试不会被它挡住——句柄已由 `spawn` 拿到）。
     assert!(
         wait_for_line(
             &log_file,
@@ -168,9 +219,9 @@ fn core_exits_when_parent_process_disappears() {
         std::fs::read_to_string(&log_file).unwrap_or_default()
     );
 
-    // 已武装 → 杀父进程（孤儿化落地）：看门狗 1s 轮询 + exit(0)，~1s 内退出；
-    // 15s 窗口为 CI 负载留余量——真回归（看门狗没开火）在窗口内照样红。
-    kill(parent_pid);
+    // 已武装 → 杀掉**活着的**父进程（孤儿化落地）：看门狗 1s 轮询 + exit(0)，~1s 内
+    // 退出；15s 窗口为 CI 负载留余量——真回归（看门狗没开火）在窗口内照样红。
+    let shell_status = shell.kill_and_reap();
     let exited = wait_until_exited(pid, Some(core_start), Duration::from_secs(15));
     drop(fifo_keepalive);
     let core_log = std::fs::read_to_string(&log_file).unwrap_or_default();
@@ -188,6 +239,13 @@ fn core_exits_when_parent_process_disappears() {
          — core pid {pid}, state={:?}; core 日志尾部：\n{}",
         process_state_and_start(pid).map(|(state, _)| state),
         core_log_tail
+    );
+    // 父 shell 必须是**被信号杀死**（我们杀了它），不是自己跑完 `sleep 90` 退出的。
+    // 这条断言把「先武装、后失父」的顺序钉在用例自己的时序上：它一旦退化回「等父
+    // 进程自然到期」，shell 会以 exit 0 正常结束、用例重新变成 90s 且覆盖不到看门狗。
+    assert!(
+        !shell_status.success(),
+        "父 shell 自己退出了（status={shell_status}）——用例没能杀掉活着的父进程"
     );
     // 看门狗路径的自证：开火时必先打诊断。它在退出之前写就，退出被观测到则
     // 这行必已在日志里。
