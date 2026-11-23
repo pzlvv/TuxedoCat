@@ -106,6 +106,42 @@ runTests('coreTestScript', async () => {
   check('smoke.yml 的 rust-tests 是 4 片矩阵', smokeCheck.hasMatrix);
   check('分片矩阵 fail-fast: false（一片红不掐掉其余片）', smokeCheck.failFastOff);
 
+  // ---------- 每个跑 cargo 的 job 都要装 musl-tools ----------
+  //
+  // 为什么这条必须单独锁：cc-rs 按**目标三元组**找 C 编译器，musl 目标上找的是
+  // `x86_64-linux-musl-gcc`，不是宿主的 `cc`。`build-core.mjs` 的 `toolchainKind`
+  // 在 Linux 宿主返回 'none' 只表示「不注入 CC」，**不代表不需要 C 编译器**。
+  //
+  // 这个坑有一次真实的误判：本 PR 曾把 apt-install 删掉，某一轮反而绿了，于是记成
+  // 「musl-gcc 不需要」。真相是那轮 rust 缓存命中了 ring 的编译产物，压根没走 cc-rs；
+  // 等缓存键变化（依赖动了）重新编 ring，立刻报 `failed to find tool
+  // "x86_64-linux-musl-gcc"`。**缓存命中会掩盖缺失的工具链**——所以判据写成静态
+  // 断言「每个跑 cargo 的 job 都有 apt-install musl-tools」，而不是拿某轮绿了当证据。
+  const muslProbe = spawnSync(process.execPath, ['-e', `
+    const fs = require('fs');
+    const text = fs.readFileSync('.github/workflows/smoke.yml', 'utf8');
+    // 按顶层 job 切块（两个空格的缩进），逐块看「有没有 cargo 构建」与「有没有装 musl-tools」
+    const blocks = text.split(/\\n(?=  [a-z][a-z0-9-]*:\\n)/).slice(1);
+    const problems = [];
+    for (const block of blocks) {
+      const name = /^  ([a-z][a-z0-9-]*):/.exec(block)?.[1] ?? '?';
+      // 该 job 是否会触发 C 依赖的 cargo 构建（build:core / cargo test 都要）
+      const runsCargo = /npm run (build:core|test:core)/.test(block);
+      if (runsCargo && !/apt-install/.test(block)) problems.push(name);
+    }
+    console.log(JSON.stringify({ problems, jobs: blocks.length }));
+  `], { cwd: REPO_ROOT, encoding: 'utf8' });
+  let muslCheck = { problems: ['__unparsed__'], jobs: 0 };
+  try {
+    muslCheck = JSON.parse((muslProbe.stdout ?? '{}').trim()) as typeof muslCheck;
+  } catch {
+    // 解析失败即按「有问题」处理，不让它静默通过
+  }
+  check(
+    `跑 cargo 的 job 都装了 musl-tools（缺：${muslCheck.problems.join('、') || '无'}）`,
+    muslCheck.problems.length === 0,
+  );
+
   // ---------- 宿主工具链判据与构建脚本同源 ----------
   // test-core.mjs 不自己复制一份判据，而是 import build-core.mjs 的 crossToolchainEnv。
   const sourceProbe = spawnSync(

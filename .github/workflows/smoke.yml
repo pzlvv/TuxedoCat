@@ -77,14 +77,22 @@ jobs:
             core-rs -> target
             mount-proxy-rs -> target
           cache-on-failure: true
-      # musl-tools 的 apt 安装（实测 4s～1min50s 不等，源站会掉到 11kB/s 且不报错，
-      # 退避重试治不了「慢」）——本 job 不需要它：build-core.mjs 的 toolchainKind 在
-      # Linux 宿主 + 同架构 musl 目标时返回 'none'，不注入 CC，直接用系统 gcc；ring 的
-      # C / 汇编编成 .o，链接交给 rustup 自带的 rust-lld + musl crt（core-rs/.cargo/
-      # config.toml），全程不经过 musl-gcc。
+      # musl-tools 必须装：`ring` 的 build.rs 经 cc-rs 找 C 编译器，而 cc-rs 按**目标
+      # 三元组**推导工具名——目标是 `x86_64-unknown-linux-musl` 时它找的是
+      # `x86_64-linux-musl-gcc`，不是宿主上的 `cc`/`gcc`。`build-core.mjs` 的
+      # `toolchainKind` 返回 'none' 只表示**不注入 CC**，不代表 cc-rs 不需要 C 编译器。
       #
-      # 实验依据见下方「musl-tools 是否必需」的验证记录：去掉后 build:core 与
-      # test:core 都必须绿，否则说明有环节真的用到了 musl-gcc。
+      # 这条曾被误判过一轮：去掉 apt 后某次构建反而绿了，于是记成「不需要」。真相是
+      # 那次 rust 缓存命中了 ring 的编译产物，压根没走 cc-rs；等缓存键变化（依赖动了）
+      # 重新编 ring 就报 `failed to find tool "x86_64-linux-musl-gcc"`。**缓存会掩盖
+      # 缺失的工具链**——判据必须是「缓存 miss 时也能编过」，不能拿命中轮当证据。
+      #
+      # 走 composite action 而不是裸 apt-get：源站实测会掉到 11kB/s 且不报错
+      # （`Fetched 1053 kB in 1min 33s`），退避重试治不了「慢」，只能靠 action 里的
+      # 已装判定与递增退避。它是本 job 最大的时间方差来源（4s～110s）。
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
       # ---- 轨道 A（本 job）与轨道 B（rust-tests 矩阵）并行 ----
       #
       # 本 job 只做「需要 Core 产物的事」：build:core → test:unit（standalone* 驱动真实
@@ -151,6 +159,12 @@ jobs:
             core-rs -> target
             mount-proxy-rs -> target
           cache-on-failure: true
+      # musl-tools 与 tests job 同一个理由：cc-rs 按目标三元组找 `x86_64-linux-musl-gcc`
+      # 编 ring 的 C / 汇编。缓存命中时这段被跳过，所以**只在缓存 miss 时才暴露**
+      # ——不能拿命中轮绿了当作不需要它的证据（本 PR 曾因此误判一轮）。
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools
       - name: core-rs 分片 ${{ matrix.shard }}/4
         env:
           RUST_BACKTRACE: '1'
