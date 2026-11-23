@@ -8,7 +8,8 @@
  * stdin（FR-004）。
  *
  * 主题由主进程推送（`terminal:theme`），字号在开窗时经 query 注入、运行期不热切
- * （FR-009）。剪贴板（选中即复制 + 快捷键复制 / 粘贴）走主进程 clipboard 模块（FR-005）。
+ * （FR-009）。复制（选中即复制 + 快捷键复制）写走主进程 clipboard 模块（FR-005）；
+ * 粘贴交给 xterm 的原生 `paste` 处理，`Ctrl+/` 的补映射见 `attachKeyHandlers` 的说明。
  */
 
 import { Terminal } from '@xterm/xterm';
@@ -20,6 +21,7 @@ import {
   type TerminalTheme,
 } from './xtermThemes.js';
 import { getTerminalLabels, type TerminalLabels } from './labels.js';
+import { ctrlSlashByte } from './ctrlSlashByte.js';
 import { selectAdjacentId, type TabSwitchDirection } from '../tabSwitching.js';
 import type { TerminalAPI, TerminalTab } from './types.js';
 
@@ -110,7 +112,7 @@ function createPane(tab: TerminalTab): PaneView {
   term.onData((data) => {
     void api.input({ tabId: tab.id, data });
   });
-  attachClipboardShortcuts(term, tab.id);
+  attachKeyHandlers(term);
   attachCopyOnSelect(term);
   const view: PaneView = { id: tab.id, term, fit, host };
   panes.set(tab.id, view);
@@ -150,23 +152,33 @@ function focusActivePaneTerm(): void {
 }
 
 /**
- * 剪贴板（docs/hosts/electron-multi-workspace.md 第 14.4 节）：Windows / Linux Ctrl+Shift+C / Ctrl+Shift+V，
- * macOS Cmd+C / Cmd+V（有选区才拦复制，未选中时交给 xterm 默认行为）。
- * 返回 false 表示事件已消费、不再进终端。
+ * 自定义按键处理（docs/hosts/electron-multi-workspace.md 第 14.4 节）。xterm 的自定义处理器
+ * 只有一个槽位，复制与补映射必须装在同一处，后装会覆盖先装。两类各一条：
+ *
+ * 1. 复制：Windows / Linux `Ctrl+Shift+C`、macOS `Cmd+C`，只在有选区时拦（无选区交给
+ *    xterm 默认行为）。粘贴不在这里实现——交给 xterm 自己的 `paste` 监听（`handlePasteEvent`）：
+ *    浏览器在 `Ctrl+Shift+V` / `Cmd+V` 上派发原生 `paste`，xterm 读剪贴板、换行归一为 `\r`、
+ *    对端开启 bracketed paste 时加括号，再经 `onData` 进 stdin。自实现一份必然与它重复：
+ *    自定义处理器的 `return false` 只表示「xterm 别再处理这个键」，**不取消浏览器默认动作**，
+ *    原生 `paste` 照样发生（specs/defects/terminal-ctrl-shift-v-pastes-twice.md）。
+ * 2. 补 `Ctrl+/` → `^_`：xterm 的映射表没有斜杠键，键会被静默吞掉、不发任何字节
+ *    （specs/defects/terminal-ctrl-slash-dropped.md）。补出来的字节仍经 `term.input` →
+ *    本页 `onData` → `api.input` 上行，不新增第二条写 stdin 的通道。
  */
-function attachClipboardShortcuts(term: Terminal, tabId: number): void {
+function attachKeyHandlers(term: Terminal): void {
   const isMac = navigator.userAgent.includes('Mac');
   term.attachCustomKeyEventHandler((event: KeyboardEvent): boolean => {
+    const slashByte = ctrlSlashByte(event);
+    if (slashByte !== null) {
+      // 浏览器对 Ctrl+/ 没有默认动作，但补映射是替 xterm 发声：压掉默认行为更稳
+      event.preventDefault();
+      term.input(slashByte);
+      return false;
+    }
     if (event.type !== 'keydown' || !(event.ctrlKey || event.metaKey)) return true;
     if (isMac ? !event.metaKey : !(event.ctrlKey && event.shiftKey)) return true;
     if (event.code === 'KeyC' && term.hasSelection()) {
       api.copyText(term.getSelection());
-      return false;
-    }
-    if (event.code === 'KeyV') {
-      void api.pasteText().then((text) => {
-        if (text.length > 0) void api.input({ tabId, data: text });
-      });
       return false;
     }
     return true;

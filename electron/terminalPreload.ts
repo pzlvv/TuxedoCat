@@ -25,7 +25,6 @@ const api: TerminalAPI = {
   copyText: (text: string) => {
     ipcRenderer.send('terminal:copy', text);
   },
-  pasteText: () => ipcRenderer.invoke('terminal:paste'),
   onTabs: (listener: (tabs: readonly TerminalTab[]) => void) => {
     ipcRenderer.on('terminal:tabs', (_event, tabs: readonly TerminalTab[]) => listener(tabs));
   },

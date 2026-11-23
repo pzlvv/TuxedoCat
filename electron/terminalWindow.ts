@@ -320,15 +320,13 @@ function registerIpcOnce(options: TerminalWindowOptions): void {
     const state = requireState(event.sender);
     if (!state.win.isDestroyed()) state.win.close();
   });
-  // 剪贴板走主进程 clipboard 模块（docs/hosts/electron-multi-workspace.md 第 14.4 节）：渲染端的
-  // navigator.clipboard.readText 受权限策略约束，这里的路径是确定的
+  // 剪贴板写走主进程 clipboard 模块（docs/hosts/electron-multi-workspace.md 第 14.4 节）：
+  // 渲染端的 navigator.clipboard.writeText 受权限策略约束，这里的路径是确定的。
+  // 粘贴没有对应通道——原生 paste 事件由浏览器进程代读剪贴板，不经渲染端 API
+  // （specs/defects/terminal-ctrl-shift-v-pastes-twice.md）。
   ipcMain.on('terminal:copy', (event, text: unknown) => {
     requireState(event.sender);
     if (typeof text === 'string' && text.length > 0) clipboard.writeText(text);
-  });
-  ipcMain.handle('terminal:paste', (event) => {
-    requireState(event.sender);
-    return clipboard.readText();
   });
 }
 

@@ -18,6 +18,7 @@
     "electron/workspaceBatchClose.ts",
     "electron/terminalShells.ts",
     "electron/terminal/xtermThemes.ts",
+    "electron/terminal/ctrlSlashByte.ts",
     "electron/viewerWindowPrefs.ts"
   ],
   "exclude": [
