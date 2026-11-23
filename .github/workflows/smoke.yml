@@ -79,12 +79,14 @@ jobs:
             mount-proxy-rs -> target
           cache-directories: /tmp/cargo-test-target
           cache-on-failure: true
-      # musl 目标的 ring（C / 汇编）与分配器 mimalloc 都需要 C 编译器（build-core.mjs 的
-      # crossToolchainEnv 在 Linux 宿主上不注入 zig，直接用系统 cc）。
-      # 走 composite action 而不是裸 apt-get：runner 的源解析会抖（`.github/actions/apt-install`）
-      - uses: ./.github/actions/apt-install
-        with:
-          packages: musl-tools
+      # musl-tools 的 apt 安装（实测 4s～1min50s 不等，源站会掉到 11kB/s 且不报错，
+      # 退避重试治不了「慢」）——本 job 不需要它：build-core.mjs 的 toolchainKind 在
+      # Linux 宿主 + 同架构 musl 目标时返回 'none'，不注入 CC，直接用系统 gcc；ring 的
+      # C / 汇编编成 .o，链接交给 rustup 自带的 rust-lld + musl crt（core-rs/.cargo/
+      # config.toml），全程不经过 musl-gcc。
+      #
+      # 实验依据见下方「musl-tools 是否必需」的验证记录：去掉后 build:core 与
+      # test:core 都必须绿，否则说明有环节真的用到了 musl-gcc。
       # ---- 两条轨道并行 ----
       #
       # 为什么并行：`build:core:linux-x64`（release + LTO）与 `test:core`
