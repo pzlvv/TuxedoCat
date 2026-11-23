@@ -1,7 +1,5 @@
 import React, { memo, useMemo } from 'react';
 
-/* eslint-disable no-control-regex -- ANSI 转义序列本身包含控制字符，必须使用 \x1b 匹配 */
-
 /**
  * ANSI 颜色解析与渲染工具。
  *
@@ -9,6 +7,25 @@ import React, { memo, useMemo } from 'react';
  * 解析 `\x1b[...m` 等 SGR 控制序列，把可见文本包上对应的颜色/样式 span；
  * 其余光标移动、清屏等 CSI 序列直接忽略（不渲染）。
  */
+
+/**
+ * ANSI CSI 序列的唯一定义（`hasAnsi` / `stripAnsi` / `renderAnsiToNodes` 共用）。
+ *
+ * 三处必须认同一份「什么算转义」：判断有无、去掉不可见部分、真正解析。各写一份
+ * 正则时，任何一种序列在其中一处被认成文本、在另一处被认成控制符，就会出现
+ * 「解析后什么都不剩、但判定说这行非空」这类不一致（`Bash.tsx` 的空行占位就靠
+ * 这个判断，见 `docs/features/user-stories/messages.md` 的 US-14）。
+ *
+ * 捕获组：[1] 为参数串、[2] 为终结符（与 `renderAnsiToNodes` 的解构一一对应）。
+ * 需要逐个匹配时用 `ansiRegex()` 新建带 `g` 的实例——带 `g` 的正则对象自身持有
+ * `lastIndex`，模块级共享会让并发 / 重入的调用互相吃位置。
+ */
+const ANSI_CSI_SOURCE = '\\x1b\\[([0-9;:?>=]*)([A-Za-z])';
+
+/** 新建一份带 `g` 标志的 ANSI CSI 匹配器（捕获组见 `ANSI_CSI_SOURCE`） */
+function ansiRegex(): RegExp {
+  return new RegExp(ANSI_CSI_SOURCE, 'g');
+}
 
 const ANSI_COLORS = [
   '#000000', '#cd3131', '#0dbc79', '#e5e510',
@@ -185,7 +202,19 @@ function styleToCss(style: AnsiStyle): React.CSSProperties {
 
 /** 判断字符串是否包含 ANSI 转义序列 */
 export function hasAnsi(text: string): boolean {
-  return /\x1b\[[0-9;:?>=]*[A-Za-z]/.test(text);
+  return ansiRegex().test(text);
+}
+
+/**
+ * 去掉 ANSI 转义序列，只留渲染层真正会画出字形的文本。
+ *
+ * 用途是「这行到底有没有可见内容」的判定：`renderAnsiToNodes` 对空片段不产出
+ * 任何节点，所以一行只含转义序列时渲染结果与空串完全相同。判断行是否为空必须
+ * 按这个口径（而不是按原始串是否 `''`），否则逐行渲染的占位符与整段渲染的行数
+ * 会对不上（`Bash.tsx` 的输出框）。
+ */
+export function stripAnsi(text: string): string {
+  return text.replace(ansiRegex(), '');
 }
 
 /** 将含 ANSI 转义序列的文本解析为 React 节点数组（不含 ANSI 时原样返回字符串） */
@@ -193,7 +222,7 @@ export function renderAnsiToNodes(text: string): React.ReactNode[] {
   if (!hasAnsi(text)) return [text];
 
   const nodes: React.ReactNode[] = [];
-  const regex = /\x1b\[([0-9;:?>=]*)([A-Za-z])/g;
+  const regex = ansiRegex();
   let lastIndex = 0;
   let key = 0;
   const style: AnsiStyle = {};
