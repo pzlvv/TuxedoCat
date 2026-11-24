@@ -37,6 +37,8 @@ interface FakeRemote {
   received: () => string[];
   /** 开 / 关 pong 应答（模拟 daemon 卡死 / 半开断连：socket 不断，帧不再回来） */
   setPong: (enabled: boolean) => void;
+  /** 已写出的 pong 数（沉默判定见到首个 pong 才武装，用例用它确认真的往返过） */
+  pongs: () => number;
   close: () => Promise<void>;
 }
 
@@ -45,6 +47,7 @@ function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> 
   let connections = 0;
   let closedCount = 0;
   let pong = options.pong === true;
+  let pongCount = 0;
   const received: string[] = [];
   let nextChannel = 1;
   const sockets = new Set<Socket>();
@@ -61,6 +64,9 @@ function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> 
       sockets.delete(socket);
       closedCount += 1;
     });
+    // 链路被看门狗 kill 时对端会读到 RST：假远端只是夹具，不因夹具侧错误打断整份用例
+    // （被测行为一律由断言表达，不让 socket 错误冒成未捕获异常）
+    socket.on('error', () => undefined);
     socket.on('data', (chunk: string) => {
       buffer += chunk;
       for (;;) {
@@ -78,7 +84,10 @@ function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> 
         }
         if (frame['kind'] === 'ping') {
           // 真实 daemon 对每个 ping 回 pong（Host 靠它武装沉默判定）
-          if (pong) send({ kind: 'pong' });
+          if (pong) {
+            pongCount += 1;
+            send({ kind: 'pong' });
+          }
           continue;
         }
         if (frame['kind'] === 'listDirectories') {
@@ -159,6 +168,7 @@ function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> 
         setPong: (enabled: boolean) => {
           pong = enabled;
         },
+        pongs: () => pongCount,
         close: () =>
           new Promise<void>((done) => {
             for (const socket of sockets) socket.destroy();
@@ -273,6 +283,8 @@ function startTruncatingRemote(): Promise<TruncatingRemote> {
         closed: () => closedCount,
         received: () => [],
         setPong: () => undefined,
+        // 这条夹具不回 pong（第 1 条连接断在半个帧上），沉默判定因此不会被武装
+        pongs: () => 0,
         truncatedConnections: () => truncated,
         close: () =>
           new Promise<void>((done) => {
@@ -286,6 +298,21 @@ function startTruncatingRemote(): Promise<TruncatingRemote> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 同步卡住事件循环 `ms` 毫秒。
+ *
+ * 用来复现「本进程被调度出去」：`setTimeout` 只保证不早于，迟到量没有上界，
+ * 而迟到期间到达的入站字节还没轮到 `link.onData` 回调（specs/defects/
+ * silence-recheck-judged-by-stale-timestamp）。故意用忙等而不是 `sleep`——后者会让出
+ * 事件循环，到达的 pong 照常被处理，复现不出缺陷。
+ */
+function blockEventLoop(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // 空转：只为占住事件循环
+  }
 }
 
 // ==================== 慢速大帧假远端（心跳独立通路） ====================
@@ -746,6 +773,62 @@ async function run(): Promise<void> {
     check('沉默判死后重连：重开 channel 重新就绪', await waitFor(() => second.isReady(), 3_000));
     check('沉默判死后重连：重开未再 fatal', secondFailure.error === null);
     check('沉默判死后重连：重开是全新连接', fake.connections() === 2);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 探针宽限按「有没有新入站」判，而不是按「时间差」
+  // ---------- （specs/defects/silence-recheck-judged-by-stale-timestamp）----------
+  //
+  // 本进程被调度出去（CI 的 2 核 runner 同时跑 4 个测试文件、GC、内核把 socket 数据排
+  // 在内核缓冲里）时，宽限定时器会迟到；迟到期间到达的 pong 还没轮到 `link.onData` 回调，
+  // 而 `lastInboundAt` 只在那里前移。判据若拿「现在 - lastInboundAt」跟宽限比，就等于用
+  // 陈旧时间戳判死一条一直在回 pong 的链路。`docs/core/core-remote.md` 第 2.5 节要求
+  // 宽限吸收的正是「本进程卡顿」。
+  //
+  // 复现形态：链路完全健康（心跳链路的 pong 秒回），只是反复同步卡住事件循环。
+  {
+    const fake = await startFakeRemote({ pong: true });
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      // 与 RT-1 同一组注入窗口：死线 + 宽限 = 100ms
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 60,
+      silenceRecheckMs: 40,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('卡顿用例完成握手', await waitFor(() => transport.isReady()));
+    // 必须等 pong 真往返过：沉默判定见到首个 pong 才武装，只看「ping 已发出」会在
+    // 武装之前就进入卡顿，那测的是另一条路径
+    check('卡顿用例心跳已往返（沉默判定武装）', await waitFor(() => fake.pongs() > 0));
+    await sleep(100);
+    // 三次「卡住 50ms + 放开 20ms」：每次卡顿都超过宽限（40ms），而 pong 一直在回。
+    // 卡顿期间内核缓冲里的 pong 来不及进回调，正是缺陷现场。
+    for (let i = 0; i < 3; i += 1) {
+      blockEventLoop(50);
+      await sleep(20);
+    }
+    check(
+      '探针宽限期间事件循环停顿超过宽限，回来的 pong 仍算活（不判死）',
+      failure.error === null,
+    );
+    // 反面对照：卡顿结束后链路仍可用，说明上面判的不是「链路早就死了只是没上报」
+    check('卡顿结束后请求仍可用', (await daemon.listDirectories(null)).path === '/home/dev');
     await daemon.shutdown();
     await fake.close();
   }

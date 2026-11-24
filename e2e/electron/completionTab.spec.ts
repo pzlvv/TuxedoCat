@@ -118,7 +118,7 @@ test('窗口失焦期间任务完成 → 绿灯当场挂上，不等回窗聚焦
   }, { timeout: 30_000 }).toBe('false');
 
   // 不再聚焦窗口：查询结束时 B 的绿灯必须当场挂上（失焦即推送，不等回窗）
-  await expect(tabs.nth(1)).toHaveClass(/activity-completed/, { timeout: 90_000 });
+  await expect(tabs.nth(1)).toHaveClass(/activity-completed/, { timeout: 45_000 });
 
   // 焦点沉降窗用完即拆：少占一个渲染进程，不给并行 worker 的内存压力添量
   await app.evaluateInMain(`(function(){try{

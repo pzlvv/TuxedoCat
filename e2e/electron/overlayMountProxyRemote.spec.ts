@@ -613,14 +613,14 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
   // → 三选一 → 提交 sudo 密码
   await dialog.locator('[data-mount-proxy-action="deploy"]').click();
   const passwordAction = dialog.locator('[data-mount-proxy-action="sudo-password"]');
-  await expect(passwordAction, '本车账号的免密 sudo 不可用，应给三选一').toBeVisible({ timeout: 120_000 });
+  await expect(passwordAction, '本车账号的免密 sudo 不可用，应给三选一').toBeVisible({ timeout: 45_000 });
   await passwordAction.click();
   await dialog.locator('input[data-mount-proxy-secret]').fill(SSH.password);
   await chatPage.keyboard.press('Enter');
 
   // AC-29：部署 + 自检成功后能力转 ready（宿主重查，不重启 Core）
   await expect
-    .poll(async () => (await readCapabilities(chatPage)).mountProxy, { timeout: 240_000 })
+    .poll(async () => (await readCapabilities(chatPage)).mountProxy, { timeout: 45_000 })
     .toBe('ready');  expect((await readCapabilities(chatPage)).isolatedWorkView).toBe(true);
 
   // FR-008：Core pid 未变（部署不重启 Core）
@@ -667,7 +667,7 @@ test('FR-009 已安装时能力 ready、Core pid 不变、帧通道正常', asyn
   });
   await chatPage.fill('textarea.input-textarea', '帧通道探针');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('REMOTE-PROXY-READY').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('REMOTE-PROXY-READY').first()).toBeVisible({ timeout: 45_000 });
   expect(lastToolResult(mockLlm!.requests[1])).toContain('frame-ok');
 });
 
@@ -715,7 +715,7 @@ test('FR-007 连续工具调用不因工具线程收尾而丢代理', async () =
   await chatPage.fill('textarea.input-textarea', '连续工具调用');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('SEQUENTIAL-TOOLS-DONE').first()).toBeVisible({
-    timeout: 180_000,
+    timeout: 45_000,
   });
 
   // 逐步断言而不是只看最后一条：失败的那一步必须点名（第 1 步成功、第 2 步起全红是
@@ -771,7 +771,7 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '先不调工具');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('EXPLORER-BASELINE-DONE').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('EXPLORER-BASELINE-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   const sidebar = await app!.sidebarPage();
   await expect(sidebar.locator('#filesSection')).toBeVisible({ timeout: 60_000 });
@@ -814,7 +814,7 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   });
   await chatPage.fill('textarea.input-textarea', '写一个只在视图里的文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('EXPLORER-WRITE-DONE').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('EXPLORER-WRITE-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   await expect
     .poll(async () => (await rows()).sort(), { timeout: 60_000 })
@@ -913,7 +913,7 @@ test('Overlay 对话：Write 的风车必须收起，且工具卡片上屏期间
   });
   await chatPage.fill('textarea.input-textarea', '写一张卡片状态的截图');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('CARD-STATE-DONE').first()).toBeVisible({ timeout: 180_000 });
+  await expect(chatPage.getByText('CARD-STATE-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   // 判据 1（问题一）：工具成功后不得残留 running 风车。
   // `updateToolStatus.success` 可能先于 `addMessage`（上架卡片）到达；旧实现把它塞进
@@ -971,7 +971,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '在隔离视图里写文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('OVERLAY-WRITE-DONE').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('OVERLAY-WRITE-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   // AC-31：写进了叠加视图，真实磁盘没变。
   //
@@ -1058,7 +1058,7 @@ test('Overlay 会话：Write 新建的文件必须能被 Edit 继续修改', asy
 
   await chatPage.fill('textarea.input-textarea', '在 Overlay 里新建再编辑');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('EDIT-CHAIN-DONE').first()).toBeVisible({ timeout: 180_000 });
+  await expect(chatPage.getByText('EDIT-CHAIN-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   const results = mockLlm!.requests
     .filter((request) => request.body.messages[request.body.messages.length - 1]?.role === 'tool')
@@ -1118,7 +1118,7 @@ test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实�
   await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '写一个文件然后点卡片链接');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('CARD-LINK-DONE').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('CARD-LINK-DONE').first()).toBeVisible({ timeout: 45_000 });
 
   // 卡片路径链接：用 title 精确锁定（聊天页里 .hover\:underline 有多处）
   const pathLink = chatPage.locator(`button[title*="${targetName}"]`);
@@ -1208,7 +1208,7 @@ test('FR-006 隔离会话里 gcc 编译运行 main.c，产物只在叠加视图�
   await chatPage.fill('textarea.input-textarea', `编译运行 ${sourceName}`);
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('OVERLAY-COMPILE-DONE').first()).toBeVisible({
-    timeout: 120_000,
+    timeout: 45_000,
   });
 
   // 判据 1：编译与运行都成功。Bash 结果里应同时出现 banner（真的跑起来了）与无错误。
@@ -1272,7 +1272,7 @@ test('FR-010 代理不可用时宿主拦下消息：弹确认框、不进 Core�
   await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '预热一轮');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('WARMUP-DONE').first()).toBeVisible({ timeout: 120_000 });
+  await expect(chatPage.getByText('WARMUP-DONE').first()).toBeVisible({ timeout: 45_000 });
   const warmupResult = toolResultMatching(mockLlm!.requests, writeTarget);
   expect(warmupResult, `预热轮 Write 应当成功（视图可用）：${warmupResult}`).not.toMatch(
     /error|不可用|Overlay/i,
@@ -1524,7 +1524,7 @@ test.describe('privileged', () => {
     await checkWorkViewOption(chatPage);
     await chatPage.fill('textarea.input-textarea', '拉起代理');
     await chatPage.press('textarea.input-textarea', 'Enter');
-    await expect(chatPage.getByText('RECYCLE-PROBE-DONE').first()).toBeVisible({ timeout: 120_000 });
+    await expect(chatPage.getByText('RECYCLE-PROBE-DONE').first()).toBeVisible({ timeout: 45_000 });
 
     // AC-26b：A 是 Core 的直接子进程、B 是 A 的子进程。
     //

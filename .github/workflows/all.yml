@@ -4,14 +4,23 @@
 # 不挂 pull_request：MR 的合入闸门是 smoke.yml（分钟级出结果），全量要构建全部产物
 # 并在 xvfb 里跑真实 Electron 链路，放不进 PR 关键路径——合入后的回归由定时车道兜底。
 #
-# **整条车道 30 分钟必出结论**：关键路径 = `prepare` + 最慢的 e2e 车道
-# （smoke 的两个 job 并行在另一条线上，不是瓶颈）。当前编排 = 8 + 18 = 26 分钟，
-# 留 4 分钟给排队与收尾；`src/test/e2eCiLane.test.ts` 对这两个上限与总预算做断言。
+# **整条车道 30 分钟必出结论**：关键路径 =
+# `prepare` + max(并行 e2e 车道的墙钟)。当前编排 = 8 + 18 = 26 分钟，留 4 分钟给排队与
+# 收尾；`src/test/e2eCiLane.test.ts` 对这两个上限与总预算做断言。
 # 三道时间闸门同时生效——
 #   1. 单用例：分档硬上限（快车道 30s / 整应用 60s / 真实 SSH 60s，见
 #      `e2e/playwright.config.ts`），超时即「Test timeout」，不是断言失败；
 #   2. 单车道：Playwright 的 `globalTimeout`（CI 15 分钟）连同未开始的用例一起收尾；
 #   3. 失败早停：5 条失败即停（`maxFailures`），不做重试（`retries: 0`）。
+#
+# **墙钟的两条来源与各自的压法**（`e2e/README.md` 的「时间预算」一节）：
+# - `ssh` 车道受**自托管 runner 数量**约束：标签 `e2e-ssh` 下只有一台机器，四个 spec
+#   job 实际串行排队（run 45177031308 合计 25m47s），**它是整条 `all` 的关键路径**。
+#   编排保持四路并行声明——补第二台机器即真并行；单机上能压的是各 job 的固定开销
+#   （已压：后三个 job 复用第一个 job 的分片下载结果）。
+# - `electron` 车道 123 条用例在同一 runner 里串行跑 12.8 分钟，按 `--shard=i/4` 切四片
+#   能把这条车道压到约 4 分钟，但**改不动整条 `all` 的墙钟**（ssh 串行才是瓶颈），
+#   因此当前不切；等 ssh 能真并行后再切，省的是同时占用的 runner 数。
 #
 # electron-ssh（真实 SSH 远端）挂 GitHub 托管 runner：runner 只当**宿主**（跑 Electron +
 # mock LLM），SSH 远端是 `e2e/environments.json` 里那台真实 Linux 机器。选托管 runner 而不是
@@ -56,7 +65,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # node_modules 缓存（同冒烟 tests job）：`prepare` 是整条 `all` 的起点，它前面
+      # 多花的每一分钟都会原样加到每一个下游车道。npm ci 实测 65s（run 45177031308 的
+      # 12:43:49 → 12:44:54），命中缓存后只剩解压 + 建链。
+      - uses: ./.github/actions/npm-ci
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -107,7 +119,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # node_modules 缓存（同 prepare / electron 车道）
+      - uses: ./.github/actions/npm-ci
       - uses: actions/download-artifact@v4
         with:
           name: e2e-artifacts
@@ -128,6 +141,10 @@ jobs:
     # 实测 123 条用例约 13 分钟，加准备（npm ci + chmod + apt + install-deps）约 2.5 分钟
     # ≈ 15.5 分钟。上限 18 分钟 = 实测 × 1.16，同时满足 `prepare(8) + 18 = 26 ≤ 30`。
     # 超了就是「用例太多 / 某条挂住」，job 直接红，不占着 runner 等 GitHub 的默认值。
+    #
+    # 为什么不按 `--shard` 切四片：切了也只是把这条车道从 15.5 分钟压到 4 分钟，而整条
+    # `all` 的墙钟由 ssh 车道的**串行排队**决定（见 `ssh` 的注释），四片只是多占三台
+    # runner 而不提前一分钟出结论。等 ssh 能真并行后再按这里的分片注释切。
     timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
@@ -137,7 +154,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # node_modules 缓存：准备期实测 1.2 分钟（setup-node 只缓存 ~/.npm，命中后仍要
+      # 解包 1152 个包）
+      - uses: ./.github/actions/npm-ci
       - uses: actions/download-artifact@v4
         with:
           name: e2e-artifacts
@@ -182,7 +201,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - uses: ./.github/actions/npm-ci
       - uses: actions/download-artifact@v4
         with:
           name: e2e-artifacts
@@ -243,6 +262,14 @@ jobs:
     # 接一个 job——这个矩阵的四路并行在容量上退化成串行排队（实测 run 45030636920：
     # 四个 job 依次 14:08 → 14:26 → 14:44 → 15:03 启动，每段都撞 18 分钟上限）。
     # 编排仍保留并行：补第二台同标签机器后无需改 workflow 即可真正并起来。
+    #
+    # **这条车道是整条 `all` 的关键路径**（run 45177031308：四个 job 串行共 25m47s，
+    # 而 electron 车道 14m44s、prepare 3m58s）。在只有一台机器的前提下能压的只有每个
+    # job 的固定开销，两处已压：分片下载（见 RT-15）与后三个 job 复用第一个 job 的
+    # 本地产物缓存（`ARTIFACT_CACHE_DIR`，省三份 22.7–149.5s 的重复下载）。
+    # 要真正把整条车道压进 12 分钟，得补同标签机器让四路真并行——那时各 spec 的
+    # uid 级清场（`pkill -u "$(id -u)"`）会互杀对方的 Core，需要先改成按 job 隔离的
+    # 清场口径；这件事不在本 workflow 里能解决，见 `e2e/README.md` 的「CI 车道」。
     strategy:
       fail-fast: false
       matrix:
@@ -261,6 +288,10 @@ jobs:
       # 自托管机器直连 actions CDN 只有 0.03MB/s（实测），经本机 mihomo 代理后 3.5MB/s。
       # 代理**只注入到需要出网的步骤**，不设 job 级：用例进程要连的是远端回环上的
       # mock LLM 与 sshd，全局代理会把它们一起绕进代理（回环连接会被代理反转成外网）。
+      #
+      # 这一步**不走 `./.github/actions/npm-ci`**（其余三个车道走）：那个 composite 用
+      # `actions/cache` 恢复 node_modules，而恢复要经 actions CDN——本机链路 0.03MB/s，
+      # 拉一份 150–300MB 的缓存比现装 17–19s 慢得多。保持现装。
       - run: npm ci
         env:
           https_proxy: http://127.0.0.1:7890
@@ -273,12 +304,28 @@ jobs:
       # 瓶颈在单连接而非线路：同一份 blob 切成 32 段并发取，聚合实测 363KB/s（1/4/8/
       # 16/32 路 = 25/102/204/181/363KB/s），30MB 约 1.5 分钟。
       # 换成 `scripts/download-artifact-parallel.mjs` 后落盘布局与官方 action 一致。
+      #
+      # `ARTIFACT_CACHE_DIR` 让**同 run 的后三个 job 直接复用**第一个 job 下好的产物：
+      # 标签下只有一台机器，四个 job 串行排队在同一台机器上，每个都重下一份一模一样的
+      # 28.8MB 是纯浪费（run `45177031308` 实测 77.1s / 149.5s / 22.7s / 66.0s）。
+      # 缓存键含 run id + attempt：换 run 或重跑不会拿到上一轮的产物；复用前脚本会
+      # 校验三个必备目录齐全，被中断的半份不会被当成可用。
+      #
+      # 落在 `runner.workspace`（`_work/<repo>` 的上一级，仓库目录之外）而不是
+      # `runner.temp`：后者每个 job 开头会被清理，跨 job 缓存会被删掉。
+      #
+      # 解压暂存目录建在缓存目录**之内**（`<cache>/.staging/job-*`），不许是 `/tmp`：
+      # 落缓存要靠 `rename`，而 `rename` 只在同一文件系统内成立——runner 的 `/tmp` 与
+      # 工作区分属两个挂载点，跨过去必报
+      # `EXDEV: cross-device link not permitted`（run `45292363880`：四个 ssh job 全红
+      # 在取产物这一步，用例一条都没跑）。
       - name: 并行取 e2e 产物
         run: node scripts/download-artifact-parallel.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_NAME: e2e-artifacts
           ARTIFACT_DEST: .
+          ARTIFACT_CACHE_DIR: ${{ runner.workspace }}/.e2e-artifacts-cache
       # 同 electron 车道：artifact 上传把文件落成 644，Core 与自带 ripgrep 要 spawn，
       # 不补回 +x 就是 EACCES（已知坑 6）
       - run: chmod -R u+x dist/resources/core resources/core

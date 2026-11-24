@@ -186,7 +186,7 @@ test('US-51 Master 子代理与普通会话：选项菜单照常可操作（不�
   // Master 子代理照常创建并收尾（侧栏父 1 + 子 1）。
   // 90s：一条完整轮次（派发子代理 → 收尾 → 侧栏条目）在慢机器负载下实测可超 60s
   await expect
-    .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 90_000 })
+    .poll(() => sb.locator(SIDEBAR_ITEM).count(), { timeout: 45_000 })
     .toBe(2);
 
   // 普通会话（父会话视图）：两项不置灰（行内 opacity 为 1）
