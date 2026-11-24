@@ -313,6 +313,12 @@ jobs:
       #
       # 落在 `runner.workspace`（`_work/<repo>` 的上一级，仓库目录之外）而不是
       # `runner.temp`：后者每个 job 开头会被清理，跨 job 缓存会被删掉。
+      #
+      # 解压暂存目录建在缓存目录**之内**（`<cache>/.staging/job-*`），不许是 `/tmp`：
+      # 落缓存要靠 `rename`，而 `rename` 只在同一文件系统内成立——runner 的 `/tmp` 与
+      # 工作区分属两个挂载点，跨过去必报
+      # `EXDEV: cross-device link not permitted`（run `45292363880`：四个 ssh job 全红
+      # 在取产物这一步，用例一条都没跑）。
       - name: 并行取 e2e 产物
         run: node scripts/download-artifact-parallel.mjs
         env:

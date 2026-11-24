@@ -479,6 +479,17 @@ e2e/
     不齐就走下载——被打断的那一轮留下的半个目录不会被当成产物。
     `src/test/artifactCache.test.ts` 的 RT-1 / RT-2 / RT-3 分别钉住「命中即复用」
     「换 run 不命中」「槽位不完整不复用」。
+
+    **暂存目录必须建在缓存目录之内**：脚本落缓存前先在暂存目录解压 + 自检，通过后再
+    `rename` 到位。`rename` 只在同一文件系统内成立，而 runner 的 `/tmp` 与工作区是两个
+    挂载点——暂存目录若放在 `os.tmpdir()`，必现
+    `EXDEV: cross-device link not permitted`（run `45292363880`：四个 ssh job 全红在取
+    产物这一步，用例一条都没跑）。暂存目录因而住在 `<cache>/.staging/job-*`，名字用
+    `mkdtemp` 保证每个 job 唯一（矩阵声明四路并行，真并行时固定命名会互删）；
+    缓存目录是持久路径，所以开场按 mtime 清掉一小时前的残骸（job 被 `timeout-minutes`
+    强杀时 `finally` 跑不到）。`src/test/artifactCache.test.ts` 的 RT-4 钉住「跨文件系统
+    仍成功」，RT-5 钉住「修复不是靠不落缓存绕过去」，RT-6 / RT-7 钉住「暂存目录不留
+    残渣」与「过期暂存目录被清掉、正在用的不被误删」。
 22. **`@electron/get` 读不到 `.npmrc` 的镜像、也不认 `https_proxy`**：两者叠加会让
     `warm-electron.cjs` 回落到 GitHub Releases 拉 100MB。症状是步骤日志停在
     `Downloading Electron binary...` 十几分钟不动（job 撞 18 分钟上限），或直接

@@ -27,6 +27,11 @@
  * 一半，那时目录在、文件不全——直接复用会让用例收在「缺产物」上，看起来像构建漏了。
  * 因此先在临时目录解压 + 自检，通过后再整体 rename 到位（`rename` 在同一文件系统内是
  * 原子的，另一个 job 读到的要么不存在、要么完整）。
+ *
+ * 临时目录建在 `ARTIFACT_CACHE_DIR` **之内**，不是 `os.tmpdir()`：`rename` 只在同一
+ * 文件系统内成立，而 runner 的 `/tmp` 与工作区是两个挂载点——从 `/tmp` 往缓存目录搬
+ * 会被内核拒为 `EXDEV: cross-device link not permitted`（run `45292363880`：四个 ssh
+ * job 全红在取产物这一步，用例一条都没跑）。
  */
 
 import { spawnSync } from 'node:child_process';
@@ -34,8 +39,10 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -132,6 +139,44 @@ async function fetchRange({ blobUrl, start, end }) {
 /** 产物解压后的必备目录（调用方依赖它们，缺一个就报错） */
 const REQUIRED_DIRS = ['dist', 'dist-electron', 'resources/core'];
 
+/**
+ * 暂存目录的过期时限（毫秒）。
+ *
+ * 单次下载 + 解压实测 30MB 用 165s，一小时留出二十倍余量：既不会误删正在用的那份，
+ * 也能把「job 被强杀」留下的残骸清掉。
+ */
+const STAGING_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * 清掉 `.staging/` 里过期的暂存目录。
+ *
+ * 为什么要清：暂存目录从 `os.tmpdir()` 挪进了缓存目录（同盘 `rename` 才成立），而缓存
+ * 目录是 runner 上的持久路径——`/tmp` 至少还有系统清理，这里没有。job 被 `timeout-minutes`
+ * 强杀时 `finally` 跑不到，残骸会一直躺着。
+ *
+ * 判定只看 mtime 且失败即忽略：拿不到 mtime 的（并发中的目录刚被改名）跳过就好，
+ * 清理是尽力而为的收尾，绝不能因为它让正常下载失败。
+ */
+function pruneStale(stagingRoot) {
+  let entries;
+  try {
+    entries = readdirSync(stagingRoot);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    const target = join(stagingRoot, entry);
+    try {
+      if (now - statSync(target).mtimeMs < STAGING_TTL_MS) continue;
+      rmSync(target, { recursive: true, force: true });
+      console.log(`[download] 清掉过期暂存目录 ${entry}`);
+    } catch {
+      // 并发中的目录正在被别的 job 改名 / 删除，下次再清
+    }
+  }
+}
+
 /** 目录里是否三个必备路径都在 */
 function hasAllRequired(dest) {
   return REQUIRED_DIRS.every((required) => spawnSync('test', ['-e', join(dest, required)]).status === 0);
@@ -200,30 +245,55 @@ async function main() {
 
   // 解压到临时目录而不是直接解到 dest：要落缓存时得先确认「这份产物是完整的」，
   // 否则被打断的那一轮会把半个目录留在缓存里给后面三个 job 用。
-  const workDir = mkdtempSync(join(tmpdir(), 'artifact-'));
+  //
+  // 临时目录的位置：**要落缓存时建在缓存目录之内**（`.staging/<唯一名>`），不能是
+  // `os.tmpdir()`。`rename` 只在同一文件系统内成立，runner 的 `/tmp` 与工作区分属两个
+  // 挂载点，从 `/tmp` 往缓存目录搬会被内核拒为 `EXDEV`（run `45292363880`：四个 ssh
+  // job 全红在取产物这一步，用例一条都没跑）。
+  //
+  // 名字用 `mkdtemp` 保证每个 job 唯一：矩阵声明的是四路并行（眼下标签下只有一台机器
+  // 才退化成串行）。按 run 键固定命名的话，真并行时两个 job 会互删暂存目录——一个在
+  // rename、另一个刚把 `rmSync(workDir)` 打下去。
+  //
+  // 唯一名换来的代价是「被打断的那一轮留着不走」，而缓存目录在 runner 上是**持久**
+  // 路径（`/tmp` 至少会被系统清）。所以开场先按 mtime 清掉过期的暂存目录：一小时远超
+  // 单次下载解压（实测 30MB 用 165s），既不会误删正在用的那份，也不会让盘被慢慢吃满。
+  const cacheKey = `run-${runId}-${attempt}-${name}`;
+  const cacheEnabled = cacheRoot !== undefined && cacheRoot !== '';
+  const stagingRoot = cacheEnabled ? join(cacheRoot, '.staging') : undefined;
+  if (cacheEnabled) {
+    mkdirSync(stagingRoot, { recursive: true });
+    pruneStale(stagingRoot);
+  }
+  const workDir = cacheEnabled
+    ? mkdtempSync(join(stagingRoot, 'job-'))
+    : mkdtempSync(join(tmpdir(), 'artifact-'));
   const zipPath = join(workDir, `${name}.zip`);
   writeFileSync(zipPath, zip);
-  const unpacked = cacheRoot !== undefined && cacheRoot !== ''
-    ? join(workDir, `run-${runId}-${attempt}-${name}`)
-    : dest;
-  mkdirSync(unpacked, { recursive: true });
-  const unzip = spawnSync('unzip', ['-q', '-o', zipPath, '-d', unpacked], { stdio: 'inherit' });
-  if (unzip.status !== 0) throw new Error(`解压失败（unzip exit ${unzip.status}）`);
+  const unpacked = cacheEnabled ? join(workDir, 'unpacked') : dest;
+  try {
+    mkdirSync(unpacked, { recursive: true });
+    const unzip = spawnSync('unzip', ['-q', '-o', zipPath, '-d', unpacked], { stdio: 'inherit' });
+    if (unzip.status !== 0) throw new Error(`解压失败（unzip exit ${unzip.status}）`);
 
-  if (!hasAllRequired(unpacked)) {
-    throw new Error(`解压后缺少 ${REQUIRED_DIRS.join(' / ')}（artifact 形状变了？）`);
+    if (!hasAllRequired(unpacked)) {
+      throw new Error(`解压后缺少 ${REQUIRED_DIRS.join(' / ')}（artifact 形状变了？）`);
+    }
+
+    if (unpacked !== dest) {
+      // `rename` 在同一文件系统内原子：另一个 job 读到的要么不存在、要么完整。
+      // 先 `rmSync` 旧槽位再 rename 会开一个「槽位不存在」的窗口，那个窗口里到达的 job
+      // 只会走一次多余的下载（`hasAllRequired` 不成立），不会读到半个目录。
+      const slot = join(cacheRoot, cacheKey);
+      rmSync(slot, { recursive: true, force: true });
+      renameSync(unpacked, slot);
+      promote(slot, dest);
+    }
+  } finally {
+    // 暂存目录在缓存目录之内（自托管机器上是持久路径），失败路径也要清掉：
+    // 留着的话每红一次就多一份半解压的产物，最终把 runner 的盘吃满。
+    rmSync(workDir, { recursive: true, force: true });
   }
-
-  if (unpacked !== dest) {
-    // `rename` 在同一文件系统内原子：另一个 job 读到的要么不存在、要么完整
-    const slot = join(cacheRoot, `run-${runId}-${attempt}-${name}`);
-    mkdirSync(cacheRoot, { recursive: true });
-    rmSync(slot, { recursive: true, force: true });
-    renameSync(unpacked, slot);
-    promote(slot, dest);
-  }
-
-  rmSync(workDir, { recursive: true, force: true });
   console.log('[download] 解压完成，dist / dist-electron / resources/core 已就位');
 }
 

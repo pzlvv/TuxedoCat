@@ -11,9 +11,12 @@
  * 2. **复用判据是三个必备目录齐全**：上一次 job 被打断时可能只解压了一半，目录在而
  *    文件不全；直接复用会让用例报「缺产物」，与「构建漏了产物」混在一起。
  *
- * 测法：真跑脚本，但把网络入口换成起在本地的一次性 HTTP 服务（`GITHUB_API_URL`
- * 不参与——脚本里是写死的 URL，因此这里改为**用缓存命中路径**验证，不触网）：
- * 命中路径不下载、只拷三个目录，正好是复用逻辑的全部行为。
+ * 测法：真跑脚本，网络入口按场景分两种——
+ * - 命中 / 不命中类用例不下载，只拷三个目录（给个明显错误的凭据，一旦真去下载就红）；
+ * - 下载类用例用 `--import` 预载 `fixtures/artifactDownloadCrossDevice.mjs`，它把
+ *   `fetch` 换成假响应（含 Range 分片语义），并按真实 CI 拓扑复现「解压目录与缓存目录
+ *   不在同一文件系统」——run `45292363880` 的四个 ssh job 就是撞在这里：
+ *   `EXDEV: cross-device link not permitted, rename '/tmp/artifact-*' -> '<workspace>/.e2e-artifacts-cache/*'`。
  *
  * 运行方式：`npm run test:unit -- artifactCache`
  */
@@ -22,10 +25,21 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createChecker, runTests } from './helpers/harness';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SCRIPT = path.join(REPO_ROOT, 'scripts', 'download-artifact-parallel.mjs');
+/**
+ * 假产物 + 跨文件系统拓扑的预载模块（下载类用例专用）。
+ *
+ * `--import` 只认 URL：Windows 上直接给 `C:\...` 会报 `ERR_UNSUPPORTED_ESM_URL_SCHEME`。
+ */
+const CROSS_DEVICE_FIXTURE = pathToFileURL(
+  path.join(REPO_ROOT, 'src', 'test', 'fixtures', 'artifactDownloadCrossDevice.mjs'),
+).href;
+/** 假产物里三个标识文件的统一内容；与预载模块里的 MARKER 一致 */
+const FIXTURE_MARKER = 'cross-device-fixture-build';
 
 /** 在临时目录里造一份「已解压的产物」：三个必备目录各放一个标识文件 */
 function makeArtifacts(root: string, marker: string): void {
@@ -143,7 +157,150 @@ runTests('artifactCache', () => {
     broken.status !== 0 && !/复用本地缓存/.test(broken.stdout),
   );
 
-  for (const dir of [cacheRoot, dest, otherDest, brokenRoot, brokenDest]) {
+  // RT-4：缓存目录与解压临时目录不在同一文件系统时，产物仍要落到位。
+  //
+  // 这是 run 45292363880 的现场：脚本把产物解压到 `/tmp`，再 `rename` 到 runner 工作区
+  // 下的 `.e2e-artifacts-cache`，两者不同挂载点 → `EXDEV: cross-device link not permitted`，
+  // 四个 ssh job 一条用例都没跑就全红。预载模块按这个拓扑把「跨进另一块盘」的 rename
+  // 一律拒掉，因此只要脚本仍从 `os.tmpdir()` 搬运就必红。
+  const cacheDevice = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-xdev-'));
+  const xdevCache = path.join(cacheDevice, 'cache');
+  const xdevRunId = '990003';
+  const runOnOtherDevice = (destDir: string) => spawnSync(process.execPath, [
+    '--import',
+    CROSS_DEVICE_FIXTURE,
+    SCRIPT,
+  ], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: {
+      ...process.env,
+      GITHUB_TOKEN: 'fixture-token',
+      GITHUB_REPOSITORY: 'invalid/invalid',
+      GITHUB_RUN_ID: xdevRunId,
+      GITHUB_RUN_ATTEMPT: attempt,
+      ARTIFACT_DEST: destDir,
+      ARTIFACT_CACHE_DIR: xdevCache,
+      // 缓存目录所在的「另一块盘」：从它外面搬进它里面的 rename 会抛 EXDEV
+      EXDEV_TEST_OTHER_DEVICE_ROOT: cacheDevice,
+      https_proxy: '',
+      http_proxy: '',
+    },
+  });
+
+  const xdevDest = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-dest-'));
+  const xdev = runOnOtherDevice(xdevDest);
+  check('缓存目录与临时目录不同文件系统时脚本仍成功退出', xdev.status === 0);
+  if (xdev.status !== 0) {
+    console.error(`     stderr: ${xdev.stderr.trim().split('\n').slice(-6).join('\n     ')}`);
+  }
+  const xdevMarkers = fs.existsSync(path.join(xdevDest, 'dist', 'webview', 'index.html'))
+    ? readMarkers(xdevDest)
+    : [];
+  check(
+    '跨文件系统时三个必备目录都落到 ARTIFACT_DEST（内容是本次下载的产物）',
+    xdevMarkers.length === 3 && xdevMarkers.every((marker) => marker === FIXTURE_MARKER),
+  );
+
+  // RT-5：这次写入的槽位必须能被后续 job 复用——修复不能靠「干脆不落缓存」，
+  // 那会把三份重复下载的墙钟重新加回关键路径（见本文件开头的浪费数据）。
+  const xdevReuseDest = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-dest-'));
+  const xdevReuse = runOnOtherDevice(xdevReuseDest);
+  check('跨文件系统写入的槽位可被后续 job 复用（不重复下载）', xdevReuse.status === 0);
+  check('复用时日志点名复用本地缓存', /复用本地缓存/.test(xdevReuse.stdout));
+  const reuseMarkers = fs.existsSync(path.join(xdevReuseDest, 'dist', 'webview', 'index.html'))
+    ? readMarkers(xdevReuseDest)
+    : [];
+  check(
+    '复用时三个必备目录都搬到 ARTIFACT_DEST',
+    reuseMarkers.length === 3 && reuseMarkers.every((marker) => marker === FIXTURE_MARKER),
+  );
+
+  // RT-6：暂存目录不许残留在缓存目录里。
+  //
+  // 修复把解压临时目录从 `os.tmpdir()` 挪进了缓存目录（同盘 rename 才成立），
+  // 而缓存目录在自托管机器上是**持久**路径——清理漏一条路径就会每红一次多留一份
+  // 半解压的产物，最终把 runner 的盘吃满。成功与失败两条路径都核对：
+  const stagingDir = path.join(xdevCache, '.staging');
+  const stagingEntries = fs.existsSync(stagingDir) ? fs.readdirSync(stagingDir) : [];
+  check('下载成功后暂存目录不留残渣', stagingEntries.length === 0);
+
+  const shapeFailDest = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-dest-'));
+  const brokenRun = spawnSync(process.execPath, ['--import', CROSS_DEVICE_FIXTURE, SCRIPT], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: {
+      ...process.env,
+      GITHUB_TOKEN: 'fixture-token',
+      GITHUB_REPOSITORY: 'invalid/invalid',
+      GITHUB_RUN_ID: '990004',
+      GITHUB_RUN_ATTEMPT: attempt,
+      ARTIFACT_DEST: shapeFailDest,
+      ARTIFACT_CACHE_DIR: xdevCache,
+      EXDEV_TEST_OTHER_DEVICE_ROOT: cacheDevice,
+      // 产物缺 resources/core → 自检失败
+      EXDEV_TEST_BROKEN_ARTIFACT: '1',
+      https_proxy: '',
+      http_proxy: '',
+    },
+  });
+  check(
+    '产物自检失败时以非零退出并指名缺哪个目录',
+    brokenRun.status !== 0
+      && /解压后缺少 dist \/ dist-electron \/ resources\/core/.test(brokenRun.stderr),
+  );
+  const stagingAfterFail = fs.existsSync(stagingDir) ? fs.readdirSync(stagingDir) : [];
+  check('自检失败后暂存目录同样不留残渣', stagingAfterFail.length === 0);
+
+  // RT-7：被强杀的 job 留下的暂存目录要能被清掉，正在用的那份不能被误删。
+  //
+  // 暂存目录从 `os.tmpdir()` 挪进了缓存目录（同盘 rename 才成立），而缓存目录是 runner
+  // 上的**持久**路径——job 被 `timeout-minutes` 强杀时 `finally` 跑不到，残骸会一直躺着。
+  // 清理按 mtime 判过期（一小时）：这里造一份 mtime 在两天前的残骸、一份刚建的目录，
+  // 跑一次脚本后前者应消失、后者应完好——只判「目录存在就删」的实现会把正在用的那份删掉。
+  const staleDir = path.join(stagingDir, 'job-stale');
+  fs.mkdirSync(path.join(staleDir, 'unpacked'), { recursive: true });
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(staleDir, twoDaysAgo, twoDaysAgo);
+  const freshDir = path.join(stagingDir, 'job-fresh');
+  fs.mkdirSync(path.join(freshDir, 'unpacked'), { recursive: true });
+
+  const pruneDest = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-dest-'));
+  const pruneRun = spawnSync(process.execPath, ['--import', CROSS_DEVICE_FIXTURE, SCRIPT], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: {
+      ...process.env,
+      GITHUB_TOKEN: 'fixture-token',
+      GITHUB_REPOSITORY: 'invalid/invalid',
+      GITHUB_RUN_ID: '990006',
+      GITHUB_RUN_ATTEMPT: attempt,
+      ARTIFACT_DEST: pruneDest,
+      ARTIFACT_CACHE_DIR: xdevCache,
+      EXDEV_TEST_OTHER_DEVICE_ROOT: cacheDevice,
+      https_proxy: '',
+      http_proxy: '',
+    },
+  });
+  check('有过期暂存目录时脚本仍成功', pruneRun.status === 0);
+  check('过期暂存目录被清掉', !fs.existsSync(staleDir));
+  check('正在区间内的暂存目录不被误删', fs.existsSync(freshDir));
+
+  for (const dir of [
+    cacheRoot,
+    dest,
+    otherDest,
+    brokenRoot,
+    brokenDest,
+    cacheDevice,
+    xdevDest,
+    xdevReuseDest,
+    shapeFailDest,
+    pruneDest,
+  ]) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   finish();
