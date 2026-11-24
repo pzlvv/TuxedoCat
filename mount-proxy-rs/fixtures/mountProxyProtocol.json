@@ -112,6 +112,6 @@
       "request": { "op": "readRange", "id": 14, "path": "/w/big.bin", "offset": 1048576, "length": 1048576 },
       "expect": { "op": "file", "id": 14, "bytes": "30313233", "eof": true },
       "note": "specs/056 FR-002 的分块读：eof = 实读字节数小于请求量（并发改写的总长不可信）"
-    },
-    {
-      "op": "spawn",
+    }
+  ]
+}
