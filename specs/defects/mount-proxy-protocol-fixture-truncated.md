@@ -10,7 +10,7 @@ status: 已修
 
 ## 现状
 
-`specs/056` 往该文件插入三个新 op 时，把文件尾部吃掉了：内容停在 `"op": "spawn"` 一行，
+`docs/archive/specs/056-transfer-overlay/` 那版改动往该文件插入三个新 op 时，把文件尾部吃掉了：内容停在 `"op": "spawn"` 一行，
 JSON 到此结束（`EOF while parsing a value`，line 118）。后果分两层：
 
 1. **CI 上红**：`contract_protocol_version_matches` 与 `request_shape_rejects_undeclared_field`
@@ -22,7 +22,7 @@ JSON 到此结束（`EOF while parsing a value`，line 118）。后果分两层�
    `0 passed; 1231 filtered out` —— 一条都不编译，而退出码是 0。「本机绿」在这个模块上
    不构成任何证据。
 
-同一类形态在 `specs/defects/mount-proxy-write-function-payload-type.md` 已经记过一次
+同一类形态在 `specs/defects/mount-proxy-write-file-payload-type.md` 已经记过一次
 （Core 发十六进制、代理只认枚举，两侧各自自洽而线上不通）；这次是它的镜像面：**两侧的
 对拍用例都没跑，而「没跑」长得跟「通过」一样**。
 
