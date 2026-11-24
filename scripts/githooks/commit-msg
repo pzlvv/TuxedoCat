@@ -26,7 +26,10 @@ if [ -f "$gitDir/MERGE_HEAD" ]; then
 fi
 
 staged=$(git diff --cached --name-only)
-code=$(printf '%s\n' "$staged" | grep -E '^(src|electron|e2e|core-rs|tui-rs|installer-rs)/')
+# `mount-proxy-rs/` 同样是代码路径（常驻挂载代理的代执行协议与进程管理）：漏掉它时，
+# 改这个 crate 的提交可以不带档位声明就进库，而它的改动照样能让 CI 红——
+# `specs/defects/mount-proxy-protocol-fixture-truncated.md` 就是从这条缝里漏过去的。
+code=$(printf '%s\n' "$staged" | grep -E '^(src|electron|e2e|core-rs|mount-proxy-rs|tui-rs|installer-rs)/')
 if [ -z "$code" ]; then
   exit 0
 fi
