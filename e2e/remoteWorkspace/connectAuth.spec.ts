@@ -27,11 +27,21 @@ const FAKE_API_INIT = `
     results: [],
     // 记录每次 connect 请求（用于断言 password 字段）
     requests: [],
+    // 挂起的 connect 的放行开关（用例需要观察「连接中」状态时用）
+    release: null,
   };
   window.remoteWorkspaceAPI = {
     connect: async (request) => {
       window.__script.requests.push(request);
       const next = window.__script.results.shift() ?? { ok: false, reason: 'error', error: 'unexpected call' };
+      // pending：这次调用挂起，直到用例调用 release()——用来观察连接进行中的按钮 / 文案
+      if (next.pending) {
+        await new Promise((resolve) => { window.__script.release = resolve; });
+        window.__script.release = null;
+        return next.result.ok
+          ? { ok: true, listing, endpoint: { host: request.host, port: Number(request.port), user: request.user } }
+          : next.result;
+      }
       return next.ok
         ? { ok: true, listing, endpoint: { host: request.host, port: Number(request.port), user: request.user } }
         : next;
@@ -69,6 +79,7 @@ async function fillTarget(page: Page): Promise<void> {
 interface FakeScript {
   results: Array<Record<string, unknown>>;
   requests: Array<{ password: string | null }>;
+  release: (() => void) | null;
 }
 
 /** 设定接下来 connect 的依次结果 */
@@ -76,6 +87,13 @@ async function script(page: Page, results: Array<Record<string, unknown>>): Prom
   await page.evaluate((value) => {
     (window as unknown as { __script: FakeScript }).__script.results = value;
   }, results);
+}
+
+/** 放行挂起的那次 connect（用例用 `{ pending: true, result }` 观察连接中状态） */
+async function releasePending(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as unknown as { __script: FakeScript }).__script.release?.();
+  });
 }
 
 /** 读出 connect 收到的全部请求 */
@@ -191,4 +209,74 @@ test('FR-009 终止性失败直接在表单上报错，不弹口令浮层', asyn
 
   await expect(page.locator('#passwordOverlay')).toBeHidden();
   await expect(page.locator('#connectError')).toContainText('ECONNREFUSED');
+});
+
+test('AC-10 口令被拒：原因在浮层里，输入保留且选中（specs/defects/remote-password-failure-hidden-behind-overlay）', async () => {
+  const { page } = handle;
+  await script(page, [
+    { ok: false, reason: 'needPassword', error: 'no private key, no saved password' },
+    { ok: false, reason: 'needPassword', error: 'All configured authentication methods failed' },
+  ]);
+  await fillTarget(page);
+  await page.click('#connect');
+  await expect(page.locator('#passwordOverlay')).toBeVisible();
+
+  await page.fill('#sshPassword', 'wrong');
+  await page.click('#submitPassword');
+
+  // 原因必须在浮层里：浮层背后的 #connectError 被遮罩盖住，写在那里等于什么都没显示
+  await expect(page.locator('#passwordOverlay')).toBeVisible();
+  await expect(page.locator('#passwordError')).toContainText('authentication methods failed');
+  await expect(page.locator('#connectError')).toHaveText('');
+  // 输入保留并全选，直接敲字即覆盖重输（AC-10）
+  await expect(page.locator('#sshPassword')).toHaveValue('wrong');
+  await expect
+    .poll(() => page.evaluate(() => {
+      const input = document.getElementById('sshPassword') as HTMLInputElement | null;
+      return input === null ? null : [input.selectionStart, input.selectionEnd];
+    }))
+    .toEqual([0, 5]);
+});
+
+test('浮层提交后的终止性失败收起浮层、报在表单上（FR-009）', async () => {
+  const { page } = handle;
+  // 第二次是部署阶段的失败：口令已被接受，问题不在口令上，不该再问一次
+  await script(page, [
+    { ok: false, reason: 'needPassword', error: 'no private key, no saved password' },
+    { ok: false, reason: 'error', error: 'remote daemon started but state file is missing' },
+  ]);
+  await fillTarget(page);
+  await page.click('#connect');
+  await expect(page.locator('#passwordOverlay')).toBeVisible();
+
+  await page.fill('#sshPassword', 'right');
+  await page.click('#submitPassword');
+
+  // 浮层收起才看得见原因：留在浮层上只会得到一个「什么都没说明」的浮层
+  await expect(page.locator('#passwordOverlay')).toBeHidden();
+  await expect(page.locator('#connectError')).toContainText('state file is missing');
+  await expect(page.locator('#connect')).toBeEnabled();
+});
+
+test('浮层提交后进入连接中：浮层收起、按钮为连接中状态', async () => {
+  const { page } = handle;
+  await script(page, [
+    { ok: false, reason: 'needPassword', error: 'no private key, no saved password' },
+    { pending: true, result: { ok: true } },
+  ]);
+  await fillTarget(page);
+  await page.click('#connect');
+  await expect(page.locator('#passwordOverlay')).toBeVisible();
+
+  await page.fill('#sshPassword', 'right');
+  await page.click('#submitPassword');
+
+  // 口令已被接受、正在部署 Core：浮层必须让开，进度与按钮状态才看得见
+  await expect(page.locator('#passwordOverlay')).toBeHidden();
+  await expect(page.locator('#connectStatus')).toContainText('Core');
+  await expect(page.locator('#connect')).toBeDisabled();
+  await expect(page.locator('#connect')).toHaveText(/连接中|Connecting/);
+
+  await releasePending(page);
+  await expect(page.locator('#pickerView')).toBeVisible({ timeout: 5000 });
 });

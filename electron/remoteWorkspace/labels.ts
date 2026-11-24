@@ -18,10 +18,14 @@ export interface RemoteWorkspaceLabels {
   sshPasswordLabel: string;
   /** 连接进行中的提示（SSH 首次接入要上传产物并启动 daemon） */
   connecting: string;
+  /** 连接进行中时确认按钮的文案（表单的「连接」与浮层的提交共用，AC-12） */
+  connectingAction: string;
   /** 口令浮层的标题 */
   passwordTitle: string;
   /** 浮层里的原因说明：`{reason}` 是认证链最后一次失败的原因 */
   passwordReason: string;
+  /** 口令被拒后重输时的原因行（失败原文在输入框下方的 `passwordError`） */
+  passwordRetry: string;
   /** 浮层提交（与表单上的「连接」同一个入口） */
   passwordSubmit: string;
   /** 浮层里没填口令就提交时的提示 */
@@ -63,8 +67,10 @@ const ZH: RemoteWorkspaceLabels = {
   sshUserPlaceholder: 'root',
   sshPasswordLabel: '登录密码',
   connecting: '正在连接远端并准备 Core…',
+  connectingAction: '连接中…',
   passwordTitle: '需要登录密码',
   passwordReason: '{reason} 目标 {endpoint} 需要登录密码。',
+  passwordRetry: '口令未被 {endpoint} 接受，请重新输入。',
   passwordSubmit: '连接',
   sshPasswordRequired: '请输入登录密码',
   connect: '连接',
@@ -100,8 +106,10 @@ const EN: RemoteWorkspaceLabels = {
   sshUserPlaceholder: 'root',
   sshPasswordLabel: 'Login Password',
   connecting: 'Connecting and preparing the remote Core…',
+  connectingAction: 'Connecting…',
   passwordTitle: 'Login password required',
   passwordReason: '{reason} {endpoint} requires a login password.',
+  passwordRetry: '{endpoint} did not accept that password. Try again.',
   passwordSubmit: 'Connect',
   sshPasswordRequired: 'Enter the login password',
   connect: 'Connect',

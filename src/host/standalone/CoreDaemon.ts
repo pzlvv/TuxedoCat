@@ -481,6 +481,13 @@ export class CoreDaemon {
   private silenceArmed = false;
   private silenceTimer: NodeJS.Timeout | null = null;
   private recheckTimer: NodeJS.Timeout | null = null;
+  /**
+   * 宽限收口排到 poll 阶段之后再执行：收口本身是 `setTimeout` 回调（timers 阶段），
+   * 而 `noteInbound` 由 socket `data` 回调（poll 阶段）触发。二者在同一轮迭代里撞上时
+   * timers 恒先跑，收口会看不到已经躺在内核缓冲里的字节
+   * （specs/defects/silence-recheck-runs-before-inbound-drain）。
+   */
+  private recheckDrainImmediate: NodeJS.Immediate | null = null;
   /** 沉默判死的原因：看门狗 kill 链路后由 handleExit 用它替换默认 fatal 文案 */
   private silenceFatal: Error | null = null;
 
@@ -991,8 +998,28 @@ export class CoreDaemon {
    * 本进程卡顿时这个定时器会迟到很久，迟到期间到达的字节还排在回调队列里没被记账，
    * 按时间差比会把它们算成「没来」——这正是 `docs/core/core-remote.md` 第 2.5 节
    * 要求宽限吸收的情形（specs/defects/silence-recheck-judged-by-stale-timestamp）。
+   *
+   * 收口本身也不在这一帧里下结论：它是 timers 阶段，而记账发生在 poll 阶段。迟到恢复时
+   * 两者撞在同一轮迭代里，timers 恒先跑，收口会把「字节已到、只是还没被读」当成「没来」
+   * （specs/defects/silence-recheck-runs-before-inbound-drain）。所以先排一个 `setImmediate`
+   * 把判定推到 check 阶段——poll 阶段已经把两条链路上就绪的字节全部入账。
    */
   private finishSilenceRecheck(recheckMs: number): void {
+    if (this.stopped || !this.linkReady || !this.silenceArmed) return;
+    if (this.recheckDrainImmediate) return;
+    const immediate = setImmediate(() => this.judgeSilenceAfterDrain(recheckMs));
+    immediate.unref();
+    this.recheckDrainImmediate = immediate;
+  }
+
+  /**
+   * 宽限收口的判定本体（`docs/core/core-remote.md` 第 2.5 节）。
+   *
+   * 跑到这里时本轮的 poll 阶段已经结束，内核缓冲里就绪的入站字节都已由 `noteInbound`
+   * 记账——序号变了就是活链路，没变才是真沉默。
+   */
+  private judgeSilenceAfterDrain(recheckMs: number): void {
+    this.recheckDrainImmediate = null;
     if (this.stopped || !this.linkReady || !this.silenceArmed) return;
     if (this.inboundSeq !== this.recheckBaselineSeq) {
       this.scheduleSilenceCheck();
@@ -1018,6 +1045,10 @@ export class CoreDaemon {
     if (this.recheckTimer) {
       clearTimeout(this.recheckTimer);
       this.recheckTimer = null;
+    }
+    if (this.recheckDrainImmediate) {
+      clearImmediate(this.recheckDrainImmediate);
+      this.recheckDrainImmediate = null;
     }
     this.silenceArmed = false;
   }

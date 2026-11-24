@@ -195,29 +195,32 @@ function main(): void {
    *
    * `password === null` → 认证链；否则只试这一次口令。结果按判别联合分叉：
    * `needPassword` 弹浮层，`error` 停在表单上报错（网络 / 主机密钥变更不弹浮层）。
+   *
+   * 尝试期间浮层让开（`suspendPasswordOverlay`）：这一步包含部署与启动 Core，浮层的遮罩
+   * 会把「正在连接远端并准备 Core…」整块盖住。口令被拒时浮层带着原输入与原因重现
+   * （AC-10），终止性失败则停在收起后的表单上（FR-009）。
    */
   function connectWithPassword(password: string | null): Promise<void> {
     if (busy) return Promise.resolve();
     connectError.textContent = '';
     setBusy(true);
+    setConnectActionBusy(true);
+    suspendPasswordOverlay();
     // SSH 首次接入要上传产物并启动 daemon：明确告诉用户这一步会慢
     connectStatus.textContent = labels.connecting;
     return api
       .connect(currentRequest(password))
       .then((result) => {
-        connectStatus.textContent = '';
         if (!result.ok) {
-          setBusy(false);
+          settleConnect();
           if (result.reason === 'needPassword') {
-            // 浮层已经开着 = 这次是用户提交的口令被拒：保持浮层、回显原因、选中便于重输
-            // （AC-10，不设尝试次数上限）；否则是首次需要口令
-            if (passwordOverlay.classList.contains('hidden')) {
-              openPasswordOverlay(result.error);
-            } else {
-              showPasswordFailure(result.error);
-            }
+            // 这次口令被拒：浮层带着已输入的内容与原因重现，选中便于重输
+            // （AC-10，不设尝试次数上限）；首次需要口令时输入框是空的
+            openPasswordOverlay(result.error, password !== null);
             return;
           }
+          // 终止性失败：浮层收起（否则原因被遮罩盖住），写在表单上（FR-009）
+          closePasswordOverlay();
           connectError.textContent = result.error;
           return;
         }
@@ -227,7 +230,7 @@ function main(): void {
         });
         // 先落定忙态再收浮层：`closePasswordOverlay` 按当时的忙态决定表单是否放行，
         // 顺序反了会把接入表单留在 disabled 状态（下一步虽然已切换视图，但状态要干净）
-        setBusy(false);
+        settleConnect();
         closePasswordOverlay();
         connectView.classList.add('hidden');
         pickerView.classList.remove('hidden');
@@ -236,10 +239,34 @@ function main(): void {
         pathInput.focus();
       })
       .catch((error: unknown) => {
-        connectStatus.textContent = '';
-        setBusy(false);
+        settleConnect();
+        closePasswordOverlay();
         connectError.textContent = describe(error);
       });
+  }
+
+  /**
+   * 一次尝试落定：清进度、解除忙态、按钮文案复原、表单放行。
+   *
+   * 四个出口（需要口令 / 终止性失败 / 成功 / 异常）共用，避免某个出口漏掉一项把表单
+   * 留在不能点的状态。
+   */
+  function settleConnect(): void {
+    connectStatus.textContent = '';
+    setBusy(false);
+    setConnectActionBusy(false);
+    setConnectFormDisabled(false);
+  }
+
+  /**
+   * 确认动作的连接中状态：表单的「连接」与浮层的提交是同一个动作（AC-12），
+   * 两处一起换成「连接中…」——一次尝试短则几秒、冷部署可能几十秒，按钮不表态时
+   * 用户会以为没点上而反复点。
+   */
+  function setConnectActionBusy(value: boolean): void {
+    element<HTMLButtonElement>('connect').textContent = value ? labels.connectingAction : labels.connect;
+    element<HTMLButtonElement>('submitPassword').textContent =
+      value ? labels.connectingAction : labels.passwordSubmit;
   }
 
   // ---------- 口令浮层（specs/053 FR-004） ----------
@@ -249,37 +276,43 @@ function main(): void {
    *
    * `reason` 是认证链最后一次失败的原因（不是网络错误——那种情况根本走不到这里）；
    * 浮层期间接入表单整体不可编辑，浮层关闭后回到原表单内容（AC-7 / AC-11）。
+   *
+   * `rejected` 为 true 表示这次是用户刚提交的口令被拒：输入框留着上次的内容并全选，
+   * 用户可以直接重敲（AC-10）。首次需要口令时输入框是空的。
    */
-  function openPasswordOverlay(reason: string): void {
-    passwordError.textContent = '';
-    sshPasswordInput.value = '';
-    passwordReason.textContent = formatLabel(labels.passwordReason, {
-      reason,
-      endpoint: `${sshUserInput.value}@${sshHostInput.value}:${sshPortInput.value}`,
-    });
+  function openPasswordOverlay(reason: string, rejected: boolean): void {
+    const endpoint = `${sshUserInput.value}@${sshHostInput.value}:${sshPortInput.value}`;
+    // 首次需要口令：原因行说明「为什么被问」；口令被拒：原因行只交代重输的目标，
+    // 原始失败原因进输入框下方的红行——两处说同一句会把小浮层塞满重复文本
+    passwordReason.textContent = rejected
+      ? formatLabel(labels.passwordRetry, { endpoint })
+      : formatLabel(labels.passwordReason, { reason, endpoint });
+    passwordError.textContent = rejected ? reason : '';
+    if (!rejected) sshPasswordInput.value = '';
     passwordOverlay.classList.remove('hidden');
     setConnectFormDisabled(true);
     sshPasswordInput.focus();
+    if (rejected) sshPasswordInput.select();
   }
 
   /**
-   * 浮层已打开时，这次口令被拒：保留浮层与已输入内容、回显原因、选中文本便于重输
-   * （AC-10：不设次数上限、不显示「剩余尝试次数」）。
+   * 尝试进行中收起浮层，输入内容留在输入框里（`openPasswordOverlay` 据它复原）。
+   *
+   * 部署 Core 的进度与按钮状态都在浮层背后，浮层一直盖着时用户看不到任何进展。
    */
-  function showPasswordFailure(reason: string): void {
-    passwordError.textContent = reason;
-    setConnectFormDisabled(true);
-    sshPasswordInput.focus();
-    sshPasswordInput.select();
+  function suspendPasswordOverlay(): void {
+    if (passwordOverlay.classList.contains('hidden')) return;
+    passwordOverlay.classList.add('hidden');
+    passwordError.textContent = '';
   }
 
   /** 关闭浮层并回到表单：不建链、不写历史、不清表单（AC-11） */
   function closePasswordOverlay(): void {
-    if (passwordOverlay.classList.contains('hidden')) return;
-    passwordOverlay.classList.add('hidden');
     passwordError.textContent = '';
     // 口令不留存：页面任何时刻不保留用户输入过的口令（FR-006）
-    sshPasswordInput.value = '';
+    if (sshPasswordInput.value.length > 0) sshPasswordInput.value = '';
+    if (passwordOverlay.classList.contains('hidden')) return;
+    passwordOverlay.classList.add('hidden');
     // 连接进行中时不要把表单放开：否则浮层里按 Esc 能绕过忙态再点一次「连接」
     setConnectFormDisabled(busy);
   }
