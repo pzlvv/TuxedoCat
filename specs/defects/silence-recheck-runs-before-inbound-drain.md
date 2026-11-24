@@ -109,4 +109,4 @@ timers 阶段——宽限收口看到序号没变就判死，紧接着 poll 阶�
 | 相邻用例 | `node scripts/run-tests.mjs coreDaemon conversationSpaceClearHost` | 绿 | 同样驱动 `CoreDaemon` 的两个文件无回归 |
 | 单测全量 | `npm run test:unit` | 绿 | 134 通过 / 0 失败 / 2 跳过（跳过的是环境前置不满足的 `sidebarFiles` / `sidebarDocViewGit`）；docsLint 与 docsLintLocalOnlyPaths 一并绿 |
 | 静态检查 | `npm run check-types` / `npm run lint` | 绿 | 三份 tsconfig 与 eslint 均无输出 |
-| 真实 CI 复跑 | 推送后 smoke 的 `tests` job | not-run | 本机 16 核无法复现 CI 的调度压力，改用确定性夹具（对端在宽限内写出 pong + 同步占住事件循环）锁定时序；CI 上那条偶发红要靠推送后复跑确认 |
+| 真实 CI 复跑 | smoke run `45494325991`（提交 ce498ae） | 绿 | 六个 job 全绿；`tests` job 里 `remoteCoreDaemon` 68 通过 / 0 失败，原偶发红的「RT-1 大帧停顿期间心跳独立通路保活（不判死）」与新增的「RT-1 宽限期内到达的 pong 不因收口早于入站入账被判死」同时绿；全量 136 通过 / 0 失败 |
