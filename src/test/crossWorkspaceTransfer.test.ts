@@ -6,7 +6,7 @@
  * 运行方式：npm run test:all -- crossWorkspaceTransfer
  */
 
-import { resolveTransferEnds } from '../host/crossWorkspaceRouting';
+import { planTransferChannels, resolveTransferEnds } from '../host/crossWorkspaceRouting';
 import { workspaceAgentId } from '../host/workspaceIdentity';
 import { localWorkspaceRef, remoteWorkspaceRef, type WorkspaceEndpoint } from '../host/workspaceRef';
 import { createChecker, runTests } from './helpers/harness';
@@ -97,6 +97,78 @@ async function run(): Promise<void> {
     '目标显式为来源 + 源缺省 → 同工作区错误',
     selfTarget.kind === 'error' && selfTarget.error.includes('two different workspaces'),
   );
+
+  // ── 通道选择（specs/056 FR-001 / FR-004）：视图端判定 ──
+  {
+    const plan = (options: {
+      originInView: boolean;
+      sourceRef: typeof origin;
+      destRef: typeof origin;
+      sourceRelative?: string | null;
+      targetRelative?: string | null;
+    }): ReturnType<typeof planTransferChannels> =>
+      planTransferChannels({
+        originRef: origin,
+        sourceRef: options.sourceRef,
+        destRef: options.destRef,
+        originInView: options.originInView,
+        sourceRelative: options.sourceRelative ?? null,
+        targetRelative: options.targetRelative ?? null,
+        sourcePath: '/ws/a.md',
+        targetPath: '/ws/b.md',
+      });
+
+    // 非 Overlay 会话：两端都走磁盘 / SFTP，相对路径无关
+    const plain = plan({ originInView: false, sourceRef: origin, destRef: remote });
+    check(
+      '通道：非 Overlay 会话两端都不是视图端（FR-006 行为不变）',
+      plain.kind === 'channels' && !plain.sourceView && !plain.destView,
+    );
+
+    // Overlay 会话 + 源是本对话：源端走视图
+    const outbound = plan({
+      originInView: true,
+      sourceRef: origin,
+      destRef: remote,
+      sourceRelative: 'a.md',
+    });
+    check(
+      '通道：源端是发起工作区 → 源端视图、目标端磁盘',
+      outbound.kind === 'channels' && outbound.sourceView && !outbound.destView,
+    );
+
+    // Overlay 会话 + 目标是本对话：目标端走视图
+    const inbound = plan({
+      originInView: true,
+      sourceRef: remote,
+      destRef: origin,
+      targetRelative: 'b.md',
+    });
+    check(
+      '通道：目标端是发起工作区 → 目标端视图、源端 SFTP',
+      inbound.kind === 'channels' && !inbound.sourceView && inbound.destView,
+    );
+
+    // 相对路径缺失 = Core 认为该路径越界：拒绝，不退回磁盘（FR-004 / FR-005）
+    const outside = plan({ originInView: true, sourceRef: origin, destRef: remote });
+    check(
+      '通道：视图端缺相对路径 → 越界错误（不退回磁盘）',
+      outside.kind === 'error' && outside.error.includes('outside the conversation workspace'),
+    );
+
+    // 非本对话端带不带相对路径都不影响判定（它永远走磁盘 / SFTP）
+    const irrelevant = plan({
+      originInView: true,
+      sourceRef: origin,
+      destRef: remote,
+      sourceRelative: '',
+      targetRelative: 'ignored',
+    });
+    check(
+      '通道：非本对话端的相对路径不参与判定',
+      irrelevant.kind === 'channels' && irrelevant.sourceView && !irrelevant.destView,
+    );
+  }
 
   finish();
 }

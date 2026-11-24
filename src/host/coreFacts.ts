@@ -27,6 +27,8 @@ import type {
   StorageCapabilities,
   WorkViewChangesResult,
   WorkViewFileDiffResult,
+  WorkViewFileIoPayload,
+  WorkViewFileIoResult,
   WorkViewFilesResult,
 } from '../shared/AssistantEventBus.js';
 import type { ConversationSpaceInfo } from '../shared/webviewTypes.js';
@@ -183,6 +185,19 @@ export async function requestWorkViewFileDiff(
   path: string,
 ): Promise<WorkViewFileDiffResult> {
   return requireEventBus().requestCore({ type: 'workViewFileDiffRequested', sessionId, path });
+}
+
+/**
+ * Overlay 对话视图里的文件 IO（`UiRequest.workViewFileIoRequested`，specs/056 FR-002 / FR-003）。
+ *
+ * 跨工作区传输的一端可能是叠加视图，而视图挂在 Core 私有的挂载命名空间里——宿主读挂载点
+ * 得到空目录，因此字节只能经这里转交 Core。`path` 是工作区相对的 `'/'` 分隔路径。
+ */
+export async function requestWorkViewFileIo(
+  sessionId: string,
+  payload: WorkViewFileIoPayload,
+): Promise<WorkViewFileIoResult> {
+  return requireEventBus().requestCore({ type: 'workViewFileIoRequested', sessionId, payload });
 }
 
 /**

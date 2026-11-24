@@ -36,6 +36,7 @@ use crate::sys;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// 一条在跑的工具进程。
@@ -632,6 +633,100 @@ pub fn stat(path: &str) -> Result<PathInfo, String> {
 /// `mkdirAll`：递归建目录
 pub fn mkdir_all(path: &str) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(|error| format!("建目录 {path} 失败（{error}）"))
+}
+
+/// `renamePath`：改名 / 覆盖式移动（specs/056 FR-003）。
+///
+/// 目标已存在时先删掉再改名：`rename(2)` 对同名目录 / 跨类型目标会报错，而传输的语义是
+/// 「同名文件覆盖」；先删再改名让结果与本地 `fsEndpoint` 的覆盖语义一致。删除失败也继续
+/// 尝试改名——目标可能本来就不存在（正常路径），真正的失败由 rename 报出。
+pub fn rename_path(from: &str, to: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(to).parent() {
+        mkdir_all(&parent.to_string_lossy())?;
+    }
+    let mut last = match std::fs::rename(from, to) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // 覆盖语义：目标存在时先删再试一次
+    if std::fs::symlink_metadata(to).is_ok() {
+        let _ = std::fs::remove_file(to);
+        last = match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+    }
+    Err(format!("改名 {from} → {to} 失败（{last}）"))
+}
+
+/// `unlinkPath`：删一个文件（目录留给调用方各自处理，不在这里递归）。
+pub fn unlink_path(path: &str) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        // 目标已不存在 = 已达成目的（执行器的清理分支就是这么用的）
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("删 {path} 失败（{error}）")),
+    }
+}
+
+/// 定向读：从 `offset` 开始读至多 `length` 字节，返回 `(bytes, eof)`。
+///
+/// `eof` 由「实际读到的字节数是否小于请求量」判定——执行器的读流靠它决定收尾，因此必须
+/// 是真实事实而不是「这个文件总长多少」（并发改写的文件总长不可信）。
+pub fn read_range(path: &str, offset: u64, length: u64) -> Result<(Vec<u8>, bool), String> {
+    use std::io::{Seek, SeekFrom};
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("打开 {path} 失败（{error}）"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("定位 {path} 到 {offset} 失败（{error}）"))?;
+    let mut buffer = Vec::new();
+    let mut remaining = length;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while remaining > 0 {
+        let want = remaining.min(chunk.len() as u64) as usize;
+        let count = std::io::Read::read(&mut file, &mut chunk[..want])
+            .map_err(|error| format!("读 {path} 失败（{error}）"))?;
+        if count == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+        remaining -= count as u64;
+    }
+    // 请求 `length` 却读到更少 = 已到文件末尾
+    let eof = (buffer.len() as u64) < length;
+    Ok((buffer, eof))
+}
+
+/// 定向写：从 `offset` 开始写，并把文件截断在写入末尾——即「从这里开始是这个文件的新内容」。
+///
+/// 传输的写流按 offset 递增分块写：第一块的 `offset` 是 0（把旧内容截掉），后续块截断点
+/// 正好等于当前长度、是 no-op。语义只有这一条，不需要额外的 append 开关——一个永远不会
+/// 被设成其它值的布尔字段只是契约噪音。
+///
+/// 返回写入后的文件长度，调用方用它推进偏移。
+pub fn write_range(path: &str, offset: u64, bytes: &[u8]) -> Result<u64, String> {
+    use std::io::{Seek, SeekFrom, Write};
+    if let Some(parent) = Path::new(path).parent() {
+        mkdir_all(&parent.to_string_lossy())?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| format!("打开 {path} 失败（{error}）"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("定位 {path} 到 {offset} 失败（{error}）"))?;
+    file.set_len(offset)
+        .map_err(|error| format!("截断 {path} 到 {offset} 失败（{error}）"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("写 {path} 失败（{error}）"))?;
+    let size = file
+        .metadata()
+        .map_err(|error| format!("取 {path} 大小失败（{error}）"))?
+        .len();
+    Ok(size)
 }
 
 #[cfg(test)]

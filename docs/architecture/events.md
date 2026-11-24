@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-21
+last_reviewed: 2026-11-24
 ---
 
 # 规格：AssistantEventBus 与事件词汇表
@@ -88,14 +88,14 @@ export type CoreRequestHandlers = {
 
 ## 2. 事件词汇表
 
-四组词汇表，共 84 个事件：
+四组词汇表，共 85 个事件：
 
 | 词汇表 | 方向 | 语义 | 数量 | 处理方 |
 | --- | --- | --- | --- | --- |
 | `CoreEvent` | core → UI | 单向事实通知 | 34 | `WebViewUI`（`onCoreEvents` 映射表） |
 | `CoreRequest` | core → UI | 请求-响应（core 等 UI 返回结果） | 4 | `WebViewUI`（`onCoreRequests` 映射表） |
 | `UiEvent` | UI → core | 单向，报告用户动作与宿主环境 | 28 | Core 进程的 `dispatch_ui_event` 分派 |
-| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 18 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
+| `UiRequest` | UI → core | 请求-响应（UI 等 Core 返回结果；宿主索取 core 事实的通道） | 19 | Core 的应答（`dispatch_ui_request`）+ 宿主侧统一入口（[docs/core/standalone-core-boundaries.md 第 2 节](../core/standalone-core-boundaries.md#2-宿主侧的-core-事实读取)） |
 
 汇总数量由 `src/test/docsLint.test.ts` 对照类型联合校验，不手写维护。
 
@@ -180,7 +180,7 @@ export type CoreRequestHandlers = {
 | 1 | `toolPermissionRequested` | `sessionId`, `toolUseId`, `toolName`, `permResult`, `displayArgs`, `agentMode` | `engine.rs`（工具执行前，权限规则已按 agentMode 加工完；工具不存在与**授权前被中断**两条失败路径同样发一次，`permResult` 恒 `allow`，只为让 UI 上架卡片） | `requestToolPermission` | `PermissionResult`（Edit / Write 的 `beforeContent` / `afterContent` 等展示字段在 auto / risk 自动放行后仍保留；`agentMode` 供 UI 判断是否打开宿主侧 diff，见[docs/architecture/host-ui-modules.md 第 2 节](host-ui-modules.md#2-toolhandler)） |
 | 2 | `userChoice` | `sessionId`, `options: UserChoiceOptions`（两种 `kind` 都带 `choiceRequestId`——core 发起时生成的请求标识，`userChoiceCanceled` 用同一个值精确撤回；`kind: 'permission'` 带 `toolName` / `message` / `choices`；`kind: 'question'` 带 `toolUseId` / `questions`，`toolUseId` 供 webview 在该工具收尾时收框） | `engine.rs` 的 `waiting_request`（权限确认需要用户选择时、`AskUserQuestion` 提问时） | `requestUserChoice` | `UserChoiceResult`（`{ kind: 'permission'; index; reply }` / `{ kind: 'question'; answers }`） |
 | 3 | `crossWorkspaceAgentRequested` | `sessionId`（发起方会话）, `targetWorkspaceId`, `role`, `prompt`, `description`, `agentMode`, `thinkingEffort`, `model`, `provider`, `webSearch`, `mcpServers`（后六项 = 发起方会话生效值，specs/024 FR-004 继承链 / specs/025 FR-005） | `engine.rs` 的 `spawn_remote_agent`（`Agent` 带 `target` 时阻塞等宿主应答） | `requestCrossWorkspaceAgent`（解析目标工作区身份 → 目标 Connection 下发 `UiEvent.remoteSubAgentStarted`） | `{ sessionId }` / `{ local: true }` / `{ error }` |
-| 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → 本地 fs / 传输专用 SshClient 执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId, paths }` / `{ error }`（`paths` = 已搬运文件相对被传输子树根的路径，工具卡片展示清单用） |
+| 4 | `crossWorkspaceTransferRequested` | `sessionId`（发起方会话）, `sourcePath`, `targetPath`, `sourceTarget: string \| null`, `destTarget: string \| null`（null = 该端缺省，即发起会话所属工作区；契约成员必选，specs/028 FR-002）, `originInView: boolean`, `sourceRelative: string \| null`, `targetRelative: string \| null`（`originInView` = 本对话工作区那一端是否按叠加视图取放，由 Core 按会话归属一次判出；两个相对路径是该端相对发起工作区根的 POSIX 路径，不属于本端时为 `null`，specs/056 FR-001） | `engine.rs` 的 `transfer_hook`（`Transfer` 工具执行时阻塞等宿主应答，等待期间切片轮询取消标记，specs/028 FR-007；`originInView` 与相对路径由 `run_transfer` 按 `ToolContext.work_view` 三态算出，`ViewUnavailable` 在发请求前就报错） | `requestCrossWorkspaceTransfer`（两端经 `resolveTransferEnds` 解析守卫 → `planTransferChannels` 选通道 → 本地 fs / 传输专用 SshClient / 视图端点执行 → abort 中转时先取消活跃传输） | `{ files, bytes, skippedSymlinks, sourceWorkspaceId, destWorkspaceId, paths }` / `{ error }`（`paths` = 已搬运文件相对被传输子树根的路径，工具卡片展示清单用） |
 
 结果类型的映射写在 `CoreRequestResultMap`（第 2 节），保证 handler 返回类型与请求一一对应。
 超时口径见第 6 节。

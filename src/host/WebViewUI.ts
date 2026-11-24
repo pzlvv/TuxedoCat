@@ -21,12 +21,14 @@ import type { UIHost, WebviewViewHandle } from './UIHost.js';
 import { sameWorkspaceRef, type WorkspaceRef } from './workspaceRef.js';
 import { resolveMachineName, workspaceAgentId } from './workspaceIdentity.js';
 import {
+  planTransferChannels,
   resolveCrossWorkspaceTarget,
   resolveTransferEnds,
   type CrossWorkspaceRoute,
   type CrossWorkspaceRouter,
 } from './crossWorkspaceRouting.js';
-import { fsEndpoint, runSessionTransfer, type TransferEndpoint } from './workspaceTransfer.js';
+import { fsEndpoint, runSessionTransfer, viewEndpoint, type TransferEndpoint } from './workspaceTransfer.js';
+import { requestWorkViewFileIo } from './coreFacts.js';
 import { SshClient } from './standalone/sshClient.js';
 import { authSourceFor } from './sshTarget.js';
 import { SSH_WORKSPACE_SCHEME } from './workspaceRef.js';
@@ -601,12 +603,36 @@ export class WebViewUI implements WebViewUiPort {
     );
     if (ends.kind === 'error') return { error: ends.error };
     const { sourceRef, destRef } = ends;
+    // 视图端（specs/056 FR-001）：`originInView` 是发起方 Core 给出的事实，「哪一端是
+    // 发起工作区」用与守卫同一份比较函数判定——宿主不读 `storage`、不重算归属。
+    // 判定与守卫同住一个纯函数，矩阵用例在 `src/test/crossWorkspaceTransfer.test.ts`。
+    const channels = planTransferChannels({
+      originRef: origin.workspaceRef,
+      sourceRef,
+      destRef,
+      originInView: request.originInView,
+      sourceRelative: request.sourceRelative,
+      targetRelative: request.targetRelative,
+      sourcePath: request.sourcePath,
+      targetPath: request.targetPath,
+    });
+    if (channels.kind === 'error') return { error: channels.error };
     // 远程端建传输专用 SSH 连接；建完再搬运，失败即报错、两端零写入
     const sshClients: SshClient[] = [];
     const endpointFor = async (
       ref: WorkspaceRef,
       label: string,
+      endpointInView: boolean,
     ): Promise<TransferEndpoint | { error: string }> => {
+      // 视图端：字节经 Core 转交代理，不建 SSH 连接也不碰本地文件系统
+      if (endpointInView) {
+        // 端点把绝对路径换算成「相对发起工作区根」的相对路径，与 Core 算相对路径时用的是
+        // 同一个根（`origin.workspaceRef.path`）；视图端因此与执行器的绝对路径语义无关
+        return viewEndpoint({
+          root: origin.workspaceRef.path,
+          request: (payload) => requestWorkViewFileIo(request.sessionId, payload),
+        });
+      }
       if (ref.endpoint === null) return fsEndpoint();
       if (ref.scheme !== SSH_WORKSPACE_SCHEME) {
         return { error: `unsupported workspace scheme for transfer (${label}): ${ref.scheme}` };
@@ -634,9 +660,9 @@ export class WebViewUI implements WebViewUiPort {
       }
     };
     try {
-      const sourceEnd = await endpointFor(sourceRef, 'source');
+      const sourceEnd = await endpointFor(sourceRef, 'source', channels.sourceView);
       if ('error' in sourceEnd) return { error: sourceEnd.error };
-      const destEnd = await endpointFor(destRef, 'destination');
+      const destEnd = await endpointFor(destRef, 'destination', channels.destView);
       if ('error' in destEnd) return { error: destEnd.error };
       if (!sourceEnd.isAbsolutePath(request.sourcePath)) {
         return { error: `source path must be absolute: ${request.sourcePath}` };

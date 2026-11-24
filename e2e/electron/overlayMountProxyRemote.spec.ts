@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Client } from 'ssh2';
 import { startMockLlm } from '../helpers/mockLlmServer';
-import { launchApp } from '../helpers/electronApp';
+import { launchApp, makeWorkspace } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, RecordedRequest } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
@@ -16,6 +16,8 @@ import {
   LOG_FILE_NAME,
 } from '../../src/config/project';
 import { requireSudoPasswordEnvironment } from '../helpers/testEnvironment';
+import { resolveMachineName } from '../../src/host/workspaceIdentity';
+import { hostname as osHostname } from 'node:os';
 
 /**
  * Overlay 挂载代理：真实 SSH 远端的安装、自检与隔离（`specs/051` FR-005 / FR-006 /
@@ -1136,6 +1138,170 @@ test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实�
 });
 
 /**
+ * Overlay 会话里 `Transfer` 的视图端（specs/056 FR-009 / AC-14 / AC-15）。
+ *
+ * 两向一次跑完：
+ *
+ * 1. **搬出**：对话内只存在于叠加视图的文件传到本机另一个工作区 —— 目标端内容必须等于
+ *    视图内容，而远端磁盘上仍不存在该文件（基线里刻意只写进视图、不写磁盘）。
+ * 2. **搬进**：本机工作区的文件传进远端 Overlay 对话 —— 同会话的 `Read` 能读到它，
+ *    远端真实磁盘上没有。
+ *
+ * 判据的关键是「磁盘上没有」与「视图里读到」两条同时成立：只看工具结果会漏掉「写成功但
+ * 写到了磁盘」（那是 `specs/defects/mount-proxy-write-file-payload-type.md` 的形态）。
+ */
+test('US-60 FR-009 Overlay 会话的 Transfer 按视图取放：视图内的文件搬得出去、搬进来的只落视图', async () => {
+  // 本用例要冷启动整应用（外加第二个本地工作区）、跑两轮工具轮次，每轮都经 WAN 往返；
+  // 60s 档（`SSH_TEST_TIMEOUT_MS`）容不下。按用例体内显式放宽的口径给 180s
+  // （`e2e/playwright.config.ts` 的 SSH 档注释：长任务必须在用例体内写清所需时长）。
+  test.setTimeout(180_000);
+  await ensureProxyInstalled();
+
+  const localDir = await makeWorkspace({ 'local-source.md': '本地内容\n' }, 'e2e-overlay-transfer-local');
+  const viewOnlyName = 'overlay-transfer-view-only.txt';
+  const viewOnlyPath = `${remoteWs}/${viewOnlyName}`;
+  const viewOnlyBody = 'void-only-content';
+  // 基线：菜盘上没有这个文件（稍后由 Write 只写进视图）
+  expect(
+    (await sshExec(`test -e ${shQuote(viewOnlyPath)} && echo yes || echo no`)).stdout.trim(),
+    '基线：真实磁盘上不得有该文件',
+  ).toBe('no');
+
+  mockLlm = await startMockLlm({
+    workspaceDir: remoteWs,
+    listenHost: '0.0.0.0',
+    reverseTunnel: SSH,
+  });
+  app = await launchApp({
+    repoRoot: process.cwd().replace(/[\\/]e2e$/, ''),
+    mockLlm,
+    workspaceDir: remoteWs,
+    openWorkspaces: [remoteRef, localDir],
+    // 活动项显式指回远端：不传时默认取 `openWorkspaces` 的最后一个（本地工作区），
+    // 而本用例要在远端 Overlay 对话里发消息、勾 Overlay 勾选框。
+    activeWorkspace: remoteRef,
+    agentMode: 'auto',
+    startupChatWaitMs: 180_000,
+  });
+  const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-mount-proxy' }, 180_000);
+  await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
+
+  // 第二个工作区是**本车**多开的（其余用例只开远端一个），它落地时会挤动标题栏与
+  // 聊天页布局；不等它就勾 Overlay 会让 `check()` 卡在「等待元素 stable」一直到用例
+  // 超时（实测 3 分钟）。与 `crossWorkspaceTransfer.spec.ts` 的多工作区用例同一口径：
+  // 先等标签真的变成两个。
+  const titlebar = await app.titlebarPage();
+  await expect(titlebar.locator('#workspaceTabs [role="tab"]')).toHaveCount(2, {
+    timeout: 30_000,
+  });
+
+  const localId = `${resolveMachineName(
+    process.platform,
+    process.env,
+    osHostname(),
+  )}:${path.resolve(localDir)}`;
+
+  const firstTurnPrompt = '把视图里的文件搬到另一个工作区';
+  const secondTurnPrompt = '把本工作区的文件搬进来';
+  /**
+   * **本轮**的工具结果条数。
+   *
+   * 两轮共用一个 mock，按全局 tool 数推进会在第二轮开场就以为已完成（历史里已有上一轮
+   * 的三条结果）。判据是「本轮用户消息之后出现了几条 tool 结果」。
+   */
+  const turnToolCount = (req: RecordedRequest, prompt: string): number => {
+    const messages = req.body.messages;
+    const start = messages.findIndex(
+      (message) => message.role === 'user' && String(message.content).includes(prompt),
+    );
+    if (start < 0) return 0;
+    return messages.slice(start).filter((message) => message.role === 'tool').length;
+  };
+
+  // 三轮：Write（只落视图）→ Transfer 搬出 → Read 证明搬进来的也在视图里
+  const rounds: Array<{ name: string; args: Record<string, unknown> }> = [
+    { name: 'Write', args: { file_path: viewOnlyPath, content: viewOnlyBody } },
+    {
+      name: 'Transfer',
+      args: {
+        sourcePath: viewOnlyPath,
+        targetPath: path.join(localDir, 'from-overlay.txt'),
+        destTarget: localId,
+      },
+    },
+    { name: 'Read', args: { file_path: viewOnlyPath } },
+  ];
+  mockLlm.setHandler((req) => {
+    const done = turnToolCount(req, firstTurnPrompt);
+    if (done >= rounds.length) return { kind: 'text', text: 'OVERLAY-TRANSFER-DONE' };
+    return { kind: 'tool', name: rounds[done].name, args: rounds[done].args };
+  });
+
+  await checkWorkViewOption(chatPage);
+  await chatPage.fill('textarea.input-textarea', firstTurnPrompt);
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('OVERLAY-TRANSFER-DONE').first()).toBeVisible({ timeout: 50_000 });
+
+  const results = mockLlm.requests
+    .filter((request) => request.body.messages[request.body.messages.length - 1]?.role === 'tool')
+    .map((request) => lastToolResult(request))
+    .slice(-rounds.length);
+  expect(results, `应拿到 ${rounds.length} 条工具结果`).toHaveLength(rounds.length);
+
+  // AC-14：搬出去的内容等于视图内容
+  expect(results[1], `Transfer 必须成功：${results[1]}`).toMatch(/Transferred 1 files/);
+  expect(
+    await fs.promises.readFile(path.join(localDir, 'from-overlay.txt'), 'utf8'),
+    '目标端内容必须等于视图内容',
+  ).toBe(viewOnlyBody);
+  // 远端磁盘仍是干净的（视图里新建的文件不该因为一次传输而落盘）
+  expect(
+    (await sshExec(`test -e ${shQuote(viewOnlyPath)} && echo yes || echo no`)).stdout.trim(),
+    'Overlay 会话内新建的文件不得出现在远端磁盘上',
+  ).toBe('no');
+
+  // 反向（AC-15）：把本机工作区的文件传进 Overlay 会话，同会话 Read 能读到、磁盘上没有
+  const inboundName = 'from-local.md';
+  const inboundPath = `${remoteWs}/${inboundName}`;
+  mockLlm.setHandler((req) => {
+    // 只数本轮的工具结果（理由见上面 `turnToolCount`）
+    const turnTools = turnToolCount(req, secondTurnPrompt);
+    if (turnTools >= 2) return { kind: 'text', text: 'OVERLAY-TRANSFER-INBOUND-DONE' };
+    if (turnTools === 0) {
+      return {
+        kind: 'tool',
+        name: 'Transfer',
+        args: {
+          sourcePath: path.join(localDir, 'local-source.md'),
+          targetPath: inboundPath,
+          // 源端在本地工作区：缺省会按 origin（远端）解析，两端同工作区被守卫拒掉
+          sourceTarget: localId,
+        },
+      };
+    }
+    return { kind: 'tool', name: 'Read', args: { file_path: inboundPath } };
+  });
+  await chatPage.fill('textarea.input-textarea', secondTurnPrompt);
+  await chatPage.press('textarea.input-textarea', 'Enter');
+  await expect(chatPage.getByText('OVERLAY-TRANSFER-INBOUND-DONE').first()).toBeVisible({
+    timeout: 50_000,
+  });
+
+  const inboundResults = mockLlm.requests
+    .filter((request) => request.body.messages[request.body.messages.length - 1]?.role === 'tool')
+    .map((request) => lastToolResult(request))
+    .slice(-2);
+  expect(inboundResults[0], `Transfer 必须成功：${inboundResults[0]}`).toMatch(/Transferred 1 files/);
+  expect(inboundResults[1], `Read 必须读到搬进来的内容：${inboundResults[1]}`).toContain('本地内容');
+  expect(
+    (await sshExec(`test -e ${shQuote(inboundPath)} && echo yes || echo no`)).stdout.trim(),
+    '搬进 Overlay 会话的文件不得落到真实磁盘',
+  ).toBe('no');
+
+  await fs.promises.rm(localDir, { recursive: true, force: true }).catch(() => undefined);
+});
+
+/**
  * 隔离会话里**编译并运行**：`main.c` 预置在真实磁盘，`gcc` 的产物只能落在叠加视图。
  *
  * 与 `AC-31` 的分工：那条只验证 Write 通道写新文件；这条走 Bash 通道，验证「一个真实的
@@ -1151,7 +1317,6 @@ test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实�
  * 第 1 条不可缺少：只看磁盘会漏掉「编译失败 + 磁盘本来就没文件」这种假绿，而这正是
  * `specs/defects/mount-proxy-write-file-payload-type.md` 的形态。
  */
-
 test('FR-006 隔离会话里 gcc 编译运行 main.c，产物只在叠加视图、不落真实磁盘', async () => {
   // 前置：代理必须就位。没装就先经界面装（单独 `-g` 跑这条时不会因此静默跳过）
   await ensureProxyInstalled();

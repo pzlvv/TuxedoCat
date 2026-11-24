@@ -96,6 +96,41 @@ impl SessionProxy {
         Err(not_linux())
     }
 
+    /// 非 Linux 上不可构造（`SessionProxy` 只有 Linux 会造出来），签名与 Linux 实现对齐。
+    #[allow(dead_code)]
+    pub fn write_range(
+        &self,
+        _path: &std::path::Path,
+        _offset: u64,
+        _bytes: &[u8],
+    ) -> Result<u64, String> {
+        Err(not_linux())
+    }
+
+    #[allow(dead_code)]
+    pub fn read_range(
+        &self,
+        _path: &std::path::Path,
+        _offset: u64,
+        _length: u64,
+    ) -> Result<(Vec<u8>, bool), String> {
+        Err(not_linux())
+    }
+
+    #[allow(dead_code)]
+    pub fn rename_path(
+        &self,
+        _from: &std::path::Path,
+        _to: &std::path::Path,
+    ) -> Result<(), String> {
+        Err(not_linux())
+    }
+
+    #[allow(dead_code)]
+    pub fn unlink_path(&self, _path: &std::path::Path) -> Result<(), String> {
+        Err(not_linux())
+    }
+
     pub fn mkdir_all(&self, _path: &std::path::Path) -> Result<(), String> {
         Err(not_linux())
     }

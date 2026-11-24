@@ -9602,6 +9602,9 @@ fn transfer_hook_roundtrip_and_cancel() {
             target_path: "/b".to_string(),
             source_target: None,
             dest_target: Some("m2:/b".to_string()),
+            origin_in_view: true,
+            source_relative: Some("a".to_string()),
+            target_relative: None,
         },
         &cancel,
     )
@@ -9625,6 +9628,10 @@ fn transfer_hook_roundtrip_and_cancel() {
     assert_eq!(request["sourceTarget"], Value::Null);
     assert_eq!(request["destTarget"], json!("m2:/b"));
     assert_eq!(request["sourcePath"], json!("/a"));
+    // specs/056 FR-001：视图端事实与相对路径原样透传
+    assert_eq!(request["originInView"], json!(true));
+    assert_eq!(request["sourceRelative"], json!("a"));
+    assert_eq!(request["targetRelative"], Value::Null);
 
     // 取消路径：宿主不响应 + 取消标记已置位 → 立即收敛，不悬挂等待
     let silent = EngineHarness::start(|_request| None);
@@ -9635,6 +9642,9 @@ fn transfer_hook_roundtrip_and_cancel() {
             target_path: "/b".to_string(),
             source_target: None,
             dest_target: None,
+            origin_in_view: false,
+            source_relative: None,
+            target_relative: None,
         },
         &std::sync::atomic::AtomicBool::new(true),
     );

@@ -182,6 +182,48 @@ fn kill_request_shape_matches_contract() {
     assert_request_shape("kill", &frame);
 }
 
+/// specs/056 的三个新 op：视图端传输的改名 / 清理 / 分块读（字段集合与 fixture 对齐）。
+#[test]
+fn view_io_request_shapes_match_contract() {
+    let rename = Frame::new("renamePath")
+        .with_id(12)
+        .with(
+            "from",
+            serde_json::Value::String("/w/a.txt.tuxedo-transfer-tmp".into()),
+        )
+        .with("to", serde_json::Value::String("/w/a.txt".into()));
+    assert_request_shape("renamePath", &rename);
+
+    let unlink = Frame::new("unlinkPath").with_id(13).with(
+        "path",
+        serde_json::Value::String("/w/a.txt.tuxedo-transfer-tmp".into()),
+    );
+    assert_request_shape("unlinkPath", &unlink);
+
+    let read = Frame::new("readRange")
+        .with_id(14)
+        .with("path", serde_json::Value::String("/w/big.bin".into()))
+        .with("offset", serde_json::Value::from(1_048_576u64))
+        .with("length", serde_json::Value::from(1_048_576u64));
+    assert_request_shape("readRange", &read);
+}
+
+/// 定向写的帧形态（specs/056 FR-003）：`offset` 是**可选**字段，给了才走分块写。
+///
+/// 这条不对 fixture 做整帧比对（fixture 的 `writeFile` 用例是老语义的整文件写），而是锁
+/// 「同样的 op 名 + 多两个字段」——代理侧 `serve.rs` 按字段存在与否分流，名字漂了两端就不通。
+#[test]
+fn write_file_offset_fields_are_optional() {
+    let ranged = Frame::new("writeFile")
+        .with_id(5)
+        .with("path", serde_json::Value::String("/w/a.txt".into()))
+        .with("bytes", serde_json::Value::String(encode_hex(b"hello")))
+        .with("offset", serde_json::Value::from(0u64));
+    let wire = wire_fields(&ranged);
+    assert_eq!(wire.get("offset").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(wire.get("path").and_then(|v| v.as_str()), Some("/w/a.txt"));
+}
+
 /// 代理回给 Core 的应答形状：Core 侧的读线程按这些字段名取值，改名会静默变默认值。
 #[test]
 fn response_shapes_match_contract() {

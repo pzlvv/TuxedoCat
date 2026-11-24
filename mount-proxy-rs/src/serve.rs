@@ -172,22 +172,82 @@ fn dispatch(op: &str, frame: &Frame, view: &Arc<Mutex<ViewState>>) -> Frame {
         },
         "writeFile" => match (frame.str_field("path"), frame.bytes_field("bytes")) {
             (Ok(path), Ok(bytes)) => {
-                let path = Path::new(path);
-                // 父目录可能还不存在（Write 工具建新文件的正常情形）
-                if let Some(parent) = path.parent() {
-                    if let Err(reason) = exec::mkdir_all(&parent.to_string_lossy()) {
-                        return error_frame(id, reason);
+                // `offset` 是 specs/056 FR-003 的定向写：**缺省**时保持「整文件写」的老语义
+                // （Write 工具那条路径），给了 offset 才按块写。两态显式判别：字段缺失 =
+                // 老语义，类型不对 = 协议错误（不静默降级成整文件写，那会把一次分块写变成
+                // 「把整文件覆盖成这一块」）。
+                match frame.get("offset") {
+                    None | Some(Value::Null) => {
+                        let path = Path::new(path);
+                        // 父目录可能还不存在（Write 工具建新文件的正常情形）
+                        if let Some(parent) = path.parent() {
+                            if let Err(reason) = exec::mkdir_all(&parent.to_string_lossy()) {
+                                return error_frame(id, reason);
+                            }
+                        }
+                        match std::fs::write(path, bytes) {
+                            Ok(()) => Frame::new("ok").with_id(id),
+                            Err(error) => {
+                                error_frame(id, format!("写 {} 失败（{error}）", path.display()))
+                            }
+                        }
                     }
-                }
-                match std::fs::write(path, bytes) {
-                    Ok(()) => Frame::new("ok").with_id(id),
-                    Err(error) => error_frame(id, format!("写 {} 失败（{error}）", path.display())),
+                    Some(Value::Num(offset)) if *offset >= 0 => {
+                        match exec::write_range(path, *offset as u64, &bytes) {
+                            Ok(size) => Frame::new("ok")
+                                .with_id(id)
+                                .with("size", Value::Num(size as i64)),
+                            Err(reason) => error_frame(id, reason),
+                        }
+                    }
+                    Some(Value::Num(_)) => {
+                        error_frame(id, "writeFile.offset 不能是负数".to_string())
+                    }
+                    Some(_) => error_frame(id, "字段 offset 不是数字".to_string()),
                 }
             }
             // 线上形态是十六进制字符串，不是 `Value::Bytes`（见 protocol 的 `bytes_field`）：
             // 只匹配 `Value::Bytes` 会让每一次 Write 都以「类型不对」失败。
             (Ok(_), Err(reason)) => error_frame(id, reason),
             (Err(reason), _) => error_frame(id, reason),
+        },
+        // 传输的暂存件改名（specs/056 FR-003）：覆盖语义在 `exec::rename_path` 里
+        "renamePath" => match (frame.str_field("from"), frame.str_field("to")) {
+            (Ok(from), Ok(to)) => match exec::rename_path(from, to) {
+                Ok(()) => Frame::new("ok").with_id(id),
+                Err(reason) => error_frame(id, reason),
+            },
+            (Err(reason), _) | (_, Err(reason)) => error_frame(id, reason),
+        },
+        // 传输失败 / 中止时清暂存件（specs/056 FR-003）：目标不存在算成功
+        "unlinkPath" => match frame.str_field("path") {
+            Ok(path) => match exec::unlink_path(path) {
+                Ok(()) => Frame::new("ok").with_id(id),
+                Err(reason) => error_frame(id, reason),
+            },
+            Err(reason) => error_frame(id, reason),
+        },
+        // 定向读（specs/056 FR-002）：执行器的读流按块取内容，`eof` 决定何时收尾
+        "readRange" => match (
+            frame.str_field("path"),
+            frame.num_field("offset"),
+            frame.num_field("length"),
+        ) {
+            (Ok(path), Ok(offset), Ok(length)) if offset >= 0 && length >= 0 => {
+                match exec::read_range(path, offset as u64, length as u64) {
+                    Ok((bytes, eof)) => Frame::new("file")
+                        .with_id(id)
+                        .with("bytes", Value::Bytes(bytes))
+                        .with("eof", Value::Bool(eof)),
+                    Err(reason) => error_frame(id, reason),
+                }
+            }
+            (Ok(_), Ok(_), Ok(_)) => {
+                error_frame(id, "readRange 的 offset / length 不能是负数".to_string())
+            }
+            (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Err(reason)) => {
+                error_frame(id, reason)
+            }
         },
         "listDir" => match frame.str_field("dir") {
             Ok(dir) => match exec::list_dir(dir) {
@@ -572,6 +632,9 @@ mod tests {
             "gitShow",
             "spawn",
             "kill",
+            "renamePath",
+            "unlinkPath",
+            "readRange",
         ] {
             let text = contract_request_for(op);
             let frame = Frame::read_from(&mut std::io::Cursor::new(as_wire_frame(&text)))
@@ -626,5 +689,35 @@ mod tests {
             .unwrap();
         assert_eq!(frame.num_field("target").unwrap(), 10);
         assert_eq!(frame.id(), 11);
+    }
+
+    /// `readRange` 的 `offset` / `length` 是数字，应答里 `eof` 是布尔（specs/056 FR-002）。
+    #[test]
+    fn consumes_contract_read_range_payload() {
+        let text = contract_request_for("readRange");
+        let frame = Frame::read_from(&mut std::io::Cursor::new(as_wire_frame(&text)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.str_field("path").unwrap(), "/w/big.bin");
+        assert_eq!(frame.num_field("offset").unwrap(), 1_048_576);
+        assert_eq!(frame.num_field("length").unwrap(), 1_048_576);
+    }
+
+    /// 定向写的两态（specs/056 FR-003）：缺 `offset` 是老语义的整文件写，给了才是分块写。
+    #[test]
+    fn write_file_offset_is_optional_and_typed() {
+        let whole = Frame::read_from(&mut std::io::Cursor::new(as_wire_frame(
+            r#"{"op":"writeFile","id":5,"path":"/w/a.txt","bytes":"6869"}"#,
+        )))
+        .unwrap()
+        .unwrap();
+        assert!(whole.get("offset").is_none(), "缺 offset 必须是老语义");
+
+        let ranged = Frame::read_from(&mut std::io::Cursor::new(as_wire_frame(
+            r#"{"op":"writeFile","id":6,"path":"/w/a.txt","bytes":"6869","offset":4194304}"#,
+        )))
+        .unwrap()
+        .unwrap();
+        assert_eq!(ranged.num_field("offset").unwrap(), 4_194_304);
     }
 }

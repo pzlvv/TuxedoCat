@@ -1823,6 +1823,7 @@ fn slow_ui_requests_run_off_the_frame_loop() {
         "workViewFilesRequested",
         "workViewChangesRequested",
         "workViewFileDiffRequested",
+        "workViewFileIoRequested",
     ] {
         assert!(
             is_slow_ui_request(&json!({ "type": request_type })),
@@ -2416,6 +2417,115 @@ fn work_view_files_request_reports_missing_arguments_and_unmounted_view() {
         Some(false),
         "{unmounted:?}"
     );
+    assert!(
+        unmounted
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "失败侧必须带非空 error：{unmounted:?}"
+    );
+}
+
+/// `workViewFileIoRequested` 的请求分支（specs/056 FR-002 / FR-003 / FR-004）。
+///
+/// 真实读写要进命名空间（`work_view_tests` 覆盖）；这里锁请求分支的三类通道：
+/// 缺参数 / 缺 payload 是「请求非法」（Err）、越界路径回失败侧且**不**触发建立视图、
+/// 非 Overlay 归属同样回失败侧——两条失败路径都不得偷偷落到真实磁盘。
+#[test]
+fn work_view_file_io_request_reports_missing_arguments_and_unmounted_view() {
+    let core = test_core();
+    // 缺 sessionId / payload：请求本身非法，走 Err 而不是回失败侧
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({ "type": "workViewFileIoRequested", "payload": { "op": "stat", "path": "" } })
+    )
+    .is_err());
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({ "type": "workViewFileIoRequested", "sessionId": "s1" })
+    )
+    .is_err());
+    // payload 缺 op
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "workViewFileIoRequested",
+            "sessionId": "s1",
+            "payload": { "path": "" },
+        })
+    )
+    .is_err());
+    // write 缺 bytes 是协议漂移
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "workViewFileIoRequested",
+            "sessionId": "s1",
+            "payload": { "op": "write", "path": "a.txt", "offset": 0 },
+        })
+    )
+    .is_err());
+    // 未知 op
+    assert!(dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "workViewFileIoRequested",
+            "sessionId": "s1",
+            "payload": { "op": "truncate", "path": "a.txt" },
+        })
+    )
+    .is_err());
+
+    // 越界路径：回失败侧（不是 Err），且不因非法请求去建立视图
+    for path in ["../escape", "/abs", "a\\b"] {
+        let response = dispatch_ui_request(
+            &core,
+            &json!({
+                "type": "workViewFileIoRequested",
+                "sessionId": "sess-out-of-range",
+                "payload": { "op": "stat", "path": path },
+            }),
+        )
+        .expect("越界路径回失败侧而不是 Err");
+        assert_eq!(
+            response.get("ok").and_then(Value::as_bool),
+            Some(false),
+            "{path}: {response:?}"
+        );
+    }
+
+    // 非 Overlay 归属：回 { ok: false, error }，不回磁盘内容
+    let response = dispatch_ui_request(
+        &core,
+        &json!({
+            "type": "workViewFileIoRequested",
+            "sessionId": "sess-not-isolated",
+            "payload": { "op": "stat", "path": "a.txt" },
+        }),
+    )
+    .expect("请求合法时必须回响应而不是 Err");
+    assert_eq!(response.get("ok").and_then(Value::as_bool), Some(false));
+    assert!(
+        response
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("不是 Overlay 归属")),
+        "非 Overlay 归属要如实说明：{response:?}"
+    );
+
+    // 隔离归属但视图建不起来（无工作目录）：同样回失败侧，不退回磁盘
+    let isolated = test_core();
+    isolated.set_session_storage("sess-isolated-io", crate::engine::WorkViewStorage::Isolated);
+    let unmounted = dispatch_ui_request(
+        &isolated,
+        &json!({
+            "type": "workViewFileIoRequested",
+            "sessionId": "sess-isolated-io",
+            "payload": { "op": "list", "path": "" },
+        }),
+    )
+    .expect("请求合法时必须回响应而不是 Err");
+    assert_eq!(unmounted.get("ok").and_then(Value::as_bool), Some(false));
     assert!(
         unmounted
             .get("error")

@@ -1664,6 +1664,11 @@ impl Core {
                     "targetPath": request.target_path,
                     "sourceTarget": request.source_target,
                     "destTarget": request.dest_target,
+                    // specs/056 FR-001：本对话工作区那一端是否按叠加视图取放（Core 判、
+                    // 宿主只消费）；两个相对路径是该端在视图里的寻址依据
+                    "originInView": request.origin_in_view,
+                    "sourceRelative": request.source_relative,
+                    "targetRelative": request.target_relative,
                 });
                 let Some(result) = core.cancellable_request(payload, cancel) else {
                     return Err(

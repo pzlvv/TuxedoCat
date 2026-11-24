@@ -324,6 +324,8 @@ fn is_slow_ui_request(request: &Value) -> bool {
             | Some("workViewFilesRequested")
             | Some("workViewChangesRequested")
             | Some("workViewFileDiffRequested")
+            // 传输的分块读写要经代理往返，量级同一次文件操作（specs/056 FR-002）
+            | Some("workViewFileIoRequested")
     )
 }
 
@@ -500,6 +502,158 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                     "after": after,
                 })),
                 Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+            }
+        }
+        // 视图里的文件 IO（specs/056 FR-002 / FR-003）：跨工作区传输的一端可能是叠加视图，
+        // 而宿主读 Core 私有挂载点只能得到空目录（`docs/core/conversation-work-view.md 第 4 节`）。
+        // 因此字节经这里转交代理，路径是「工作区相对」，绝不接受视图内部路径。
+        //
+        // 失败分两类：视图备不起来 / 路径越界等业务失败回 `{ ok: false, error }`（宿主显示
+        // 错误，不退回磁盘）；缺参数是请求非法，回 `Err`。
+        "workViewFileIoRequested" => {
+            let session_id = request
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileIoRequested without sessionId".to_string())?;
+            // `payload` 是按 `op` 判别的联合（`WorkViewFileIoPayload`）：`sessionId` 在帧顶层
+            // （宿主路由用），其余字段都在 payload 里。契约成员必选，缺 payload 即协议漂移。
+            let request = request
+                .get("payload")
+                .ok_or_else(|| "workViewFileIoRequested without payload".to_string())?;
+            let op = request
+                .get("op")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workViewFileIoRequested without op".to_string())?;
+            // 未知 op 是协议漂移：在「视图备好了吗」之前就报错，别把它掩盖成业务失败
+            if !matches!(
+                op,
+                "stat" | "list" | "mkdirAll" | "rename" | "unlink" | "read" | "write"
+            ) {
+                return Err(format!("workViewFileIoRequested 未知 op：{op}"));
+            }
+            // 越界路径先拒（与 `workViewFilesRequested` 同一判据）：非法请求不该触发建立
+            // 视图这种副作用。`to` / `from` 成对出现，各自过同一份校验。
+            let read_relative = |key: &str| -> Result<&str, String> {
+                request
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("workViewFileIoRequested({op}) without {key}"))
+            };
+            let relative = read_relative("path")?;
+            if let Err(reason) = crate::work_view::check_view_relative(relative) {
+                return Ok(json!({ "ok": false, "error": reason }));
+            }
+            match op {
+                // `rename` 的第二个路径也要先校验
+                "rename" => {
+                    let to = read_relative("to")?;
+                    if let Err(reason) = crate::work_view::check_view_relative(to) {
+                        return Ok(json!({ "ok": false, "error": reason }));
+                    }
+                }
+                _ => {}
+            }
+            let number = |key: &str, required: bool| -> Result<Option<u64>, String> {
+                match request.get(key) {
+                    Some(Value::Number(_)) => request
+                        .get(key)
+                        .and_then(Value::as_u64)
+                        .map(Some)
+                        .ok_or_else(|| {
+                            format!("workViewFileIoRequested({op}) 的 {key} 不能是负数")
+                        }),
+                    Some(Value::Null) | None if !required => Ok(None),
+                    _ => Err(format!("workViewFileIoRequested({op}) without {key}")),
+                }
+            };
+            // 偏移与长度只在读写两个 op 上是必填；其余 op 的帧里不带这两个字段
+            let offset = number("offset", matches!(op, "read" | "write"))?;
+            let length = number("length", op == "read")?;
+            let bytes: Vec<u8> = match request.get("bytes") {
+                Some(Value::Array(items)) if op == "write" => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for item in items {
+                        let byte =
+                            item.as_u64().filter(|value| *value <= 255).ok_or_else(|| {
+                                "workViewFileIoRequested(write) 的 bytes 必须是 0-255 的整数数组"
+                                    .to_string()
+                            })?;
+                        out.push(byte as u8);
+                    }
+                    out
+                }
+                Some(Value::Null) | None if op == "write" => {
+                    return Err("workViewFileIoRequested(write) without bytes".to_string())
+                }
+                _ => Vec::new(),
+            };
+            if let Err(reason) = ensure_view_ready(core, session_id) {
+                return Ok(json!({ "ok": false, "error": reason }));
+            }
+            match op {
+                "stat" => match crate::work_view::view_stat(session_id, relative) {
+                    Ok(facts) => Ok(json!({
+                        "ok": true,
+                        "exists": facts.exists,
+                        "isFile": facts.is_file,
+                        "isDir": facts.is_dir,
+                        "isSymlink": facts.is_symlink,
+                        "size": facts.size,
+                    })),
+                    Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                },
+                "list" => match crate::work_view::view_list(session_id, relative) {
+                    Ok(entries) => Ok(json!({
+                        "ok": true,
+                        "entries": Value::Array(
+                            entries
+                                .into_iter()
+                                .map(|(name, is_dir)| json!({
+                                    "name": name,
+                                    "kind": if is_dir { "directory" } else { "file" },
+                                }))
+                                .collect(),
+                        ),
+                    })),
+                    Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                },
+                "mkdirAll" => match crate::work_view::view_mkdir_all(session_id, relative) {
+                    Ok(()) => Ok(json!({ "ok": true })),
+                    Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                },
+                "rename" => {
+                    let to = read_relative("to")?;
+                    match crate::work_view::view_rename(session_id, relative, to) {
+                        Ok(()) => Ok(json!({ "ok": true })),
+                        Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                    }
+                }
+                "unlink" => match crate::work_view::view_unlink(session_id, relative) {
+                    Ok(()) => Ok(json!({ "ok": true })),
+                    Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                },
+                "read" => {
+                    let offset = offset.unwrap_or(0);
+                    let length = length.unwrap_or(0);
+                    match crate::work_view::view_read_chunk(session_id, relative, offset, length) {
+                        Ok((bytes, eof)) => Ok(json!({
+                            "ok": true,
+                            "bytes": Value::Array(
+                                bytes.iter().map(|byte| json!(*byte)).collect()
+                            ),
+                            "eof": eof,
+                        })),
+                        Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                    }
+                }
+                "write" => {
+                    let offset = offset.unwrap_or(0);
+                    match crate::work_view::view_write_chunk(session_id, relative, offset, &bytes) {
+                        Ok(size) => Ok(json!({ "ok": true, "size": size })),
+                        Err(reason) => Ok(json!({ "ok": false, "error": reason })),
+                    }
+                }
+                other => Err(format!("workViewFileIoRequested 未知 op：{other}")),
             }
         }
         "smartNamingRequested" => {

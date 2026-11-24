@@ -65,6 +65,7 @@ last_reviewed: 2026-11-16
 | `e2e/electron/subagentInheritance.spec.ts` | US-51（Master 子代理继承思考强度：落盘 / 视图显示 / 请求体） | Electron 整应用 |
 | `e2e/electron/crossWorkspaceAgent.spec.ts` | US-56（跨工作区派发 / 占位对话 / 跳转 / 中止） | Electron 整应用 |
 | `e2e/electron/crossWorkspaceTransfer.spec.ts` | US-60（本地↔本地递归传输 / 守卫零写入） | Electron 整应用 |
+| `e2e/electron/overlayMountProxyRemote.spec.ts` | US-60（Overlay 会话的视图端：视图内文件搬出去 / 搬进来的只落视图） | Electron 整应用（真实 SSH 远端，`electron-ssh` 车道） |
 | `e2e/webview/workspaceMention.spec.ts` | US-57（`@` 候选 / 插入 / 排除本工作区） | webview UI |
 | `e2e/webview/todoProgress.spec.ts` | US-59（进度按钮 / 悬停 100ms / 固定与取消 / 恢复 / 压缩不丢） | webview UI |
 | `e2e/webview/subagentOptionsLock.spec.ts` | US-51（role 事实到达后的选项置灰） | webview UI |

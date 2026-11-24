@@ -4892,6 +4892,70 @@ fn transfer_test_context(
     }
 }
 
+// ==================== Transfer × Overlay 视图端（specs/056）====================
+
+/// 视图不可用时直接拒绝：隔离归属但代理没起来时，绝不能把请求交给宿主去搬磁盘
+/// （specs/056 FR-005；`docs/architecture/principles.md` 铁律 4.1）。
+#[test]
+fn transfer_view_unavailable_is_rejected_before_the_host() {
+    use std::sync::{Arc, Mutex};
+
+    let _serial = crate::test_support::serial();
+    set_cross_workspace_capability(true);
+    // 钩子被调用即记一次：断言它一次都没被调用（拒绝发生在发请求之前）
+    let calls = Arc::new(Mutex::new(0usize));
+    let counter = Arc::clone(&calls);
+    let mut ctx = transfer_test_context(
+        Some(Arc::new(move |_request, _cancel| {
+            *counter.lock().unwrap() += 1;
+            Ok(TransferSummary {
+                files: 0,
+                bytes: 0,
+                skipped_symlinks: 0,
+                source_workspace_id: String::new(),
+                dest_workspace_id: String::new(),
+                paths: Vec::new(),
+            })
+        })),
+        None,
+    );
+    ctx.cwd = "/ws".to_string();
+    ctx.work_view = crate::tools::WorkViewState::ViewUnavailable("代理缺失".to_string());
+    let input = json!({ "sourcePath": "/ws/a.txt", "targetPath": "/other/b.txt" });
+    match execute("Transfer", &input, &ctx) {
+        ToolOutcome::Error(text) => {
+            assert!(text.contains("Overlay view is unavailable"), "{text}");
+            assert!(text.contains("代理缺失"), "应透传原因：{text}");
+        }
+        other => panic!("视图不可用应当直接报错，得到 {other:?}"),
+    }
+    assert_eq!(*calls.lock().unwrap(), 0, "拒绝必须发生在发请求之前");
+}
+
+/// 视图端的相对路径派生（FR-004）：工作区内给出相对路径，工作区外是 `None`。
+#[test]
+fn transfer_view_relative_derivation() {
+    use std::path::Path;
+    let workspace = Path::new("/ws");
+    assert_eq!(
+        transfer_view_relative(workspace, "/ws/a.txt"),
+        Some("a.txt".to_string())
+    );
+    assert_eq!(
+        transfer_view_relative(workspace, "/ws/sub/deep/b.txt"),
+        Some("sub/deep/b.txt".to_string())
+    );
+    // 工作区根本身：空串（视图根的寻址形态）
+    assert_eq!(
+        transfer_view_relative(workspace, "/ws"),
+        Some(String::new())
+    );
+    // 越界：另一棵树
+    assert_eq!(transfer_view_relative(workspace, "/other/a.txt"), None);
+    // 未规整的路径不猜落点，按越界拒绝
+    assert_eq!(transfer_view_relative(workspace, "/ws/../etc/passwd"), None);
+}
+
 /// 带 `target` 的成功派发注入 Transfer reminder（isMeta silent 消息，正文复用
 /// 公共变量）；缺省（本机）派发不注入（specs/028 FR-006）。
 #[test]

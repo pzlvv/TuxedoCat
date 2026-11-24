@@ -16,8 +16,11 @@ use std::io::{Read, Write};
 /// 运行期 IPC 协议版本；改帧语义（新增 / 改名字段）必须递增。
 ///
 /// 消费方是 Linux 侧的 `serve`；非 Linux 目标只编译本模块的测试，读它的是单测。
+///
+/// 2：新增 `renamePath` / `unlinkPath`，`writeFile` 支持 `offset` / `append` /
+///    返回写入后的字节数（specs/056 FR-002 / FR-003 的视图文件 IO）。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub const IPC_PROTOCOL_VERSION: u32 = 1;
+pub const IPC_PROTOCOL_VERSION: u32 = 2;
 
 /// 单帧长度上限：8 MiB。超过即认为流已损坏（防止恶意长度触发巨量分配）。
 const MAX_FRAME: usize = 8 * 1024 * 1024;

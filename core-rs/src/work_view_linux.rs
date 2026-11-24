@@ -400,3 +400,89 @@ pub fn bind_view_onto_workspace(_mount_point: &Path, _workspace: &Path) -> Resul
 
 /// 历史遗留符号：旧形态由 Core 在启动早期 `unshare`，新形态不存在这一步。
 pub fn enter() {}
+
+// ==================== 视图文件 IO（specs/056 FR-002 / FR-003）====================
+//
+// 跨工作区传输的一端可能是本对话的叠加视图。视图挂载在 Core 的私有命名空间里，宿主进程
+// 读挂载点得到空目录（`docs/core/conversation-work-view.md` 第 4 节），因此**字节必须经
+// Core 转交代理**：`UiRequest.workViewFileIoRequested` 的每个 op 落到下面这一组入口，
+// 路径 = 该会话工作区 + 相对路径。
+//
+// 所有入口的前提与 `list_view_dir` 相同：调用前经 `Core::ensure_work_view` 备好视图。
+// 视图取不到时回 `Err`，由请求分支翻成 `{ ok: false, error }`——不退回真实磁盘。
+
+/// 取某会话视图里的路径（相对路径已由 `check_view_relative` 校验过）。
+fn view_target(
+    session_id: &str,
+    relative: &str,
+) -> Result<(PathBuf, Arc<mount_proxy::SessionProxy>), String> {
+    let handle = WorkViewHandle::of(session_id)
+        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let relative = sanitize_view_relative(relative)?;
+    let target = handle.workspace().join(&relative);
+    Ok((target, Arc::clone(handle.proxy())))
+}
+
+/// 视图里一个路径的事实（`UiRequest.workViewFileIoRequested` 的 `stat`）。
+pub fn view_stat(session_id: &str, relative: &str) -> Result<super::ViewPathFacts, String> {
+    let (target, proxy) = view_target(session_id, relative)?;
+    let facts = proxy.stat(&target)?;
+    Ok(super::ViewPathFacts {
+        exists: facts.exists,
+        is_file: facts.is_file,
+        is_dir: facts.is_dir,
+        is_symlink: facts.is_symlink,
+        size: facts.size,
+    })
+}
+
+/// 列视图目录（`list`）：只回名称与类型，与传输端点需要的最小面一致。
+pub fn view_list(session_id: &str, relative: &str) -> Result<Vec<(String, bool)>, String> {
+    let (target, proxy) = view_target(session_id, relative)?;
+    proxy.list_dir(&target)
+}
+
+/// 递归建目录（`mkdirAll`）。
+pub fn view_mkdir_all(session_id: &str, relative: &str) -> Result<(), String> {
+    let (target, proxy) = view_target(session_id, relative)?;
+    proxy.mkdir_all(&target)
+}
+
+/// 改名（`rename`）：目标已存在时按覆盖语义处理。
+///
+/// 两端必须在**同一个视图**里，因此只取一次句柄、两条路径都拼在它的工作区上。
+pub fn view_rename(session_id: &str, from: &str, to: &str) -> Result<(), String> {
+    let handle = WorkViewHandle::of(session_id)
+        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let from_path = handle.workspace().join(sanitize_view_relative(from)?);
+    let to_path = handle.workspace().join(sanitize_view_relative(to)?);
+    handle.proxy().rename_path(&from_path, &to_path)
+}
+
+/// 删一个文件（`unlink`）：清理传输的暂存件，目标不存在算成功。
+pub fn view_unlink(session_id: &str, relative: &str) -> Result<(), String> {
+    let (target, proxy) = view_target(session_id, relative)?;
+    proxy.unlink_path(&target)
+}
+
+/// 定向读（`read`）：返回 `(bytes, eof)`。
+pub fn view_read_chunk(
+    session_id: &str,
+    relative: &str,
+    offset: u64,
+    length: u64,
+) -> Result<(Vec<u8>, bool), String> {
+    let (target, proxy) = view_target(session_id, relative)?;
+    proxy.read_range(&target, offset, length)
+}
+
+/// 定向写（`write`）：返回写入后的文件长度。
+pub fn view_write_chunk(
+    session_id: &str,
+    relative: &str,
+    offset: u64,
+    bytes: &[u8],
+) -> Result<u64, String> {
+    let (target, proxy) = view_target(session_id, relative)?;
+    proxy.write_range(&target, offset, bytes)
+}

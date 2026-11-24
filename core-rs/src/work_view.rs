@@ -27,8 +27,22 @@
 #[allow(unused_imports)]
 pub use imp::{
     bind_view_onto_workspace, capabilities, changes, enter, file_diff, list_view_dir, release,
-    remove, WorkView, WorkViewHandle,
+    remove, view_list, view_mkdir_all, view_read_chunk, view_rename, view_stat, view_unlink,
+    view_write_chunk, WorkView, WorkViewHandle,
 };
+
+/// 视图里一个路径的事实（`UiRequest.workViewFileIoRequested` 的 `stat` 应答）。
+///
+/// 平台无关形态放在这里：请求分支与两侧实现共用同一份字段，`PathFacts` 是代理层的
+/// 内部类型，不直接进契约。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewPathFacts {
+    pub exists: bool,
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub size: u64,
+}
 
 /// 视图里的 git 取数（specs/047）：变更清单与文件两侧原文。
 ///

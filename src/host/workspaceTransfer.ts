@@ -11,8 +11,10 @@
 
 import { createReadStream, createWriteStream, promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { Transform, type Readable, type Writable } from 'node:stream';
+import { Readable, Transform, Writable } from 'node:stream';
+import type { Readable as ReadableStream } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import type { WorkViewFileIoPayload, WorkViewFileIoResult } from '../shared/AssistantEventBus.js';
 
 /** 目录项（readdir 的原始形态：符号链接不跟随、单列一类） */
 export interface TransferDirEntry {
@@ -40,7 +42,7 @@ export interface TransferEndpoint {
   mkdirp(p: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   unlink(p: string): Promise<void>;
-  readStream(p: string): Readable;
+  readStream(p: string): ReadableStream;
   writeStream(p: string): Writable;
   join(dir: string, name: string): string;
   dirname(p: string): string;
@@ -121,6 +123,146 @@ export function fsEndpoint(): TransferEndpoint {
     writeStream: (p) => createWriteStream(p),
     join: (dir, name) => path.join(dir, name),
     dirname: (p) => path.dirname(p),
+  };
+}
+
+/** 视图端点的单次读写块大小（specs/056 FR-003）：远小于代理 8 MiB 单帧上限 */
+export const WORK_VIEW_IO_CHUNK = 1024 * 1024;
+
+/**
+ * 叠加视图端点（specs/056 FR-002 / FR-003）：把 `TransferEndpoint` 映射到
+ * `UiRequest.workViewFileIoRequested`。
+ *
+ * 视图挂在 Core 的私有挂载命名空间里（`docs/core/conversation-work-view.md` 第 4 节），
+ * 宿主读挂载点得到空目录，因此这里只发请求、不碰文件系统。路径一律是**工作区相对**的
+ * `'/'` 分隔路径：`root` 是该端在发起会话工作区里的真实路径，本模块把它换算成相对路径，
+ * 于是执行器的其余代码（递归、覆盖合并、暂存改名）继续按绝对路径工作，一行不改。
+ *
+ * `request` 由调用方注入（生产是 `requestWorkViewFileIo`，单测是同形桩）：本模块保持
+ * 「纯逻辑、不 import 宿主 API」的既有性质。
+ */
+export function viewEndpoint(options: {
+  /** 该端在发起会话工作区里的绝对根路径（真实路径，不是视图内部路径） */
+  root: string;
+  request: (payload: WorkViewFileIoPayload) => Promise<WorkViewFileIoResult>;
+}): TransferEndpoint {
+  const { root, request } = options;
+  const posix = (p: string): string => p.replace(/\\/g, '/');
+  const trimmedRoot = posix(root).replace(/\/+$/, '');
+
+  /**
+   * 真实路径 → 工作区相对路径（`''` = 根）。
+   *
+   * 越界一律抛错：叠加只覆盖工作区子树，工作区之外在视图里就是真实磁盘，静默放行会让
+   * 传输读到视图之外的东西（specs/056 FR-004，`docs/architecture/principles.md` 铁律 4.1）。
+   * Core 侧也会拒一次（`check_view_relative`），这里先拒是为了让错误在发起端就点名路径。
+   */
+  const relative = (p: string): string => {
+    const full = posix(p);
+    if (full === trimmedRoot) return '';
+    const prefix = `${trimmedRoot}/`;
+    if (!full.startsWith(prefix)) {
+      throw new Error(`path is outside the conversation workspace: ${p}`);
+    }
+    return full.slice(prefix.length);
+  };
+
+  /** 发一条请求并把失败侧翻成异常（执行器靠异常收尾与清理暂存件） */
+  const call = async <T extends WorkViewFileIoResult>(
+    payload: Parameters<typeof request>[0],
+  ): Promise<T> => {
+    const result = await request(payload);
+    if (!result.ok) throw new Error(result.error);
+    return result as T;
+  };
+
+  return {
+    // 视图端不自己判绝对路径：端点的语义是「一定在工作区内」，越界由 `relative` 拒
+    isAbsolutePath: (p) => p.startsWith('/'),
+    async stat(p) {
+      const result = await request({ op: 'stat', path: relative(p) });
+      if (!result.ok) throw new Error(result.error);
+      if (!('exists' in result) || !result.exists) return null;
+      return {
+        kind: result.isDir ? 'directory' : 'file',
+        symlink: result.isSymlink,
+        size: result.size,
+      };
+    },
+    async readdir(p) {
+      const result = await request({ op: 'list', path: relative(p) });
+      if (!result.ok) throw new Error(result.error);
+      if (!('entries' in result)) {
+        throw new Error(`view list returned an unexpected payload for ${p}`);
+      }
+      return result.entries.map((entry) => ({
+        name: entry.name,
+        // 代理的 listDir 单列 `isSymlink`，但契约只回 file / directory：符号链接在这里
+        // 按「不是目录就是文件」处理，与 `fsEndpoint` 的 lstat 语义有差异——视图端不复制
+        // 符号链接（既有非目标），因此这一项不会改变搬运结果
+        kind: entry.kind,
+      }));
+    },
+    async mkdirp(p) {
+      await call({ op: 'mkdirAll', path: relative(p) });
+    },
+    async rename(from, to) {
+      await call({ op: 'rename', path: relative(from), to: relative(to) });
+    },
+    async unlink(p) {
+      await call({ op: 'unlink', path: relative(p) });
+    },
+    readStream(p) {
+      const rel = relative(p);
+      let offset = 0;
+      let done = false;
+      return new Readable({
+        async read() {
+          if (done) return;
+          try {
+            const result = await request({ op: 'read', path: rel, offset, length: WORK_VIEW_IO_CHUNK });
+            if (!result.ok) throw new Error(result.error);
+            if (!('bytes' in result)) {
+              throw new Error(`view read returned an unexpected payload for ${p}`);
+            }
+            if (result.bytes.length > 0) {
+              offset += result.bytes.length;
+              this.push(Buffer.from(result.bytes));
+            }
+            if (result.eof || result.bytes.length === 0) {
+              done = true;
+              this.push(null);
+            }
+          } catch (error) {
+            done = true;
+            this.destroy(error instanceof Error ? error : new Error(String(error)));
+          }
+        },
+      });
+    },
+    writeStream(p) {
+      const rel = relative(p);
+      let offset = 0;
+      return new Writable({
+        async write(chunk: Buffer, _encoding, callback) {
+          try {
+            const result = await request({ op: 'write', path: rel, offset, bytes: [...chunk] });
+            if (!result.ok) throw new Error(result.error);
+            offset += chunk.length;
+            callback();
+          } catch (error) {
+            callback(error instanceof Error ? error : new Error(String(error)));
+          }
+        },
+      });
+    },
+    join: (dir, name) => `${dir.replace(/[\\/]+$/, '')}/${name}`,
+    dirname: (p) => {
+      const parts = p.split(/[\\/]/).filter((part) => part !== '');
+      parts.pop();
+      const base = p.startsWith('/') ? '/' : '';
+      return base + parts.join('/');
+    },
   };
 }
 
