@@ -16,7 +16,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createChecker, runTests } from './helpers/harness';
 import { authFromSource, endpointWithAuth, runSshAuthChain } from '../host/sshConnectChain';
-import type { SshAuthSource } from '../host/sshAuth';
+import { classifySshFailure, SshConnectError, type SshAuthSource } from '../host/sshAuth';
+import { SshHostKeyError } from '../host/standalone/sshClient';
 
 function makeSshDir(names: readonly string[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-chain-test-'));
@@ -38,6 +39,11 @@ function recorder(
       throw outcome;
     },
   };
+}
+
+/** 建链阶段的失败（认证链据报文分类的那一层，见 `SshConnectError`） */
+function connectFailure(message: string): Error {
+  return new SshConnectError({ host: 'h', port: 22, user: 'u' }, new Error(message));
 }
 
 runTests('sshConnectChain', async () => {
@@ -72,7 +78,7 @@ runTests('sshConnectChain', async () => {
 
   {
     const dir = sshDir(['id_ed25519']);
-    const fx = recorder(() => new Error('All configured authentication methods failed'));
+    const fx = recorder(() => connectFailure('All configured authentication methods failed'));
     const outcome = await runSshAuthChain({
       sshDir: dir, env: agentEnv, savedPassword: 'pw', attempt: fx.attempt, log,
     });
@@ -86,7 +92,7 @@ runTests('sshConnectChain', async () => {
 
   {
     const dir = sshDir([]);
-    const fx = recorder((source) => (source.kind === 'agent' ? 'ok' : new Error('All configured authentication methods failed')));
+    const fx = recorder((source) => (source.kind === 'agent' ? 'ok' : connectFailure('All configured authentication methods failed')));
     const outcome = await runSshAuthChain({
       sshDir: dir, env: agentEnv, savedPassword: null, attempt: fx.attempt, log,
     });
@@ -101,7 +107,7 @@ runTests('sshConnectChain', async () => {
 
   {
     const dir = sshDir(['id_ed25519']);
-    const fx = recorder(() => new Error('connect ECONNREFUSED 10.0.0.1:22'));
+    const fx = recorder(() => connectFailure('connect ECONNREFUSED 10.0.0.1:22'));
     const outcome = await runSshAuthChain({
       sshDir: dir, env: agentEnv, savedPassword: 'pw', attempt: fx.attempt, log,
     });
@@ -112,9 +118,7 @@ runTests('sshConnectChain', async () => {
 
   {
     const dir = sshDir(['id_ed25519']);
-    const fx = recorder(() => new Error(
-      'SSH host key for 10.0.0.1:22 does not match the fingerprint recorded in known-hosts.json.',
-    ));
+    const fx = recorder(() => new SshHostKeyError('10.0.0.1', 22, 'old-fp', 'new-fp'));
     const outcome = await runSshAuthChain({
       sshDir: dir, env: {}, savedPassword: null, attempt: fx.attempt, log,
     });
@@ -127,9 +131,9 @@ runTests('sshConnectChain', async () => {
     const dir = sshDir(['id_ed25519', 'id_rsa']);
     const fx = recorder((source) => {
       if (source.kind === 'keyFile' && source.keyPath.endsWith('id_ed25519')) {
-        return new Error('private key cannot be parsed: Encrypted private OpenSSH key detected');
+        return connectFailure('private key cannot be parsed: Encrypted private OpenSSH key detected');
       }
-      if (source.kind === 'keyFile') return new Error('All configured authentication methods failed');
+      if (source.kind === 'keyFile') return connectFailure('All configured authentication methods failed');
       return 'ok';
     });
     const outcome = await runSshAuthChain({
@@ -186,6 +190,39 @@ runTests('sshConnectChain', async () => {
       { kind: 'sshKey', keyPath: null },
     );
     check('endpointWithAuth 只换凭证', endpoint.host === 'h' && endpoint.port === 22 && endpoint.auth?.kind === 'sshKey');
+  }
+
+  // ---------- 失败的归属：建链阶段的「认证不成立」才回浮层（AC-08 / AC-10 vs FR-009） ----------
+
+  {
+    const handshake = (message: string): Error =>
+      new SshConnectError({ host: 'h', port: 22, user: 'u' }, new Error(message));
+    check(
+      '口令被服务端拒绝判 auth（AC-08）',
+      classifySshFailure(handshake('All configured authentication methods failed')) === 'auth',
+    );
+    check(
+      'permission denied 也是口令被拒（AC-10）',
+      classifySshFailure(handshake('Permission denied (publickey,password)')) === 'auth',
+    );
+    check(
+      '建链阶段的不可达是终止性失败（FR-009）',
+      classifySshFailure(handshake('connect ECONNREFUSED 10.0.0.1:22')) === 'fatal',
+    );
+    check(
+      '主机密钥变更是终止性失败（FR-009）',
+      classifySshFailure(new SshHostKeyError('h', 22, 'old-fp', 'new-fp')) === 'fatal',
+    );
+    // 凭证已被接受之后的失败（部署 / 启动 / 列目录）不进浮层：报文里出现 permission denied
+    // 只是远端文件系统权限问题，再问一次口令没有意义
+    check(
+      '部署阶段的 permission denied 是终止性失败',
+      classifySshFailure(new Error('SFTP mkdir failed (/home/u/x): Permission denied')) === 'fatal',
+    );
+    check(
+      '非 Error 的值按终止性失败处理',
+      classifySshFailure('All configured authentication methods failed') === 'fatal',
+    );
   }
 
   for (const dir of created) fs.rmSync(dir, { recursive: true, force: true });

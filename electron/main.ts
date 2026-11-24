@@ -151,6 +151,7 @@ import {
 } from './fileOpen.js';
 import { sshTargetFor, sshTargetKey } from '../src/host/sshTarget.js';
 import { runSshAuthChain, endpointWithAuth, authFromSource } from '../src/host/sshConnectChain.js';
+import { classifySshFailure } from '../src/host/sshAuth.js';
 import { sessionBusyLevel } from '../src/shared/sessionRuntime.js';
 import {
   readWorkspaceState,
@@ -3680,7 +3681,17 @@ function openRemoteWorkspaceDialog(): void {
         // 口令浮层的提交：用户已经把口令给了，不再退回私钥 / agent 重试
         // （既无意义，又会让服务端把失败计数加到公钥上）
         auth = { kind: 'sshPassword', password: request.password };
-        listing = await tryConnect(base, auth);
+        try {
+          listing = await tryConnect(base, auth);
+        } catch (error) {
+          // 这一次口令被服务端拒绝 → 回浮层重输（AC-08 / AC-10）；凭证已被接受之后的
+          // 失败（部署 / 启动 / 列目录）与不可达 / 主机密钥变更一样是终止性失败，
+          // 报在表单上、不再问口令（FR-009）。分类只在 `classifySshFailure` 一处定义。
+          if (classifySshFailure(error) === 'auth') {
+            return { ok: false, reason: 'needPassword', error: describeError(error) };
+          }
+          throw error;
+        }
       } else {
         const outcome = await runSshAuthChain({
           // 默认私钥目录与环境都取宿主进程自身的：这是「本机有什么身份」的事实来源

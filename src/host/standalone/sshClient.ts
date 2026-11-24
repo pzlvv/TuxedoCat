@@ -17,7 +17,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Client, utils, type ClientChannel, type SFTPWrapper, type FileEntryWithStats } from 'ssh2';
 import { CONFIG_DIR_NAME } from '../../config/project.js';
-import type { SshAuthSource } from '../sshAuth.js';
+import { SshConnectError, type SshAuthSource } from '../sshAuth.js';
 import type { TransferEndpoint } from '../workspaceTransfer.js';
 
 /** SSH 连接目标 */
@@ -169,13 +169,26 @@ export class SshClient {
     if (this.client) throw new SshDisconnectedError('SSH client is connecting or closed.');
     const { host, port, user } = this.target;
     // 认证材料只在「建链这一刻」准备：凭证对象里只有来源描述，私钥正文不常驻（specs/053 FR-007）
-    const authOptions = this.authOptions();
+    let authOptions: { password: string } | { agent: string } | { privateKey: Buffer };
+    try {
+      authOptions = this.authOptions();
+    } catch (error) {
+      // 来源准备失败同属建链阶段：认证链据此跳过这份来源（FR-003）
+      throw new SshConnectError(
+        { host, port, user },
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
     const client = new Client();
     this.client = client;
-    /** 失败原因统一带上目标：ssh2 的原文（如「认证方式全部失败」）看不出连的是谁 */
-    const describe = (error: Error): Error => this.hostKeyMismatch ?? new Error(
-      `SSH connection to ${user}@${host}:${port} failed: ${error.message}`,
-    );
+    /**
+     * 失败原因统一带上目标：ssh2 的原文（如「认证方式全部失败」）看不出连的是谁。
+     *
+     * 建链阶段之外没有别的失败会走这里；主机密钥变更原样抛出（`SshHostKeyError`
+     * 有自己的新旧指纹，宿主据此弹比对告警），不包进 `SshConnectError`。
+     */
+    const describe = (error: Error): Error => this.hostKeyMismatch
+      ?? new SshConnectError({ host, port, user }, error);
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (error: Error | null): void => {
@@ -222,7 +235,7 @@ export class SshClient {
   /**
    * 认证来源 → ssh2 的 connect 选项（`docs/core/core-remote.md` 第 2.8 节，specs/053）。
    *
-   * 三种来源的准备失败都**直接抛错**，由认证链按 `classifySshFailure` 判为「认证不成立」
+   * 三种来源的准备失败都由调用方包成 `SshConnectError` 抛出，认证链据此判为「认证不成立」
    * 并推进到下一个来源（FR-003）：这里不做「跳过」的决定——跳过属于认证链。
    *
    * 私钥先用 `utils.parseKey` 预检：加密私钥在没有 passphrase 时以明确错误暴露，

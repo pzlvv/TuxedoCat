@@ -21,7 +21,9 @@ import {
   discoverDefaultPrivateKeys,
   sshAuthChain,
   sshAuthIdentity,
+  SshConnectError,
 } from '../host/sshAuth';
+import { SshHostKeyError } from '../host/standalone/sshClient';
 
 /** 建一个临时 `~/.ssh`，`names` 里的文件写成普通文件，`dirs` 里的建成目录 */
 function makeSshDir(names: readonly string[], dirs: readonly string[] = []): string {
@@ -113,8 +115,12 @@ runTests('sshAuth', () => {
 
   // ---------- 失败分类 ----------
 
+  // 只有建链阶段的失败（`SshConnectError`，含来源准备失败）才继续看报文：报文本身不足以
+  // 区分「口令被拒」与「部署阶段被远端文件系统拒绝」，两处都是 permission denied
+  const connectFailure = (message: string): Error =>
+    new SshConnectError({ host: '10.0.0.1', port: 22, user: 'pz' }, new Error(message));
+
   const fatal = [
-    'SSH connection to pz@10.0.0.1:22 failed: SSH host key for 10.0.0.1:22 does not match the fingerprint recorded in known-hosts.json.',
     'connect ECONNREFUSED 10.0.0.1:22',
     'SSH command timed out after 120000ms: uname -sm',
     'connect ETIMEDOUT 10.0.0.1:22',
@@ -122,7 +128,7 @@ runTests('sshAuth', () => {
     'connection closed.',
   ];
   for (const message of fatal) {
-    check(`终止性失败判 fatal：${message.slice(0, 40)}`, classifySshFailure(new Error(message)) === 'fatal');
+    check(`终止性失败判 fatal：${message.slice(0, 40)}`, classifySshFailure(connectFailure(message)) === 'fatal');
   }
 
   const auth = [
@@ -132,11 +138,21 @@ runTests('sshAuth', () => {
     'All configured authentication methods failed',
   ];
   for (const message of auth) {
-    check(`认证不成立判 auth：${message.slice(0, 40)}`, classifySshFailure(new Error(message)) === 'auth');
+    check(`认证不成立判 auth：${message.slice(0, 40)}`, classifySshFailure(connectFailure(message)) === 'auth');
   }
 
-  check('认不出的错误按 fatal 处理（不做乐观兜底）', classifySshFailure(new Error('something unexpected')) === 'fatal');
+  check('认不出的错误按 fatal 处理（不做乐观兜底）', classifySshFailure(connectFailure('something unexpected')) === 'fatal');
   check('非 Error 也能分类', classifySshFailure('ECONNREFUSED') === 'fatal');
+  // 建链阶段之外的失败（部署 / 启动 / 列目录）：报文里的 permission denied 说的是远端
+  // 文件系统，再问一次口令没有意义（specs/053 FR-009）
+  check(
+    '主机密钥变更判 fatal（不包进建链失败）',
+    classifySshFailure(new SshHostKeyError('10.0.0.1', 22, 'old-fp', 'new-fp')) === 'fatal',
+  );
+  check(
+    '部署阶段的 permission denied 判 fatal',
+    classifySshFailure(new Error('SFTP mkdir failed (/home/pz/x): Permission denied')) === 'fatal',
+  );
 
   // ---------- 凭证身份 ----------
 

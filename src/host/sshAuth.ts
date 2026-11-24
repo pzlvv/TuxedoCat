@@ -91,6 +91,28 @@ export function sshAuthChain(options: {
 export type SshFailureKind = 'auth' | 'fatal';
 
 /**
+ * 建链阶段（传输 + 认证握手）的失败。
+ *
+ * 「失败发生在哪一段」决定它归谁：只有这一段可能是**这份凭证不被接受**，值得换下一个
+ * 来源或问用户口令；之后的部署 / 启动 / 列目录与凭证无关，一律终止性失败
+ * （specs/053 FR-009）。报文本身不足以区分——远端文件系统拒绝时的 `Permission denied`
+ * 与口令被拒的 `Permission denied (publickey,password)` 长得一样。
+ *
+ * 主机密钥变更**不进本类**：`SshHostKeyError` 原样抛给宿主去弹指纹比对告警。
+ */
+export class SshConnectError extends Error {
+  constructor(
+    /** 目标（host / port / user）：ssh2 的原文看不出连的是谁 */
+    readonly target: { host: string; port: number; user: string },
+    /** 底层原因：私钥预检错误，或 ssh2 的认证 / 传输失败原文 */
+    readonly reason: Error,
+  ) {
+    super(`SSH connection to ${target.user}@${target.host}:${target.port} failed: ${reason.message}`);
+    this.name = 'SshConnectError';
+  }
+}
+
+/**
  * ssh2 在「所有配置的认证方式都失败」时给的原文。
  *
  * 这条是**认证不成立**的判据：主机是通的，只是这份凭证不被接受。
@@ -103,13 +125,15 @@ const AUTH_REJECTED_PATTERN = /all configured authentication methods failed|no a
  * 只有认证不成立才值得继续兜底（换成别的来源、最后问口令）；不可达、超时、主机密钥变更
  * 都直接报错——把它们混进兜底链会让用户为了一个拼错的主机名去输口令。
  *
+ * 不在 `SshConnectError` 里的失败（部署 / 启动 / 列目录 / 主机密钥变更）一律终止性：
+ * 它们与凭证无关，报文里的 `permission denied` 说的是远端文件系统（FR-009）。
+ *
  * 私钥自身的问题（加密、损坏、不可读）判为 `auth`：它只说明**这份来源**不可用，与目标
  * 主机是否可达无关（FR-003）。
  */
 export function classifySshFailure(error: unknown): SshFailureKind {
-  const message = error instanceof Error ? error.message : String(error);
-  // 主机密钥变更：`SshHostKeyError` 的原文，必须原样呈现给用户去比对指纹
-  if (/does not match the fingerprint/i.test(message)) return 'fatal';
+  if (!(error instanceof SshConnectError)) return 'fatal';
+  const message = error.reason.message;
   // 传输层就没建起来：换凭证也解决不了
   if (/timed out|timeout|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ECONNRESET|EPIPE|getaddrinfo|connection closed/i.test(message)) {
     return 'fatal';

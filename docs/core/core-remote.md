@@ -233,8 +233,11 @@ last_reviewed: 2026-10-17
    - 连接历史里该 `user@host:port` 的口令排在私钥之后；
    - 以上都「认证不成立」时，宿主弹口令浮层问一次。
    `classifySshFailure` 把失败分成两类：`auth`（认证不成立，推进到下一个来源）与
-   `fatal`（不可达 / 超时 / 主机密钥不一致，直接报错、不弹浮层）。加密或损坏的私钥按
-   「该来源不可用」跳过，不询问 passphrase。
+   `fatal`（不可达 / 超时 / 主机密钥不一致，直接报错、不弹浮层）。判据是**失败发生在哪一段**
+   而不是报文：只有建链阶段（传输 + 认证握手，`SshClient.connect` 抛的 `SshConnectError`）
+   的失败算 `auth`，其后的部署 / 启动 / 列目录一律 `fatal`——那里出现的 `permission denied`
+   是远端文件系统拒绝，再问一次口令没有意义。加密或损坏的私钥按「该来源不可用」跳过，
+   不询问 passphrase。
    主机密钥首次记录、之后不一致即报错，指纹存 `~/<configDir>/known-hosts.json`。指纹变更
    时宿主弹告警展示新旧指纹，用户确认后经 `recordKnownHostFingerprint` 把新指纹写回再重连
    ——模块本身不提供「跳过校验」的连接方式；
