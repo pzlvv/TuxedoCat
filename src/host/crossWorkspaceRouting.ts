@@ -57,6 +57,54 @@ export type TransferEndsResolution =
   | { kind: 'ends'; sourceRef: WorkspaceRef; destRef: WorkspaceRef }
   | { kind: 'error'; error: string };
 
+/** 传输两端的通道选择（specs/056 FR-001：视图端判定） */
+export type TransferChannels =
+  | {
+      kind: 'channels';
+      /** 源端走叠加视图（`UiRequest.workViewFileIoRequested`）而不是磁盘 / SFTP */
+      sourceView: boolean;
+      destView: boolean;
+    }
+  | { kind: 'error'; error: string };
+
+/**
+ * 传输两端的通道选择（specs/056 FR-001 / FR-004）。
+ *
+ * 纯函数：`originInView` 是发起方 Core 给出的**事实**（该会话此刻的归属是否为 `isolated`），
+ * 「哪一端是发起工作区」用与守卫同一份 `sameWorkspaceRef` 比较——宿主不读 `meta.json`，
+ * 不重算归属。落在发起工作区的那一端必须带上相对路径（Core 在发请求前算好）；缺了就报错，
+ * 不退回磁盘：那会把「本以为搬的是对话里的文件、实际搬的是磁盘」交给用户
+ * （`docs/architecture/principles.md` 铁律 4.1）。
+ */
+export function planTransferChannels(options: {
+  originRef: WorkspaceRef;
+  sourceRef: WorkspaceRef;
+  destRef: WorkspaceRef;
+  originInView: boolean;
+  sourceRelative: string | null;
+  targetRelative: string | null;
+  sourcePath: string;
+  targetPath: string;
+}): TransferChannels {
+  const sourceInOrigin = sameWorkspaceRef(options.sourceRef, options.originRef);
+  const destInOrigin = sameWorkspaceRef(options.destRef, options.originRef);
+  const sourceView = options.originInView && sourceInOrigin;
+  const destView = options.originInView && destInOrigin;
+  if (sourceView && options.sourceRelative === null) {
+    return {
+      kind: 'error',
+      error: `source path is outside the conversation workspace: ${options.sourcePath}`,
+    };
+  }
+  if (destView && options.targetRelative === null) {
+    return {
+      kind: 'error',
+      error: `target path is outside the conversation workspace: ${options.targetPath}`,
+    };
+  }
+  return { kind: 'channels', sourceView, destView };
+}
+
 /**
  * 跨工作区传输的两端解析与守卫（specs/028 FR-002）。
  *

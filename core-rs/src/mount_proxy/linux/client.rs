@@ -360,6 +360,85 @@ impl SessionProxy {
         }
     }
 
+    /// 定向写（specs/056 FR-003）：从 `offset` 写，并把文件截断在写入末尾。
+    /// 返回写入后的文件长度。
+    pub fn write_range(&self, path: &Path, offset: u64, bytes: &[u8]) -> Result<u64, String> {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "path".to_string(),
+            serde_json::Value::String(path.to_string_lossy().into_owned()),
+        );
+        fields.insert(
+            "bytes".to_string(),
+            serde_json::Value::String(encode_hex(bytes)),
+        );
+        fields.insert("offset".to_string(), serde_json::Value::from(offset));
+        let reply = self.call("writeFile", fields)?;
+        reply
+            .fields
+            .get("size")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "writeFile 应答缺 size".to_string())
+    }
+
+    /// 定向读（specs/056 FR-002）：返回 `(bytes, eof)`，`eof` 由实读字节数判定。
+    pub fn read_range(
+        &self,
+        path: &Path,
+        offset: u64,
+        length: u64,
+    ) -> Result<(Vec<u8>, bool), String> {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "path".to_string(),
+            serde_json::Value::String(path.to_string_lossy().into_owned()),
+        );
+        fields.insert("offset".to_string(), serde_json::Value::from(offset));
+        fields.insert("length".to_string(), serde_json::Value::from(length));
+        let reply = self.call("readRange", fields)?;
+        let bytes = decode_hex(reply.str_field("bytes")?)?;
+        let eof = reply
+            .fields
+            .get("eof")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| "readRange 应答缺 eof".to_string())?;
+        Ok((bytes, eof))
+    }
+
+    /// 改名（specs/056 FR-003）：目标已存在时按覆盖语义处理。
+    pub fn rename_path(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "from".to_string(),
+            serde_json::Value::String(from.to_string_lossy().into_owned()),
+        );
+        fields.insert(
+            "to".to_string(),
+            serde_json::Value::String(to.to_string_lossy().into_owned()),
+        );
+        let reply = self.call("renamePath", fields)?;
+        if reply.op == "ok" {
+            Ok(())
+        } else {
+            Err(format!("renamePath 回了 {}", reply.op))
+        }
+    }
+
+    /// 删一个文件（specs/056 FR-003）：用于清理传输的暂存件，目标不存在算成功。
+    pub fn unlink_path(&self, path: &Path) -> Result<(), String> {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            "path".to_string(),
+            serde_json::Value::String(path.to_string_lossy().into_owned()),
+        );
+        let reply = self.call("unlinkPath", fields)?;
+        if reply.op == "ok" {
+            Ok(())
+        } else {
+            Err(format!("unlinkPath 回了 {}", reply.op))
+        }
+    }
+
     /// 递归建目录
     pub fn mkdir_all(&self, path: &Path) -> Result<(), String> {
         let mut fields = serde_json::Map::new();

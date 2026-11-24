@@ -74,7 +74,7 @@ Windows 上若 Smart App Control 处于评估 / 开启态，tui-installer 车道
 | --- | --- | --- | --- |
 | 只走 `sshExec`（不启 Electron） | 8.5s | 12.4s | 1.46× |
 | 启 Electron + 恢复远程工作区 | 13.4s | 31.9s | 2.38× |
-| `overlayMountProxyRemote` 全 17 条 | — | 中位 31.9s / 最长 49.1s | — |
+| `overlayMountProxyRemote` 全 18 条 | — | 中位 31.9s / 最长 49.1s（`US-60 FR-009` 两轮工具轮次 + 第二个工作区，体内放宽到 180s） | — |
 
 **放大集中在 Electron 冷启动，不在网络。** 结构性原因是每条用例都完整走一遍
 `startMockLlm`（开反向隧道）→ `launchApp` → 等远程工作区恢复 → `afterEach` 的

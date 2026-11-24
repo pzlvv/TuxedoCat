@@ -7,7 +7,7 @@
     "形态：Core 发十六进制字符串，代理只认进程内枚举，单侧自测全绿而真实链路全红。",
     "request 是 Core 实际发出的形状；expect 是代理必须回给 Core 的形状。"
   ],
-  "ipcProtocolVersion": 1,
+  "ipcProtocolVersion": 2,
   "cases": [
     {
       "op": "ping",
@@ -17,7 +17,7 @@
     {
       "op": "version",
       "request": { "op": "version", "id": 2 },
-      "expect": { "op": "version", "id": 2, "ipcVersion": 1 }
+      "expect": { "op": "version", "id": 2, "ipcVersion": 2 }
     },
     {
       "op": "probeOverlay",
@@ -94,6 +94,24 @@
       "request": { "op": "kill", "id": 11, "target": 10 },
       "expect": { "op": "ok", "id": 11 },
       "note": "target 是被中止那条 spawn 的 id，不是本条请求自己的 id"
-    }
-  ]
-}
+    },
+    {
+      "op": "renamePath",
+      "request": { "op": "renamePath", "id": 12, "from": "/w/a.txt.tuxedo-transfer-tmp", "to": "/w/a.txt" },
+      "expect": { "op": "ok", "id": 12 },
+      "note": "specs/056 FR-003 的暂存改名：目标已存在时先删再改名（覆盖语义）"
+    },
+    {
+      "op": "unlinkPath",
+      "request": { "op": "unlinkPath", "id": 13, "path": "/w/a.txt.tuxedo-transfer-tmp" },
+      "expect": { "op": "ok", "id": 13 },
+      "note": "specs/056 FR-003 的中止 / 失败清理：目标不存在也算成功"
+    },
+    {
+      "op": "readRange",
+      "request": { "op": "readRange", "id": 14, "path": "/w/big.bin", "offset": 1048576, "length": 1048576 },
+      "expect": { "op": "file", "id": 14, "bytes": "30313233", "eof": true },
+      "note": "specs/056 FR-002 的分块读：eof = 实读字节数小于请求量（并发改写的总长不可信）"
+    },
+    {
+      "op": "spawn",

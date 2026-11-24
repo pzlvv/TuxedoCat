@@ -274,6 +274,19 @@ pub struct TransferRequest {
     /// `None` = 发起会话所属工作区（缺省端）
     pub source_target: Option<String>,
     pub dest_target: Option<String>,
+    /// 本对话工作区那一端是否按叠加视图取放（specs/056 FR-001）。
+    ///
+    /// 由 Core 按 `ToolContext.work_view` 一次判出，宿主只消费这个事实——它不读
+    /// `meta.json` 的 `storage`、不重算（`docs/core/conversation-work-view.md` 第 2 节）。
+    pub origin_in_view: bool,
+    /// 源端相对**发起会话工作区根**的 POSIX 相对路径；落在该工作区之外时为 `None`。
+    ///
+    /// 视图挂在 Core 的私有命名空间里（宿主读挂载点得到空目录），跨进程搬字节只能由
+    /// Core 代执行，因此请求带的是「会话 + 相对路径」而不是任何视图内部路径
+    /// （specs/056 FR-002）。
+    pub source_relative: Option<String>,
+    /// 目标端的同形相对路径（语义同上）。
+    pub target_relative: Option<String>,
 }
 
 /// 传输统计（宿主应答载荷；结果文本由 `run_transfer` 组装）
@@ -2829,6 +2842,28 @@ fn format_transfer_paths(paths: &[String]) -> String {
     text
 }
 
+/// 视图端路径的派生（specs/056 FR-004）：真实路径 → 相对工作区根的 POSIX 相对路径。
+///
+/// `None` = 该路径落在工作区之外。叠加只覆盖工作区子树，工作区之外在视图里就是真实
+/// 磁盘；把它当成视图路径会让 Core 读到视图之外的东西，因此调用方按工具错误拒绝
+/// （与 `WorkViewState::io_path` 的越界语义同一条口径）。
+///
+/// 工作区根本身回空串（视图根的寻址形态），与 `check_view_relative` 的 `''` 约定一致。
+fn transfer_view_relative(workspace: &std::path::Path, path: &str) -> Option<String> {
+    let target = std::path::Path::new(path);
+    let relative = target.strip_prefix(workspace).ok()?;
+    let mut segments: Vec<String> = Vec::new();
+    for segment in relative.components() {
+        match segment {
+            std::path::Component::CurDir => continue,
+            std::path::Component::Normal(text) => segments.push(text.to_string_lossy().to_string()),
+            // `..` / 根 / 前缀分量说明这条路径根本没被规整过：不猜它的落点，按越界拒绝
+            _ => return None,
+        }
+    }
+    Some(segments.join("/"))
+}
+
 /// `Transfer` 工具：跨工作区文件传输。
 ///
 /// Core 只做入参校验、能力位检查与结果文本组装；两端解析守卫与搬运都在宿主
@@ -2880,6 +2915,35 @@ fn run_transfer(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     let Some(hook) = ctx.transfer.as_ref() else {
         return ToolOutcome::Error("Transfer: no transfer runtime available".to_string());
     };
+    // 视图端判定（specs/056 FR-001 / FR-005）：三态在发送前就落地——`ViewUnavailable`
+    // 直接报错，不把「隔离归属但视图坏了」的请求交给宿主去搬磁盘
+    // （`docs/architecture/principles.md` 铁律 4.1）。
+    let origin_in_view = match &ctx.work_view {
+        WorkViewState::Workspace => false,
+        WorkViewState::View(_) => true,
+        WorkViewState::ViewUnavailable(reason) => {
+            return ToolOutcome::Error(format!(
+                "Transfer: the conversation's Overlay view is unavailable ({reason}); nothing was transferred"
+            ));
+        }
+    };
+    // 视图端的相对路径（specs/056 FR-002）：跨进程搬字节只能由 Core 代执行，因此请求带
+    // 「会话 + 相对工作区根的路径」。非视图会话不算这份派生值——它们两端都走磁盘 / SFTP。
+    let (source_relative, target_relative) = if origin_in_view {
+        let cwd = std::path::Path::new(&ctx.cwd);
+        let source = transfer_view_relative(cwd, &source_path);
+        let target = transfer_view_relative(cwd, &target_path);
+        // 两端都在工作区之外：视图只覆盖工作区子树，拿出界的路径会让 Core 去读真实磁盘
+        // （FR-004），所以这里就拒绝，两端零写入
+        if source.is_none() && target.is_none() {
+            return ToolOutcome::Error(format!(
+                "Transfer: paths must be inside the conversation workspace when it uses an Overlay view: {source_path} -> {target_path}"
+            ));
+        }
+        (source, target)
+    } else {
+        (None, None)
+    };
     let cancel_never = std::sync::atomic::AtomicBool::new(false);
     let cancel = ctx.cancel.as_deref().unwrap_or(&cancel_never);
     let request = TransferRequest {
@@ -2888,6 +2952,9 @@ fn run_transfer(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         target_path,
         source_target,
         dest_target,
+        origin_in_view,
+        source_relative,
+        target_relative,
     };
     match (hook)(request, cancel) {
         Ok(summary) => {

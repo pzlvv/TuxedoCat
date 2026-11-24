@@ -360,6 +360,25 @@ export type CoreRequest =
       /** null = 发起会话所属工作区（缺省端） */
       sourceTarget: string | null;
       destTarget: string | null;
+      /**
+       * 本对话工作区那一端是否按叠加视图取放（specs/056 FR-001）。
+       *
+       * 由发起方 Core 按该会话此刻的归属一次判出，宿主只消费：不读 `meta.json` 的
+       * `storage`、不缓存、不重算（`docs/core/conversation-work-view.md` 第 2 节）。
+       * `true` 时「属于发起工作区的那一端」的通道换成
+       * `UiRequest.workViewFileIoRequested`，另一端仍是真实磁盘 / SFTP。
+       */
+      originInView: boolean;
+      /**
+       * 源端相对**发起会话工作区根**的 POSIX 相对路径（`''` = 工作区根）。
+       *
+       * `null` = 该端不在发起会话的工作区内（于是它必然是另一端，走磁盘 / SFTP）。
+       * 视图挂在 Core 的私有命名空间里，宿主拿不到挂载点，因此跨进程搬字节只能带
+       * 「会话 + 相对路径」让 Core 代执行（specs/056 FR-002）。
+       */
+      sourceRelative: string | null;
+      /** 目标端的同形相对路径（语义同 `sourceRelative`）。 */
+      targetRelative: string | null;
     };
 
 /** 请求 → 结果的类型映射（判别联合，字段完整） */
@@ -449,6 +468,43 @@ export type WorkViewFileDiffResult =
   | { ok: true; kind: 'not-a-git-workspace'; after: string }
   | { ok: true; kind: 'git'; before: string | null; after: string }
   | { ok: false; error: string };
+
+/**
+ * Overlay 对话视图里的文件 IO 结果（`UiRequest.workViewFileIoRequested`，specs/056）。
+ *
+ * 判别联合按 `op` 的语义分三组：`stat` 带路径事实、`list` 带目录项、`read` 带一块字节与
+ * `eof`；其余 op（`mkdirAll` / `rename` / `unlink` / `write`）只回 `ok`（写还回新的字节数）。
+ * 失败侧恒带 `error`：视图备不起来就是失败，不回退成磁盘结果（FR-005）。
+ */
+export type WorkViewFileIoResult =
+  | {
+      ok: true;
+      exists: boolean;
+      isFile: boolean;
+      isDir: boolean;
+      isSymlink: boolean;
+      size: number;
+    }
+  | { ok: true; entries: Array<{ name: string; kind: 'file' | 'directory' }> }
+  | { ok: true; bytes: number[]; eof: boolean }
+  | { ok: true; size: number }
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * 视图文件 IO 的载荷（`sessionId` 之外的判别联合）。
+ *
+ * 单独成形而不是从 `UiRequest` 上 `Omit`：对联合做 `Omit` 不分配，请求构造点会退化成
+ * 「所有字段都可选」的松散形态（TypeScript 的已知行为），判别性在这里是契约的一部分。
+ */
+export type WorkViewFileIoPayload =
+  | { op: 'stat'; path: string }
+  | { op: 'list'; path: string }
+  | { op: 'mkdirAll'; path: string }
+  | { op: 'unlink'; path: string }
+  | { op: 'rename'; path: string; to: string }
+  | { op: 'read'; path: string; offset: number; length: number }
+  | { op: 'write'; path: string; offset: number; bytes: number[] };
 
 export type CoreRequestResultMap = {
   toolPermissionRequested: PermissionResult;
@@ -843,6 +899,23 @@ export type UiRequest =
    * 因此这一对原文只能由 Core 给出。
    */
   | { type: 'workViewFileDiffRequested'; sessionId: string; path: string }
+  /**
+   * Overlay 对话视图里的文件 IO（specs/056 FR-002 / FR-003）。
+   *
+   * 跨工作区传输的一端可能是本对话的叠加视图，而视图挂在 Core 私有的挂载命名空间里
+   * （`docs/core/conversation-work-view.md` 第 4 节）——宿主读挂载点得到空目录，因此
+   * **字节只能经这里转交 Core**。`path` / `to` 是工作区相对的 `'/'` 分隔路径（`''` =
+   * 视图根），越界（绝对路径 / `..` / 反斜杠）由 Core 拒绝。
+   *
+   * 读写按块进行（FR-003 的大文件要求）：`read` 给 `offset` + `length`，`eof` 表示已到
+   * 末尾；`write` 给 `offset`，语义是「从 offset 写，并把文件截断在写入末尾」——分块的
+   * 第一块把旧内容截掉，后续块是 no-op，因此不需要额外的追加开关。
+   * 字节用数字数组表达——JSON 帧没有二进制类型，这是不引入新编码约定的唯一形态。
+   *
+   * 业务失败（视图备不起来 / 路径越界 / 代理错误）回 `ok: false` + `error`，不退化成
+   * 对真实磁盘的读写：那会把「看起来是这个对话的文件、实际是磁盘」的形态交给调用方。
+   */
+  | { type: 'workViewFileIoRequested'; sessionId: string; payload: WorkViewFileIoPayload }
   /** 智能命名：读会话消息 + 调 LLM + 解析标题（`history/smartNaming` 的等价物） */
   | { type: 'smartNamingRequested'; sessionId: string }
   /**
@@ -994,6 +1067,7 @@ export type UiRequestResultMap = {
   workViewFilesRequested: WorkViewFilesResult;
   workViewChangesRequested: WorkViewChangesResult;
   workViewFileDiffRequested: WorkViewFileDiffResult;
+  workViewFileIoRequested: WorkViewFileIoResult;
   smartNamingRequested: { title: string };
   balanceRequested: {
     totalBalance: number;

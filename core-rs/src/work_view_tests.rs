@@ -590,6 +590,82 @@ fn work_view_lists_subdirectory_and_rejects_escape() {
     });
 }
 
+/// 视图文件 IO（specs/056 FR-002 / FR-003）：跨工作区传输的视图端经这一组入口搬运字节。
+///
+/// 覆盖四件事：定向写在视图里生效且磁盘不变、分块读的 `eof` 边界、暂存改名覆盖语义、
+/// 越界路径被拒。
+#[test]
+fn work_view_file_io_writes_reads_and_renames_in_the_view() {
+    in_namespace("work-view-file-io", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let session = "sess-file-io";
+        let mut view = crate::work_view::WorkView::register(&workspace, session).expect("登记");
+        view.ensure_mounted().expect("挂载");
+
+        // 建目录 + 定向写：第一块 offset 0 覆盖、后续块接着写（执行器的写流就是这样推进的）
+        crate::work_view::view_mkdir_all(session, "incoming").expect("建目录");
+        let first = crate::work_view::view_write_chunk(session, "incoming/a.txt", 0, b"hello ")
+            .expect("写第一块");
+        assert_eq!(first, 6);
+        let second = crate::work_view::view_write_chunk(session, "incoming/a.txt", 6, b"view")
+            .expect("写第二块");
+        assert_eq!(second, 10, "offset 写必须接着上一块而不是从 0 重来");
+
+        // 分块读：请求超过剩余长度时 eof 为 true，且内容逐字节一致
+        let (chunk, eof) =
+            crate::work_view::view_read_chunk(session, "incoming/a.txt", 0, 4).expect("读块");
+        assert_eq!(chunk.as_slice(), b"hell");
+        assert!(!eof, "还有剩余时必须 eof = false");
+        let (tail, tail_eof) =
+            crate::work_view::view_read_chunk(session, "incoming/a.txt", 4, 64).expect("读尾部");
+        assert_eq!(tail.as_slice(), b"o view");
+        assert!(tail_eof, "读到末尾必须 eof = true");
+
+        // 暂存改名：目标已存在时按覆盖语义（执行器收尾那一步）
+        crate::work_view::view_write_chunk(
+            session,
+            "incoming/a.txt.tuxedo-transfer-tmp",
+            0,
+            b"new",
+        )
+        .expect("写暂存件");
+        crate::work_view::view_rename(
+            session,
+            "incoming/a.txt.tuxedo-transfer-tmp",
+            "incoming/a.txt",
+        )
+        .expect("覆盖改名");
+        let (renamed, _) = crate::work_view::view_read_chunk(session, "incoming/a.txt", 0, 64)
+            .expect("读改名后的");
+        assert_eq!(renamed.as_slice(), b"new", "改名必须覆盖目标内容");
+        // 暂存件已不在，且清理用的 unlink 对不存在的路径也算成功
+        assert!(
+            crate::work_view::view_read_chunk(session, "incoming/a.txt.tuxedo-transfer-tmp", 0, 8)
+                .is_err(),
+            "暂存件必须已被改名消费"
+        );
+        crate::work_view::view_unlink(session, "incoming/never-existed.txt")
+            .expect("删不存在算成功");
+
+        // stat 与磁盘隔离：视图里新建的文件不在磁盘上
+        let facts = crate::work_view::view_stat(session, "incoming/a.txt").expect("stat");
+        assert!(facts.exists && facts.is_file, "{facts:?}");
+        assert_eq!(facts.size, 3);
+        assert!(
+            !sandbox.workspace.join("incoming/a.txt").exists(),
+            "改动不得落到真实磁盘"
+        );
+
+        // 越界路径全部拒绝
+        for bad in ["..", "../etc/passwd", "/etc/passwd", "a/../../b"] {
+            assert!(
+                crate::work_view::view_stat(session, bad).is_err(),
+                "越界路径 {bad} 必须被拒绝"
+            );
+        }
+    });
+}
+
 /// 视图未建立（会话还没调用过工具）时列目录报错，不偷偷退回磁盘（specs/046 FR-004）。
 #[test]
 fn work_view_lists_nothing_when_view_not_mounted() {

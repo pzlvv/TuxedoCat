@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-19
+last_reviewed: 2026-11-24
 ---
 
 # 规格：Overlay 对话工作视图
@@ -59,11 +59,12 @@ Core 忽略它们、只回答自己那份能力。同给时 `sessionId` 优先�
 | `UiRequest.workViewFilesRequested` | `sessionId`、`dir`（`'/'` 分隔相对路径，`''` 为视图根） | `{ ok: true, entries }` 或 `{ ok: false, error }` |
 | `UiRequest.workViewChangesRequested` | `sessionId`、`scope`（`doc` / `all`，与侧栏同一判别值） | `{ ok: true, entries }` 或 `{ ok: false, kind: 'not-a-git-workspace' \| 'error', error }`；条目带 `path` / `plus` / `minus` / `status`（`A` / `M` / `R`）/ `oldPath`（重命名前的旧路径，无则 `null`） |
 | `UiRequest.workViewFileDiffRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, kind: 'git', before: string \| null, after }`、`{ ok: true, kind: 'not-a-git-workspace', after }` 或 `{ ok: false, error }` |
+| `UiRequest.workViewFileIoRequested` | `sessionId`、`payload`（判别联合：`op` = `stat` / `list` / `mkdirAll` / `rename` / `unlink` / `read` / `write`；`path` 是 `'/'` 分隔相对路径，`''` 为视图根；`rename` 另带 `to`，`read` 带 `offset` / `length`，`write` 带 `offset` / 字节数组） | 按 `op`：路径事实 / 目录项 / 一块字节与 `eof` / 写入后的字节数 / `{ ok: true }`；失败恒 `{ ok: false, error }` |
 
-视图不需要事先建立：三个取数请求在取数前都会把该会话的视图备好
+视图不需要事先建立：这几个取数请求在取数前都会把该会话的视图备好
 （与工具调用同一个入口），因此用户进对话就展开资源管理器也能看到叠加视图的内容。
 `dir` / `path` 越界（绝对路径、`..`）一律拒绝；会话不是 Overlay 归属、或视图建不起来时
-三者回失败侧，由宿主显示错误行——Core 不替它改列磁盘。
+它们回失败侧，由宿主显示错误行——Core 不替它改列磁盘。
 
 `workViewChangesRequested` 列出该对话视图里相对 HEAD 的改动：改磁盘已有文件、对话内新建、
 以及只用 Bash 写出的文件都进清单——判据是「视图内容 vs HEAD」，不是工具旁路的记录。
@@ -212,6 +213,12 @@ Bash 的路径字符串尤其重要：`pwd`、脚本里写死的绝对路径、`
 会话归属是 `isolated` 时经 `UiRequest.workViewFileDiffRequested` 读视图内容，与侧栏
 Overlay 双击打开同一份编排——磁盘上没有的对话内新文件因此也能打开。归属的 owner 仍是
 Core（`meta.json` 的 `storage`），宿主只读投影、不重算。
+
+跨工作区传输（`Transfer`）的一端同样按归属取放：属于本对话工作区的那一端经
+`UiRequest.workViewFileIoRequested` 在视图里读写（`stat` / `list` / `mkdirAll` /
+`rename` / `unlink` / `read` / `write`），另一端是真实磁盘或 SFTP。宿主读不到挂载点，
+所以字节全部经这条请求往返；视图取不到时传输直接报错而不是退回磁盘
+（[docs/features/cross-workspace-transfer.md 第 2.4 节](../features/cross-workspace-transfer.md#24-视图端的取放与失败语义)）。
 
 ## 6. 生命周期
 

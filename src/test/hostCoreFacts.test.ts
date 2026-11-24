@@ -40,6 +40,7 @@ async function run(): Promise<void> {
     workViewFilesRequested: async () => ({ ok: false as const, error: '测试桩' }),
     workViewChangesRequested: async () => ({ ok: false as const, kind: 'error' as const, error: '测试桩' }),
     workViewFileDiffRequested: async () => ({ ok: false as const, error: '测试桩' }),
+    workViewFileIoRequested: async () => ({ ok: false as const, error: '测试桩' }),
     conversationListRequested: async (req) => {
       sent.push(req);
       return [{ sessionId: 'c1', title: 't' } as never];
