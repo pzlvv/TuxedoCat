@@ -466,6 +466,17 @@ export class CoreDaemon {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   /** 最近一次入站字节的时刻（沉默判定的时间基准：字节级而非帧级） */
   private lastInboundAt: number | null = null;
+  /**
+   * 入站字节的单调序号：每次 `noteInbound` 递增。
+   *
+   * 宽限期收口只回答「探针发出到现在有没有新的入站证据」，用序号比对而不是时间差——
+   * 本进程被调度出去时定时器会迟到，迟到期间到达的字节还停在回调队列 / 内核缓冲里，
+   * 时间差会看到一个陈旧的 `lastInboundAt` 而误判死活链路（specs/defects/
+   * silence-recheck-judged-by-stale-timestamp）。
+   */
+  private inboundSeq = 0;
+  /** 本轮探针发出时的入站序号：收口时与当前值比对即知宽限期里有没有新证据 */
+  private recheckBaselineSeq = 0;
   /** 沉默判定是否已武装（见到首个 pong 才武装） */
   private silenceArmed = false;
   private silenceTimer: NodeJS.Timeout | null = null;
@@ -917,6 +928,7 @@ export class CoreDaemon {
    */
   private noteInbound(): void {
     this.lastInboundAt = Date.now();
+    this.inboundSeq += 1;
     if (this.silenceArmed && this.silenceTimer) this.scheduleSilenceCheck();
   }
 
@@ -963,6 +975,8 @@ export class CoreDaemon {
     this.sendHeartbeatPing();
     if (this.recheckTimer) clearTimeout(this.recheckTimer);
     const recheckMs = this.options.silenceRecheckMs ?? LINK_SILENCE_RECHECK_MS;
+    // 记下发探针这一刻的入站序号：收口只看这个序号有没有变，不看流逝了多久
+    this.recheckBaselineSeq = this.inboundSeq;
     const timer = setTimeout(() => this.finishSilenceRecheck(recheckMs), recheckMs);
     timer.unref();
     this.recheckTimer = timer;
@@ -972,13 +986,15 @@ export class CoreDaemon {
    * 宽限期收口：期间来过任何入站字节（心跳 pong、业务帧、半个大帧）就算活，
    * 回到常规沉默检查；仍无入站即判死。kill 触发链路 close，handleExit 以
    * `silenceFatal` 上报 fatal，不落在「exited unexpectedly」的默认文案上。
+   *
+   * 判据是**探针发出后有没有新的入站字节**（序号比对），不是「距上次入站过了多久」：
+   * 本进程卡顿时这个定时器会迟到很久，迟到期间到达的字节还排在回调队列里没被记账，
+   * 按时间差比会把它们算成「没来」——这正是 `docs/core/core-remote.md` 第 2.5 节
+   * 要求宽限吸收的情形（specs/defects/silence-recheck-judged-by-stale-timestamp）。
    */
   private finishSilenceRecheck(recheckMs: number): void {
     if (this.stopped || !this.linkReady || !this.silenceArmed) return;
-    const silentFor = this.lastInboundAt === null
-      ? Number.POSITIVE_INFINITY
-      : Date.now() - this.lastInboundAt;
-    if (silentFor < recheckMs) {
+    if (this.inboundSeq !== this.recheckBaselineSeq) {
       this.scheduleSilenceCheck();
       return;
     }
