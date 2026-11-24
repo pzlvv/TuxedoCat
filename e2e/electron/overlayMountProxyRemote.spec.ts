@@ -1177,11 +1177,23 @@ test('US-60 FR-009 Overlay 会话的 Transfer 按视图取放：视图内的文�
     mockLlm,
     workspaceDir: remoteWs,
     openWorkspaces: [remoteRef, localDir],
+    // 活动项显式指回远端：不传时默认取 `openWorkspaces` 的最后一个（本地工作区），
+    // 而本用例要在远端 Overlay 对话里发消息、勾 Overlay 勾选框。
+    activeWorkspace: remoteRef,
     agentMode: 'auto',
     startupChatWaitMs: 180_000,
   });
   const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-mount-proxy' }, 180_000);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
+
+  // 第二个工作区是**本车**多开的（其余用例只开远端一个），它落地时会挤动标题栏与
+  // 聊天页布局；不等它就勾 Overlay 会让 `check()` 卡在「等待元素 stable」一直到用例
+  // 超时（实测 3 分钟）。与 `crossWorkspaceTransfer.spec.ts` 的多工作区用例同一口径：
+  // 先等标签真的变成两个。
+  const titlebar = await app.titlebarPage();
+  await expect(titlebar.locator('#workspaceTabs [role="tab"]')).toHaveCount(2, {
+    timeout: 30_000,
+  });
 
   const localId = `${resolveMachineName(
     process.platform,
