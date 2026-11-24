@@ -40,7 +40,11 @@ use std::time::Duration;
 ///
 /// 与「安装握手版本」（`TC_PROTOCOL_VERSION`）分开：前者是帧语义兼容性，后者是「装的
 /// 这份代理能不能被这个 Core 用」。两者任一不匹配都不启用能力。
-pub const IPC_PROTOCOL_VERSION: u32 = 1;
+///
+/// 2：新增 `renamePath` / `unlinkPath` / `readRange`，`writeFile` 支持 `offset`
+///    （specs/056 的视图文件 IO）。两侧常量必须同值——`contract_protocol_version_matches`
+///    拿 fixture 做唯一对照点，改一侧漏另一侧在那里红。
+pub const IPC_PROTOCOL_VERSION: u32 = 2;
 
 /// 单帧长度上限：8 MiB（与代理侧同值）
 const MAX_FRAME: usize = 8 * 1024 * 1024;
