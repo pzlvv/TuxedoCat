@@ -489,6 +489,132 @@ function startSlowFrameRemote(options: { stall: boolean }): Promise<SlowFrameRem
   });
 }
 
+// ==================== 宽限窗口内到达的 pong（收口早于入站入账） ====================
+
+interface GraceWindowRemote {
+  port: number;
+  /** 写出的 pong 数 */
+  pongs: () => number;
+  /** 停止应答 pong：让宿主沉默死线到期、补发探针 */
+  silence: () => void;
+  /** 恢复应答；首次应答会先写 pong 再同步占住事件循环（宿主被调度出去） */
+  resumeWithStall: (stallMs: number) => void;
+  /** 首次应答写出 pong 的时刻；`null` = 还没写出 */
+  answeredAt: () => number | null;
+  close: () => Promise<void>;
+}
+
+/**
+ * 「宽限窗口内到达的 pong」假远端。
+ *
+ * 缺陷形态（specs/defects/silence-recheck-runs-before-inbound-drain）：宿主沉默死线到期后
+ * 发出探针并武装宽限；对端在**宽限内**写出 `pong`，但宿主此刻被调度出去（同一进程里用
+ * 同步忙等模拟），恢复时事件循环的 timers 阶段先跑宽限收口、poll 阶段才读到已到达的字节，
+ * 收口看到入站序号没变就把活链路判死。
+ *
+ * 时间由用例里的「RT-1 宽限内对端写出的 pong 早于宽限到期」断言锁定：pong 必须早于宽限
+ * 到期写出，否则这条用例测的就成了「真的没回 pong」。
+ */
+function startGraceWindowRemote(): Promise<GraceWindowRemote> {
+  let pongs = 0;
+  let replying = true;
+  let answeredAt: number | null = null;
+  let stallMs = 0;
+  const sockets = new Set<Socket>();
+
+  const server: Server = createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding('utf8');
+    let buffer = '';
+    const send = (frame: unknown): void => {
+      if (socket.writable) socket.write(`${JSON.stringify(frame)}\n`);
+    };
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => undefined);
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      for (;;) {
+        const index = buffer.indexOf('\n');
+        if (index < 0) break;
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        if (line.trim().length === 0) continue;
+        let frame: Record<string, unknown>;
+        try {
+          frame = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (frame['kind'] === 'ping') {
+          if (!replying) continue;
+          pongs += 1;
+          send({ kind: 'pong' });
+          // 只让「恢复应答后的第一帧」带动占住：握手阶段的 pong 不该占住事件循环
+          if (stallMs > 0 && answeredAt === null) {
+            answeredAt = Date.now();
+            // 宽限内先写出 pong、再占住事件循环：这条 pong 只可能落到宿主的 socket 缓冲里，
+            // 等到 poll 阶段才被读——而宽限收口跑在它前面的 timers 阶段
+            blockEventLoop(stallMs);
+          }
+          continue;
+        }
+        if (frame['kind'] === 'listDirectories') {
+          send({
+            kind: 'directoriesListed',
+            id: frame['id'],
+            path: '/home/dev',
+            parent: '/home',
+            entries: [{ name: 'repo', path: '/home/dev/repo' }],
+          });
+          continue;
+        }
+        if (frame['kind'] === 'openWorkspace') {
+          const channel = 1;
+          send({
+            kind: 'workspaceOpened',
+            id: frame['id'],
+            channel,
+            descriptor: { kind: 'multiplexed', channel },
+          });
+          continue;
+        }
+        if (frame['kind'] === 'frame') {
+          const inner = frame['frame'] as { kind?: string };
+          if (inner?.kind === 'hello') {
+            send({ kind: 'frame', channel: frame['channel'], frame: { kind: 'ready' } });
+          }
+          continue;
+        }
+        if (frame['kind'] === 'shutdown') socket.end();
+      }
+    });
+  });
+
+  return new Promise<GraceWindowRemote>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      resolve({
+        port,
+        pongs: () => pongs,
+        silence: () => {
+          replying = false;
+        },
+        resumeWithStall: (ms: number) => {
+          stallMs = ms;
+          replying = true;
+        },
+        answeredAt: () => answeredAt,
+        close: () =>
+          new Promise<void>((done) => {
+            for (const socket of sockets) socket.destroy();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+}
+
 const requestHandlers: CoreRequestHandlers = {
   toolPermissionRequested: async () => ({ behavior: 'allow' }),
   userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
@@ -882,6 +1008,67 @@ async function run(): Promise<void> {
       failure.error === null && Date.now() - startedAt >= 400,
     );
     check('RT-1 心跳链路的 pong 独立往返', fake.independentPongs() > 0);
+    await daemon.shutdown();
+    await fake.close();
+  }
+
+  // ---------- 宽限期内到达的 pong 不因收口早于入站入账被判死
+  // ---------- （specs/defects/silence-recheck-runs-before-inbound-drain）----------
+  //
+  // 判据是入站序号，而 `noteInbound` 只在 socket `data` 回调（poll 阶段）里前移；
+  // 宽限收口是 `setTimeout` 回调（timers 阶段）。宿主被调度出去超过宽限时，恢复后
+  // 一轮迭代里 timers 恒先于 poll：收口先看到「序号没变」，紧接着才读到宽限内早就
+  // 到达的 pong。`docs/core/core-remote.md` 第 2.5 节要求宽限吸收的正是「本进程卡顿」
+  // 这一类情形。
+  {
+    const fake = await startGraceWindowRemote();
+    const daemon = new CoreDaemon({
+      log: () => undefined,
+      handshakeTimeoutMs: 2_000,
+      shutdownTimeoutMs: 1_000,
+      // 死线 150ms / 宽限 600ms：三段时序各留足余量，不依赖 runner 的调度精度——
+      // 「死线到期」在 150ms，对端在 250ms 写出 pong，宽限到 750ms 才到期，
+      // 随后 700ms 的占住把「宽限到期」推到 950ms，跨过到期时刻。
+      heartbeatIntervalMs: 20,
+      silenceDeadlineMs: 150,
+      silenceRecheckMs: 600,
+      transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
+    });
+    const ref = remoteWorkspaceRef(
+      { host: '127.0.0.1', port: fake.port, user: 'root', auth: { kind: 'sshPassword', password: 'secret' } },
+      '/home/dev/repo',
+    );
+    const transport = daemon.openChannel(ref);
+    const failure: { error: Error | null } = { error: null };
+    transport.hooks = {
+      ...NOOP_CORE_CHANNEL_HOOKS,
+      onFatal: (error: Error) => {
+        failure.error = error;
+      },
+    };
+    transport.start();
+    check('RT-1 宽限用例完成握手', await waitFor(() => transport.isReady()));
+    check('RT-1 宽限用例心跳已往返（沉默判定武装）', await waitFor(() => fake.pongs() > 0));
+    // 武装后停止应答：死线 150ms 到期时宿主补发探针并武装 600ms 宽限
+    const silenceAt = Date.now();
+    fake.silence();
+    await sleep(250);
+    // 宽限中段恢复应答：对端立刻写 pong（此后字节只在宿主 socket 缓冲里），
+    // 随后同步占住事件循环 700ms，把「宽限到期」压进这段占住里。
+    fake.resumeWithStall(700);
+    const answered = await waitFor(() => fake.answeredAt() !== null, 3_000);
+    const answeredAt = fake.answeredAt();
+    check('RT-1 宽限内对端写出的 pong 早于宽限到期', answered
+      && answeredAt !== null
+      && answeredAt - silenceAt < 150 + 600);
+    // 占住 700ms + 收口本身，留足余量让收口跑完
+    await sleep(1_200);
+    check(
+      'RT-1 宽限期内到达的 pong 不因收口早于入站入账被判死',
+      failure.error === null,
+    );
+    // 反面对照：链路仍可用，说明上面判的不是「早就死了只是没上报」
+    check('RT-1 宽限用例结束后请求仍可用', (await daemon.listDirectories(null)).path === '/home/dev');
     await daemon.shutdown();
     await fake.close();
   }
