@@ -1201,6 +1201,23 @@ test('US-60 FR-009 Overlay 会话的 Transfer 按视图取放：视图内的文�
     osHostname(),
   )}:${path.resolve(localDir)}`;
 
+  const firstTurnPrompt = '把视图里的文件搬到另一个工作区';
+  const secondTurnPrompt = '把本工作区的文件搬进来';
+  /**
+   * **本轮**的工具结果条数。
+   *
+   * 两轮共用一个 mock，按全局 tool 数推进会在第二轮开场就以为已完成（历史里已有上一轮
+   * 的三条结果）。判据是「本轮用户消息之后出现了几条 tool 结果」。
+   */
+  const turnToolCount = (req: RecordedRequest, prompt: string): number => {
+    const messages = req.body.messages;
+    const start = messages.findIndex(
+      (message) => message.role === 'user' && String(message.content).includes(prompt),
+    );
+    if (start < 0) return 0;
+    return messages.slice(start).filter((message) => message.role === 'tool').length;
+  };
+
   // 三轮：Write（只落视图）→ Transfer 搬出 → Read 证明搬进来的也在视图里
   const rounds: Array<{ name: string; args: Record<string, unknown> }> = [
     { name: 'Write', args: { file_path: viewOnlyPath, content: viewOnlyBody } },
@@ -1215,13 +1232,13 @@ test('US-60 FR-009 Overlay 会话的 Transfer 按视图取放：视图内的文�
     { name: 'Read', args: { file_path: viewOnlyPath } },
   ];
   mockLlm.setHandler((req) => {
-    const done = req.body.messages.filter((message) => message.role === 'tool').length;
+    const done = turnToolCount(req, firstTurnPrompt);
     if (done >= rounds.length) return { kind: 'text', text: 'OVERLAY-TRANSFER-DONE' };
     return { kind: 'tool', name: rounds[done].name, args: rounds[done].args };
   });
 
   await checkWorkViewOption(chatPage);
-  await chatPage.fill('textarea.input-textarea', '把视图里的文件搬到另一个工作区');
+  await chatPage.fill('textarea.input-textarea', firstTurnPrompt);
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('OVERLAY-TRANSFER-DONE').first()).toBeVisible({ timeout: 50_000 });
 
@@ -1247,18 +1264,24 @@ test('US-60 FR-009 Overlay 会话的 Transfer 按视图取放：视图内的文�
   const inboundName = 'from-local.md';
   const inboundPath = `${remoteWs}/${inboundName}`;
   mockLlm.setHandler((req) => {
-    const done = req.body.messages.filter((message) => message.role === 'tool').length;
-    if (done >= 2) return { kind: 'text', text: 'OVERLAY-TRANSFER-INBOUND-DONE' };
-    if (done === 0) {
+    // 只数本轮的工具结果（理由见上面 `turnToolCount`）
+    const turnTools = turnToolCount(req, secondTurnPrompt);
+    if (turnTools >= 2) return { kind: 'text', text: 'OVERLAY-TRANSFER-INBOUND-DONE' };
+    if (turnTools === 0) {
       return {
         kind: 'tool',
         name: 'Transfer',
-        args: { sourcePath: path.join(localDir, 'local-source.md'), targetPath: inboundPath },
+        args: {
+          sourcePath: path.join(localDir, 'local-source.md'),
+          targetPath: inboundPath,
+          // 源端在本地工作区：缺省会按 origin（远端）解析，两端同工作区被守卫拒掉
+          sourceTarget: localId,
+        },
       };
     }
     return { kind: 'tool', name: 'Read', args: { file_path: inboundPath } };
   });
-  await chatPage.fill('textarea.input-textarea', '把本工作区的文件搬进来');
+  await chatPage.fill('textarea.input-textarea', secondTurnPrompt);
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('OVERLAY-TRANSFER-INBOUND-DONE').first()).toBeVisible({
     timeout: 50_000,
