@@ -993,7 +993,13 @@ async function run(): Promise<void> {
       shutdownTimeoutMs: 1_000,
       heartbeatIntervalMs: 20,
       silenceDeadlineMs: 80,
-      silenceRecheckMs: 40,
+      // 宽限必须显著大于调度噪声：CI 上（2 核跑 4 个测试文件）用例与假远端共用一条事件
+      // 循环，进程被调度出去时心跳 pong 送不进来，宽限窗口整个被吃掉就会误判死。空闲机
+      // 上实测心跳 pong 间隔已达 38ms，40ms 的宽限没有余量；这里留约 6 倍。
+      // 灵敏度不降：心跳若真被大帧饿死（本缺陷的形态）两条通路都没有入站，仍会在
+      // 死线 + 宽限（80 + 250）判死，落在下面的观察窗内
+      // （specs/defects/silence-recheck-runs-before-inbound-drain 的 RT-3）。
+      silenceRecheckMs: 250,
       transport: tcpDaemonOpener({ host: '127.0.0.1', port: fake.port }),
     });
     const ref = remoteWorkspaceRef(
@@ -1021,11 +1027,19 @@ async function run(): Promise<void> {
     } as never);
     check('RT-1 大帧开始下传（字节已流动，但没有完整帧）', await waitFor(() => fake.written() > 0));
     const startedAt = Date.now();
-    // 死线 + 宽限 = 120ms；大帧停在中途，业务链路此后不再有字节
-    await sleep(400);
+    // 观察窗覆盖「死线 + 宽限」（80 + 250 = 330ms）再加余量：大帧停在中途、业务链路此后
+    // 不再有字节，若心跳真被大帧饿死，判死会落在窗内而让断言变红——灵敏度不靠掐紧窗口
+    const OBSERVE_MS = 600;
+    await sleep(OBSERVE_MS);
     check(
       'RT-1 大帧停顿期间心跳独立通路保活（不判死）',
-      failure.error === null && Date.now() - startedAt >= 400,
+      failure.error === null && Date.now() - startedAt >= OBSERVE_MS,
+    );
+    // 判死不等于「饿死」：只有沉默判死的文案才算心跳被业务大帧拖垮。这条把「不判死」
+    // 收窄到本缺陷的形态，避免任意 fatal（建链 / 心跳链路中断等）都让上一条通过
+    check(
+      'RT-1 未以沉默判死收场',
+      failure.error === null || !/silent for/.test(failure.error.message),
     );
     check('RT-1 心跳链路的 pong 独立往返', fake.independentPongs() > 0);
     await daemon.shutdown();
