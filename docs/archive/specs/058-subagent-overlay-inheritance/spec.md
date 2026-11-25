@@ -169,7 +169,7 @@ core-rs 的视图 / 引擎用例锁定继承、共用视图与生命周期，宿
 | AC-1 / AC-2（本地子代理继承归属、父为 `workspace` 时照旧） | `engine_tests::sub_agent_inherits_isolated_storage`（两个父归属各跑一遍，内存态与 meta 同时断言） |
 | AC-3（Explorer 同口径） | `engine_tests::explorer_sub_agent_inherits_isolated_storage` |
 | AC-4（跨工作区不继承） | `engine_tests::start_remote_sub_agent_records_creator`（`state.storage == Workspace` + meta `"workspace"`）、`history_tests::remote_sub_agent_metadata_is_always_workspace` |
-| AC-5 / AC-6 / AC-7（父子互见、同一份视图） | `work_view_tests::work_view_child_writes_are_visible_to_parent`（子写父读、父改子读、同一视图根、`Arc::ptr_eq` 同一个代理、磁盘不变） |
+| AC-5 / AC-6 / AC-7（父子互见、同一份视图） | `work_view_tests::work_view_child_writes_are_visible_to_parent`（走真实接线：子代理 `isolated` → `ensure_work_view` 解析出父对话；断言句柄根就是父对话的视图根、视图层没有子代理自己的登记、子写父读、父改子读、磁盘不变） |
 | AC-8（按子会话 id 取数一致） | `main_tests::work_view_requests_use_owner_session`（四个 `workView*` 请求都先解析 owner，断言解析结果是父对话） |
 | AC-9 / AC-10 / AC-11（生命周期只由所有者决定） | `main_tests::view_teardown_distinguishes_owner_user_and_unknown`（四态判定）、`closing_and_deleting_sub_agent_keeps_shared_view`（关 / 删子代理后父对话仍自持所有者）；`work_view_tests::work_view_release_and_remove`（所有者释放保留上层、回收删目录） |
 | AC-12（所有者解析不出 fail-closed） | `engine_tests::work_view_owner_follows_parent_chain`（父缺失 / 父为 `workspace` / 成环三种错）与 `sub_agent_view_owner_resolution_fails_closed`（`ViewUnavailable`，不回 `Workspace`）；`main_tests::work_view_requests_fail_closed_when_owner_is_unknown` |

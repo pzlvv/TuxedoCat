@@ -217,6 +217,14 @@ impl WorkViewHandle {
         &self.workspace
     }
 
+    /// 视图根目录（`upper` / `work` 的父目录）。
+    ///
+    /// 父子共用一份视图的判据取自它：`isolated` 的本地子代理解析到所有者后拿到的是
+    /// **同一个**根目录（specs/058 FR-002）。
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// 把真实路径映射成「工具该用的路径」。
     ///
     /// 代理已把视图 bind 到真实工作区路径上，因此映射是恒等——但它仍然校验路径在
