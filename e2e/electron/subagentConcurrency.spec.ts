@@ -258,11 +258,18 @@ test('US-49 前台中止：排队中的 2 个调用取消、不创建子代理�
 
   // 首击只停前台：父会话收尾轮被 mock 挂住（不回首字），此刻仍是前台在跑；
   // 前台中止置会话取消标记，已排队未启动的 2 个派发随之放弃
-  const abortButton = chatPage.locator('button[title="终止"]');
+  //
+  // 定位用 `data-abort-state`（红 / 黄 / 灰恒在），不用 `title`：按钮转黄后 native title
+  // 被移除、由悬停明细浮层取代（docs/features/abort-button.md FR-004），跨态定位器会在
+  // 断言前就匹配不到元素（specs/defects/us49-abort-locator-reads-vanished-title）。
+  const abortButton = chatPage.locator('button[data-abort-state]');
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'query', { timeout: 30_000 });
   await abortButton.click();
 
-  // 按钮仍可点（前台停了，但 4 个子代理还在跑，按钮转黄）
-  await expect(abortButton).toBeEnabled({ timeout: 15_000 });
+  // 点击后按钮转黄（前台已停、4 个子代理仍在跑）：先等状态落定再断言可点，
+  // 否则断言会落在转黄之前的红态窗口里，绿的时机取决于调度
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'background', { timeout: 15_000 });
+  await expect(abortButton).toBeEnabled();
 
   // 等待窗口内排队者不得补位启动：子代理首请求数恒为 4；
   // 会话总数维持 5（4 子 + 1 父，排队 2 个从未创建会话）——放在等待窗口之后，

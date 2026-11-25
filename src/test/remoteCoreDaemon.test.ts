@@ -42,11 +42,21 @@ interface FakeRemote {
   close: () => Promise<void>;
 }
 
-/** 进程内假远端：单条控制通道，按 daemon 协议应答 */
-function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> {
+/**
+ * 进程内假远端：单条控制通道，按 daemon 协议应答。
+ *
+ * `deferCloseAccounting` 把对端 close 的记账推迟 50ms：生产形态里 daemon 是
+ * 另一个进程，对端看到 RST 与本端 `kill()` 之间隔着一次网络往返，对端 close 恒晚于宿主侧
+ * fatal（`docs/core/core-remote.md` 第 2.5 节）。进程内假远端把两件事压进同一个事件循环，
+ * 多数时候同轮派发，只有在调度被打断时才跨轮——用例不能依赖这个巧合。
+ */
+function startFakeRemote(
+  options: { pong?: boolean; deferCloseAccounting?: boolean } = {},
+): Promise<FakeRemote> {
   let connections = 0;
   let closedCount = 0;
   let pong = options.pong === true;
+  const deferCloseAccounting = options.deferCloseAccounting === true;
   let pongCount = 0;
   const received: string[] = [];
   let nextChannel = 1;
@@ -62,7 +72,11 @@ function startFakeRemote(options: { pong?: boolean } = {}): Promise<FakeRemote> 
     };
     socket.on('close', () => {
       sockets.delete(socket);
-      closedCount += 1;
+      // 推迟记账：把「对端看到断开」排到宿主侧 fatal 回调之后（真实远端的网络往返等价物）。
+      // `setTimeout` 而不是 `setImmediate`：后者常与 close 派发同轮跑完，推迟不到
+      // 「fatal 已落地、对端尚未记账」的那个窗口，也就锁不住本缺陷。
+      if (deferCloseAccounting) setTimeout(() => { closedCount += 1; }, 50);
+      else closedCount += 1;
     });
     // 链路被看门狗 kill 时对端会读到 RST：假远端只是夹具，不因夹具侧错误打断整份用例
     // （被测行为一律由断言表达，不让 socket 错误冒成未捕获异常）
@@ -741,7 +755,10 @@ async function run(): Promise<void> {
 
   // ---------- 沉默判定：pong 武装、沉默判死 ----------
   {
-    const fake = await startFakeRemote({ pong: true });
+    // 推迟对端 close 记账：把「宿主侧 fatal 已上报、对端还没记账」的时序固定下来。
+    // 生产形态（daemon 在另一个进程）对端 close 恒晚于 fatal，用例不能依赖进程内
+    // 两根 socket 恰好同轮派发这一巧合（specs/defects/daemon-close-assertion-races-fatal-callback）。
+    const fake = await startFakeRemote({ pong: true, deferCloseAccounting: true });
     const daemon = new CoreDaemon({
       log: () => undefined,
       handshakeTimeoutMs: 2_000,
@@ -778,7 +795,10 @@ async function run(): Promise<void> {
     check('沉默超过死线 + 宽限后判死 fatal', fatalArrived && failure.error !== null);
     check('fatal 文案指明沉默判死', failure.error !== null && /silent for/.test(failure.error.message));
     check('判死在死线 + 宽限的量级内完成', Date.now() - silenceAt < 1_000);
-    check('判死确实断开了链路', fake.closed() >= 1);
+    // 断链是「kill 之后对端最终看到断开」，不是 kill 的同步结果：对端 close 由另一根
+    // socket 异步派发，生产形态下还隔着一次网络往返，恒晚于宿主侧 fatal
+    // （specs/defects/daemon-close-assertion-races-fatal-callback）
+    check('判死确实断开了链路', await waitFor(() => fake.closed() >= 1, 2_000));
     await daemon.shutdown();
     await fake.close();
   }
