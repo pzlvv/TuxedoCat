@@ -115,9 +115,12 @@ export interface ToolUseContext {
 /**
  * 工具结果统一上限（字符数）——**唯一**的结果上限入口。
  *
- * 所有工具（含 Bash）的 `maxResultSizeChars` 一律取此值，工具内部不再另设阈值：
+ * 除 `Read` 外的所有工具（含 Bash）的 `maxResultSizeChars` 一律取此值，工具内部不再另设阈值：
  * 超过 4K 时由 RunTools 统一把完整结果持久化到磁盘，进入上下文 / UI 的内容
  * 替换为「前 2K + 后 2K」预览（`core-rs/src/tools.rs` 的 `build_large_tool_result_message`）。
+ *
+ * `Read` 例外：它的窗口由 Core 按 10K code unit 整行截断并自带 `offset` 续读 footer，
+ * 不落盘（`docs/core/tool-result-limits.md` 第 3 节）。
  */
 export const MAX_RESULT_SIZE_CHARS = 4 * 1024; // 4K
 

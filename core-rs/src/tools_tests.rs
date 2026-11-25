@@ -1786,8 +1786,9 @@ fn read_truncates_overlong_lines_and_huge_files() {
     // 末尾空行也占一行
     assert_eq!(rendered, format!("1|{truncated}\n2|"));
 
-    // 输出超过 50KB 时提前收尾，并给出 `Output capped.` 续读提示。
-    // 每行 99 字符 + 换行 = 100 字节，约 512 行后越过 50KB。
+    // 结果（行号前缀 + 正文 + footer）超过 10K code unit 时提前收尾，并给出
+    // `Output capped.` 续读提示。每行 99 字符 + `N|` 前缀 + 换行约 103 个 code unit，
+    // 约百行后越过 `READ_MAX_RESULT_CHARS`。
     let line = format!("{}\n", "a".repeat(99));
     sandbox.write_file("huge.txt", &line.repeat(3000));
     let huge = execute(
@@ -1803,10 +1804,16 @@ fn read_truncates_overlong_lines_and_huge_files() {
     );
     assert!(rendered.ends_with("to continue.)"), "footer 不完整");
     assert!(
-        rendered.len() < 60 * 1024,
-        "输出应被 50KB 上限截住，实际 {}",
-        rendered.len()
+        util::utf16_len(&rendered) <= READ_MAX_RESULT_CHARS,
+        "结果应被 {READ_MAX_RESULT_CHARS} code unit 上限截住，实际 {}",
+        util::utf16_len(&rendered)
     );
+    // 截断落在整行边界：每一行都是完整的 99 个 `a`，没有半行
+    let body = rendered.split("\n(").next().unwrap();
+    for rendered_line in body.split('\n') {
+        let text = rendered_line.split_once('|').expect("行号前缀").1;
+        assert_eq!(text.len(), 99, "截断点不在整行边界：{rendered_line}");
+    }
 }
 
 // ==================== Read：xlsx ====================
@@ -2055,13 +2062,10 @@ fn xlsx_cells_and_columns_match_javascript_semantics() {
         vec![json!("b"), json!("")],
         vec![json!(""), json!("")],
     ];
-    let (content, line_count, start_line, total_lines, truncated) =
-        format_xlsx_data(&data, None, None);
-    assert_eq!(start_line, 0);
-    assert_eq!(total_lines, 2);
-    assert_eq!(line_count, 2);
-    assert!(!truncated);
-    assert_eq!(content, "Row 1: a\nRow 2: b");
+    assert_eq!(
+        format_xlsx_data(&data, None, None),
+        "1|Row 1: a\n2|Row 2: b"
+    );
 }
 
 #[test]
@@ -3956,6 +3960,22 @@ fn cap_tool_result_uses_utf16_length_threshold() {
         &capped[..40.min(capped.len())]
     );
     assert!(capped.contains("chars omitted"));
+}
+
+#[test]
+fn cap_tool_result_does_not_persist_read_results() {
+    // Read 的结果窗口本身就是完整的：超过 4K 也原样返回，不落盘（续读靠 footer 的 offset）。
+    let sandbox = Sandbox::new("tools-cap-read");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let text = "1|".to_string() + &"a".repeat(MAX_RESULT_SIZE_CHARS);
+    assert!(util::utf16_len(&text) > MAX_RESULT_SIZE_CHARS);
+    assert_eq!(cap_tool_result(&text, "s1", &project, "Read"), text);
+    assert!(
+        !config::project_conversation_dir(&project)
+            .map(|dir| dir.join("tool-results").is_dir())
+            .unwrap_or(false),
+        "Read 不应创建 tool-results 目录"
+    );
 }
 
 // ==================== 入参 schema 校验对等（Zod safeParse） ====================

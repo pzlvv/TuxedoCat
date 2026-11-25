@@ -2540,6 +2540,60 @@ fn second_llm_round_sees_the_tool_result() {
         .all(|message| message["role"] != "tool"));
 }
 
+/// Read 的文本结果走自己的 10K 窗口，不经 `cap_tool_result` 的落盘分支：
+/// 整份结果进 tool_result（UI + 下一轮 LLM 上下文），磁盘上不出现 `tool-results/` 副本。
+#[test]
+fn read_results_are_not_persisted_to_disk() {
+    let sandbox = Sandbox::new("engine-read-no-persist");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse("call_1", "Read", r#"{"file_path":"big.txt"}"#)
+        } else {
+            openai_text_sse(&["读完了"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    // 300 行 × 40 字符：结果超过 10K code unit，必须由 Read 自己按行截断
+    let line = format!("{}\n", "x".repeat(40));
+    sandbox.write_file("big.txt", &line.repeat(300));
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "读一下", "u-1");
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
+
+    let result = harness.sink.event_of("toolResult").expect("toolResult");
+    let output = result["output"].as_str().expect("output 是字符串");
+    assert!(
+        !output.starts_with("<persisted-output>"),
+        "Read 不落盘，不应出现持久化信封: {}",
+        &output[..40.min(output.len())]
+    );
+    assert!(
+        output.contains("(Output capped. Showing lines 1-"),
+        "超过 10K 应给出续读 footer: {}",
+        &output[output.len().saturating_sub(120)..]
+    );
+    assert!(output.ends_with("to continue.)"), "footer 不完整");
+    assert!(
+        crate::util::utf16_len(output) <= crate::tools::READ_MAX_RESULT_CHARS,
+        "结果应在 10K 以内，实际 {}",
+        crate::util::utf16_len(output)
+    );
+
+    // 全库唯一的落盘点没有被写：`tool-results/` 目录都不该出现
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    let dir = sandbox.conversation_dir(&workspace);
+    assert!(
+        !dir.join("tool-results").exists(),
+        "Read 结果不应落盘到 {}",
+        dir.join("tool-results").display()
+    );
+}
+
 /// 手工转后台（`UiEvent.bashBackgroundRequested`，Bash 卡片「转后台」按钮）：
 ///
 /// 1. 前台 Bash 跑起来后触发转后台 → toolResult 落盘（success）、消费循环收尾
