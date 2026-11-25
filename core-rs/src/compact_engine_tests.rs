@@ -1275,3 +1275,261 @@ fn compact_without_running_tasks_adds_no_section() {
 
     crate::compact::reset_for_test();
 }
+
+// ==================== 已加载技能随压缩携带（FR-007） ====================
+
+/// 在 `<cwd>/.agents/skills/<name>/SKILL.md` 写一个技能
+fn write_workspace_skill(workspace: &Path, name: &str, body: &str) {
+    let dir = workspace.join(".agents").join("skills").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\ndescription: {name} 的描述\n---\n\n{body}\n"),
+    )
+    .unwrap();
+}
+
+/// 消息数组里追加一条 `Skill` 工具调用（`tool_use` 名字即契约）
+fn skill_tool_use_message(name: &str) -> Value {
+    json!({
+        "type": "assistant",
+        "message": { "role": "assistant", "content": [
+            { "type": "tool_use", "id": format!("tu-{name}"), "name": "Skill",
+              "input": { "skill": name } }
+        ] },
+        "uuid": format!("tu-msg-{name}"),
+        "timestamp": 1,
+    })
+}
+
+/// 把一条消息插到会话里（内存 + 落盘），随后由压缩当作归档区 / 保留区的一部分处理。
+fn push_message(harness: &EngineHarness, session_id: &str, project: &str, message: Value) {
+    let state = harness.core.session(session_id);
+    let messages = {
+        let mut state = state.lock().unwrap();
+        state.messages.push(message);
+        state.persisted_count = state.messages.len();
+        state.last_uuid = state
+            .messages
+            .last()
+            .and_then(|message| message.get("uuid"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        state.messages.clone()
+    };
+    crate::history::replace_messages(session_id, project, &messages).unwrap();
+}
+
+fn summary_text(messages: &[Value]) -> String {
+    messages[1]["message"]["content"]
+        .as_str()
+        .expect("摘要消息正文")
+        .to_string()
+}
+
+/// 调用过技能 → 压缩后摘要正文带该技能的磁盘正文与调用记录字段。
+#[test]
+fn compact_reloads_an_invoked_skill_from_disk() {
+    let sandbox = Sandbox::new("engine-compact-reload-skill");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    write_workspace_skill(&sandbox.workspace, "fix", "缺陷修复流程正文");
+
+    seed_messages(&harness, "s1", &project, 40);
+    // 把技能调用放在归档区（最早的位置），确保它会被摘要掉
+    let state = harness.core.session("s1");
+    {
+        let mut state = state.lock().unwrap();
+        state.messages.insert(3, skill_tool_use_message("fix"));
+        state.persisted_count = state.messages.len();
+        let messages = state.messages.clone();
+        drop(state);
+        crate::history::replace_messages("s1", &project, &messages).unwrap();
+    }
+
+    harness.core.request_compact("s1");
+
+    let messages = crate::history::load_messages("s1", &project);
+    assert_eq!(
+        messages[0]["subtype"],
+        json!("compact_boundary"),
+        "压缩应当发生"
+    );
+    let summary = summary_text(&messages);
+    assert!(
+        summary.contains(crate::compact::LOADED_SKILLS_HEADING),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("缺陷修复流程正文"),
+        "重挂正文应在摘要里: {summary}"
+    );
+    assert_eq!(
+        messages[1]["compactLoadedSkills"],
+        json!([{ "name": "fix", "args": "" }]),
+        "调用记录随摘要落盘"
+    );
+
+    crate::compact::reset_for_test();
+}
+
+/// 二次压缩：第一代技能已不在保留区，第二代仍要重挂（跨代继承字段）。
+#[test]
+fn repeated_compact_keeps_reloading_the_skill() {
+    let sandbox = Sandbox::new("engine-compact-reload-repeat");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    write_workspace_skill(&sandbox.workspace, "fix", "第一代正文");
+
+    seed_messages(&harness, "s1", &project, 40);
+    let state = harness.core.session("s1");
+    {
+        let mut state = state.lock().unwrap();
+        state.messages.insert(3, skill_tool_use_message("fix"));
+        state.persisted_count = state.messages.len();
+        let messages = state.messages.clone();
+        drop(state);
+        crate::history::replace_messages("s1", &project, &messages).unwrap();
+    }
+
+    harness.core.request_compact("s1");
+    let after_first = crate::history::load_messages("s1", &project);
+    assert!(summary_text(&after_first).contains("第一代正文"));
+    // 第一次压缩后摘要消息里的重挂章节本身是 `isCompactSummary` 消息的一部分，
+    // 它会在第二次压缩时进归档区并被剥掉——这里先确认它确实在。
+    assert_eq!(
+        after_first[1]["compactLoadedSkills"],
+        json!([{ "name": "fix", "args": "" }])
+    );
+
+    // 磁盘内容改写：第二代重挂要取新版，证明「压缩那一刻的磁盘」而不是旧副本
+    write_workspace_skill(&sandbox.workspace, "fix", "第二代正文");
+    append_messages(&harness, "s1", &project, 40, 40);
+    harness.core.request_compact("s1");
+
+    let after_second = crate::history::load_messages("s1", &project);
+    let summary = summary_text(&after_second);
+    assert!(
+        summary.contains(crate::compact::LOADED_SKILLS_HEADING),
+        "第二代仍应重挂: {summary}"
+    );
+    assert!(summary.contains("第二代正文"), "应取磁盘新版: {summary}");
+    assert!(!summary.contains("第一代正文"), "不应复用旧副本: {summary}");
+    assert_eq!(
+        after_second[1]["compactLoadedSkills"],
+        json!([{ "name": "fix", "args": "" }]),
+        "记录跨代保留"
+    );
+
+    crate::compact::reset_for_test();
+}
+
+/// 技能的正文仍在保留区里 → 不重复重挂，但记录照常保留。
+#[test]
+fn skill_still_in_the_keep_region_is_not_reloaded() {
+    let sandbox = Sandbox::new("engine-compact-reload-keep");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    write_workspace_skill(&sandbox.workspace, "fix", "正文不该重复出现");
+
+    seed_messages(&harness, "s1", &project, 40);
+    // 调用与注入正文都放在末尾（保留区）：保留区是最近 30 条
+    push_message(&harness, "s1", &project, skill_tool_use_message("fix"));
+    push_message(
+        &harness,
+        "s1",
+        &project,
+        json!({
+            "type": "user",
+            "message": { "role": "user", "content": "注入的技能正文" },
+            "uuid": "body-fix",
+            "timestamp": 2,
+            "isMeta": true,
+            "skillName": "fix",
+        }),
+    );
+
+    harness.core.request_compact("s1");
+
+    let messages = crate::history::load_messages("s1", &project);
+    assert_eq!(
+        messages[0]["subtype"],
+        json!("compact_boundary"),
+        "压缩应当发生"
+    );
+    let summary = summary_text(&messages);
+    assert!(
+        !summary.contains(crate::compact::LOADED_SKILLS_HEADING),
+        "正文仍在保留区时不应重复重挂: {summary}"
+    );
+    assert_eq!(
+        messages[1]["compactLoadedSkills"],
+        json!([{ "name": "fix", "args": "" }]),
+        "记录仍要记下来（下次压缩继续继承）"
+    );
+
+    crate::compact::reset_for_test();
+}
+
+/// 技能文件在压缩前被删除：压缩照常完成，摘要点名缺席，不留调用记录以外的痕迹。
+#[test]
+fn deleted_skill_is_named_and_compaction_still_completes() {
+    let sandbox = Sandbox::new("engine-compact-reload-deleted");
+    crate::compact::reset_for_test();
+    let llm = FakeLlm::fixed(openai_text_sse(&["## 对话摘要\n\n摘要正文"]));
+    prepare(&sandbox, &llm.base_url, "auto");
+    let harness = EngineHarness::allow_all();
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    write_workspace_skill(&sandbox.workspace, "gone", "会被删掉的正文");
+
+    seed_messages(&harness, "s1", &project, 40);
+    {
+        let state = harness.core.session("s1");
+        let mut state = state.lock().unwrap();
+        state.messages.insert(3, skill_tool_use_message("gone"));
+        state.persisted_count = state.messages.len();
+        let messages = state.messages.clone();
+        drop(state);
+        crate::history::replace_messages("s1", &project, &messages).unwrap();
+    }
+    std::fs::remove_dir_all(
+        sandbox
+            .workspace
+            .join(".agents")
+            .join("skills")
+            .join("gone"),
+    )
+    .unwrap();
+
+    harness.core.request_compact("s1");
+
+    let messages = crate::history::load_messages("s1", &project);
+    assert_eq!(
+        messages[0]["subtype"],
+        json!("compact_boundary"),
+        "压缩应当发生"
+    );
+    let summary = summary_text(&messages);
+    assert!(
+        summary.contains("无法重新读取"),
+        "缺席要单独说明: {summary}"
+    );
+    assert!(summary.contains("gone"), "要点名: {summary}");
+    assert!(!summary.contains("会被删掉的正文"), "{summary}");
+    assert_eq!(
+        messages[1]["compactLoadedSkills"],
+        json!([{ "name": "gone", "args": "" }]),
+        "记录留着，下次再试"
+    );
+
+    crate::compact::reset_for_test();
+}

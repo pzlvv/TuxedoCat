@@ -38,6 +38,18 @@ last_reviewed: 2026-11-21
   - **AC-11**（FR-006）：GIVEN 运行中任务数超过上限 WHEN 生成章节 THEN 只列出上限内的任务并报出剩余条数
   - **AC-12**（FR-006）：GIVEN 压缩开始时没有运行中的后台任务 WHEN 生成摘要消息 THEN 正文不含该章节
   - **AC-13**（FR-006）：GIVEN 章节已写入压缩产物 WHEN 其中某个任务随后完成或被杀 THEN 压缩产物不回写（章节是压缩那一刻的时点事实，后续由完成通知接续）
+- 场景 7：已调用技能跨压缩携带
+  - **AC-16**（FR-007）：GIVEN 本会话调用过技能 `a` WHEN 压缩完成 THEN 摘要正文含 `### 已加载技能` 章节与 `a` 的磁盘当前正文，摘要消息带 `compactLoadedSkills` 记录
+  - **AC-17**（FR-007）：GIVEN 本会话从未调用任何技能 WHEN 压缩完成 THEN 摘要正文不含该章节，摘要消息不出现 `compactLoadedSkills` 字段
+  - **AC-18**（FR-007）：GIVEN 技能文件在首次调用后被改写 WHEN 压缩完成 THEN 重挂正文是改写后的内容（不是调用时的副本）与当前技能目录
+  - **AC-19**（FR-007）：GIVEN 技能文件在压缩前被删除或读不出 WHEN 压缩完成 THEN 压缩仍以 `complete` 收尾，该技能不进正文、在章节说明行里被点名，记录仍随摘要保留
+  - **AC-20**（FR-007）：GIVEN 单个技能正文超过单项上限 WHEN 重挂 THEN 只保留开头并追加一行截断说明（点名技能与「可重新调用取全文」）
+  - **AC-21**（FR-007）：GIVEN 已调用技能总量超过总预算 WHEN 重挂 THEN 按最近调用优先填充，被整项挤出的技能名逐个写进章节说明行
+  - **AC-22**（FR-007）：GIVEN 会话已压缩一次、其中重挂的技能早已不在保留区 WHEN 再次压缩 THEN 该技能仍出现在新的重挂章节里（记录跨代继承）
+  - **AC-23**（FR-007）：GIVEN 同一技能被调用两次且参数不同 WHEN 压缩完成 THEN 章节里该技能只出现一次且参数取最近一次
+  - **AC-24**（FR-007）：GIVEN 某技能最近一次注入正文仍完整落在保留区 WHEN 压缩完成 THEN 该技能不进重挂正文，记录照常写入
+  - **AC-25**（FR-007）：GIVEN 上一次压缩的重挂章节落在本次归档区 WHEN 生成本次摘要 THEN 该章节不进摘要输入（正文其余部分照常进）
+  - **AC-26**（FR-007）：GIVEN 摘要消息上的 `compactLoadedSkills` 缺失或条目形态非法 WHEN 再次压缩 THEN 按「无历史记录」处理并从本次归档区重新收集，不中断压缩
 
 ## 2. 功能需求
 
@@ -222,6 +234,61 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 任务表也会清空——两种情况下清单为空但命令可能仍在跑。章节只陈述「本进程当前登记在册的
 运行中任务」，不是全局事实。
 
+### FR-007：已加载技能随压缩携带
+
+技能正文是一次性进上下文的：`Skill` 工具把 `SKILL.md` 渲染成一条 `isMeta` 的 user 消息
+落盘，之后就是普通历史（[skills.md 3.4](skills.md#34-注入路径)）。压缩把较早的历史折进摘要，
+摘要里通常只剩「加载过某技能」这类痕迹，红线规则与检查清单从模型可见层消失——而模型不知道
+自己已经忘了，不会自觉重调 `/name`。
+
+压缩因此在摘要正文里额外产出一个「已加载技能」章节，并在摘要消息上留一份不含正文的调用记录。
+
+**事实与投影**：
+
+| 东西 | 来源 | 是否落盘 |
+| --- | --- | --- |
+| 调用记录 `{ name, args }` | 消息里 `assistant` 的 `tool_use`（`name == "Skill"`） | 是：摘要消息的 `compactLoadedSkills` |
+| 记录先后序 | 记录数组顺序（末尾最近） | 同上 |
+| 正文 | 压缩时 `skills::find_skill(cwd)` 解析 + `skills::render_skill_body` 重渲染 | 否（磁盘投影） |
+| 「正文仍在上下文」 | 保留区里带同名 `skillName` 的 `isMeta` 消息 | 否 |
+
+- **收集范围**：本会话的 `Skill` 工具调用，模型主动调用与用户 `/name` 派发都算（两条路径
+  共用同一次工具执行）。子代理在自己会话里的调用不进本会话记录。调用时被记下就行——
+  两个调用开关（`user-invocable` / `disable-model-invocation`）不参与记录判定。
+- **跨代合并**：按「上一代摘要字段 → 本次归档区 → 本次保留区」顺序合并，同名先删旧再追加，
+  因此同一技能只留**最近一次**的调用（参数取最近那次的），数组里每个名字一条。三段顺序就是
+  时间顺序，`compactLoadedSkills` 是跨多次压缩与 `--resume` 的唯一载体。
+- **正文来源是压缩那一刻的磁盘**：每条记录在压缩时重新解析并渲染（参数替换 → 内置变量替换
+  与首次注入走同一份 `render_skill_body`），因此文件改了就重挂新版、路径变了就写新路径。
+  这与「重放调用时的旧副本」是有意区别：旧副本会让过期规则继续按现行规则生效。
+- **章节形态**：摘要正文的**最后一个**章节（位于「用户输入历史」「后台任务」之后、固定尾注
+  之前），标题 `### 已加载技能`，前言点明「这些技能是本会话较早时候加载的，不是当前轮次的
+  要求」。每个技能一段：`#### <name>` + 来源行（技能目录，`skill_root` 存在时）+ 正文。
+- **预算**：单项 `COMPACT_SKILL_MAX_TOKENS`（5,000 token，含该技能的标题行 / 来源行 /
+  截断说明行），整体 `COMPACT_SKILL_TOTAL_TOKENS`（25,000 token，含章节标题与说明行），
+  都按 `util::estimate_text_tokens` 计算。填充顺序是**最近调用优先**。
+- **截断与溢出都不静默**：单项超限时保留开头（`util::take_prefix_within_tokens`）并追加
+  一行截断说明，点名技能与「需要全文请重新调用」；总量不足时**整项**放弃最旧的，被放弃的
+  技能名逐个写进章节末尾的说明行。说明行本身顶穿预算时才省略它，被省略名单改记 core 日志。
+- **读不出 / 解析不到**：该技能不进正文，在说明行里被点名（`无法重新读取`），core 日志打一条
+  点名技能名与原因的 WARNING；压缩照常以 `complete` 收尾——重挂不依赖摘要模型的输出。
+- **保留区已含正文**：保留区里仍有该技能的 `skillName` 注入消息时，不重复重挂（它还在上下文
+  里，再挂一份只白花预算），但记录照常写入。判据只看标记、**不比对内容**：内容随文件改动
+  立刻失效，拿它判断会得出「还在」的错误结论。
+- **二次压缩的摘要输入卫生**：上一代的重挂章节落在本次归档区，它在进摘要输入前被剥掉
+  （`format_messages_for_compact` 对 `isCompactSummary` 消息先剥「后台任务」再剥「已加载
+  技能」）。剥离范围是「标题行首 → 固定尾注起点」，不走「遇到下一个 Markdown 标题即止」的
+  通用逻辑——技能正文自带标题与 `---`，通用逻辑会在章节内部提前收手，把半段旧正文喂给摘要
+  模型。`COMPACT_FOOTER` 是生成侧与剥离侧共用的唯一一份尾注常量。
+- **不改调用语义**：重挂不过工具执行、不产生用户消息 / `Skill` 卡片、不刷 `meta.json` 的
+  `messageCount`，也不受 `disable-model-invocation` 约束（[skills.md FR-001](skills.md#fr-001两个调用开关各管一侧)）。
+- **可见性**：章节随摘要正文一并展示给用户（webview 的压缩摘要卡片原样渲染），与「用户输入
+  历史」「后台任务」同口径；展示形态由 UI 决定，不在本规格内。
+- **空集**：本会话没有调用记录，或所有记录都仍完整落在保留区 → 不产出章节、不写字段，
+  摘要正文与不含该章节的形态逐字节相同。
+- **字段形态非法**：条目缺 `name`、`name` 非字符串 / 全空白、`compactLoadedSkills` 不是数组
+  → 逐条忽略并按「无历史记录」继续，不让整次压缩失败（外部工具可能改坏 JSONL）。
+
 ## 3. 行为规格
 
 ### 3.1 数据流
@@ -231,6 +298,7 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
                     │
                     ├─ LLM 生成摘要
                     ├─ 组装 [边界, 摘要, ...保留区]
+                    │    └─ 摘要正文：摘要 + 用户输入历史 + 后台任务 + 已加载技能（FR-007）
                     ├─ 重算压缩后占用（估算）
                     ├─ compactEnd ──▶ UI（进度提示 complete / error + 用量按新值刷新）
                     ├─ append_compact_archive（本代归档区 + 摘要，追加在第 N 代之后）
@@ -260,16 +328,28 @@ webview 与 TUI 在「`pendingCompact === true` 且 `compacting === false`」期
 - **代次分界重合**：某代归档区只含已被去重的上代摘要时，两代分界落在同一下标——该层
   可见集合不变，但层级计数照常推进，展开到最后仍会露出全部代次。
 - **会话回退（`rewindConversation`）**：不回写也不回收归档，各代仍是压缩那一刻的事实。
+- **已加载技能读不出**：`find_skill` 解析不到 / 渲染为空时该技能不进重挂正文，章节说明行点名
+  （`无法重新读取`）并打 core WARNING；压缩仍 `complete`，记录留在 `compactLoadedSkills` 里
+  等下次再试（AC-19）。
+- **单项 / 总量超预算**：单项保留开头 + 截断说明行；总量按最近调用优先填充，被整项挤出的技能
+  逐个点名。两者都不静默丢弃（AC-20、AC-21）。
+- **保留区已含正文**：不重复重挂，记录照常写入（AC-24）。
+- **技能记录字段损坏**：逐条忽略、按无历史记录继续（AC-26）。
+- **第一代重挂章节进归档区**：进摘要输入前被剥掉；剥离不影响记录的跨代继承（二者分离）
+  （AC-25）。
 
 ## 5. 非目标
 
 - 进度条 / 按钮等 UI 表现不在本规格内（core 只发事实事件）。
 - 归档文件的 UI 呈现样式不在本规格内（展开的只读语义见 FR-005）。
+- 重挂正文不跟随压缩后的磁盘改动：它只保证「压缩那一刻读到的内容」（非目标登记于
+  [skills.md 第 5 节](skills.md#5-非目标)）。
 
 ## 6. 对需求基线的影响
 
 关联既有 [user-stories.md](user-stories.md) 的 US-9（上下文用量与手动压缩）/
-US-17（压缩历史展开）；无新增 US。
+US-17（压缩历史展开）/ [US-27 斜杠命令与技能触发](user-stories/tools.md#us-27-斜杠命令与技能触发)
+（验收标准 5：会话压缩后本会话调用过的技能仍按当前文件内容对模型可见）。无新增 US。
 
 ## 7. 追溯矩阵
 
@@ -281,3 +361,4 @@ US-17（压缩历史展开）；无新增 US。
 | FR-004 | `core-rs/src/compact.rs` 的 `select_user_input_history` | `core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_keeps_the_global_user_input_head` | 自动 |
 | FR-005 | `core-rs/src/history.rs` 的 `append_compact_archive`（按代次追加）+ `core-rs/src/main.rs` 的 `compact_archive_display`（合并与每代起始下标）+ 宿主 `expandCompact`（`src/host/ui/webviewMessageHandler.ts`，分段转换）+ `src/webview/compactExpand.ts`（层级 → 可见集合 / 按钮显隐） | `core-rs/src/history_tests.rs`（追加不覆盖 / 旧格式 / 半行）、`core-rs/src/main_tests.rs` 的 `compact_archive_display_*`、`core-rs/src/compact_engine_tests.rs` 的 `repeated_compact_appends_a_second_archive_generation`、`src/test/compactExpand.test.ts`、e2e `e2e/webview/messagePresentation.spec.ts`（US-17 逐层展开） | 自动 |
 | FR-006 | `core-rs/src/compact.rs` 的 `compact_conversation_inner` / `generate_compact_user_message` / `strip_running_tasks_section`；`core-rs/src/bash_task.rs` 的 `build_running_tasks_section` / `RUNNING_TASKS_HEADING`；`core-rs/src/engine.rs` 的 `enqueue_agent_message` 的 `compacting` 守卫 | `core-rs/src/bash_task_tests.rs` 的 `running_tasks_section_*` 五条；`core-rs/src/compact_tests.rs` 的 `strip_running_tasks_tests` 三条；`core-rs/src/compact_engine_tests.rs` 的 `compact_carries_the_running_background_tasks_into_the_summary_message` / `compact_without_running_tasks_adds_no_section`；`core-rs/src/engine_tests.rs` 的 `agent_message_during_compaction_is_queued_without_starting_the_consumer`；对照表 `core-rs/fixtures/compact.json` 的 `compactUserMessages` | 自动 |
+| FR-007 | `core-rs/src/compact.rs` 的 `collect_loaded_skill_records` / `read_compact_loaded_skills` / `keep_region_skill_names` / `build_loaded_skills_section` / `strip_loaded_skills_section` / `COMPACT_SKILL_MAX_TOKENS` / `COMPACT_SKILL_TOTAL_TOKENS`；`core-rs/src/skills.rs` 的 `render_skill_body`；`core-rs/src/util.rs` 的 `take_prefix_within_tokens`；`core-rs/src/tools.rs` 的 `skillName` 标记 | `core-rs/src/compact_tests.rs` 的 `loaded_skills_tests` / `strip_loaded_skills_tests`（14 条）、`core-rs/src/compact_engine_tests.rs` 的 `compact_reloads_an_invoked_skill_from_disk` / `repeated_compact_keeps_reloading_the_skill` / `skill_still_in_the_keep_region_is_not_reloaded` / `deleted_skill_is_named_and_compaction_still_completes`、对照表 `core-rs/fixtures/compact.json` 的 `compactUserMessages`、e2e `e2e/electron/skillReloadAfterCompact.spec.ts`（含重复压缩） | 自动 |

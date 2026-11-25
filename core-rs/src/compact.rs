@@ -182,7 +182,10 @@ pub fn format_messages_for_compact(messages: &[Value]) -> String {
                 };
                 let text = if message.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
                 {
-                    strip_running_tasks_section(&text)
+                    // 两个章节都是「当时」的快照：后台任务是那次压缩开始时的任务表，
+                    // 技能正文是那次的磁盘内容。原样喂给摘要模型，它会抄进「未完成事项」
+                    // 或压成一段似是而非的规则，与本次新算的章节自相矛盾。
+                    strip_loaded_skills_section(&strip_running_tasks_section(&text))
                 } else {
                     text
                 };
@@ -596,6 +599,361 @@ pub fn generate_compact_summary_prompt(
     }
 }
 
+/// 压缩后注入的 user 消息正文的固定尾注。
+///
+/// 生成侧（[`generate_compact_user_message`]）与剥离侧（[`strip_loaded_skills_section`]）
+/// 共用同一份：重挂章节是正文的最后一个章节，剥离要从它的标题一直切到这条尾注之前，
+/// 两处各写一份字符串就会在改动时静默错位。
+pub const COMPACT_FOOTER: &str = "---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。";
+
+/// 重挂章节标题（`docs/features/compaction.md` FR-007）
+pub const LOADED_SKILLS_HEADING: &str = "### 已加载技能";
+
+/// 单个已加载技能重挂正文的 token 上限（含该技能的标题行与来源行）
+pub const COMPACT_SKILL_MAX_TOKENS: u64 = 5_000;
+
+/// 重挂章节整体的 token 上限（含标题、前言与说明行）
+pub const COMPACT_SKILL_TOTAL_TOKENS: u64 = 25_000;
+
+/// 重挂章节的前言：点明时点与来源，避免模型把旧规则当成本轮新指令
+/// （Codex 的 world_state 全量重放就踩过这个坑）。
+const LOADED_SKILLS_PREAMBLE: &str =
+    "以下技能是本会话较早时候加载的，不是当前轮次的要求；其中的指令按既有优先级继续生效。";
+
+/// 一条「本会话调用过某技能」的记录。
+///
+/// **不含正文**：正文是磁盘内容的投影，随文件变化；把它存进落盘会让过期规则继续生效
+/// （`docs/features/compaction.md` FR-007）。数组顺序即调用先后，末尾最近。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadedSkillRecord {
+    pub name: String,
+    pub args: String,
+}
+
+/// 从消息里的 `Skill` 工具调用提取记录（按出现顺序）
+fn skill_tool_uses(messages: &[Value]) -> Vec<LoadedSkillRecord> {
+    let mut records: Vec<LoadedSkillRecord> = Vec::new();
+    for message in messages {
+        if message.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(blocks) = message
+            .get("message")
+            .and_then(|inner| inner.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            if block.get("name").and_then(Value::as_str) != Some("Skill") {
+                continue;
+            }
+            let input = block.get("input");
+            let raw = input
+                .and_then(|value| value.get("skill"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let trimmed = util::js_trim(raw);
+            let name = trimmed.strip_prefix('/').unwrap_or(trimmed);
+            if name.is_empty() {
+                continue;
+            }
+            let args = input
+                .and_then(|value| value.get("args"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            records.push(LoadedSkillRecord {
+                name: name.to_string(),
+                args,
+            });
+        }
+    }
+    records
+}
+
+/// 读取上一次压缩摘要持久化的技能调用记录（`compactLoadedSkills`）。
+///
+/// 与 [`read_compact_user_input_history`] 同口径：取消息数组里最后一条
+/// `isCompactSummary` 消息上的字段。形态非法的条目逐条忽略——旧会话没有该字段、
+/// 外部工具可能改坏 JSONL，按「无历史记录」继续而不是让整次压缩失败。
+pub fn read_compact_loaded_skills(messages: &[Value]) -> Vec<Value> {
+    for message in messages.iter().rev() {
+        if message.get("isCompactSummary").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(entries) = message.get("compactLoadedSkills").and_then(Value::as_array) else {
+            return Vec::new();
+        };
+        return entries
+            .iter()
+            .filter_map(|entry| {
+                let name = entry.get("name").and_then(Value::as_str)?;
+                let name = util::js_trim(name);
+                if name.is_empty() {
+                    return None;
+                }
+                let args = entry
+                    .get("args")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                Some(json!({ "name": name, "args": args }))
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+/// 把持久化条目解析成记录（非法条目忽略）
+fn records_from_values(values: &[Value]) -> Vec<LoadedSkillRecord> {
+    values
+        .iter()
+        .filter_map(|entry| {
+            let name = entry.get("name").and_then(Value::as_str)?;
+            let name = util::js_trim(name);
+            if name.is_empty() {
+                return None;
+            }
+            Some(LoadedSkillRecord {
+                name: name.to_string(),
+                args: entry
+                    .get("args")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 按「上一代字段 → 本次归档区 → 本次保留区」合并记录，同名只留最近一次。
+///
+/// 三段顺序就是时间顺序，所以「先删旧同名再追加」天然实现「取最近一次」；一条技能
+/// 在数组里只出现一次，重挂章节里也只出现一次（`docs/features/compaction.md` FR-007）。
+pub fn collect_loaded_skill_records(
+    persisted: &[Value],
+    region: &[Value],
+    keep: &[Value],
+) -> Vec<LoadedSkillRecord> {
+    let mut merged: Vec<LoadedSkillRecord> = Vec::new();
+    let sources = [
+        records_from_values(persisted),
+        skill_tool_uses(region),
+        skill_tool_uses(keep),
+    ];
+    for source in sources {
+        for record in source {
+            merged.retain(|existing| existing.name != record.name);
+            merged.push(record);
+        }
+    }
+    merged
+}
+
+/// 保留区里仍带着完整技能正文的技能名。
+///
+/// 判据只看注入消息上的 `skillName` 标记，**不比对内容**：内容随磁盘改动立刻失效，
+/// 拿它判断会得出「还在」的错误结论。
+pub fn keep_region_skill_names(keep: &[Value]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for message in keep {
+        if message.get("isMeta").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(name) = message.get("skillName").and_then(Value::as_str) else {
+            continue;
+        };
+        let name = util::js_trim(name);
+        if name.is_empty() || names.iter().any(|known| known == name) {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names
+}
+
+/// 渲染重挂章节（`docs/features/compaction.md` FR-007）。
+///
+/// 填充顺序是**最近调用优先**：预算先给最近的，最旧的先被整项放弃。返回 `None` 表示
+/// 不该出章节（没有记录，或全部记录都还在保留区里）。
+pub fn build_loaded_skills_section(
+    records: &[LoadedSkillRecord],
+    skip_names: &[String],
+    cwd: &str,
+    session_id: &str,
+) -> Option<String> {
+    if records.is_empty() {
+        return None;
+    }
+
+    let frame = format!("{LOADED_SKILLS_HEADING}\n\n{LOADED_SKILLS_PREAMBLE}");
+    let mut total = util::estimate_text_tokens(&frame);
+    let mut items: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut dropped: Vec<String> = Vec::new();
+    // 预算一旦不够，更旧的记录（本循环后面才遇到）一律整项放弃：这是「最近优先」
+    // 的直接推论，也让结果与遍历顺序无关地可复现。
+    let mut exhausted = false;
+
+    for record in records.iter().rev() {
+        if skip_names.iter().any(|name| name == &record.name) {
+            continue;
+        }
+        if exhausted {
+            dropped.push(record.name.clone());
+            continue;
+        }
+        let Some(command) = crate::skills::find_skill(&record.name, cwd) else {
+            eprintln!(
+                "[core] compact: skill '{}' not found; omitted from reloaded skills section",
+                record.name
+            );
+            failed.push(record.name.clone());
+            continue;
+        };
+        let body = crate::skills::render_skill_body(&command, &record.args, session_id);
+        if util::js_trim(&body).is_empty() {
+            eprintln!(
+                "[core] compact: skill '{}' rendered empty; omitted from reloaded skills section",
+                record.name
+            );
+            failed.push(record.name.clone());
+            continue;
+        }
+
+        let mut header = format!("#### {}\n", command.name);
+        if let Some(dir) = command.skill_root.as_deref() {
+            header.push_str(&format!("技能目录：{}\n", dir.replace('\\', "/")));
+        }
+        let header_cost = util::estimate_text_tokens(&header);
+        // 截断说明行也占预算：单项上限约束的是「这个技能在章节里占的全部 token」，
+        // 只扣正文的额度会让加了说明行的条目顶穿上限（估算与断言口径都会露出来）。
+        let truncation_note = format!(
+            "\n\n（已截断：{} 的正文超过单项上限 {COMPACT_SKILL_MAX_TOKENS} token，\
+             仅保留开头；需要全文请重新调用 /{}）",
+            command.name, command.name
+        );
+        let note_cost = util::estimate_text_tokens(&truncation_note);
+        let body_capacity = COMPACT_SKILL_MAX_TOKENS.saturating_sub(header_cost);
+        let body_cost = util::estimate_text_tokens(&body);
+        let (body, truncated) = if body_cost > body_capacity {
+            (
+                util::take_prefix_within_tokens(&body, body_capacity.saturating_sub(note_cost)),
+                true,
+            )
+        } else {
+            (body, false)
+        };
+
+        let mut item = format!("{header}\n{body}");
+        if truncated {
+            item.push_str(&truncation_note);
+        }
+
+        let cost = util::estimate_text_tokens(&item);
+        if total + cost > COMPACT_SKILL_TOTAL_TOKENS {
+            exhausted = true;
+            dropped.push(record.name.clone());
+            continue;
+        }
+        total += cost;
+        items.push(item);
+    }
+
+    // 一条都没挂上、也没有读不出的记录时不出章节。注意 `dropped` 非空时仍要出——
+    // 「所有技能都因预算被放弃」必须让模型与用户看见那句话，不能静默变成没有章节。
+    if items.is_empty() && failed.is_empty() && dropped.is_empty() {
+        return None;
+    }
+
+    let mut blocks: Vec<String> = Vec::new();
+    if !items.is_empty() {
+        blocks.push(LOADED_SKILLS_PREAMBLE.to_string());
+        blocks.extend(items.iter().cloned());
+    }
+    if !dropped.is_empty() {
+        blocks.push(format!(
+            "（以下技能因总量预算 {COMPACT_SKILL_TOTAL_TOKENS} token 未重挂：{}）",
+            dropped.join("、")
+        ));
+    }
+    if !failed.is_empty() {
+        blocks.push(format!(
+            "（以下技能无法重新读取，未重挂：{}；请确认 SKILL.md 是否仍在）",
+            failed.join("、")
+        ));
+    }
+    let section = format!("{LOADED_SKILLS_HEADING}\n\n{}", blocks.join("\n\n"));
+
+    // 说明行是唯一可能在预算之外再加一段的块。真顶穿了就退化为「只留技能正文」，
+    // 被省略的名单改记 core 日志——绝不静默丢技能正文。
+    if util::estimate_text_tokens(&section) > COMPACT_SKILL_TOTAL_TOKENS {
+        eprintln!(
+            "[core] compact: reloaded skills notes exceed the {COMPACT_SKILL_TOTAL_TOKENS} token \
+             budget; dropped: [{}], unreadable: [{}]",
+            dropped.join(", "),
+            failed.join(", ")
+        );
+        let mut kept = vec![LOADED_SKILLS_PREAMBLE.to_string()];
+        kept.extend(items.clone());
+        return Some(format!("{LOADED_SKILLS_HEADING}\n\n{}", kept.join("\n\n")));
+    }
+
+    Some(section)
+}
+
+/// 从摘要正文里剥掉「已加载技能」章节（`docs/features/compaction.md` FR-007）。
+///
+/// 该章节是正文的**最后一个**章节，所以剥离范围就是「标题行首 → 固定尾注起点」。
+/// 不走「遇到下一个 Markdown 标题即止」的通用逻辑：技能正文自己带标题与 `---`，
+/// 通用逻辑会在章节内部提前收手，把半段旧技能正文喂给摘要模型。
+pub fn strip_loaded_skills_section(text: &str) -> String {
+    // 用「标题 + 前言」整段定位，而不是只找标题：技能正文自己也可能有一行
+    // `### 已加载技能`，只按标题定位会从章节内部开刀，把半段正文留在摘要输入里。
+    let marker = format!("{LOADED_SKILLS_HEADING}\n\n{LOADED_SKILLS_PREAMBLE}");
+    let Some(marker_at) = text.rfind(&marker) else {
+        // 前言被预算挤掉时退化为只认标题
+        let Some(heading_at) = text.rfind(LOADED_SKILLS_HEADING) else {
+            return text.to_string();
+        };
+        return strip_from_heading(text, heading_at);
+    };
+    strip_from_heading(text, marker_at)
+}
+
+/// 从 `at` 所在行的行首起、切到固定尾注之前。
+fn strip_from_heading(text: &str, at: usize) -> String {
+    let line_start = text[..at].rfind('\n').map(|index| index + 1).unwrap_or(0);
+    // 标题必须在行首（正文里偶然提到这串字的不算章节）
+    if !util::js_trim(&text[line_start..at]).is_empty() {
+        return text.to_string();
+    }
+    let footer_at = text
+        .find(COMPACT_FOOTER)
+        .filter(|index| *index > line_start);
+    let Some(footer_at) = footer_at else {
+        // 没有尾注：章节吞掉到末尾
+        let head = util::js_trim_end(&text[..line_start]);
+        return if head.is_empty() {
+            String::new()
+        } else {
+            head.to_string()
+        };
+    };
+    let head = util::js_trim_end(&text[..line_start]);
+    let tail = util::js_trim_start(&text[footer_at..]);
+    match (head.is_empty(), tail.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => tail.to_string(),
+        (false, true) => head.to_string(),
+        (false, false) => format!("{head}\n\n{tail}"),
+    }
+}
+
 /// 压缩后注入的 user 消息正文（`generateCompactUserMessage`）
 ///
 /// `running_tasks` 是压缩开始时仍在运行的后台任务章节（
@@ -604,11 +962,15 @@ pub fn generate_compact_summary_prompt(
 /// 压缩会把它摊平、截断或替换成合成结果，任务仍在跑而模型那一侧的事实已经消失
 /// （`docs/features/compaction.md` FR-006）。放在摘要正文里而不是单开一条消息，
 /// 是为了让压缩产物保持 `[边界标记, 摘要, ...保留区]` 的三段形态。
+///
+/// `loaded_skills` 是同样的道理（`docs/features/compaction.md` FR-007）：技能正文一次性
+/// 加载、随后被压缩吃掉，模型不会自觉重新调用。它是正文的最后一个章节。
 pub fn generate_compact_user_message(
     summary: &str,
     transcript_path: Option<&str>,
     user_input_history: Option<&str>,
     running_tasks: Option<&str>,
+    loaded_skills: Option<&str>,
 ) -> String {
     let mut content = format!("以下是之前对话的摘要：\n\n{summary}");
     if let Some(path) = transcript_path {
@@ -620,7 +982,12 @@ pub fn generate_compact_user_message(
     if let Some(tasks) = running_tasks {
         content.push_str(&format!("\n\n{tasks}"));
     }
-    content.push_str("\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。");
+    // 已加载技能是最后一个章节：剥离侧（`strip_loaded_skills_section`）据此只需
+    // 「标题行首 → 尾注起点」一段切法，不必猜章节边界。
+    if let Some(skills) = loaded_skills {
+        content.push_str(&format!("\n\n{skills}"));
+    }
+    content.push_str(&format!("\n\n{COMPACT_FOOTER}"));
     content
 }
 
@@ -841,6 +1208,7 @@ pub fn compact_conversation(
     custom_instructions: Option<&str>,
     is_auto_compact: bool,
     max_messages_to_keep: usize,
+    cwd: &str,
 ) -> Option<CompactionResult> {
     if !has_compactable_messages(messages, max_messages_to_keep) {
         return None;
@@ -860,6 +1228,7 @@ pub fn compact_conversation(
         custom_instructions,
         is_auto_compact,
         max_messages_to_keep,
+        cwd,
     );
     unmark_compacting(session_id);
     {
@@ -879,6 +1248,7 @@ fn compact_conversation_inner(
     custom_instructions: Option<&str>,
     is_auto_compact: bool,
     max_messages_to_keep: usize,
+    cwd: &str,
 ) -> Option<CompactionResult> {
     // 通知 UI：压缩开始
     core.emit(json!({ "type": "compactBegin", "sessionId": session_id }));
@@ -939,6 +1309,28 @@ fn compact_conversation_inner(
         &crate::bash_task::running_tasks_for_session(session_id),
     );
 
+    // 本会话调用过的技能（`docs/features/compaction.md` FR-007）：记录只从消息派生，
+    // 正文在下面按磁盘重渲染。保留区里仍带着完整正文的技能不重复重挂——它还在上下文里，
+    // 再挂一份只是白花预算。
+    let previous_loaded_skills = read_compact_loaded_skills(&messages_for_compact);
+    let loaded_skill_records = collect_loaded_skill_records(
+        &previous_loaded_skills,
+        &messages_to_summarize,
+        &recent_messages,
+    );
+    let loaded_skills_section = build_loaded_skills_section(
+        &loaded_skill_records,
+        &keep_region_skill_names(&recent_messages),
+        cwd,
+        session_id,
+    );
+    // 落盘字段只留名字与参数：正文是磁盘投影，存进来自证「一份事实一个写入点」
+    // 被破坏（过期规则会继续生效）。
+    let persisted_loaded_skills: Vec<Value> = loaded_skill_records
+        .iter()
+        .map(|record| json!({ "name": record.name, "args": record.args }))
+        .collect();
+
     let last_message_uuid = messages_for_compact
         .last()
         .and_then(|message| message.get("uuid"))
@@ -964,7 +1356,7 @@ fn compact_conversation_inner(
         },
     });
 
-    let summary_message = json!({
+    let mut summary_message = json!({
         "type": "user",
         "message": {
             "role": "user",
@@ -973,6 +1365,7 @@ fn compact_conversation_inner(
                 None,
                 user_input_history.as_deref(),
                 running_tasks.as_deref(),
+                loaded_skills_section.as_deref(),
             ),
         },
         "uuid": format!("summary_{}", util::now_millis()),
@@ -981,6 +1374,17 @@ fn compact_conversation_inner(
         // 跨多次压缩保留全局用户输入历史：下次压缩据此恢复会话最初的用户输入。
         "compactUserInputHistory": selected_user_input_history,
     });
+    // 跨多次压缩保留「本会话调用过哪些技能」：正文每次压缩按磁盘重渲染，字段只记
+    // 名字与参数（`docs/features/compaction.md` FR-007）。空集不写字段——旧会话与新会话
+    // 的摘要消息形态因此只差「有没有这条」，不引入 `null` 语义。
+    if !persisted_loaded_skills.is_empty() {
+        if let Some(object) = summary_message.as_object_mut() {
+            object.insert(
+                "compactLoadedSkills".to_string(),
+                Value::Array(persisted_loaded_skills),
+            );
+        }
+    }
 
     // 压缩后上下文占用：与运行时估算同一套口径重算（`build_llm_messages_from` 转换后
     // 交给 `estimate_request_tokens`；system prompt / tools 不在压缩产物里，按消息体
@@ -1103,6 +1507,8 @@ pub fn compact_and_apply_messages(
         custom_instructions,
         is_auto_compact,
         30,
+        // 重挂要按会话工作目录解析技能：与 `/name` 派发同一套发现与仲裁
+        project,
     ) else {
         return false;
     };

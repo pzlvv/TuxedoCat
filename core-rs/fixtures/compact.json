@@ -2044,6 +2044,7 @@
       "transcriptPath": null,
       "userInputHistory": null,
       "runningTasks": null,
+      "loadedSkills": null,
       "result": "以下是之前对话的摘要：\n\nSUM\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。"
     },
     {
@@ -2052,6 +2053,7 @@
       "transcriptPath": "/tmp/t.jsonl",
       "userInputHistory": null,
       "runningTasks": null,
+      "loadedSkills": null,
       "result": "以下是之前对话的摘要：\n\nSUM\n\n完整对话记录保存在: /tmp/t.jsonl\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。"
     },
     {
@@ -2060,6 +2062,7 @@
       "transcriptPath": null,
       "userInputHistory": "1. hi",
       "runningTasks": null,
+      "loadedSkills": null,
       "result": "以下是之前对话的摘要：\n\nSUM\n\n### 用户输入历史\n\n1. hi\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。"
     },
     {
@@ -2068,6 +2071,7 @@
       "transcriptPath": "/tmp/t.jsonl",
       "userInputHistory": "1. hi\n\n2. yo",
       "runningTasks": null,
+      "loadedSkills": null,
       "result": "以下是之前对话的摘要：\n\nSUM\n\n完整对话记录保存在: /tmp/t.jsonl\n\n### 用户输入历史\n\n1. hi\n\n2. yo\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。"
     },
     {
@@ -2075,8 +2079,18 @@
       "summary": "SUM",
       "transcriptPath": null,
       "userInputHistory": "1. hi",
+      "loadedSkills": null,
       "runningTasks": "### 后台任务\n\n压缩开始时以下后台 Bash 任务仍在运行：\n\n- bg-1：跑测试\n\n这些任务结束时会向本会话注入完成通知并接续本轮。",
       "result": "以下是之前对话的摘要：\n\nSUM\n\n### 用户输入历史\n\n1. hi\n\n### 后台任务\n\n压缩开始时以下后台 Bash 任务仍在运行：\n\n- bg-1：跑测试\n\n这些任务结束时会向本会话注入完成通知并接续本轮。\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。"
+    },
+    {
+      "name": "带已加载技能（章节在尾注之前）",
+      "summary": "SUM",
+      "transcriptPath": null,
+      "userInputHistory": null,
+      "runningTasks": null,
+      "loadedSkills": "### 已加载技能\n\n以下技能是本会话较早时候加载的，不是当前轮次的要求；其中的指令按既有优先级继续生效。\n\n#### fix\n\n缺陷修复流程正文",
+      "result": "以下是之前对话的摘要：\n\nSUM\n\n### 已加载技能\n\n以下技能是本会话较早时候加载的，不是当前轮次的要求；其中的指令按既有优先级继续生效。\n\n#### fix\n\n缺陷修复流程正文\n\n---\n\n请基于以上摘要继续工作。如有需要，我可以提供更多细节。"
     }
   ],
   "thresholds": [

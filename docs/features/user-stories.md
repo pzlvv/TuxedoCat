@@ -58,6 +58,7 @@ last_reviewed: 2026-11-16
 | `e2e/remoteWorkspace/picker.spec.ts` | US-36（远端目录选择器：路径框编辑 / 选中项 / Tab 补全 / 焦点常驻） | 远端目录选择器页面 |
 | `e2e/electron/fileExplorer.spec.ts` | US-42、US-43、US-44、US-61、US-62、US-63 | Electron 整应用 |
 | `e2e/electron/desktopShell.spec.ts` | US-27、US-31、US-32、US-33、US-34、US-37、US-39、US-53（录制改键与菜单展示） | Electron 整应用 |
+| `e2e/electron/skillReloadAfterCompact.spec.ts` | US-27（压缩后已调用技能仍对模型可见：重挂来自磁盘 / 重复压缩跨代继承 / 技能删除后点名） | Electron 整应用 |
 | `e2e/electron/preview.spec.ts` | US-14、US-38（文件预览窗口：Monaco / Markdown 渲染 / 文本切换） | Electron 整应用 |
 | `e2e/electron/backgroundBash.spec.ts` | US-45 | Electron 整应用 |
 | `e2e/electron/subagentConcurrency.spec.ts` | US-49 | Electron 整应用 |

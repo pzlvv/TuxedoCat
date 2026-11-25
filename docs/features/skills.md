@@ -146,6 +146,15 @@ user 消息随 `newMessages` 进对话，tool_result 文本是
 用户 `/name`：命令在轮次边界解析 → 合成一条 assistant `tool_use` 消息 → 执行同一个 Skill 工具
 → 落 tool_result 与注入消息。整个过程落三条消息，UI 看到一张 Skill 卡片。
 
+两条路径的正文渲染只有 `skills::render_skill_body` 一份（参数替换 → 内置变量替换）。注入消息
+另带 `skillName` 标记，只服务压缩时的「该技能正文是否仍在保留区」判定，不进 LLM 载荷。
+
+**压缩后的重挂**：正文一次性进上下文，压缩会把较早的历史折进摘要。压缩因此按「本会话调用过
+哪些技能」重挂正文（[compaction.md FR-007](compaction.md#fr-007已加载技能随压缩携带)）：
+记录只留名字与参数，正文在压缩时按**当前磁盘内容**重新渲染（同一个 `render_skill_body`），
+受单项 5,000 / 总量 25,000 token 预算约束。重挂不过工具执行、不产生 Skill 卡片、不受
+`disable-model-invocation` 限制——它只是把已经加载过的正文放回上下文。
+
 ### 3.5 仲裁与日志
 
 冲突 WARNING 形如
@@ -163,6 +172,10 @@ realpath 去重日志形如 `deduped '<name>' (<路径> from <来源> is the sam
   `Skill '<name>' cannot be invoked by the model (disable-model-invocation: true)`，正文不注入。
 - `/name` 区分大小写、按名称精确匹配，不做归一化；未知命令落到普通消息路径。
 - 技能名含空白时无法用 `/name` 触发（命令名以空白切分），菜单仍会列出它。
+- 压缩时重挂的技能已被删除 / 读不出：该技能不进重挂正文，摘要的说明行点名它并打 core
+  WARNING；压缩照常完成，记录留在摘要上等下次再试
+  （[compaction.md FR-007](compaction.md#fr-007已加载技能随压缩携带)）。
+- 重挂取的是**压缩那一刻**的磁盘内容：压缩之后文件再改，不回溯已注入的正文。
 
 ## 5. 非目标
 
@@ -170,7 +183,8 @@ realpath 去重日志形如 `deduped '<name>' (<路径> from <来源> is the sam
 - 不向上父目录查找：monorepo 根上的技能在子目录里打开会话时不可见。
 - 不支持扁平 `skills/*.md`（只认 `<name>/SKILL.md`）。
 - 不换真正的 YAML 解析器：折叠标量、流式数组、嵌套 map 仍不支持。
-- 模型名单没有字符预算或截断；压缩后不重新挂载已加载的技能正文；重复调用不去重。
+- 模型名单没有字符预算或截断；同一技能重复调用时仍会把正文再灌一遍（压缩后的重挂见
+  [compaction.md FR-007](compaction.md#fr-007已加载技能随压缩携带)）。
 - 不改 `SkillListItem` 契约（不带来源与开关字段）。
 - 不做技能管理面板与 `/skills` 列表。
 - 弱化 `<configDir>/skills` 的路线未定，登记在
@@ -180,7 +194,7 @@ realpath 去重日志形如 `deduped '<name>' (<路径> from <来源> is the sam
 
 对应 [US-27 斜杠命令与技能触发](user-stories/tools.md#us-27-斜杠命令与技能触发)：验收标准 1
 列出四个发现根与 rank 顺序，验收标准 3 保留「技能与内置命令同名时技能被忽略」，
-验收标准 4 给出两个调用开关的语义。
+验收标准 4 给出两个调用开关的语义，验收标准 5 给出压缩后已调用技能仍对模型可见。
 
 ## 7. 追溯矩阵
 

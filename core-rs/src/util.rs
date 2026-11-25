@@ -429,6 +429,36 @@ fn is_cjk_code(code: u32) -> bool {
         || (0x3000..=0x303f).contains(&code) // CJK 标点
 }
 
+/// 取前 `limit` 个 token 对应的一段文本前缀（不含省略标记）。
+///
+/// 与 [`estimate_text_tokens`] 同一套系数逐 UTF-16 code unit 累加（CJK / 全角按 1.2 计，
+/// 其余按 1/3 计），因此「按本函数截出的文本」的估算值必然 ≤ `limit`，不会出现
+/// 截断后再估一次又超预算的来回。代理对整对保留，不在中间切开。
+pub fn take_prefix_within_tokens(text: &str, limit: u64) -> String {
+    if estimate_text_tokens(text) <= limit {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    // 累加量用「放大 15 倍」的整数口径：非 CJK 一个 code unit 记 5，CJK 记 18
+    // （1.2 × 15）。整数累加与 `estimate_text_tokens` 的浮点系数同源，避开浮点误差。
+    let capacity = limit.saturating_mul(15);
+    let mut used: u64 = 0;
+    let mut units = [0u16; 2];
+    for ch in text.chars() {
+        let encoded = ch.encode_utf16(&mut units);
+        let weight: u64 = encoded
+            .iter()
+            .map(|unit| if is_cjk_code(*unit as u32) { 18 } else { 5 })
+            .sum();
+        if used + weight > capacity {
+            break;
+        }
+        used += weight;
+        out.push(ch);
+    }
+    out
+}
+
 /// 估算一段文本的 token 数（偏保守，可能高于真实值）。
 ///
 /// 逐字对齐 `tokenEstimate.ts` 的 `estimateTextTokens`：CJK / 全角按 1.2 计，

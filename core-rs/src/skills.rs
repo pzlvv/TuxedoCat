@@ -659,6 +659,23 @@ pub fn parse_positional_args(args: &str, count: usize) -> Vec<String> {
     result
 }
 
+/// 渲染一次技能调用的正文（唯一实现）。
+///
+/// 两条消费点共用：`Skill` 工具执行（模型主动调用与用户 `/name` 都走
+/// `tools::run_skill`）与压缩后的重挂（`compact::build_loaded_skills_section`）。
+/// 参数替换 → 拼出文本块 → 内置变量替换（`${SKILL_DIR}` / `${SESSION_ID}`）三步口径只有
+/// 这里一份，两处不会漂移（`docs/features/compaction.md` FR-007）。
+pub fn render_skill_body(command: &SkillCommand, args: &str, session_id: &str) -> String {
+    let text = command
+        .prompt_for_command(args)
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    substitute_builtin_variables(&text, command.skill_root.as_deref(), Some(session_id))
+}
+
 /// 替换内置变量：`${SKILL_DIR}` → skill 所在目录、`${SESSION_ID}` → 当前会话 ID
 pub fn substitute_builtin_variables(
     content: &str,
