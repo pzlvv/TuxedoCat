@@ -2764,10 +2764,11 @@ const MessagesView = memo(({
         style={isEmpty ? undefined : { display: 'flex', flexDirection: 'column' }}
       >
       {isEmpty ? (
-        /* 装饰图与入口叠在同一层：入口按 `.empty-state-entry` 绝对定位在装饰图下方，
-           不占用居中布局的高度——入口出现 / 消失时 360px 的装饰图位置保持不变，否则
-           多出的那一行会把 logo 整体顶上去（「勾选框一出现，logo 就跳」）。 */
-        <div className="flex flex-col items-center justify-center h-full">
+        /* 装饰图与入口挂在**视口**尺寸的固定层上（docs/hosts/webview-ui.md 第 11 节
+           「新对话空态布局」）：主输入框长高只会压缩消息区，把这一层留在消息区里的话
+           居中的装饰图会跟着被顶上去。入口仍按 `.empty-state-entry` 绝对定位在装饰图
+           下方，不占用居中布局的高度——入口出现 / 消失时装饰图位置同样不动。 */
+        <div className="empty-state-layer">
           <div className="empty-state-stack">
             {showThinkingAnimation ? (
               <div
