@@ -7,6 +7,7 @@
 //! 串行由 `Sandbox::new` 内部持有的全局闸门保证。
 
 use crate::test_support::Sandbox;
+use std::sync::{Arc, Mutex};
 
 /// 测试用的内核接口：与实现同口径，直接声明 FFI 而不引 `libc` 依赖
 /// （新增直接依赖会改变 cargo 依赖图指纹，让 Windows 目标重编 `ring`）。
@@ -216,9 +217,8 @@ fn work_view_handle_maps_paths() {
 }
 
 /// 真实工具链路：Write 写进视图、Read 读回来、Bash 看到同一份内容，磁盘全程不变
-/// （specs/045 FR-002 / FR-003）。
-///
-/// 这条走 `tools::execute` 而不是直接 `std::fs`，验证的是「工具与 Bash 对视图透明」。
+/// （specs/045 FR-002 / FR-003）。这条走 `tools::execute` 而不是直接 `std::fs`，验证的是
+/// 「工具与 Bash 对视图透明」。
 #[test]
 fn work_view_tools_and_bash_share_the_overlay() {
     in_namespace("work-view-tools", |sandbox| {
@@ -723,6 +723,94 @@ fn work_view_file_diff_reads_both_sides_from_the_view() {
 }
 
 // ==================== 视图里的变更清单（specs/047）====================
+
+// ==================== 父子共用同一份视图（specs/058）====================
+
+/// `isolated` 的本地子代理与发起对话共用一份视图（specs/058 FR-002 / AC-5 ~ AC-8）。
+///
+/// 这条用例走**真实接线**：子代理会话的归属是继承来的 `isolated`，`ensure_work_view`
+/// 沿 `parentSessionId` 解析出父对话后，登记 / 挂载 / 取句柄都按父对话做。三个断言分别
+/// 对应「只有一份视图」（视图层没有子代理自己的登记）、「共用同一份」（句柄根就是父对话的
+/// 视图根）与「写入互见」（子写父读、磁盘不变）。
+#[test]
+fn work_view_child_writes_are_visible_to_parent() {
+    in_namespace("work-view-parent-child", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let owner = "sess-parent";
+        let child = "sub_child";
+        crate::history::create_conversation(
+            owner,
+            &workspace,
+            serde_json::json!({ "sessionId": owner, "storage": "isolated" }),
+        )
+        .expect("父对话档案");
+        crate::history::create_sub_agent_metadata(
+            child,
+            &workspace,
+            "子任务",
+            owner,
+            "Master",
+            None,
+            None,
+            crate::engine::WorkViewStorage::Isolated,
+        )
+        .expect("子代理档案");
+        for id in [owner, child] {
+            crate::config::set_session_workspace(id, Some(workspace.clone()));
+        }
+
+        // 视图层只登记了所有者：子代理 id 在这里取不到任何东西——共用必须由
+        // `Core::work_view_owner` 解析，而不是视图层猜。
+        // 空 Core 足够：`ensure_work_view` 只读会话状态与视图登记表，不发总线事件
+        let sink = crate::test_support::Capture::new();
+        let core = crate::engine::Core::new(Arc::new(Mutex::new(crate::bus::CoreBus::<
+            crate::bus::FrameWriter,
+        >::new(sink.writer()))));
+        let handle = match core.ensure_work_view(child) {
+            crate::tools::WorkViewState::View(handle) => handle,
+            crate::tools::WorkViewState::Workspace => {
+                panic!("子代理是 isolated 归属，不能按真实磁盘执行")
+            }
+            crate::tools::WorkViewState::ViewUnavailable(reason) => {
+                panic!("子代理必须拿到父对话那份视图：{reason}")
+            }
+        };
+        let expected_root = crate::work_view::WorkView::root_of(&workspace, owner).expect("视图根");
+        assert_eq!(handle.root(), expected_root, "子代理拿到的是父对话的视图根");
+        assert_eq!(handle.session_id(), owner, "句柄记的是视图所有者");
+        assert!(
+            crate::work_view::WorkViewHandle::of(child).is_none(),
+            "视图层不该有子代理自己的登记（没有第二份上层）"
+        );
+
+        // 子在视图里写，父立刻读到；父改已有文件，子读到新内容
+        let mount = expected_root.join("mount");
+        std::fs::write(mount.join("made-by-child.txt"), "child\n").expect("子写");
+        assert_eq!(
+            std::fs::read_to_string(mount.join("made-by-child.txt")).unwrap(),
+            "child\n",
+            "父对话必须看到子代理写下的文件"
+        );
+        assert!(
+            !sandbox.workspace.join("made-by-child.txt").exists(),
+            "子代理的写入不得落在真实磁盘上"
+        );
+        std::fs::write(mount.join("existing.txt"), "parent-changed\n").expect("父改");
+        assert_eq!(
+            std::fs::read_to_string(mount.join("existing.txt")).unwrap(),
+            "parent-changed\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sandbox.workspace.join("existing.txt")).unwrap(),
+            "from-workspace\n",
+            "磁盘基线全程不变"
+        );
+
+        // 所有者删除才回收上层（子代理写过的内容随之一起消失）
+        crate::work_view::remove(&workspace, owner).expect("回收");
+        assert!(!expected_root.exists(), "所有者删除时整份视图回收");
+    });
+}
 
 /// 在沙箱工作区建一个 git 仓并提交一次基线（`f.txt` / `doc.md`）。
 fn init_git(sandbox: &Sandbox) {

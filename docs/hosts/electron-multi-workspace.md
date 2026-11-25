@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-12
+last_reviewed: 2026-11-25
 ---
 
 # 规格：Electron 多工作目录
@@ -270,7 +270,7 @@ core 持有进程级映射 `sessionId → 工作目录`。登记时机：
   `sidebar:files-mode-watch` / `sidebar:files-open`（带 `source`）/ `sidebar:files-invalidate` 推送），不经总线；远程工作区的 git 探测与记录读取复用 §14.5 的共享连接池；取数往返次数与条目数无关（五条 git 事实合成一次远端 exec、未跟踪行数在远端数出，每条 git 调用带只读锁参数避免重写 `.git/index` 触发哨兵，口径见 `specs/defects/remote-change-list-n-plus-one-round-trips.md`）。Connection 就绪时另推一次文件树失效：侧栏那条 SSH 连接与 Core 传输层
   独立，首连失败后不会自连，不推就停在「读取失败，点击重试」
   （`specs/defects/sidebar-file-tree-stale-after-ssh-reconnect.md`）。
-- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录 / 变更清单 / 打开文件都走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）：目录树 → `sidebar:files-list-overlay`；文档视图 / 全部变更 → `sidebar:files-doc-list-overlay`（磁盘上的 git 看不到只落私有上层目录的改动，Core 在该对话视图里跑 git，行集、状态字母与徽标和磁盘口径同一套解析与组装）；双击打开 → `sidebar:files-open-overlay`（一次给出视图内容与视图里 HEAD 的版本）。归属变化即清缓存并重取；取数前由 Core 按需建立该对话的视图（用户进对话就展开也能看到叠加视图），Core 不可用 / 视图建不起来 / git 失败显示错误行，不回退磁盘清单。Overlay 来源下不挂磁盘 `.git` 哨兵（HEAD 与改动都在视图里，宿主看不到）。
+- **Overlay 对话下的取数来源**：活动对话 `storage` 为 `isolated` 时标题显示「文件资源管理器 (overlay)」，列目录 / 变更清单 / 打开文件都走 Core 只读请求而不走磁盘（理由见 [docs/core/conversation-work-view.md 第 1.1 节](../core/conversation-work-view.md#11-按会话读取视图内容)）：目录树 → `sidebar:files-list-overlay`；文档视图 / 全部变更 → `sidebar:files-doc-list-overlay`（磁盘上的 git 看不到只落私有上层目录的改动，Core 在该对话视图里跑 git，行集、状态字母与徽标和磁盘口径同一套解析与组装）；双击打开 → `sidebar:files-open-overlay`（一次给出视图内容与视图里 HEAD 的版本）。归属变化即清缓存并重取；取数前由 Core 按需建立该对话的视图（用户进对话就展开也能看到叠加视图），Core 不可用 / 视图建不起来 / git 失败显示错误行，不回退磁盘清单。Overlay 来源下不挂磁盘 `.git` 哨兵（HEAD 与改动都在视图里，宿主看不到）。**子代理行同判据**：本地子代理继承发起对话的归属（[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)），因此它的 Overlay 标识、取数分流与打开来源都自动覆盖，判据表达式不新增「这是子代理」的分支；以子代理会话 id 取数由 Core 解析到所有者，返回的是同一份叠加视图。
 
 ### 9.1 空态
 

@@ -1158,8 +1158,17 @@ fn finished_sub_agent_rejects_user_message() {
         .sub_agent_driver_done = true;
 
     // 重启恢复路径：meta 带本地子代理归属（creator 为 agent 形态），加载即推导收尾
-    history::create_sub_agent_metadata("sub2", &project, "子任务", "p1", "Master", None, None)
-        .unwrap();
+    history::create_sub_agent_metadata(
+        "sub2",
+        &project,
+        "子任务",
+        "p1",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
     harness.core.ensure_loaded("sub2").unwrap();
     assert!(
         harness
@@ -9380,10 +9389,14 @@ fn start_remote_sub_agent_records_creator() {
     assert_eq!(state.provider.as_deref(), Some("prov-origin"));
     assert_eq!(state.thinking_effort.as_deref(), Some("max"));
     assert_eq!(state.web_search, Some(true));
+    // specs/058 FR-001：跨工作区派发不继承发起方归属——发起方的叠加视图是发起方 Core
+    // 私有命名空间里的事实，不跨工作区传递
+    assert_eq!(state.storage, crate::engine::WorkViewStorage::Workspace);
     drop(state);
 
     let metadata = history::load_metadata("sub_remote_start", &project).expect("meta");
     assert!(metadata.get("parentSessionId").is_none());
+    assert_eq!(metadata["storage"], "workspace");
     assert!(metadata.get("crossWorkspaceOrigin").is_none());
     assert_eq!(
         metadata["creator"],
@@ -9825,6 +9838,234 @@ fn storage_change_is_ignored_once_messages_exist() {
     );
 }
 
+/// 本地子代理继承发起对话的 Overlay 归属，并**落盘**进子会话 meta.json（specs/058 FR-001）。
+///
+/// 判据是「发起对话此刻的归属」这唯一事实：父是 `isolated` 时子代理也是 `isolated`
+/// （与角色无关），父是 `workspace` 时子代理照旧直接读写磁盘。
+#[test]
+fn sub_agent_inherits_isolated_storage() {
+    let sandbox = Sandbox::new("engine-sub-inherit-storage");
+    let llm = FakeLlm::start(|_index, body| {
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[(
+                "call_reply",
+                "Reply",
+                r#"{"message":"子代理已完成任务"}"#,
+            )]);
+        }
+        openai_text_sse(&["好"])
+    });
+    prepare(&sandbox, &llm.base_url, "risk");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+
+    for (creator, parent_storage) in [
+        ("s-inherit-iso", WorkViewStorage::Isolated),
+        ("s-inherit-disk", WorkViewStorage::Workspace),
+    ] {
+        history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+        harness.core.session(creator).lock().unwrap().storage = parent_storage;
+        acquire_slot_for_test(creator);
+        let sub_id = harness
+            .core
+            .create_sub_agent(tools::SubAgentRequest {
+                creator_session_id: creator.to_string(),
+                prompt: "任务".to_string(),
+                description: "inherit storage".to_string(),
+                role: "Master".to_string(),
+                target: None,
+            })
+            .expect("create sub agent");
+
+        assert_eq!(
+            harness.core.session_storage(&sub_id),
+            parent_storage,
+            "{creator}: 子代理必须继承发起对话的归属"
+        );
+        let metadata = history::load_metadata(&sub_id, &project).expect("子会话 meta.json");
+        assert_eq!(
+            metadata["storage"],
+            json!(crate::engine::work_view_storage_text(parent_storage)),
+            "{creator}: 继承来的归属必须落盘（重启后按落盘值恢复）"
+        );
+    }
+}
+
+/// Explorer 角色同样继承归属（specs/058 FR-001）：角色只决定工具白名单，不决定文件在哪。
+#[test]
+fn explorer_sub_agent_inherits_isolated_storage() {
+    let sandbox = Sandbox::new("engine-explorer-inherit-storage");
+    let llm = FakeLlm::start(|_index, body| {
+        if is_sub_agent_request(body) {
+            return openai_multi_tool_sse(&[("call_reply", "Reply", r#"{"message":"已阅"}"#)]);
+        }
+        openai_text_sse(&["好"])
+    });
+    prepare(&sandbox, &llm.base_url, "risk");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    let creator = "s-inherit-explorer";
+    history::create_conversation(creator, &project, json!({ "sessionId": creator })).unwrap();
+    harness.core.session(creator).lock().unwrap().storage = WorkViewStorage::Isolated;
+    acquire_slot_for_test(creator);
+
+    let sub_id = harness
+        .core
+        .create_sub_agent(tools::SubAgentRequest {
+            creator_session_id: creator.to_string(),
+            prompt: "找文件".to_string(),
+            description: "explore".to_string(),
+            role: "Explorer".to_string(),
+            target: None,
+        })
+        .expect("create explorer sub agent");
+
+    assert_eq!(
+        harness.core.session_storage(&sub_id),
+        WorkViewStorage::Isolated,
+        "Explorer 读的也是同一份叠加视图"
+    );
+}
+
+/// 视图所有者沿父链解析（specs/058 FR-002）：本地子代理指向发起对话，主对话指向自己。
+///
+/// 失败一律 `Err`：父会话不是 `isolated`（归属链断了）与父会话 id 查不到（档案被删）
+/// 都是数据异常，不能猜成「各一份视图」。
+#[test]
+fn work_view_owner_follows_parent_chain() {
+    let sandbox = Sandbox::new("engine-work-view-owner");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+
+    // 兄弟两份档案：父是 isolated、子代理带 parentSessionId
+    crate::history::create_conversation(
+        "owner-top",
+        &project,
+        json!({ "sessionId": "owner-top", "storage": "isolated" }),
+    )
+    .unwrap();
+    crate::history::create_sub_agent_metadata(
+        "owner-sub",
+        &project,
+        "子任务",
+        "owner-top",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+
+    assert_eq!(
+        harness
+            .core
+            .work_view_owner("owner-top")
+            .expect("主对话自持"),
+        "owner-top"
+    );
+    assert_eq!(
+        harness
+            .core
+            .work_view_owner("owner-sub")
+            .expect("子代理指向父对话"),
+        "owner-top",
+        "本地子代理与发起对话共用同一份视图"
+    );
+
+    // 父会话是 workspace：归属链断了，按数据异常报错
+    crate::history::create_conversation(
+        "owner-disk",
+        &project,
+        json!({ "sessionId": "owner-disk", "storage": "workspace" }),
+    )
+    .unwrap();
+    crate::history::create_sub_agent_metadata(
+        "owner-orphan",
+        &project,
+        "子任务",
+        "owner-disk",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+    assert!(
+        harness.core.work_view_owner("owner-orphan").is_err(),
+        "父会话不是 isolated 时不能猜出一份视图"
+    );
+
+    // 父会话 id 指向不存在的会话：同样报错，不猜成自己一份
+    crate::history::create_conversation(
+        "owner-lost",
+        &project,
+        json!({ "sessionId": "owner-lost", "storage": "isolated", "parentSessionId": "gone" }),
+    )
+    .unwrap();
+    let error = harness
+        .core
+        .work_view_owner("owner-lost")
+        .expect_err("父档案缺失必须报错");
+    assert!(
+        error.contains("gone"),
+        "错误要点名解析不出的父会话：{error}"
+    );
+
+    // 父链成环：收敛成错误而不是死循环
+    crate::history::create_conversation(
+        "owner-loop-a",
+        &project,
+        json!({ "sessionId": "owner-loop-a", "storage": "isolated" }),
+    )
+    .unwrap();
+    crate::history::create_conversation(
+        "owner-loop-b",
+        &project,
+        json!({ "sessionId": "owner-loop-b", "storage": "isolated", "parentSessionId": "owner-loop-a" }),
+    )
+    .unwrap();
+    crate::history::update_metadata(
+        "owner-loop-a",
+        &project,
+        || json!({ "sessionId": "owner-loop-a" }),
+        |metadata| metadata["parentSessionId"] = json!("owner-loop-b"),
+    )
+    .unwrap();
+    assert!(
+        harness.core.work_view_owner("owner-loop-a").is_err(),
+        "父链成环必须报错"
+    );
+}
+
+/// 所有者解析失败时工具与取数通道都 fail-closed（specs/058 FR-003 / AC-12）。
+#[test]
+fn sub_agent_view_owner_resolution_fails_closed() {
+    let sandbox = Sandbox::new("engine-owner-fail-closed");
+    let project = sandbox.workspace.to_string_lossy().to_string();
+    let harness = EngineHarness::allow_all();
+    config::set_session_workspace("iso-broken", Some(project.clone()));
+    crate::history::create_conversation(
+        "iso-broken",
+        &project,
+        json!({ "sessionId": "iso-broken", "storage": "isolated", "parentSessionId": "gone" }),
+    )
+    .unwrap();
+
+    match harness.core.ensure_work_view("iso-broken") {
+        crate::tools::WorkViewState::ViewUnavailable(reason) => {
+            assert!(
+                reason.contains("gone"),
+                "原因要点名解析不出的父会话：{reason}"
+            );
+        }
+        // 非隔离归属会走磁盘——这里绝不能出现那种形态
+        crate::tools::WorkViewState::Workspace => {
+            panic!("isolated 归属解析不出所有者时必须 fail-closed，不能退回真实磁盘")
+        }
+        crate::tools::WorkViewState::View(_) => panic!("父档案缺失时不该建出视图"),
+    }
+}
+
 /// 隔离视图对话走**完整工具链路**（`execute_tool` → `ensure_work_view` → `io_path`），
 /// Bash 的编译产物必须落在视图上层，磁盘上不出现。
 ///
@@ -9884,6 +10125,10 @@ fn isolated_session_tool_writes_stay_in_the_view() {
 /// 与 `work_view_tests` 的分工：那边手工构造 `ToolContext`，这里走
 /// `execute_tool` → `ensure_work_view` 的完整接线。句柄取不到时工具静默走真实
 /// 磁盘，只有这条用例能看出来。
+///
+/// 继承落地后子代理走的是同一个入口（specs/058 FR-004）：它的 `storage` 是 `isolated`
+/// 时 `ensure_work_view` 解析出所有者并给出**所有者那份**句柄，因此工具链路的
+/// fail-closed 与共用视图对子代理一并成立。
 #[test]
 fn isolated_session_bash_writes_stay_in_the_view() {
     let _sandbox = Sandbox::new("engine-iso-bash-chain");

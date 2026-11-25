@@ -545,6 +545,7 @@ pub fn create_sub_agent_metadata(
     role: &str,
     model: Option<&str>,
     provider: Option<&str>,
+    storage: crate::engine::WorkViewStorage,
 ) -> Result<(), String> {
     let now = util::now_millis();
     let mut metadata = Map::new();
@@ -556,6 +557,13 @@ pub fn create_sub_agent_metadata(
     metadata.insert("messageCount".to_string(), json!(0));
     metadata.insert("parentSessionId".to_string(), json!(parent_session_id));
     metadata.insert("role".to_string(), json!(role));
+    // 文件存储归属（specs/058 FR-001）：本地子代理继承发起对话此刻的归属，由调用方
+    // （`Core::create_sub_agent`）算好传入并**落盘**——重启后 `storage_of_session`
+    // 读的就是这一格，不向父会话追问。
+    metadata.insert(
+        "storage".to_string(),
+        json!(crate::engine::work_view_storage_text(storage)),
+    );
     // 本地子代理：creator 为 agent 形态、workspaceId 为 null（创建方在本工作区，
     // specs/025 FR-002；身份算法唯一落点是宿主 workspaceIdentity.ts，Core 不持该事实）
     metadata.insert(
@@ -576,6 +584,9 @@ pub fn create_sub_agent_metadata(
 ///
 /// 跨工作区对话是顶层普通会话：不写 `parentSessionId`（无占位父对话），归属由
 /// `creator` 承载（agent 形态，携带发起方工作区身份与会话 id）。
+///
+/// 文件存储归属恒 `workspace`（specs/058 FR-001）：发起方的叠加视图是发起方 Core 私有
+/// 命名空间里的事实，不跨工作区传递，因此这里显式写 `workspace` 而不是留空靠缺省回落。
 pub fn create_remote_sub_agent_metadata(
     session_id: &str,
     project: &str,
@@ -595,6 +606,8 @@ pub fn create_remote_sub_agent_metadata(
     metadata.insert("updatedAt".to_string(), json!(now));
     metadata.insert("messageCount".to_string(), json!(0));
     metadata.insert("role".to_string(), json!(role));
+    // specs/058 FR-001：跨工作区派发不继承发起方归属（视图不出工作区），显式写事实
+    metadata.insert("storage".to_string(), json!("workspace"));
     metadata.insert(
         "creator".to_string(),
         json!({

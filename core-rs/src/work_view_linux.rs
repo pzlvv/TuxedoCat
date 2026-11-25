@@ -176,7 +176,8 @@ impl WorkView {
 /// 那些挂载。
 #[derive(Clone)]
 pub struct WorkViewHandle {
-    /// 会话 id（诊断用）
+    /// **视图所有者**的会话 id（诊断用）：`isolated` 的本地子代理拿到的是发起对话的 id
+    /// （specs/058 FR-002——父子共用同一份视图，使用者不单独登记）。
     session_id: String,
     /// 真实工作区路径
     workspace: PathBuf,
@@ -214,6 +215,14 @@ impl WorkViewHandle {
 
     pub fn workspace(&self) -> &Path {
         &self.workspace
+    }
+
+    /// 视图根目录（`upper` / `work` 的父目录）。
+    ///
+    /// 父子共用一份视图的判据取自它：`isolated` 的本地子代理解析到所有者后拿到的是
+    /// **同一个**根目录（specs/058 FR-002）。
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// 把真实路径映射成「工具该用的路径」。
@@ -254,13 +263,16 @@ impl WorkViewHandle {
 /// （`docs/core/conversation-work-view.md` 第 4 节）。
 ///
 /// 调用前必须经 `Core::ensure_work_view` 把视图备好：本函数只做取数，`None` 在这里
-/// 的含义是「该会话没有视图」，不替调用方决定怎么补救。
+/// 的含义是「这份视图没有登记」，不替调用方决定怎么补救。
+///
+/// `owner` 是**视图所有者**的会话 id（specs/058 FR-002）：`isolated` 的本地子代理与发起
+/// 对话共用同一份视图，调用方（`main.rs` 的请求分支）已按 `Core::work_view_owner` 解析过。
 ///
 /// **不降级**（`docs/architecture/principles.md` 铁律 4.1）：视图取不到时回 `Err` 而不是
 /// 偷偷列磁盘——那是两个不同的事实，由宿主决定怎么呈现。
-pub fn list_view_dir(session_id: &str, dir: &str) -> Result<Vec<serde_json::Value>, String> {
-    let handle = WorkViewHandle::of(session_id)
-        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+pub fn list_view_dir(owner: &str, dir: &str) -> Result<Vec<serde_json::Value>, String> {
+    let handle = WorkViewHandle::of(owner)
+        .ok_or_else(|| format!("会话 {owner} 没有已挂载的 Overlay 视图"))?;
     let relative = sanitize_view_relative(dir)?;
     let target = handle.workspace().join(&relative);
     let entries = handle.proxy.list_dir(&target)?;
@@ -295,28 +307,34 @@ fn sanitize_view_relative(dir: &str) -> Result<PathBuf, String> {
 
 /// 释放某会话的视图（会话关闭时调用）：丢弃代理，**保留**上层目录——改动要跨 Core
 /// 重启保留（specs/045 FR-006）。
-pub fn release(_workspace: &str, session_id: &str) {
+///
+/// `owner` 是视图所有者（specs/058 FR-003）：使用者（本地子代理）关闭时**不**走这里，
+/// 否则会把所有者还在用的常驻代理一起丢掉（`main.rs` 的 `release_owned_work_view`）。
+pub fn release(_workspace: &str, owner: &str) {
     let removed = views()
         .lock()
-        .map(|mut views| views.remove(session_id))
+        .map(|mut views| views.remove(owner))
         .ok()
         .flatten();
     // 丢弃句柄 = 关闭 socketpair = 代理读到 EOF 自行退出
     drop(removed);
-    crate::mount_proxy::release_session(session_id);
+    crate::mount_proxy::release_session(owner);
 }
 
 /// 回收某会话的视图（会话删除时调用）：丢弃代理并删掉整个视图目录。
 ///
 /// 失败只记日志不阻塞删除——残留目录可以事后清理，但删除对话本身不能因此失败。
-pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
+///
+/// `owner` 是视图所有者（specs/058 FR-003）：只有所有者被删除时上层目录才整体回收；
+/// 删除子代理会话时上层里可能有它写过的内容，必须留在原处。
+pub fn remove(workspace: &str, owner: &str) -> Result<(), String> {
     let removed = views()
         .lock()
         .map_err(|error| format!("视图登记表损坏：{error}"))?
-        .remove(session_id);
+        .remove(owner);
     drop(removed);
-    crate::mount_proxy::release_session(session_id);
-    let root = WorkView::root_of(workspace, session_id)?;
+    crate::mount_proxy::release_session(owner);
+    let root = WorkView::root_of(workspace, owner)?;
     if root.exists() {
         std::fs::remove_dir_all(&root)
             .map_err(|error| format!("回收视图目录 {} 失败：{error}", root.display()))?;
@@ -331,9 +349,9 @@ pub fn remove(workspace: &str, session_id: &str) -> Result<(), String> {
 /// `upper`（理由见 `work_view_changes.rs`）。
 ///
 /// 与 `list_view_dir` 同一前提：调用前经 `Core::ensure_work_view` 备好视图。
-pub fn changes(session_id: &str, scope: &str) -> Result<super::ChangesOutcome, String> {
-    let handle = WorkViewHandle::of(session_id)
-        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+pub fn changes(owner: &str, scope: &str) -> Result<super::ChangesOutcome, String> {
+    let handle = WorkViewHandle::of(owner)
+        .ok_or_else(|| format!("会话 {owner} 没有已挂载的 Overlay 视图"))?;
     let scope = super::ChangeScope::parse(scope)?;
     let scratch = handle.scratch_dir()?;
     let view = super::GitView {
@@ -345,9 +363,9 @@ pub fn changes(session_id: &str, scope: &str) -> Result<super::ChangesOutcome, S
 }
 
 /// 取视图里某个文件的两侧原文（specs/047 FR-004）。`path` 不能是视图根。
-pub fn file_diff(session_id: &str, path: &str) -> Result<super::FileDiffOutcome, String> {
-    let handle = WorkViewHandle::of(session_id)
-        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+pub fn file_diff(owner: &str, path: &str) -> Result<super::FileDiffOutcome, String> {
+    let handle = WorkViewHandle::of(owner)
+        .ok_or_else(|| format!("会话 {owner} 没有已挂载的 Overlay 视图"))?;
     let relative = sanitize_view_relative(path)?;
     if relative.as_os_str().is_empty() {
         return Err("取文件两侧原文时 path 不能是视图根".to_string());
@@ -413,19 +431,19 @@ pub fn enter() {}
 
 /// 取某会话视图里的路径（相对路径已由 `check_view_relative` 校验过）。
 fn view_target(
-    session_id: &str,
+    owner: &str,
     relative: &str,
 ) -> Result<(PathBuf, Arc<mount_proxy::SessionProxy>), String> {
-    let handle = WorkViewHandle::of(session_id)
-        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+    let handle = WorkViewHandle::of(owner)
+        .ok_or_else(|| format!("会话 {owner} 没有已挂载的 Overlay 视图"))?;
     let relative = sanitize_view_relative(relative)?;
     let target = handle.workspace().join(&relative);
     Ok((target, Arc::clone(handle.proxy())))
 }
 
 /// 视图里一个路径的事实（`UiRequest.workViewFileIoRequested` 的 `stat`）。
-pub fn view_stat(session_id: &str, relative: &str) -> Result<super::ViewPathFacts, String> {
-    let (target, proxy) = view_target(session_id, relative)?;
+pub fn view_stat(owner: &str, relative: &str) -> Result<super::ViewPathFacts, String> {
+    let (target, proxy) = view_target(owner, relative)?;
     let facts = proxy.stat(&target)?;
     Ok(super::ViewPathFacts {
         exists: facts.exists,
@@ -437,52 +455,52 @@ pub fn view_stat(session_id: &str, relative: &str) -> Result<super::ViewPathFact
 }
 
 /// 列视图目录（`list`）：只回名称与类型，与传输端点需要的最小面一致。
-pub fn view_list(session_id: &str, relative: &str) -> Result<Vec<(String, bool)>, String> {
-    let (target, proxy) = view_target(session_id, relative)?;
+pub fn view_list(owner: &str, relative: &str) -> Result<Vec<(String, bool)>, String> {
+    let (target, proxy) = view_target(owner, relative)?;
     proxy.list_dir(&target)
 }
 
 /// 递归建目录（`mkdirAll`）。
-pub fn view_mkdir_all(session_id: &str, relative: &str) -> Result<(), String> {
-    let (target, proxy) = view_target(session_id, relative)?;
+pub fn view_mkdir_all(owner: &str, relative: &str) -> Result<(), String> {
+    let (target, proxy) = view_target(owner, relative)?;
     proxy.mkdir_all(&target)
 }
 
 /// 改名（`rename`）：目标已存在时按覆盖语义处理。
 ///
 /// 两端必须在**同一个视图**里，因此只取一次句柄、两条路径都拼在它的工作区上。
-pub fn view_rename(session_id: &str, from: &str, to: &str) -> Result<(), String> {
-    let handle = WorkViewHandle::of(session_id)
-        .ok_or_else(|| format!("会话 {session_id} 没有已挂载的 Overlay 视图"))?;
+pub fn view_rename(owner: &str, from: &str, to: &str) -> Result<(), String> {
+    let handle = WorkViewHandle::of(owner)
+        .ok_or_else(|| format!("会话 {owner} 没有已挂载的 Overlay 视图"))?;
     let from_path = handle.workspace().join(sanitize_view_relative(from)?);
     let to_path = handle.workspace().join(sanitize_view_relative(to)?);
     handle.proxy().rename_path(&from_path, &to_path)
 }
 
 /// 删一个文件（`unlink`）：清理传输的暂存件，目标不存在算成功。
-pub fn view_unlink(session_id: &str, relative: &str) -> Result<(), String> {
-    let (target, proxy) = view_target(session_id, relative)?;
+pub fn view_unlink(owner: &str, relative: &str) -> Result<(), String> {
+    let (target, proxy) = view_target(owner, relative)?;
     proxy.unlink_path(&target)
 }
 
 /// 定向读（`read`）：返回 `(bytes, eof)`。
 pub fn view_read_chunk(
-    session_id: &str,
+    owner: &str,
     relative: &str,
     offset: u64,
     length: u64,
 ) -> Result<(Vec<u8>, bool), String> {
-    let (target, proxy) = view_target(session_id, relative)?;
+    let (target, proxy) = view_target(owner, relative)?;
     proxy.read_range(&target, offset, length)
 }
 
 /// 定向写（`write`）：返回写入后的文件长度。
 pub fn view_write_chunk(
-    session_id: &str,
+    owner: &str,
     relative: &str,
     offset: u64,
     bytes: &[u8],
 ) -> Result<u64, String> {
-    let (target, proxy) = view_target(session_id, relative)?;
+    let (target, proxy) = view_target(owner, relative)?;
     proxy.write_range(&target, offset, bytes)
 }

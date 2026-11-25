@@ -71,59 +71,59 @@ impl WorkViewHandle {
     }
 }
 
-pub fn release(_workspace: &str, _session_id: &str) {}
+pub fn release(_workspace: &str, _owner: &str) {}
 
-pub fn remove(_workspace: &str, _session_id: &str) -> Result<(), String> {
+pub fn remove(_workspace: &str, _owner: &str) -> Result<(), String> {
     Ok(())
 }
 
 /// 非 Linux 上永远取不到句柄（`WorkViewHandle::of` 恒 `None`），列目录必然失败。
 ///
 /// 保留这个签名是为了让两个平台实现同一组符号，`main.rs` 的请求分支不必到处 `cfg`。
-pub fn list_view_dir(_session_id: &str, _dir: &str) -> Result<Vec<serde_json::Value>, String> {
+pub fn list_view_dir(_owner: &str, _dir: &str) -> Result<Vec<serde_json::Value>, String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `list_view_dir`：非 Linux 上没有 Overlay 对话，变更清单必然失败。
-pub fn changes(_session_id: &str, _scope: &str) -> Result<super::ChangesOutcome, String> {
+pub fn changes(_owner: &str, _scope: &str) -> Result<super::ChangesOutcome, String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `list_view_dir`：非 Linux 上没有 Overlay 对话，取两侧原文必然失败。
-pub fn file_diff(_session_id: &str, _path: &str) -> Result<super::FileDiffOutcome, String> {
+pub fn file_diff(_owner: &str, _path: &str) -> Result<super::FileDiffOutcome, String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 视图文件 IO（specs/056 FR-002 / FR-003）：非 Linux 上没有 Overlay 对话，恒失败。
 ///
 /// 保留这一组签名是为了让两个平台编译出同一组符号，`main.rs` 的请求分支不必到处 `cfg`。
-pub fn view_stat(_session_id: &str, _relative: &str) -> Result<super::ViewPathFacts, String> {
+pub fn view_stat(_owner: &str, _relative: &str) -> Result<super::ViewPathFacts, String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `view_stat`。
-pub fn view_list(_session_id: &str, _relative: &str) -> Result<Vec<(String, bool)>, String> {
+pub fn view_list(_owner: &str, _relative: &str) -> Result<Vec<(String, bool)>, String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `view_stat`。
-pub fn view_mkdir_all(_session_id: &str, _relative: &str) -> Result<(), String> {
+pub fn view_mkdir_all(_owner: &str, _relative: &str) -> Result<(), String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `view_stat`。
-pub fn view_rename(_session_id: &str, _from: &str, _to: &str) -> Result<(), String> {
+pub fn view_rename(_owner: &str, _from: &str, _to: &str) -> Result<(), String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `view_stat`。
-pub fn view_unlink(_session_id: &str, _relative: &str) -> Result<(), String> {
+pub fn view_unlink(_owner: &str, _relative: &str) -> Result<(), String> {
     Err("Overlay 对话只在 Linux Core 上可用".to_string())
 }
 
 /// 同 `view_stat`。
 pub fn view_read_chunk(
-    _session_id: &str,
+    _owner: &str,
     _relative: &str,
     _offset: u64,
     _length: u64,
@@ -133,7 +133,7 @@ pub fn view_read_chunk(
 
 /// 同 `view_stat`。
 pub fn view_write_chunk(
-    _session_id: &str,
+    _owner: &str,
     _relative: &str,
     _offset: u64,
     _bytes: &[u8],

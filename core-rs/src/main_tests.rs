@@ -1,6 +1,7 @@
 //! `main` 的单元测试：UiEvent 分发与 `conversationStarted` 的会话建档。
 
 use super::*;
+use crate::engine::WorkViewStorage;
 use crate::test_support::{EngineHarness, Sandbox};
 use serde_json::json;
 
@@ -395,6 +396,206 @@ fn conversation_lifecycle_events_are_dispatched() {
         json!({ "type": "conversationDeleted", "sessionId": "s1" }),
     );
     assert!(history::load_metadata("s1", &workspace).is_none());
+}
+
+/// `workView*` 四个请求按**视图所有者**取数（specs/058 FR-002）：
+/// `isolated` 的本地子代理与发起对话共用同一份视图，以子代理 id 请求应落到父对话的视图。
+#[test]
+fn work_view_requests_use_owner_session() {
+    let sandbox = Sandbox::new("main-work-view-owner");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    let core = test_core();
+    config::set_session_workspace("parent-iso", Some(workspace.clone()));
+    config::set_session_workspace("sub-iso", Some(workspace.clone()));
+    history::create_conversation(
+        "parent-iso",
+        &workspace,
+        json!({ "sessionId": "parent-iso", "storage": "isolated" }),
+    )
+    .unwrap();
+    history::create_sub_agent_metadata(
+        "sub-iso",
+        &workspace,
+        "子任务",
+        "parent-iso",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+
+    // 视图建不起来（无能力 / 无命名空间）时回失败侧，但**不能**把「所有者解析不出」
+    // 混进来：子代理必须解析到父对话。
+    assert_eq!(
+        core.work_view_owner("sub-iso").expect("子代理解析到父对话"),
+        "parent-iso"
+    );
+    for request in [
+        json!({ "type": "workViewFilesRequested", "sessionId": "sub-iso", "dir": "" }),
+        json!({ "type": "workViewChangesRequested", "sessionId": "sub-iso", "scope": "all" }),
+        json!({ "type": "workViewFileDiffRequested", "sessionId": "sub-iso", "path": "a.txt" }),
+        json!({
+            "type": "workViewFileIoRequested",
+            "sessionId": "sub-iso",
+            "payload": { "op": "stat", "path": "a.txt" },
+        }),
+    ] {
+        let response = dispatch_ui_request(&core, &request).expect("请求本身合法");
+        if crate::work_view::capabilities().isolated_work_view {
+            // 能力可用时这里会真的去建父对话的视图；断言的不是成败，而是错误原因里
+            // 出现的是**父会话**（视图所有者）而不是子会话自己的 id
+            if let Some(error) = response.get("error").and_then(Value::as_str) {
+                assert!(
+                    !error.contains("不是 Overlay 归属"),
+                    "子代理必须解析到父对话的归属：{error}"
+                );
+            }
+        } else {
+            assert_eq!(
+                response["ok"],
+                json!(false),
+                "能力不可用时回失败侧：{response}"
+            );
+        }
+    }
+}
+
+/// 子代理的 `storage: isolated` 但所有者解析不出时，取数请求报错并点名原因，
+/// 不退回磁盘（specs/058 FR-003 / AC-12）。
+#[test]
+fn work_view_requests_fail_closed_when_owner_is_unknown() {
+    let sandbox = Sandbox::new("main-work-view-owner-missing");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    let core = test_core();
+    config::set_session_workspace("sub-lost", Some(workspace.clone()));
+    history::create_sub_agent_metadata(
+        "sub-lost",
+        &workspace,
+        "子任务",
+        "gone",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+
+    let response = dispatch_ui_request(
+        &core,
+        &json!({ "type": "workViewFilesRequested", "sessionId": "sub-lost", "dir": "" }),
+    )
+    .expect("请求本身合法");
+    assert_eq!(response["ok"], json!(false));
+    let error = response["error"].as_str().unwrap_or("");
+    assert!(
+        error.contains("gone"),
+        "错误要点名解析不出的父会话：{error}"
+    );
+}
+
+/// 关闭 / 删除子代理会话不动共享视图，只有所有者才释放与回收（specs/058 FR-003）。
+///
+/// 判据只有一条：`work_view_owner` 解析出来的所有者是不是它自己。使用者（本地子代理）
+/// 与解析失败都不动视图——前者所有者还在用，后者宁可残留也不能误删别人的上层。
+#[test]
+fn closing_and_deleting_sub_agent_keeps_shared_view() {
+    let sandbox = Sandbox::new("main-work-view-lifecycle");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    config::set_active_workspace(Some(workspace.clone()));
+    let harness = EngineHarness::allow_all();
+    for id in ["parent-iso", "sub-iso", "plain"] {
+        config::set_session_workspace(id, Some(workspace.clone()));
+    }
+    history::create_conversation(
+        "parent-iso",
+        &workspace,
+        json!({ "sessionId": "parent-iso", "storage": "isolated" }),
+    )
+    .unwrap();
+    history::create_sub_agent_metadata(
+        "sub-iso",
+        &workspace,
+        "子任务",
+        "parent-iso",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+    history::create_conversation(
+        "plain",
+        &workspace,
+        json!({ "sessionId": "plain", "storage": "workspace" }),
+    )
+    .unwrap();
+
+    assert_eq!(
+        harness
+            .core
+            .work_view_owner("parent-iso")
+            .expect("父对话自持"),
+        "parent-iso"
+    );
+    assert_eq!(
+        harness
+            .core
+            .work_view_owner("sub-iso")
+            .expect("子代理指向父对话"),
+        "parent-iso",
+        "子代理是使用者而不是所有者：关闭 / 删除它都不该碰共享视图"
+    );
+
+    // 关闭 / 删除子代理会话与普通对话：不 panic、不误碰共享视图，父对话仍自持
+    for id in ["sub-iso", "sub-iso", "plain"] {
+        dispatch(
+            &harness,
+            json!({ "type": "conversationClosed", "sessionId": id }),
+        );
+    }
+    dispatch(
+        &harness,
+        json!({ "type": "conversationDeleted", "sessionId": "plain" }),
+    );
+    assert_eq!(
+        harness
+            .core
+            .work_view_owner("parent-iso")
+            .expect("父对话自持"),
+        "parent-iso"
+    );
+    // 关会话会丢弃内存态：所有者必须在释放前采样，否则父链与归属都读不回来。
+    // 子代理档案还在（只有内存态丢了），落盘 `parentSessionId` 仍能解析出所有者。
+    assert_eq!(
+        harness
+            .core
+            .work_view_owner("sub-iso")
+            .expect("按落盘父链解析"),
+        "parent-iso",
+        "子代理会话关闭后仍可从 meta.json 解析到所有者"
+    );
+}
+
+/// 会话终结的视图判定是四态纯函数（specs/058 FR-003）：普通对话不动作、所有者释放、
+/// 使用者不动共享视图、解析失败不动并留痕。
+#[test]
+fn view_teardown_distinguishes_owner_user_and_unknown() {
+    assert_eq!(view_teardown("s1", None), ViewTeardown::NotOverlay);
+    assert_eq!(
+        view_teardown("s1", Some(Ok("s1".to_string()))),
+        ViewTeardown::Owner("s1".to_string())
+    );
+    assert_eq!(
+        view_teardown("sub_1", Some(Ok("s1".to_string()))),
+        ViewTeardown::User("s1".to_string())
+    );
+    assert_eq!(
+        view_teardown("sub_1", Some(Err("父会话档案缺失".to_string()))),
+        ViewTeardown::Unknown("父会话档案缺失".to_string())
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-21
+last_reviewed: 2026-11-25
 ---
 
 # 规格：跨工作区多 Agent 通信
@@ -84,6 +84,8 @@ TUI 不提供本能力。
   路径；不写 `parentSessionId`（无占位父对话）。
 - 归属由 `creator` 承载（specs/025 FR-002）：agent 形态，携带发起方工作区身份
   （`workspaceId`）与发起方会话 id（`sessionId`），创建时一次写进 `meta.json`。
+- 文件存储归属恒 `workspace`（specs/058 FR-001）：本地子代理继承发起对话的归属，跨工作区
+  派发的会话**不**继承——叠加视图是发起方 Core 私有命名空间里的事实，不跨工作区传递。
 - prompt 作为该会话的第一条用户消息，子代理消费循环在目标工作区 Core 内运行；
   `Reply` 与 Reminder 重试沿用既有子代理语义（specs/025 FR-007）——Reminder 以
   **silent 消息**注入（模型可见、落盘，UI 消息流与回放不展示）。

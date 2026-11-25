@@ -247,6 +247,10 @@ pub fn work_view_storage_from_text(text: Option<&str>) -> WorkViewStorage {
     }
 }
 
+/// 父链上溯的深度上限（specs/058 FR-002）：`parentSessionId` 成环时用它收敛成错误，
+/// 而不是死循环。本地子代理最多一层（子代理内禁止再调 `Agent`），64 足够宽。
+const WORK_VIEW_OWNER_DEPTH_LIMIT: usize = 64;
+
 /// `WorkMode` 的落盘 / 事件文本（`meta.json` 的 `workMode` 字段与
 /// `workModeChanged` 载荷共用；specs/016 FR-005）
 pub fn work_mode_text(mode: WorkMode) -> &'static str {
@@ -616,53 +620,127 @@ impl Core {
     ///
     /// Core 重启后登记表是空的，因此这里按需补登记：会话归属存在 `meta.json` 里，
     /// 与「第一次工具调用」之间没有任何别的时机能重建它。
+    ///
+    /// **视图按所有者解析**（specs/058 FR-002）：`isolated` 的本地子代理与发起对话共用
+    /// 同一份视图（同一上层目录、同一常驻代理），因此登记 / 取回 / 挂载 / 取句柄全部按
+    /// `work_view_owner` 的结果做。所有者解析失败是数据异常，按视图不可用处理。
     pub fn ensure_work_view(&self, session_id: &str) -> crate::tools::WorkViewState {
         use crate::tools::WorkViewState;
         if self.session_storage(session_id) != WorkViewStorage::Isolated {
             return WorkViewState::Workspace;
         }
-        if let Some(handle) = crate::work_view::WorkViewHandle::of(session_id) {
+        let owner = match self.work_view_owner(session_id) {
+            Ok(owner) => owner,
+            Err(reason) => {
+                eprintln!("[core] 会话 {session_id} 的隔离工作视图不可用：{reason}");
+                return WorkViewState::ViewUnavailable(reason);
+            }
+        };
+        if let Some(handle) = crate::work_view::WorkViewHandle::of(&owner) {
             return WorkViewState::View(handle);
         }
-        let Some(project) = self.project_of(session_id).ok() else {
+        let Some(project) = self.project_of(&owner).ok() else {
             let reason = "会话没有工作目录，无法建立隔离视图".to_string();
-            eprintln!("[core] 会话 {session_id} 的隔离工作视图不可用：{reason}");
+            eprintln!("[core] 会话 {owner} 的隔离工作视图不可用：{reason}");
             return WorkViewState::ViewUnavailable(reason);
         };
-        let view = match crate::work_view::WorkView::register(&project, session_id) {
+        let view = match crate::work_view::WorkView::register(&project, &owner) {
             Ok(view) => view,
             Err(reason) if reason.contains("已有工作视图") => {
-                match crate::work_view::WorkView::reopen(&project, session_id) {
+                match crate::work_view::WorkView::reopen(&project, &owner) {
                     Ok(view) => view,
                     Err(reason) => {
-                        eprintln!("[core] 会话 {session_id} 的隔离工作视图取回失败：{reason}");
+                        eprintln!("[core] 会话 {owner} 的隔离工作视图取回失败：{reason}");
                         return WorkViewState::ViewUnavailable(reason);
                     }
                 }
             }
             Err(reason) => {
-                eprintln!("[core] 会话 {session_id} 的隔离工作视图登记失败：{reason}");
+                eprintln!("[core] 会话 {owner} 的隔离工作视图登记失败：{reason}");
                 return WorkViewState::ViewUnavailable(reason);
             }
         };
         let mut view = view;
         if let Err(reason) = view.ensure_mounted() {
             // 不退回真实磁盘：隔离会话的工具必须报错（FR-010），改动不落磁盘
-            eprintln!("[core] 会话 {session_id} 的隔离工作视图建立失败：{reason}");
+            eprintln!("[core] 会话 {owner} 的隔离工作视图建立失败：{reason}");
             return WorkViewState::ViewUnavailable(reason);
         }
         eprintln!(
-            "[core] 会话 {session_id} 的隔离工作视图已就绪：{}",
+            "[core] 会话 {owner} 的隔离工作视图已就绪：{}",
             view.mount_point()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<无挂载点>".to_string())
         );
-        match crate::work_view::WorkViewHandle::of(session_id) {
+        match crate::work_view::WorkViewHandle::of(&owner) {
             Some(handle) => WorkViewState::View(handle),
             None => WorkViewState::ViewUnavailable(
                 "视图已建立但句柄取不到（登记表可能被并发清理）".to_string(),
             ),
         }
+    }
+
+    /// 某会话的父会话 id（`specs/058 FR-002` 的所有者解析用）。
+    ///
+    /// 两级来源，与归属读侧同构：内存态优先（创建时就写定，子代理运行中命中），内存态
+    /// 没有时读 `meta.json` 的 `parentSessionId`（Core 重启 / 会话重新加载后唯一来源——
+    /// `ensure_loaded` 不还原这一格）。且**先判是不是子代理**：主对话的每次工具调都不该
+    /// 为了一次父链查询付一次目录枚举。
+    ///
+    /// 返回 `None` 的含义是「没有父会话」，与「父会话 id 查不到」不同——后者只在
+    /// 调用方明确需要时由 [`Self::work_view_owner`] 判成数据异常。
+    pub fn parent_session_of(&self, session_id: &str) -> Option<String> {
+        if let Some(state) = self.session_if_exists(session_id) {
+            let state = state.lock().unwrap();
+            // 主对话（含跨工作区派发的顶层会话）恒没有父会话：`is_sub_agent_session`
+            // 会认 `creator` 为 agent 形态的会话，那种会话的 `parent_session_id` 是空，
+            // 这里直接回 `None`，不为主对话的每次工具调用多付一次目录枚举。
+            if !state.is_sub_agent_session() {
+                return None;
+            }
+            if state.parent_session_id.is_some() {
+                return state.parent_session_id.clone();
+            }
+        }
+        // 内存态还没建（Core 重启后首次问到），或内存态是重新加载出来的子代理会话
+        // （`ensure_loaded` 只还原 `creator`、不还原 `parent_session_id`）：按落盘值判定。
+        history::metadata_of_session(session_id)?
+            .get("parentSessionId")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+    }
+
+    /// 这份 `isolated` 视图的所有者会话 id（specs/058 FR-002 / FR-003）。
+    ///
+    /// 沿 `parentSessionId` 上溯到「没有父会话」的那一层：本地子代理继承发起对话的归属，
+    /// 两者共用同一份视图，视图目录、常驻代理与上层只属于所有者。主对话（含跨工作区对话）
+    /// 自己就是所有者，因此这是一次空转。
+    ///
+    /// 失败一律 `Err`（调用方转成视图不可用，不退回真实磁盘）：
+    /// - 子代理查不到父会话 id：父档案被删掉是数据异常，不猜「父不在就自己一份」；
+    /// - 父会话归属是 `workspace`：归属链断了（子代理 `isolated` 而父不是），同样是数据异常；
+    /// - 上溯超过 [`WORK_VIEW_OWNER_DEPTH_LIMIT`] 层：父链成环，报错而不是死循环。
+    pub fn work_view_owner(&self, session_id: &str) -> Result<String, String> {
+        let mut current = session_id.to_string();
+        for _ in 0..WORK_VIEW_OWNER_DEPTH_LIMIT {
+            let Some(parent) = self.parent_session_of(&current) else {
+                return Ok(current);
+            };
+            if parent == current {
+                return Err(format!(
+                    "会话 {current} 的 parentSessionId 指向自己，无法确定 Overlay 视图的所有者"
+                ));
+            }
+            if self.session_storage(&parent) != WorkViewStorage::Isolated {
+                return Err(format!(
+                    "会话 {session_id} 是 isolated 归属，但父会话 {parent} 不是；无法确定共用哪份 Overlay 视图"
+                ));
+            }
+            current = parent;
+        }
+        Err(format!(
+            "会话 {session_id} 的父会话链超过 {WORK_VIEW_OWNER_DEPTH_LIMIT} 层，无法确定 Overlay 视图的所有者"
+        ))
     }
 
     /// 会话的文件存储归属（specs/045 FR-001）；未知会话按真实工作区处理。
@@ -1920,6 +1998,11 @@ impl Core {
         let persisted_thinking_effort = thinking_effort
             .clone()
             .unwrap_or_else(config::default_thinking_effort);
+        // 文件存储归属（specs/058 FR-001）：本地子代理继承发起对话此刻的归属。取值走
+        // `session_storage` 这唯一读点（内存态优先、`meta.json` 次之），因此父对话是本次
+        // 新建勾的 Overlay、还是重启后从落盘恢复的 Overlay，得到的是同一个答案。
+        // 角色不参与判定：Explorer 只是工具白名单更窄，读的仍是同一份叠加视图。
+        let storage = self.session_storage(&creator);
 
         let sub_state = self.session(&sub_session_id);
         {
@@ -1930,6 +2013,7 @@ impl Core {
             state.provider = provider.clone();
             state.thinking_effort = thinking_effort;
             state.web_search = web_search;
+            state.storage = storage;
             state.parent_session_id = Some(creator.clone());
             // 归属根事实与树事实同时写定（specs/025 FR-002）：默认 `creator` 是 user，
             // 漏写会让运行时快照把子代理当成用户会话，完成提醒 / 未读绿灯的抑制失效
@@ -1964,6 +2048,7 @@ impl Core {
             &request.role,
             model.as_deref(),
             provider.as_deref(),
+            storage,
         )
         .map_err(|error| format!("create sub agent metadata: {error}"))?;
         // 同步把继承来的会话级设置落进子会话 meta.json 的 context：
@@ -2076,6 +2161,10 @@ impl Core {
                 workspace_id: Some(origin_workspace_id.clone()),
                 session_id: origin_session_id.clone(),
             };
+            // 文件存储归属恒 `workspace`（specs/058 FR-001）：发起方的叠加视图是发起方
+            // Core 私有命名空间里的事实，不跨工作区传递。派生字段与落盘一致——
+            // `create_remote_sub_agent_metadata` 写的是同一个值。
+            state.storage = WorkViewStorage::Workspace;
             state.sub_agent_role = Some(role.clone());
             state.sub_agent_description = Some(description.clone());
             // SystemPrompt 由目标 Core 按固定模板组装（specs/025 FR-006）：身份取

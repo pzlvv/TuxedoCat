@@ -104,6 +104,12 @@
   （3）`e2e/webview/conversation.spec.ts` 的 US-52 用「abort 按钮回灰」等轮次结束，
   但按钮一开始就是灰的，断言立即通过、随后被轮末 idle 快照冲掉注入的黄色态；
   同样改为 `turnsDone` 计数。
+  （4）`e2e/electron/desktopShell.spec.ts` 的「关闭所有空闲对话」用例（specs/058 的 all 车道
+  发现）：`sendTurn` 用「收到：」可见做轮次边界，随后 30s 等侧栏 `.loaded-dot` 出现；负载高时
+  轮末 idle 快照与侧栏 loaded 集合刷新会晚于回复可见。**尚未修**——该用例在重跑（只跑失败
+  job）时通过，三轮 all 的失败点各不相同（`subagentConcurrency` / `desktopShell`），先按抖动
+  记录。方向同上：改用轮次结束的确定信号（`turnsDone` 计数的宿主等价物）而不是回复可见 +
+  固定 30s。
   验收判据：`npm run test:e2e:local` 连续两次全绿（当前已跑通一轮）；新增用例若依赖
   布局测量，一律用 `turnsDone` 做轮次边界，不用按钮/快照投影做判据。
 
