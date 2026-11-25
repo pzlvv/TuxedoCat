@@ -612,6 +612,86 @@ runTests('e2eCiLane', () => {
     }
   }
 
+  // RT-1（specs/defects/remote-task-survival-sleep-outlived-its-rationale.md）：
+  // 长任务的 `sleep` 时长必须由它要覆盖的等待推导，不能凭一个已失效的理由定值。
+  //
+  // 事故形态：`sleep 180` 是 `646e51c` 为「超过 Bash 工具 120s 默认超时」而设，而
+  // `221390b` 之后默认超时是 60s 且含 `sleep` 的命令按 `max(60s, sleep 时长)` 顺延——
+  // 那条理由早已不成立，180s 变成纯空转；实测重开远程工作区只要 5.8s，
+  // 而 US-65 的最坏路径被推到 210s，把它的轮询窗口挤到只剩 50s 余量（CI 上超时）。
+  //
+  // 判据一：用例体内的**固定等待**（`await new Promise((r) => setTimeout(r, N))`）等的是
+  // 「某状态已经变了」这一条件，能轮询真实可观测状态就必须轮询；确实需要「整整跨过多久」
+  // 的语义（例如「孤儿必须跨过 idle-exit 窗口仍不被收尾」）才保留，并必须在前面写明
+  // 为什么不能改条件等待。静默保留的固定等待与静默放宽超时同一性质：它掩盖真实判断点，
+  // 慢机上等不够、快机上白等。
+  // 判据一：固定等待要么改成条件等待，要么写明为什么必须等满。
+  //
+  // 本组目前只锁 `remoteTaskSurvival.spec.ts`——它是本缺陷的现场，且它的三个固定等待
+  // 恰好对应三种不同性质（等宿主进程退出 / 等 daemon 察觉断链 / 等孤儿跨过 idle 窗口）。
+  // 其余 SSH spec 的固定等待另按各自缺陷处理，不在这里顺手扫：判据一旦覆盖全仓，
+  // 改一个文件就必须连带改二十处无关注释，红线会变成噪声。
+  const FIXED_WAIT_SPECS = ['e2e/electron/remoteTaskSurvival.spec.ts'];
+  const fixedWaits: string[] = [];
+  for (const rel of FIXED_WAIT_SPECS) {
+    const lines = read(path.join(REPO_ROOT, rel)).split(/\r?\n/);
+    lines.forEach((line, index) => {
+      if (!/new Promise(?:<[^>]*>)?\(\s*\(\s*\w+\s*\)\s*=>\s*setTimeout\(/.test(line)) return;
+      // 轮询 helper 的间隔不是「固定等待」：它本身就是条件等待循环的节拍（条件不满足
+      // 才会转下一轮），判据要的是「拿时长当判据」那种位点。判据取「往回 20 行内出现过
+      // 循环头（`while (` / `for (;;)`）且期间有 `if (...) return` 形态的提前收尾」来排除。
+      const loopContext = lines.slice(Math.max(0, index - 20), index).join('\n');
+      const hasLoopHeader = /(^|\n)\s*(while \(|for \(;;\))/.test(loopContext);
+      const hasEarlyExit = /if \([^\n]*\)\s*return\b/.test(loopContext)
+        || /(^|\n)\s*return;/.test(loopContext);
+      if (hasLoopHeader && hasEarlyExit) return;
+      // 前 2 行内要有注释，且注释要说明为什么必须等满（出现「必须」「不能」「等满」
+      // 「宽限」「跨过」等判据词），不接受「等待一下」这类空注释
+      const context = lines.slice(Math.max(0, index - 2), index).join('\n');
+      if (!/(必须|不能改|等满|宽限|idle-exit|跨过)/.test(context)) {
+        fixedWaits.push(`${rel}:${index + 1}`);
+      }
+    });
+  }
+  check(
+    `固定等待都写明了为何不能用条件等待（缺：${fixedWaits.join('、') || '无'}）`,
+    fixedWaits.length === 0,
+  );
+
+  // 判据二：注释里声称的 Bash 默认超时时长必须与实现一致。
+  //
+  // 事故形态（specs/defects/remote-task-survival-sleep-outlived-its-rationale.md）：
+  // `remoteTaskSurvival` 的 `sleep 180` 是照着「超过 Bash 工具 2 分钟默认超时」设的，
+  // 而 `core-rs/src/tools.rs` 的 `DEFAULT_BASH_TIMEOUT_MS` 是 60s，且含 `sleep` 的命令
+  // 还会把死线顺延到 `max(60s, sleep 时长)`——那条理由与注释同时失效，180s 变成纯空转。
+  const toolsSource = read(path.join(REPO_ROOT, 'core-rs', 'src', 'tools.rs'));
+  const bashDefaultMs = Number(
+    /const\s+DEFAULT_BASH_TIMEOUT_MS\s*:\s*u64\s*=\s*([0-9_]+)\s*;/.exec(toolsSource)?.[1]?.replace(/_/g, '') ?? '0',
+  );
+  const staleTimeoutClaims: string[] = [];
+  if (bashDefaultMs > 0) {
+    for (const lane of laneBudgets) {
+      const dir = path.join(REPO_ROOT, lane.dir);
+      if (!fs.existsSync(dir)) continue;
+      for (const name of fs.readdirSync(dir).filter((f) => f.endsWith('.spec.ts')).sort()) {
+        const rel = `${lane.dir}/${name}`;
+        const lines = read(path.join(dir, name)).split(/\r?\n/);
+        lines.forEach((line, index) => {
+          const match = /Bash 工具\s*([0-9]+)\s*分钟默认超时/.exec(line);
+          if (match && Number(match[1]) * 60_000 !== bashDefaultMs) {
+            staleTimeoutClaims.push(
+              `${rel}:${index + 1}：注释称 ${match[1]} 分钟，实现是 ${bashDefaultMs / 1000}s`,
+            );
+          }
+        });
+      }
+    }
+  }
+  check(
+    `注释里的 Bash 默认超时与 tools.rs 一致（不符：${staleTimeoutClaims.join('、') || '无'}）`,
+    staleTimeoutClaims.length === 0,
+  );
+
   // RT-14：Electron 二进制必须在**用例开始前**就位。
   //
   // `node_modules/electron` 没有 postinstall：第一次 `require('electron')` 才同步 spawn
