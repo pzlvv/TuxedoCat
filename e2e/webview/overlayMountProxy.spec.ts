@@ -93,7 +93,7 @@ test('FR-002 可部署但未就绪时渲染 Overlay 勾选框', async ({ browser
 /**
  * 入口渲染在装饰图**下方**且不移动装饰图（docs/hosts/webview-ui.md 第 11 节
  * 「新对话空态布局」）：入口是装饰图的绝对定位兄弟层，出现 / 消失都不改装饰图位置。
- * 判据取几何事实——装饰图中心与容器中心同高（居中不受入口影响）、入口整体落在
+ * 判据取几何事实——装饰图中心与视口中心同高（居中不受入口影响）、入口整体落在
  * 装饰图下边界之下。
  */
 test('FR-002 入口出现在 logo 下方且不影响 logo 位置', async ({ browser }) => {
@@ -106,14 +106,12 @@ test('FR-002 入口出现在 logo 下方且不影响 logo 位置', async ({ brow
   const geometry = await page.evaluate(() => {
     const logoEl = document.querySelector('.placeholder-logo');
     const entryEl = document.querySelector('input[data-work-view-option]');
-    const container = document.querySelector('.messages-container-empty');
-    if (!logoEl || !entryEl || !container) throw new Error('空态节点缺失');
+    if (!logoEl || !entryEl) throw new Error('空态节点缺失');
     const logoBox = logoEl.getBoundingClientRect();
     const entryBox = entryEl.getBoundingClientRect();
-    const containerBox = container.getBoundingClientRect();
     return {
       logoCenterY: logoBox.top + logoBox.height / 2,
-      containerCenterY: containerBox.top + containerBox.height / 2,
+      viewportCenterY: window.innerHeight / 2,
       logoBottom: logoBox.bottom,
       entryTop: entryBox.top,
     };
@@ -121,8 +119,41 @@ test('FR-002 入口出现在 logo 下方且不影响 logo 位置', async ({ brow
 
   // 入口在装饰图下方，且留出了间距（不是压在图上）
   expect(geometry.entryTop).toBeGreaterThan(geometry.logoBottom);
-  // 装饰图仍按容器中线居中：入口作为绝对定位层不占布局高度
-  expect(Math.abs(geometry.logoCenterY - geometry.containerCenterY)).toBeLessThanOrEqual(1);
+  // 装饰图仍按视口中线居中：入口作为绝对定位层不占布局高度
+  expect(Math.abs(geometry.logoCenterY - geometry.viewportCenterY)).toBeLessThanOrEqual(1);
+});
+
+/**
+ * 空态层挂在视口上而不是消息区上：主输入框随内容长高时消息区被压矮，装饰图与入口
+ * 的位置只由窗口尺寸决定，不跟着输入框走动（把 `.empty-state-layer` 的 fixed 改回
+ * 消息区内的 static 即失败）。
+ */
+test('FR-002 主输入框长高时 logo 与入口位置不动', async ({ browser }) => {
+  handle = await openWithCapabilities(browser, DEPLOYABLE);
+  const { page } = handle;
+  await expect(page.locator(WORK_VIEW_OPTION)).toBeVisible({ timeout: 15_000 });
+
+  const readGeometry = () =>
+    page.evaluate(() => {
+      const logoEl = document.querySelector('.placeholder-logo');
+      const entryEl = document.querySelector('input[data-work-view-option]');
+      const inputEl = document.querySelector('textarea.input-textarea');
+      if (!logoEl || !entryEl || !inputEl) throw new Error('空态节点缺失');
+      return {
+        logoTop: Math.round(logoEl.getBoundingClientRect().top),
+        entryTop: Math.round(entryEl.getBoundingClientRect().top),
+        inputHeight: Math.round(inputEl.getBoundingClientRect().height),
+      };
+    });
+
+  const before = await readGeometry();
+  // 填多行让主输入框按 maxRows 长高（不发送，空态保持不变）
+  await page.fill('textarea.input-textarea', Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 行`).join('\n'));
+  const after = await readGeometry();
+
+  expect(after.inputHeight, '输入框必须真的长高，否则本条用例验不到位移').toBeGreaterThan(before.inputHeight);
+  expect(after.logoTop, '装饰图随输入框高度移动了').toBe(before.logoTop);
+  expect(after.entryTop, '入口随输入框高度移动了').toBe(before.entryTop);
 });
 
 test('FR-002 不可部署时整块入口不渲染', async ({ browser }) => {

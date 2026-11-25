@@ -269,16 +269,28 @@ textarea::-webkit-scrollbar-thumb:hover {
   border-radius: 10px;
 }
 
-/* 空态装饰图 + 其下方入口的叠层（docs/hosts/webview-ui.md 第 11 节）：
-   入口绝对定位挂在装饰图外框下方，不占居中布局的高度——入口出现 / 消失时装饰图
-   位置不动。装饰图宽 360px（窄侧栏按容器收缩），所以入口按 `top: 100%` 贴它的
-   底边，而不是用固定像素偏移（收窄时同样贴住）。 */
+/* 空态层（docs/hosts/webview-ui.md 第 11 节「新对话空态布局」）：挂在视口而不是消息区上。
+   主输入框随内容长高会把消息区压矮，若这一层留在消息区里，按消息区居中的装饰图与入口
+   会被整体顶上去；挂到视口后两者位置只由窗口尺寸决定，输入框高度变化不影响。
+   整层不接鼠标（装饰图本来就不可操作），只有入口自身恢复命中。 */
+.empty-state-layer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* 空态装饰图 + 其下方入口的叠层：入口绝对定位挂在装饰图外框下方，不占居中布局
+   的高度——入口出现 / 消失时装饰图位置不动。装饰图宽 360px（窄侧栏按容器收缩），
+   所以入口按 `top: 100%` 贴它的底边，而不是用固定像素偏移（收窄时同样贴住）。 */
 .empty-state-stack {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 占满消息区宽度：装饰图自身的 `max-width: 100%` 才会按容器收缩（窄侧栏），
+  /* 占满视口宽度：装饰图自身的 `max-width: 100%` 才会按容器收缩（窄侧栏），
      入口的 `left: 50%` 也就落在这条中线上。 */
   width: 100%;
 }
@@ -293,6 +305,8 @@ textarea::-webkit-scrollbar-thumb:hover {
   align-items: center;
   justify-content: center;
   white-space: nowrap;
+  /* 外层空态层关掉了命中，入口是唯一可交互的部分 */
+  pointer-events: auto;
 }
 
 /* Transparent background for markdown */
