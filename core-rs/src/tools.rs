@@ -5635,34 +5635,28 @@ fn run_skill(input: &Value, ctx: &ToolContext) -> ToolOutcome {
         return ToolOutcome::Error(format!("Skill '{trimmed}' not found"));
     };
 
-    // 提取文本内容
-    let text_content = command
-        .prompt_for_command(args)
-        .iter()
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // 替换内置变量（`${SKILL_DIR}`, `${SESSION_ID}`）
-    let final_content = crate::skills::substitute_builtin_variables(
-        &text_content,
-        command.skill_root.as_deref(),
-        Some(&ctx.session_id),
-    );
+    // 渲染口径只有 `skills::render_skill_body` 一份：压缩后的重挂（
+    // `compact::build_loaded_skills_section`）调同一个函数，两处不会漂移
+    // （`docs/features/compaction.md` FR-007）。
+    let final_content = crate::skills::render_skill_body(&command, args, &ctx.session_id);
 
     eprintln!(
         "[core] SkillTool: Injecting skill '{trimmed}' prompt ({} chars)",
         crate::util::utf16_len(&final_content)
     );
 
-    // 包装为 UserMessage（`isMeta=true` 表示不被 UI 直接显示）
+    // 包装为 UserMessage（`isMeta=true` 表示不被 UI 直接显示）。
+    //
+    // `skillName` 只服务「压缩时判断该技能的正文是否仍在保留区」（重启后的场景更要靠它，
+    // 内容比对随文件改动立刻失效）；它不进 LLM 载荷，`build_raw_api_messages` 只取
+    // `role` / `content`。
     let user_message = json!({
         "type": "user",
         "message": { "role": "user", "content": final_content },
         "uuid": format!("skill_{}", crate::util::now_millis()),
         "timestamp": crate::util::now_millis(),
         "isMeta": true,
+        "skillName": command.name,
     });
 
     ToolOutcome::SuccessWithMessages {

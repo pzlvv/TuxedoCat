@@ -140,6 +140,7 @@ mod parity_tests {
                     case["transcriptPath"].as_str(),
                     case["userInputHistory"].as_str(),
                     case["runningTasks"].as_str(),
+                    case["loadedSkills"].as_str(),
                 ),
                 case["result"].as_str().unwrap(),
                 "压缩后 user 消息不一致: {}",
@@ -449,7 +450,8 @@ mod strip_running_tasks_tests {
                 start_time: 0,
             }])
             .expect("非空集应有章节");
-        let summary = generate_compact_user_message("SUM", None, Some("1. hi"), Some(&section));
+        let summary =
+            generate_compact_user_message("SUM", None, Some("1. hi"), Some(&section), None);
 
         let stripped = strip_running_tasks_section(&summary);
         assert!(!stripped.contains("### 后台任务"), "{stripped}");
@@ -466,7 +468,7 @@ mod strip_running_tasks_tests {
 
     #[test]
     fn leaves_text_without_the_section_unchanged() {
-        let plain = generate_compact_user_message("SUM", None, Some("1. hi"), None);
+        let plain = generate_compact_user_message("SUM", None, Some("1. hi"), None, None);
         assert_eq!(strip_running_tasks_section(&plain), plain);
     }
 
@@ -483,5 +485,272 @@ mod strip_running_tasks_tests {
             }])
             .expect("非空集应有章节");
         assert_eq!(strip_running_tasks_section(&section), "");
+    }
+}
+
+// ==================== 已加载技能随压缩携带（FR-007） ====================
+
+mod loaded_skills_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// 在 `<cwd>/.agents/skills/<name>/SKILL.md` 写一个技能
+    fn write_skill(cwd: &Path, name: &str, body: &str) {
+        let dir = cwd.join(".agents").join("skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\ndescription: {name} 的描述\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    fn skill_tool_use(name: &str, args: Option<&str>, uuid: &str) -> Value {
+        let input = match args {
+            Some(args) => json!({ "skill": name, "args": args }),
+            None => json!({ "skill": name }),
+        };
+        json!({
+            "type": "assistant",
+            "message": { "role": "assistant", "content": [
+                { "type": "tool_use", "id": format!("tu-{uuid}"), "name": "Skill", "input": input }
+            ] },
+            "uuid": uuid,
+            "timestamp": 1,
+        })
+    }
+
+    fn skill_body_message(name: &str) -> Value {
+        json!({
+            "type": "user",
+            "message": { "role": "user", "content": "技能正文" },
+            "uuid": format!("body-{name}"),
+            "timestamp": 2,
+            "isMeta": true,
+            "skillName": name,
+        })
+    }
+
+    #[test]
+    fn records_are_collected_from_skill_tool_uses_in_order() {
+        let region = vec![skill_tool_use("alpha", None, "a-1")];
+        let keep = vec![skill_tool_use("beta", Some("x y"), "b-1")];
+        let records = collect_loaded_skill_records(&[], &region, &keep);
+        assert_eq!(
+            records,
+            vec![
+                LoadedSkillRecord {
+                    name: "alpha".to_string(),
+                    args: String::new()
+                },
+                LoadedSkillRecord {
+                    name: "beta".to_string(),
+                    args: "x y".to_string()
+                },
+            ]
+        );
+    }
+
+    /// 同名技能跨代 / 跨区段只留最近一次，且参数取最近那次的。
+    #[test]
+    fn records_dedupe_by_name_keeping_the_latest() {
+        let persisted = vec![json!({ "name": "alpha", "args": "old" })];
+        let region = vec![skill_tool_use("alpha", Some("mid"), "a-1")];
+        let keep = vec![skill_tool_use("alpha", Some("new"), "a-2")];
+        let records = collect_loaded_skill_records(&persisted, &region, &keep);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].args, "new");
+    }
+
+    /// 持久化字段形态非法（缺 name / 类型不对）逐条忽略，等价于「无历史记录」。
+    #[test]
+    fn malformed_persisted_entries_are_ignored() {
+        let messages = vec![json!({
+            "type": "user",
+            "isCompactSummary": true,
+            "message": { "role": "user", "content": "摘要" },
+            "compactLoadedSkills": [
+                { "args": "缺名字" },
+                { "name": 42 },
+                { "name": "  " },
+                { "name": "ok", "args": "a" },
+                "不是对象",
+            ],
+        })];
+        let values = read_compact_loaded_skills(&messages);
+        assert_eq!(values, vec![json!({ "name": "ok", "args": "a" })]);
+    }
+
+    #[test]
+    fn absent_field_reads_as_empty_history() {
+        let messages = vec![json!({
+            "type": "user",
+            "isCompactSummary": true,
+            "message": { "role": "user", "content": "摘要" },
+        })];
+        assert!(read_compact_loaded_skills(&messages).is_empty());
+    }
+
+    /// 保留区判据只看 `skillName` 标记，不比对内容。
+    #[test]
+    fn keep_region_names_come_from_the_injection_marker() {
+        let keep = vec![
+            skill_body_message("alpha"),
+            json!({ "type": "user", "message": { "role": "user", "content": "x" } }),
+            skill_body_message("alpha"),
+        ];
+        assert_eq!(keep_region_skill_names(&keep), vec!["alpha".to_string()]);
+    }
+
+    fn records(names: &[&str]) -> Vec<LoadedSkillRecord> {
+        names
+            .iter()
+            .map(|name| LoadedSkillRecord {
+                name: (*name).to_string(),
+                args: String::new(),
+            })
+            .collect()
+    }
+
+    /// 没有记录 / 全部仍在保留区 → 不出章节（摘要正文逐字节不变）。
+    #[test]
+    fn section_is_absent_without_reloadable_records() {
+        let cwd = std::path::PathBuf::from(".");
+        assert_eq!(build_loaded_skills_section(&[], &[], ".", "s1"), None);
+        assert_eq!(
+            build_loaded_skills_section(&records(&["alpha"]), &["alpha".to_string()], ".", "s1"),
+            None
+        );
+        let _ = cwd;
+    }
+
+    /// 章节按「最近调用优先」排列，标题与前言在里面，正文来自磁盘。
+    #[test]
+    fn section_lists_recent_skills_first_with_body_from_disk() {
+        let sandbox = crate::test_support::Sandbox::new("compact-loaded-skills");
+        let cwd = sandbox.workspace.to_string_lossy().to_string();
+        write_skill(&sandbox.workspace, "alpha", "ALPHA 正文");
+        write_skill(&sandbox.workspace, "beta", "BETA 正文");
+
+        let section = build_loaded_skills_section(&records(&["alpha", "beta"]), &[], &cwd, "s1")
+            .expect("有记录就应有章节");
+        assert!(section.starts_with(LOADED_SKILLS_HEADING), "{section}");
+        let beta_at = section.find("#### beta").expect("beta 应在章节里");
+        let alpha_at = section.find("#### alpha").expect("alpha 应在章节里");
+        assert!(beta_at < alpha_at, "最近调用的排前面: {section}");
+        assert!(section.contains("ALPHA 正文"), "{section}");
+        assert!(section.contains("BETA 正文"), "{section}");
+    }
+
+    /// 磁盘内容改了，重挂取新版（不是调用时的旧副本）。
+    #[test]
+    fn section_renders_the_current_file_content() {
+        let sandbox = crate::test_support::Sandbox::new("compact-loaded-skills-fresh");
+        let cwd = sandbox.workspace.to_string_lossy().to_string();
+        write_skill(&sandbox.workspace, "alpha", "旧正文");
+        write_skill(&sandbox.workspace, "alpha", "新正文");
+
+        let section = build_loaded_skills_section(&records(&["alpha"]), &[], &cwd, "s1")
+            .expect("有记录就应有章节");
+        assert!(section.contains("新正文"), "{section}");
+        assert!(!section.contains("旧正文"), "{section}");
+    }
+
+    /// 技能被删 / 解析不到：不进正文，但点名说明，压缩不失败。
+    #[test]
+    fn missing_skill_is_named_instead_of_silently_dropped() {
+        let sandbox = crate::test_support::Sandbox::new("compact-loaded-skills-missing");
+        let cwd = sandbox.workspace.to_string_lossy().to_string();
+        write_skill(&sandbox.workspace, "alpha", "ALPHA 正文");
+
+        let section = build_loaded_skills_section(&records(&["alpha", "gone"]), &[], &cwd, "s1")
+            .expect("有一个能读出来就应有章节");
+        assert!(section.contains("ALPHA 正文"), "{section}");
+        assert!(section.contains("无法重新读取"), "{section}");
+        assert!(section.contains("gone"), "缺席技能要点名: {section}");
+        assert!(!section.contains("#### gone"), "{section}");
+    }
+
+    /// 单项超限：保留开头 + 截断说明行（不静默截断）。
+    #[test]
+    fn oversized_skill_is_truncated_with_a_note() {
+        let sandbox = crate::test_support::Sandbox::new("compact-loaded-skills-truncate");
+        let cwd = sandbox.workspace.to_string_lossy().to_string();
+        // 20_000 个汉字 ≈ 24_000 token，远超单项上限
+        write_skill(&sandbox.workspace, "huge", &"长".repeat(20_000));
+
+        let section =
+            build_loaded_skills_section(&records(&["huge"]), &[], &cwd, "s1").expect("应有章节");
+        assert!(section.contains("已截断"), "{section}");
+        assert!(section.contains("单项上限"), "{section}");
+        // 正文被截到单项上限以内
+        let body_start = section.find("#### huge").unwrap();
+        assert!(
+            crate::util::estimate_text_tokens(&section[body_start..]) <= COMPACT_SKILL_MAX_TOKENS,
+            "单项正文应落在上限内"
+        );
+    }
+
+    /// 总量溢出：整项放弃最旧的，并把被放弃的技能逐个点名。
+    #[test]
+    fn budget_overflow_drops_the_oldest_and_names_them() {
+        let sandbox = crate::test_support::Sandbox::new("compact-loaded-skills-budget");
+        let cwd = sandbox.workspace.to_string_lossy().to_string();
+        // 每个技能 ~4_700 token（汉字按 1.2 计）：6 个超总量，最旧的应被挤掉
+        for name in ["s1", "s2", "s3", "s4", "s5", "s6"] {
+            write_skill(&sandbox.workspace, name, &"内".repeat(3_900));
+        }
+        let names: Vec<&str> = vec!["s1", "s2", "s3", "s4", "s5", "s6"];
+        let section =
+            build_loaded_skills_section(&records(&names), &[], &cwd, "s1").expect("应有章节");
+        assert!(
+            section.contains("总量预算"),
+            "溢出要有说明行: {}",
+            &section[..200.min(section.len())]
+        );
+        // 最近调用的一定在，最旧的被点名
+        assert!(section.contains("#### s6"), "最近调用的必须重挂");
+        assert!(section.contains("s1"), "被挤出的最旧技能要点名");
+    }
+}
+
+mod strip_loaded_skills_tests {
+    use super::*;
+
+    fn summary_with_loaded_skills() -> String {
+        let section = format!(
+            "{LOADED_SKILLS_HEADING}\n\n{LOADED_SKILLS_PREAMBLE}\n\n#### fix\n\n正文里有\n\n## 自带标题\n\n与\n\n---\n\n分隔线"
+        );
+        generate_compact_user_message("SUM", None, Some("1. hi"), None, Some(&section))
+    }
+
+    /// 章节是最后一个：从标题一直剥到尾注，正文里自带的标题 / 分隔线不提前收手。
+    #[test]
+    fn strips_the_whole_section_keeping_the_footer() {
+        let stripped = strip_loaded_skills_section(&summary_with_loaded_skills());
+        assert!(!stripped.contains(LOADED_SKILLS_HEADING), "{stripped}");
+        assert!(
+            !stripped.contains("自带标题"),
+            "技能正文不该残留: {stripped}"
+        );
+        assert!(!stripped.contains("正文里有"), "{stripped}");
+        assert!(stripped.contains("SUM"), "{stripped}");
+        assert!(stripped.contains("### 用户输入历史"), "{stripped}");
+        assert!(stripped.contains("请基于以上摘要继续工作"), "{stripped}");
+    }
+
+    #[test]
+    fn absent_section_leaves_text_unchanged() {
+        let plain = generate_compact_user_message("SUM", None, Some("1. hi"), None, None);
+        assert_eq!(strip_loaded_skills_section(&plain), plain);
+    }
+
+    /// 正文里偶然提到标题文字（不在行首）不算章节。
+    #[test]
+    fn inline_mention_is_not_treated_as_the_section() {
+        let text = format!(
+            "以下是之前对话的摘要：\n\n提到 {LOADED_SKILLS_HEADING} 这串字\n\n{COMPACT_FOOTER}"
+        );
+        assert_eq!(strip_loaded_skills_section(&text), text);
     }
 }

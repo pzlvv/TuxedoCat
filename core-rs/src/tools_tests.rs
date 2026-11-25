@@ -5075,6 +5075,9 @@ disable-model-invocation: true",
     let injected = outcome.new_messages();
     assert_eq!(injected.len(), 1, "技能正文以 isMeta 消息注入");
     assert_eq!(injected[0]["isMeta"], json!(true));
+    // `skillName` 标记：压缩时据此判断「这个技能的正文是否仍在保留区」。
+    // 没有它就只能比对内容，而内容随文件改动立刻失效（`docs/features/compaction.md` FR-007）。
+    assert_eq!(injected[0]["skillName"], json!("deploy"));
 
     crate::skills::reset_registries();
 }
