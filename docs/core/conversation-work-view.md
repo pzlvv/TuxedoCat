@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-24
+last_reviewed: 2026-11-25
 ---
 
 # 规格：Overlay 对话工作视图
@@ -56,7 +56,7 @@ Core 忽略它们、只回答自己那份能力。同给时 `sessionId` 优先�
 
 | 请求 | 载荷 | 应答 |
 | --- | --- | --- |
-| `UiRequest.workViewFilesRequested` | `sessionId`、`dir`（`'/'` 分隔相对路径，`''` 为视图根） | `{ ok: true, entries }` 或 `{ ok: false, error }` |
+| `UiRequest.workViewFilesRequested` | `sessionId`（可给子代理会话 id，Core 解析到所有者）、`dir`（`'/'` 分隔相对路径，`''` 为视图根） | `{ ok: true, entries }` 或 `{ ok: false, error }` |
 | `UiRequest.workViewChangesRequested` | `sessionId`、`scope`（`doc` / `all`，与侧栏同一判别值） | `{ ok: true, entries }` 或 `{ ok: false, kind: 'not-a-git-workspace' \| 'error', error }`；条目带 `path` / `plus` / `minus` / `status`（`A` / `M` / `R`）/ `oldPath`（重命名前的旧路径，无则 `null`） |
 | `UiRequest.workViewFileDiffRequested` | `sessionId`、`path`（不能是视图根） | `{ ok: true, kind: 'git', before: string \| null, after }`、`{ ok: true, kind: 'not-a-git-workspace', after }` 或 `{ ok: false, error }` |
 | `UiRequest.workViewFileIoRequested` | `sessionId`、`payload`（判别联合：`op` = `stat` / `list` / `mkdirAll` / `rename` / `unlink` / `read` / `write`；`path` 是 `'/'` 分隔相对路径，`''` 为视图根；`rename` 另带 `to`，`read` 带 `offset` / `length`，`write` 带 `offset` / 字节数组） | 按 `op`：路径事实 / 目录项 / 一块字节与 `eof` / 写入后的字节数 / `{ ok: true }`；失败恒 `{ ok: false, error }` |
@@ -98,13 +98,23 @@ HEAD 以**视图**为准：对话内自己 `git commit` 之后变更清单随之
 `isolated`（读写落在本对话私有的叠加视图上）。归属在会话创建时一次写定，之后不变；
 缺失按 `workspace`（存量会话口径）。
 
-写入有三个时机：
+归属的写入时机：
 
 | 时机 | 落点 | 作用 |
 | --- | --- | --- |
 | `conversationStarted` | Core 内存态 | 新建对话的**初始**归属 |
 | `storageChanged` | Core 内存态 + 已有的 `meta.json` | 勾选框在创建之后才渲染，用户勾选必然晚于创建，需补发 |
 | 首条消息建档（`touch_metadata`） | `meta.json` 的 `storage` | 兜底：`storageChanged` 先到时 meta 还不存在 |
+| 本地子代理创建（`create_sub_agent`） | Core 内存态 + 子会话 `meta.json` | 继承发起对话此刻的归属（下节） |
+
+**本地子代理继承发起对话的归属**（specs/058 FR-001）：`Agent` 不带 `target`（或 `target`
+等于当前工作区）建立的子代理，把归属写成发起对话此刻的归属——发起方是 `isolated` 时子代理
+也是 `isolated`，值随子会话 `meta.json` 落盘，Core 重启后按落盘值恢复，不再向父会话追问。
+继承与角色无关（`Master` 与 `Explorer` 一视同仁，角色只决定工具白名单）。
+
+**跨工作区派发的会话不继承**：`target` 指向另一个已打开工作区时，目标工作区那份会话恒按
+`workspace` 记账（`meta.json` 显式写该值）。叠加视图是发起方 Core 私有命名空间里的事实，
+不跨工作区传递。
 
 `storageChanged` 不是「归属可变」：**已经有消息**（`messageCount > 0`）时直接忽略并记日志。
 判据是「是否有消息」而不是「`meta.json` 是否存在」——新建对话时宿主立刻推送默认配置
@@ -120,6 +130,24 @@ HEAD 以**视图**为准：对话内自己 `git commit` 之后变更清单随之
 
 读侧相应有两级：内存态优先（内存态是「本次进程内已确定」的归属，一定比磁盘新），
 内存态缺失时读 `meta.json`（Core 重启、存量会话）。两处都没有才是 `workspace`。
+
+### 2.1 视图的所有者
+
+`isolated` 的视图有唯一所有者：**用户勾选 Overlay 的那条顶层对话**。本地子代理是使用者——
+它继承来的 `isolated` 指向父对话那份视图（同一上层目录、同一挂载、同一常驻代理），不新建
+第二份目录、不额外拉起代理。因此父子改动双向立即可见，两者之间没有同步、合并或回并动作。
+
+所有者在读取时由 `parentSessionId` 链上溯推出（`Core::work_view_owner`）：父会话同样
+`isolated` 时继续上溯，到没有父会话的那一层即所有者。父会话 id 两级来源——内存态
+（创建时写定）与 `meta.json` 的 `parentSessionId`（Core 重启后唯一来源）；判据先看「这是不是
+子代理」，主对话不为一次父链查询付目录枚举。上溯深度上限 64 层，父链成环时报错。
+
+所有按会话寻址视图的能力（工具代执行、`workView*` 取数、变更清单、两侧原文、`Transfer`
+的视图端）都以「使用者 → 所有者」的解析结果作答，因此以子代理会话 id 取数与以父对话会话 id
+取数得到同一份内容。「这份 `isolated` 用哪份视图」是推导值，`meta.json` 不写第二个字段。
+
+解析失败一律按视图不可用处理（不退回真实磁盘）：子代理查不到父会话 id、父会话归属不是
+`isolated`、父链成环都是数据异常，见第 7 节。
 
 ## 3. 视图结构
 
@@ -188,7 +216,8 @@ Core（帧循环）                              ← 永不进入命名空间、
 ## 5. 工具语义
 
 工具对视图**透明**：路径解析、相对路径、`cwd` 行为与不带隔离的对话完全一致，用户看到的
-路径字符串仍是真实工作区路径。
+路径字符串仍是真实工作区路径。`isolated` 的本地子代理与发起对话共用同一份视图（第 2.1 节），
+因此它的工具读写与父对话落在同一份上层目录上。
 
 实现上，工具的文件 IO 与 Bash 命令全部**经常驻挂载代理代执行**：Core 不在命名空间里，
 它自己 `open()` / `spawn` 看到的都是真实磁盘。代理已经把视图 bind 到真实工作区路径上，
@@ -225,12 +254,16 @@ Core（`meta.json` 的 `storage`），宿主只读投影、不重算。
 | 时机 | 动作 |
 | --- | --- |
 | `conversationStarted`（`storage: isolated`） | 登记归属；视图**只登记**，不建目录、不拉起代理 |
-| 第一次工具调用，或第一次视图取数（列目录 / 变更清单 / 两侧原文） | 拉起该会话的代理：它建目录、挂 overlay、bind 到工作区；失败时工具与取数都**报错**（fail-closed） |
-| `conversationClosed` | 丢弃代理（关闭 socketpair → 它读到 EOF 自行退出），**保留**上层目录（改动跨重启保留） |
-| `conversationDeleted` | 丢弃代理并回收整个视图目录；失败只记日志 |
+| 本地子代理创建（继承 `isolated`） | 同样只登记归属：视图目录、挂载与代理都属于所有者，子代理不新建 |
+| 第一次工具调用，或第一次视图取数（列目录 / 变更清单 / 两侧原文） | 按第 2.1 节解析出所有者，拉起**所有者**的代理：它建目录、挂 overlay、bind 到工作区；失败时工具与取数都**报错**（fail-closed） |
+| `conversationClosed`（所有者） | 丢弃代理（关闭 socketpair → 它读到 EOF 自行退出），**保留**上层目录（改动跨重启保留） |
+| `conversationClosed`（子代理） | 只让该会话退场，**不**碰共享视图：所有者的代理与上层目录都留着 |
+| `conversationDeleted`（所有者） | 丢弃代理并回收整个视图目录（含子代理曾写入的内容）；失败只记日志 |
+| `conversationDeleted`（子代理） | 不删共享视图目录：其中的改动随视图留在原处；父子链的整棵删除仍由引擎负责销号 |
 
 惰性拉起的理由：纯声明性对话（只发一条消息就关）不该在磁盘上留下视图目录，也不该产生
-任何代理进程。
+任何代理进程。视图的所有者在会话关闭 / 删除**之前**解析：这两个动作会抹掉会话档案，
+之后再解析就只剩「父会话缺失」了。
 
 ## 7. 失败路径
 
@@ -245,6 +278,9 @@ Core（`meta.json` 的 `storage`），宿主只读投影、不重算。
 | 视图未建立时的只读请求（列目录 / 变更清单 / 两侧原文） | 先按需建立该会话的视图再取数；建立失败回失败侧（变更清单带 `kind: 'error'`），由宿主显示错误行；不退回磁盘 |
 | 视图里跑 git 失败（可执行缺失 / 子命令非零退出） | 回失败侧并带上失败原因，不回退磁盘清单 |
 | 会话删除时回收失败 | 删除照常完成，日志记录残留路径 |
+| 子代理 `isolated` 但父会话 id 解析不出（档案被删） | 工具与取数请求**报错**并点名缺失的父会话；不猜「父不在就自己一份视图」，不退回磁盘 |
+| 父会话存在但归属是 `workspace`（归属链断了） | 同上：按数据异常报错，不退回磁盘 |
+| 父链成环（`parentSessionId` 互相指向） | 上溯到 64 层后报错，不死循环 |
 
 所有降级都**留痕**：不静默把「看起来隔离、实际写磁盘」的形态交给用户。
 

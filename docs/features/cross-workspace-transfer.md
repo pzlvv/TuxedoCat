@@ -1,6 +1,6 @@
 ---
 owner: pzlvz
-last_reviewed: 2026-11-24
+last_reviewed: 2026-11-25
 ---
 
 # 规格：跨工作区文件传输（`Transfer` 工具）
@@ -246,9 +246,8 @@ Moves files or directories between open workspaces, only after a cross-workspace
 - 传输进度的流式上报。
 - 会话中途动态注入 / 移除工具（实测击穿前缀缓存，specs/028 调研结论）。
 - 把某个对话的叠加视图当作传输的另一端：端仍是工作区身份，视图是对话私有的事实。
-- 子代理会话继承发起对话的 Overlay 归属：本地与跨工作区子代理会话都按 `workspace`
-  记账，它们调用 `Transfer` 时两端仍是磁盘 / SFTP。让子代理继承归属是另一项改动；
-  本规格的判定只读「该会话自己的归属」，因此继承落地后自动生效（specs/056 FR-007）。
+- 跨工作区派发的会话继承发起方的叠加视图：目标工作区那份会话恒按 `workspace` 记账
+  （[docs/core/conversation-work-view.md 第 2 节](../core/conversation-work-view.md#2-归属)）。
 
 ## 6. 对需求基线的影响
 

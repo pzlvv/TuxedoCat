@@ -1396,6 +1396,92 @@ fn storage_of_session_defaults_to_workspace_when_absent() {
 }
 
 #[test]
+fn local_sub_agent_metadata_persists_inherited_storage() {
+    // specs/058 FR-001：本地子代理的归属由创建路径传入并**落盘**（`meta.json` 的
+    // `storage`）——重启后 `storage_of_session` 读的就是这一格，不向父会话追问。
+    let _sandbox = Sandbox::new("history-sub-agent-storage");
+    create_sub_agent_metadata(
+        "sub_1",
+        PROJECT,
+        "子任务",
+        "parent_1",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+
+    let metadata = load_metadata("sub_1", PROJECT).unwrap();
+    assert_eq!(metadata["parentSessionId"], "parent_1");
+    assert_eq!(
+        metadata["storage"], "isolated",
+        "继承来的归属必须落盘：{metadata}"
+    );
+    assert_eq!(storage_of_session("sub_1"), WorkViewStorage::Isolated);
+}
+
+#[test]
+fn remote_sub_agent_metadata_is_always_workspace() {
+    // specs/058 FR-001：跨工作区派发不继承发起方归属（叠加视图是发起方 Core 私有的
+    // 事实），meta 显式写 `workspace` 而不是靠缺字段回落。
+    let _sandbox = Sandbox::new("history-remote-agent-storage");
+    create_remote_sub_agent_metadata(
+        "sub_remote_1",
+        PROJECT,
+        "跨工作区",
+        "Master",
+        "HOST:/a",
+        "origin_1",
+        None,
+        None,
+    )
+    .unwrap();
+
+    let metadata = load_metadata("sub_remote_1", PROJECT).unwrap();
+    assert_eq!(metadata["storage"], "workspace");
+    assert!(metadata.get("parentSessionId").is_none());
+    assert_eq!(
+        storage_of_session("sub_remote_1"),
+        WorkViewStorage::Workspace
+    );
+}
+
+#[test]
+fn legacy_sub_agent_metadata_keeps_workspace() {
+    // specs/058 FR-005：改动前创建的本地子代理（meta 里已是 `workspace`）不追溯。
+    // 归属一次写定，首条消息建档时同样不覆盖既有值。
+    let _sandbox = Sandbox::new("history-legacy-sub-agent");
+    create_sub_agent_metadata(
+        "sub_legacy",
+        PROJECT,
+        "子任务",
+        "parent_1",
+        "Master",
+        None,
+        None,
+        WorkViewStorage::Workspace,
+    )
+    .unwrap();
+    append_message("sub_legacy", PROJECT, &user_message("hi", "u1"), None).unwrap();
+    touch_metadata(
+        "sub_legacy",
+        PROJECT,
+        true,
+        &SessionCreator::User,
+        WorkViewStorage::Isolated,
+    )
+    .unwrap();
+
+    assert_eq!(
+        load_metadata("sub_legacy", PROJECT).unwrap()["storage"],
+        "workspace",
+        "存量归属不得被首条消息改写"
+    );
+    assert_eq!(storage_of_session("sub_legacy"), WorkViewStorage::Workspace);
+}
+
+#[test]
 fn compact_archive_appends_generations_instead_of_overwriting() {
     // 归档只增不改（specs/048 FR-001）：第二次压缩把第 2 代追加在末尾，
     // 第 1 代的记录逐字节保留。

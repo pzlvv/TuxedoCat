@@ -216,9 +216,8 @@ fn work_view_handle_maps_paths() {
 }
 
 /// 真实工具链路：Write 写进视图、Read 读回来、Bash 看到同一份内容，磁盘全程不变
-/// （specs/045 FR-002 / FR-003）。
-///
-/// 这条走 `tools::execute` 而不是直接 `std::fs`，验证的是「工具与 Bash 对视图透明」。
+/// （specs/045 FR-002 / FR-003）。这条走 `tools::execute` 而不是直接 `std::fs`，验证的是
+/// 「工具与 Bash 对视图透明」。
 #[test]
 fn work_view_tools_and_bash_share_the_overlay() {
     in_namespace("work-view-tools", |sandbox| {
@@ -723,6 +722,64 @@ fn work_view_file_diff_reads_both_sides_from_the_view() {
 }
 
 // ==================== 视图里的变更清单（specs/047）====================
+
+// ==================== 父子共用同一份视图（specs/058）====================
+
+/// 发起对话与它的本地子代理共用一份视图：子代理写的新文件父对话立刻可读、磁盘上没有
+/// （specs/058 FR-002 / AC-5 / AC-6）。
+///
+/// 两个会话在视图层就是**同一个所有者**（父对话的会话 id），因此登记表里只有一份视图、
+/// 一个常驻代理；父子之间不存在第二份上层，也不需要任何同步动作。
+#[test]
+fn work_view_child_writes_are_visible_to_parent() {
+    in_namespace("work-view-parent-child", |sandbox| {
+        let workspace = sandbox.workspace.to_string_lossy().to_string();
+        let owner = "sess-parent";
+        let mut view = crate::work_view::WorkView::register(&workspace, owner).expect("登记");
+        view.ensure_mounted().expect("挂载");
+        let mount = view.mount_point().expect("挂载点");
+
+        // 双方拿到的是同一个视图根与同一个代理
+        let parent_handle = crate::work_view::WorkViewHandle::of(owner).expect("父句柄");
+        let child_handle = crate::work_view::WorkViewHandle::of(owner).expect("子句柄");
+        assert_eq!(
+            parent_handle.root(),
+            child_handle.root(),
+            "父子必须指向同一份视图根（没有第二份上层）"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(parent_handle.proxy(), child_handle.proxy()),
+            "父子必须共用一个常驻代理"
+        );
+
+        // 子在视图里写，父立刻读到
+        std::fs::write(mount.join("made-by-child.txt"), "child\n").expect("子写");
+        assert_eq!(
+            std::fs::read_to_string(mount.join("made-by-child.txt")).unwrap(),
+            "child\n",
+            "父对话必须看到子代理写下的文件"
+        );
+        assert!(
+            !sandbox.workspace.join("made-by-child.txt").exists(),
+            "子代理的写入不得落在真实磁盘上"
+        );
+        // 父改已有文件，子读到的是新内容（同一份视图）
+        std::fs::write(mount.join("existing.txt"), "parent-changed\n").expect("父改");
+        assert_eq!(
+            std::fs::read_to_string(mount.join("existing.txt")).unwrap(),
+            "parent-changed\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sandbox.workspace.join("existing.txt")).unwrap(),
+            "from-workspace\n",
+            "磁盘基线全程不变"
+        );
+
+        // 所有者删除才回收上层（子代理写过的内容随之一起消失）
+        crate::work_view::remove(&workspace, owner).expect("回收");
+        assert!(!sandbox.workspace.join("made-by-child.txt").exists());
+    });
+}
 
 /// 在沙箱工作区建一个 git 仓并提交一次基线（`f.txt` / `doc.md`）。
 fn init_git(sandbox: &Sandbox) {

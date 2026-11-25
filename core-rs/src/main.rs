@@ -349,7 +349,7 @@ fn spawn_slow_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64, r
 
 /// 取数请求的前置：确保某会话的叠加视图已就位（specs/046 FR-004）。
 ///
-/// 三个 `workView*` 只读请求共用这一个入口，判据与工具调用完全相同（`ensure_work_view`）：
+/// 四个 `workView*` 请求共用这一个入口，判据与工具调用完全相同（`ensure_work_view`）：
 /// 「用户正在看这个对话的文件」就是「这个对话需要视图」。视图惰性建立
 /// （`docs/core/conversation-work-view.md` 第 6 节），资源管理器却可以在任何时刻展开，
 /// 因此这里必须能把它建起来，而不是回一条「没有已挂载的视图」让用户以为文件都没了。
@@ -357,14 +357,104 @@ fn spawn_slow_request(core: Arc<Core>, shared_bus: engine::SharedBus, id: u64, r
 /// 三态映射：`Workspace`（非隔离归属）与 `ViewUnavailable`（隔离归属但建不起来）都回
 /// `Err` —— 前者是「不该问这个对话」，后者是「问了但坏了」，两者对调用方都是失败；
 /// 偷偷列磁盘会把两个不同的事实混成一个（`docs/architecture/principles.md` 铁律 4.1）。
-fn ensure_view_ready(core: &Core, session_id: &str) -> Result<(), String> {
+///
+/// 入参是**视图所有者**（specs/058 FR-002）：`isolated` 的本地子代理与发起对话共用同一
+/// 份视图，请求分支先用 [`overlay_owner`] 解析，再按所有者备视图、按所有者取数。
+fn ensure_view_ready(core: &Core, owner: &str) -> Result<(), String> {
     use crate::tools::WorkViewState;
-    match core.ensure_work_view(session_id) {
+    match core.ensure_work_view(owner) {
         WorkViewState::View(_) => Ok(()),
-        WorkViewState::Workspace => {
-            Err(format!("会话 {session_id} 不是 Overlay 归属，没有叠加视图"))
-        }
+        WorkViewState::Workspace => Err(format!("会话 {owner} 不是 Overlay 归属，没有叠加视图")),
         WorkViewState::ViewUnavailable(reason) => Err(reason),
+    }
+}
+
+/// 某会话的叠加视图所有者；非 `isolated` 归属直接回失败（它不是 Overlay 对话）。
+///
+/// 归属判据只有一份（`meta.json` 的 `storage`，内存态优先），这里不重述它，只把
+/// 「不是 Overlay 对话」翻成调用方要的错误文案；父链解析仍归 `Core::work_view_owner`。
+fn overlay_owner(core: &Core, session_id: &str) -> Result<String, String> {
+    if core.session_storage(session_id) != engine::WorkViewStorage::Isolated {
+        return Err(format!("会话 {session_id} 不是 Overlay 归属，没有叠加视图"));
+    }
+    core.work_view_owner(session_id)
+}
+
+/// 关闭 / 删除分支要用的视图所有者：非 `isolated` 归属回 `None`（普通对话，没有视图可动）。
+///
+/// 必须在会话被释放**之前**采样：`conversationClosed` / `conversationDeleted` 之后内存态与
+/// （删除时）`meta.json` 都没了，父链再也解析不出来。
+fn owned_view_owner(core: &Core, session_id: &str) -> Option<Result<String, String>> {
+    (core.session_storage(session_id) == engine::WorkViewStorage::Isolated)
+        .then(|| core.work_view_owner(session_id))
+}
+
+/// 会话终结时该对它的叠加视图做什么（specs/058 FR-003）。
+///
+/// 只判「谁是所有者」，不碰任何资源：四种结论分别对应普通对话（无视图可动）、所有者
+/// （释放 / 回收）、使用者（不动共享视图）、解析失败（不动视图，宁可残留也不误删）。
+#[derive(Debug, PartialEq, Eq)]
+enum ViewTeardown {
+    /// 该会话不是 `Overlay` 归属，没有任何视图动作。
+    NotOverlay,
+    /// 它就是视图所有者，按既有语义释放 / 回收。
+    Owner(String),
+    /// 它是使用者（`isolated` 的本地子代理），共享视图归所有者，不能动。
+    User(String),
+    /// 归属是 `isolated` 但所有者解析不出：不动视图并留痕。
+    Unknown(String),
+}
+
+fn view_teardown(session_id: &str, owner: Option<Result<String, String>>) -> ViewTeardown {
+    match owner {
+        None => ViewTeardown::NotOverlay,
+        Some(Ok(owner)) if owner == session_id => ViewTeardown::Owner(owner),
+        Some(Ok(owner)) => ViewTeardown::User(owner),
+        Some(Err(reason)) => ViewTeardown::Unknown(reason),
+    }
+}
+
+/// 关闭会话时的视图处理（specs/058 FR-003）。
+///
+/// 所有者的关闭照既有语义执行：丢弃代理、保留上层目录（改动跨重启与重开对话保留）。
+/// 使用者的关闭不碰共享视图——所有者可能正在用，`release` 会把它的代理一起丢弃。
+fn release_owned_work_view(core: &Core, session_id: &str, owner: Option<Result<String, String>>) {
+    match view_teardown(session_id, owner) {
+        ViewTeardown::NotOverlay => {}
+        ViewTeardown::Owner(owner) => {
+            if let Ok(project) = core.project_of(session_id) {
+                crate::work_view::release(&project, &owner);
+            }
+        }
+        ViewTeardown::User(owner) => eprintln!(
+            "[core] 会话 {session_id} 只是 Overlay 视图 {owner} 的使用者，关闭时不释放共享视图"
+        ),
+        ViewTeardown::Unknown(reason) => eprintln!(
+            "[core] 会话 {session_id} 的 Overlay 视图所有者解析失败（{reason}），不释放任何视图"
+        ),
+    }
+}
+
+/// 删除会话时的视图处理（specs/058 FR-003）。
+///
+/// 所有者的删除照既有语义整体回收（含子代理曾写入的上层内容）；子代理会话的删除不动
+/// 共享视图目录。失败只记日志，不阻塞删除本身。
+fn remove_owned_work_view(core: &Core, session_id: &str, owner: Option<Result<String, String>>) {
+    match view_teardown(session_id, owner) {
+        ViewTeardown::NotOverlay => {}
+        ViewTeardown::Owner(owner) => {
+            if let Ok(project) = core.project_of(session_id) {
+                if let Err(reason) = crate::work_view::remove(&project, &owner) {
+                    eprintln!("[core] 会话 {owner} 的工作视图回收失败：{reason}");
+                }
+            }
+        }
+        ViewTeardown::User(owner) => eprintln!(
+            "[core] 会话 {session_id} 只是 Overlay 视图 {owner} 的使用者，删除时保留共享视图与上层目录"
+        ),
+        ViewTeardown::Unknown(reason) => eprintln!(
+            "[core] 会话 {session_id} 的 Overlay 视图所有者解析失败（{reason}），不回收任何视图"
+        ),
     }
 }
 
@@ -436,11 +526,17 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
             if let Err(reason) = crate::work_view::check_view_relative(dir) {
                 return Ok(json!({ "ok": false, "error": reason }));
             }
-            if let Err(reason) = ensure_view_ready(core, session_id) {
+            // 按**所有者**取数（specs/058 FR-002）：isolated 的本地子代理与发起对话共用
+            // 同一份视图，以子代理 id 请求应得到与父对话一致的内容。
+            let owner = match overlay_owner(core, session_id) {
+                Ok(owner) => owner,
+                Err(reason) => return Ok(json!({ "ok": false, "error": reason })),
+            };
+            if let Err(reason) = ensure_view_ready(core, &owner) {
                 // 视图备不起来是业务失败（宿主显示错误行），不是请求非法（FR-006）
                 return Ok(json!({ "ok": false, "error": reason }));
             }
-            match crate::work_view::list_view_dir(session_id, dir) {
+            match crate::work_view::list_view_dir(&owner, dir) {
                 Ok(entries) => Ok(json!({ "ok": true, "entries": entries })),
                 // 失败回判别联合的失败侧而不是 Err：宿主据此显示错误行（FR-006），
                 // 与「请求本身非法」（缺参数）走不同的通道
@@ -458,10 +554,14 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("scope")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "workViewChangesRequested without scope".to_string())?;
-            if let Err(reason) = ensure_view_ready(core, session_id) {
+            let owner = match overlay_owner(core, session_id) {
+                Ok(owner) => owner,
+                Err(reason) => return Ok(json!({ "ok": false, "kind": "error", "error": reason })),
+            };
+            if let Err(reason) = ensure_view_ready(core, &owner) {
                 return Ok(json!({ "ok": false, "kind": "error", "error": reason }));
             }
-            match crate::work_view::changes(session_id, scope) {
+            match crate::work_view::changes(&owner, scope) {
                 Ok(crate::work_view::ChangesOutcome::Ready(entries)) => Ok(json!({
                     "ok": true,
                     "entries": work_view_changes_payload(entries),
@@ -486,10 +586,14 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "workViewFileDiffRequested without path".to_string())?;
-            if let Err(reason) = ensure_view_ready(core, session_id) {
+            let owner = match overlay_owner(core, session_id) {
+                Ok(owner) => owner,
+                Err(reason) => return Ok(json!({ "ok": false, "error": reason })),
+            };
+            if let Err(reason) = ensure_view_ready(core, &owner) {
                 return Ok(json!({ "ok": false, "error": reason }));
             }
-            match crate::work_view::file_diff(session_id, path) {
+            match crate::work_view::file_diff(&owner, path) {
                 Ok(crate::work_view::FileDiffOutcome::NotAGitWorkspace { after }) => Ok(json!({
                     "ok": true,
                     "kind": "not-a-git-workspace",
@@ -587,11 +691,15 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 }
                 _ => Vec::new(),
             };
-            if let Err(reason) = ensure_view_ready(core, session_id) {
+            let owner = match overlay_owner(core, session_id) {
+                Ok(owner) => owner,
+                Err(reason) => return Ok(json!({ "ok": false, "error": reason })),
+            };
+            if let Err(reason) = ensure_view_ready(core, &owner) {
                 return Ok(json!({ "ok": false, "error": reason }));
             }
             match op {
-                "stat" => match crate::work_view::view_stat(session_id, relative) {
+                "stat" => match crate::work_view::view_stat(&owner, relative) {
                     Ok(facts) => Ok(json!({
                         "ok": true,
                         "exists": facts.exists,
@@ -602,7 +710,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                     })),
                     Err(reason) => Ok(json!({ "ok": false, "error": reason })),
                 },
-                "list" => match crate::work_view::view_list(session_id, relative) {
+                "list" => match crate::work_view::view_list(&owner, relative) {
                     Ok(entries) => Ok(json!({
                         "ok": true,
                         "entries": Value::Array(
@@ -617,25 +725,25 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                     })),
                     Err(reason) => Ok(json!({ "ok": false, "error": reason })),
                 },
-                "mkdirAll" => match crate::work_view::view_mkdir_all(session_id, relative) {
+                "mkdirAll" => match crate::work_view::view_mkdir_all(&owner, relative) {
                     Ok(()) => Ok(json!({ "ok": true })),
                     Err(reason) => Ok(json!({ "ok": false, "error": reason })),
                 },
                 "rename" => {
                     let to = read_relative("to")?;
-                    match crate::work_view::view_rename(session_id, relative, to) {
+                    match crate::work_view::view_rename(&owner, relative, to) {
                         Ok(()) => Ok(json!({ "ok": true })),
                         Err(reason) => Ok(json!({ "ok": false, "error": reason })),
                     }
                 }
-                "unlink" => match crate::work_view::view_unlink(session_id, relative) {
+                "unlink" => match crate::work_view::view_unlink(&owner, relative) {
                     Ok(()) => Ok(json!({ "ok": true })),
                     Err(reason) => Ok(json!({ "ok": false, "error": reason })),
                 },
                 "read" => {
                     let offset = offset.unwrap_or(0);
                     let length = length.unwrap_or(0);
-                    match crate::work_view::view_read_chunk(session_id, relative, offset, length) {
+                    match crate::work_view::view_read_chunk(&owner, relative, offset, length) {
                         Ok((bytes, eof)) => Ok(json!({
                             "ok": true,
                             "bytes": Value::Array(
@@ -648,7 +756,7 @@ fn dispatch_ui_request(core: &Core, request: &Value) -> Result<Value, String> {
                 }
                 "write" => {
                     let offset = offset.unwrap_or(0);
-                    match crate::work_view::view_write_chunk(session_id, relative, offset, &bytes) {
+                    match crate::work_view::view_write_chunk(&owner, relative, offset, &bytes) {
                         Ok(size) => Ok(json!({ "ok": true, "size": size })),
                         Err(reason) => Ok(json!({ "ok": false, "error": reason })),
                     }
@@ -1230,26 +1338,28 @@ fn dispatch_ui_event(core: &Arc<Core>, bus: &engine::SharedBus, event: Value) {
             core.on_conversation_opened(&session_id);
         }
         "conversationClosed" => {
+            // 归属与所有者必须在关会话之前采样（specs/058 FR-003）：`on_conversation_closed`
+            // 会丢弃该会话的内存态，之后只剩落盘值可用。
+            let owner = owned_view_owner(core, &session_id);
             core.on_conversation_closed(&session_id);
             // 释放挂载但**保留**上层目录：改动要跨 Core 重启与重开对话保留
-            // （specs/045 FR-006）。
-            if let Ok(project) = core.project_of(&session_id) {
-                crate::work_view::release(&project, &session_id);
-            }
+            // （specs/045 FR-006）。视图属于**所有者**：关闭本地子代理只是使用者退场，
+            // 不能丢弃所有者仍在用的代理与上层。
+            release_owned_work_view(core, &session_id, owner);
         }
         "conversationRenamed" => {
             let title = event.get("title").and_then(Value::as_str).unwrap_or("");
             core.on_conversation_renamed(&session_id, title);
         }
         "conversationDeleted" => {
+            // 同 `conversationClosed`：删除会抹掉会话档案，归属与所有者只能在此之前采样。
+            let owner = owned_view_owner(core, &session_id);
             core.on_conversation_deleted(&session_id);
-            // 隔离工作视图的上层只属于这个对话，随对话一起回收（specs/045 FR-006）。
+            // 隔离工作视图的上层只属于它的**所有者**（specs/045 FR-006 / specs/058
+            // FR-003）：删除子代理会话时共享视图与上层必须留着（所有者还在用，且其中
+            // 可能有子代理写过的内容）；所有者那一层的删除照旧整体回收。
             // 失败只记日志：残留目录可以事后清理，对话删除本身不能因此失败。
-            if let Ok(project) = core.project_of(&session_id) {
-                if let Err(reason) = crate::work_view::remove(&project, &session_id) {
-                    eprintln!("[core] 会话 {session_id} 的工作视图回收失败：{reason}");
-                }
-            }
+            remove_owned_work_view(core, &session_id, owner);
         }
         "conversationSpaceCleared" => {
             // `dirName` 是**对话空间目录名**，清空整个空间。
