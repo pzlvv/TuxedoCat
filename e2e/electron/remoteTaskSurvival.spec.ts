@@ -36,7 +36,7 @@ import { requireSshEnvironment } from '../helpers/testEnvironment';
 const SSH = requireSshEnvironment();
 
 // 单用例上限由 project 给（`electron-ssh` = 60s，见 `e2e/playwright.config.ts`）。
-// 本文件的三条用例要等 180s 的远端 sleep 任务跨孤儿期跑完，各自在用例体内放宽。
+// 本文件的三条用例要等 90s 的远端 sleep 任务跨孤儿期跑完，各自在用例体内放宽。
 
 function sshConnect(): Client {
   const client = new Client();
@@ -179,11 +179,13 @@ async function launch(mockLlm: MockLlm): Promise<Awaited<ReturnType<AppHandle['c
     workspaceDir: remoteWs,
     openWorkspaces: [remoteRef],
     agentMode: 'auto',
-    // 与下面 chatPage 的 180s 预算对齐（`specs/defects/
-    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）
-    startupChatWaitMs: 180_000,
+    // 与下面 chatPage 的预算对齐（`specs/defects/
+    // e2e-launchapp-inner-chatpage-wait-ignores-caller-timeout.md`）。
+    // 60s 覆盖「Electron 冷启动 + SSH 建链 + 恢复远程工作区」：真实远端实测 5.8s，
+    // 留约 10 倍余量吸收 CI 慢机
+    startupChatWaitMs: 60_000,
   });
-  const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-survival' }, 180_000);
+  const chatPage = await app.chatPage({ workspaceIncludes: 'tuxedo-e2e-survival' }, 60_000);
   await chatPage.waitForSelector('textarea.input-textarea', { timeout: 30_000 });
   return chatPage;
 }
@@ -223,17 +225,25 @@ function armSleepTaskHandler(mockLlm: MockLlm): void {
     return {
       kind: 'tool',
       name: 'Bash',
-      // sleep 取 180s（超过 Bash 工具 2 分钟默认超时，由超时收口出工具结果）：
-      // 认领重开（SSH 引导 + 建链）要几十秒，任务必须撑过重开完成后的断言窗口。
-      // 缺省为真的 restricted 闸门会拒绝含 sleep 的命令（docs/features/background-bash.md
-      // FR-005），起不出长任务；本条要的是长任务本身，显式关掉它。
-      args: { command: 'printf probe; sleep 180 && printf orphan-survival-ok', description: 'background survival probe', restricted: false },
+      // 时长由「要覆盖的最长等待」推导，不按超时口径定值。本组每条用例都要任务
+      // **跨越整条交互链仍然在跑**：detach → 强杀宿主 → 重开认领 → 侧栏/快照断言，
+      // 实测整链约 40–50s（单次重开 5.8s，但链上还有 SSH 建链、认领重放、两轮断言），
+      // 90s 留约 2 倍余量；再往下（试过 60s）任务会在终答回来之前就跑完，
+      // 「在跑任务继续执行直至完成」这条断言就会拿到空结果。
+      //
+      // 注意前台超时口径（`core-rs/src/tools.rs` 的 `default_bash_timeout_ms`）：默认
+      // 60s，含 `sleep` 的命令取 `max(60s, sleep 时长总和)`——sleep 只把死线后移、
+      // 不注销死线，因此**不会**有「超时先收口出工具结果」这种捷径可依赖。
+      //
+      // `restricted` 缺省为真时闸门会拒绝含 `sleep` 的命令
+      // （docs/features/background-bash.md FR-005），起不出长任务，显式关掉。
+      args: { command: 'printf probe; sleep 90 && printf orphan-survival-ok', description: 'background survival probe', restricted: false },
     };
   });
 }
 
 test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消）、后台运行后远端 Core 存活', async () => {
-  // 起一个 180s 的远端 sleep 任务并跨「标签页关闭 → 重开认领」窗口：实测整轮 108s
+  // 起一个 90s 的远端 sleep 任务并跨「标签页关闭 → 重开认领」窗口：实测整轮 108s
   test.setTimeout(180_000);
   const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
@@ -269,10 +279,24 @@ test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消�
   // 且超过 idle-exit（30s）窗口 daemon 也不空退（AC-17）
   await closeApp();
   mockLlm.close();
-  await new Promise((r) => setTimeout(r, 5_000));
+  // 等 daemon 真的察觉断链，不用固定时长：判据是「业务 Core 已孤儿化」——断链前它是
+  // 连接内的 Core，断链后 daemon 把它移进孤儿表，两种状态在远端进程表上不可区分，
+  // 因此以「孤儿期仍保留 stdio 形态且 daemon 存活」作为可观测条件反复确认
+  await pollRemote(
+    async () => {
+      const procs = await remoteCoreProcesses();
+      return procs.some((p) => p.cmd.includes(' start-daemon'))
+        && procs.some((p) => p.cmd.includes(' stdio'));
+    },
+    20_000,
+    '宿主断链后 daemon 存活且孤儿 Core 未被收尾',
+  );
   const afterCrash = await remoteCoreProcesses();
   expect(afterCrash.some((p) => p.cmd.includes(' start-daemon')), 'daemon 应在跑').toBeTruthy();
   expect(afterCrash.some((p) => p.cmd.includes(' stdio')), '孤儿 Core 应存活').toBeTruthy();
+  // 这里必须等满 idle-exit 窗口（30s）再加余量，不能改条件等待：本条验的就是
+  // 「非 idle 孤儿在跑时 daemon 不得提前空退」（AC-17）——提前结束等待会把「还没到宽限
+  // 到期」误当成「已经跨过窗口」，断言就失去了意义。条件是「时间过去了多久」本身。
   await new Promise((r) => setTimeout(r, 35_000));
   const pastIdleWindow = await remoteCoreProcesses();
   expect(
@@ -286,8 +310,8 @@ test('US-64 关闭在跑任务的远程工作区：三选弹框（默认取消�
 });
 
 test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、任务继续完成', async () => {
-  // 孤儿期要跑满远端 sleep（180s）后等终答：实测整轮 210s
-  test.setTimeout(300_000);
+  // 孤儿期要跑满远端 sleep（90s）后等终答，中途含一次重开认领：实测整轮约 140s
+  test.setTimeout(180_000);
   const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
@@ -303,7 +327,14 @@ test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、
   const orphanCore = (await remoteCoreProcesses()).find((p) => p.cmd.includes(' stdio'));
   expect(orphanCore, '孤儿 Core 应存活').toBeTruthy();
   await closeApp();
-  await new Promise((r) => setTimeout(r, 8_000));
+  // `closeApp()` 返回即宿主进程已退出（它内部等 child 的 close 事件），不需要再等固定
+  // 时长；这里要确认的是「宿主死了孤儿还活着」，用 pid 轮询表达：同一个 pid 在远端
+  // 仍存活即为事实，条件满足立刻继续
+  await pollRemote(
+    async () => (await remoteCoreProcesses()).some((p) => p.pid === orphanCore?.pid),
+    15_000,
+    '宿主退出后孤儿 Core 仍以原 pid 存活',
+  );
   // 同一个 Core 进程还在（记录 pid，认领后比对）
   const surviving = (await remoteCoreProcesses()).find((p) => p.cmd.includes(' stdio'));
   expect(surviving?.pid, '孤儿 Core 跨宿主死亡存活').toBe(orphanCore?.pid);
@@ -342,14 +373,16 @@ test('US-65 后台运行后重开：认领原 Core、孤儿期间内容可见、
   // 任务在跑 → 终止按钮可用；若快照在认领后丢失，这里会退回灰色不可点
   await expect(loadedPage.locator('button[title="终止"]')).toBeEnabled({ timeout: 30_000 });
 
-  // 在跑任务继续执行直至完成：sleep 到点 → 工具结果回传 → 终答（AC-7 消息流恢复）
-  await expect(loadedPage.getByText('SURVIVAL-DONE').first()).toBeVisible({ timeout: 180_000 });
+  // 在跑任务继续执行直至完成：sleep 到点 → 工具结果回传 → 终答（AC-7 消息流恢复）。
+  // 预算覆盖「剩余 sleep + 终答往返」：任务总长 60s，此处从认领后起算，留 3 倍余量
+  await expect(loadedPage.getByText('SURVIVAL-DONE').first()).toBeVisible({ timeout: 120_000 });
   mockLlm.close();
 });
 
 test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色未读完成灯（AC-4）', async () => {
-  // 孤儿期要等 sleep 跑完 + daemon 空退（30s）+ 重开认领：实测整轮 294s
-  test.setTimeout(420_000);
+  // 最坏路径 = sleep 90s（自然跑完，超时不会更早收口）+ 30s 孤儿空闲宽限
+  // + 两次重开（各约 6s，真实远端探针实测）+ 断言窗口，实测整轮约 190s
+  test.setTimeout(300_000);
   const mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
   armSleepTaskHandler(mockLlm);
   const chatPage = await launch(mockLlm);
@@ -365,10 +398,12 @@ test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色�
   await expect(tabs).toHaveCount(0, { timeout: 20_000 });
 
   // 等任务在孤儿期跑完：daemon 检出 running → idle 迁移，经控制帧让 core 把
-  // 未读完成记进 meta.json；随后孤儿转 idle，满 30s 宽限被 daemon 收尾
+  // 未读完成记进 meta.json；随后孤儿转 idle，满 30s 宽限被 daemon 收尾。
+  // 窗口 = sleep 90s + 30s 宽限 + 远端抖动余量。最坏路径 120s，留 60s（50%）余量：
+  // 原先 260s 是对着 sleep 180 定的，最坏路径 210s 只剩 50s（24%），CI 上因此偶发超时
   await pollRemote(
     async () => !(await remoteCoreProcesses()).some((p) => p.cmd.includes(' stdio')),
-    260_000,
+    180_000,
     '孤儿 Core 在任务完成 + 30s 空闲宽限后收尾',
   );
 
