@@ -8,6 +8,11 @@
 #   L3 新特性  —— specs/<NNN>-<slug>/ 三件套（Spec trailer 指向；spec 评审通过后由
 #                 /implement 一轮产出 plan / tasks，所以带代码的提交三件套必然齐）
 #
+# 用例修复不参与分档（AGENTS.md 第 5 节）：测试自身的问题——判据读错事实、断言了产品
+# 没承诺的性质、等待条件不稳——产品行为一个字节都没变，既不是 L1 也不该借 L0 混进
+# 代码改动。这类提交写 `Flow: L0` 并在正文说明「修的是用例的观测口径」及根因，
+# 不写缺陷规格。闸门对此不额外校验：它判不出「改的是观测还是产品」，靠正文声明。
+#
 # 为什么闸门在 commit-msg 而不在 pre-commit：git 跑 pre-commit 时提交信息还没生成
 # （.git/COMMIT_EDITMSG 尚不存在），只有 commit-msg 拿得到消息文件（$1）。
 #
@@ -40,7 +45,7 @@ field() {
 }
 
 fail() {
-  printf >&2 '\n改动分级闸门：%s\n\n  四档判据与各档产物见 AGENTS.md 第 5 节。\n  纯缺陷修复走 /fix，新特性走 /spec。\n\n' "$1"
+  printf >&2 '\n改动分级闸门：%s\n\n  四档判据与各档产物见 AGENTS.md 第 5 节。\n  产品缺陷修复走 /fix，新特性走 /spec；只改用例的观测口径不算分档，\n  写 Flow: L0 并在正文说明根因即可。\n\n' "$1"
   exit 1
 }
 
