@@ -71,17 +71,23 @@ function requireTask(grant: SubAgentGrant): number {
 }
 
 /**
- * 排队者是否严格按发起顺序拿到槽位预留（US-49 验收 2 要锁的语义）。
+ * 排队者是否按发起顺序拿到槽位预留（US-49 验收 2 要锁的语义）。
  *
  * 只校验 `queuedTasks` 给出的任务**彼此之间**的先后：它们由脚本跨轮发起，产品承诺
  * 按发起顺序授予。首轮并发直取的那批（同一轮 `tools` 批）相互之间本来就不承诺
  * 顺序，`queuedTasks` 之外的任务一律不参与比较。
  *
  * 返回空数组即顺序正确。注意本函数**完全不看 mock 的请求到达时刻**：把首请求顺序
- * 反过来喂给它，结果不变——这正是本次修复的要害。
+ * 反过来喂给它，结果不变——这正是上一次修复的要害
+ * （`specs/defects/us49-fifo-assertion-reads-first-request-order.md`）。
  *
- * 同一毫秒授予时 `now_millis` 分辨不出先后，判定失去观测能力：那必须报为问题，
- * 不许靠「相等就算过」蒙过去。
+ * **同毫秒不判违规**：观测用的是 `now_millis()`，它的分辨率是产品实现的细节，产品从未
+ * 承诺「相邻两次授予必然落在不同毫秒」。排队者被连续放行时两次授予同毫秒是可发生的
+ * 真实形态（`sub_<millis>_<suffix>` 的毫秒值在拿到预留**之后**、经 `on_grant` 后台
+ * 线程才取，中间几段无顺序依赖）。把同毫秒报成缺陷等于断言一个产品没承诺的事实，
+ * CI 上因此两次误报（一次报「同一毫秒先后无法观测」、一次读成 `[6, 5]`）。
+ * 这里按「先后未知但不违规」处理——只在**看到反序证据**（后发起者的授予时刻严格更早）
+ * 时才报破坏，那是产品语义确实被违反的形态。
  */
 export function queuedGrantViolations(
   grants: readonly SubAgentGrant[],
@@ -108,13 +114,10 @@ export function queuedGrantViolations(
       const laterTask = queuedTasks[next];
       const laterMillis = millisByTask.get(laterTask);
       if (laterMillis === undefined) continue;
+      // 只认「严格更早」为破坏；同毫秒不构成反序证据（见函数头注释）
       if (laterMillis < earlierMillis) {
         problems.push(
           `任务${laterTask} 比任务${earlierTask} 更晚发起却先拿到槽位预留（FIFO 破坏）`,
-        );
-      } else if (laterMillis === earlierMillis) {
-        problems.push(
-          `任务${earlierTask} 与任务${laterTask} 在同一毫秒（${earlierMillis}）拿到预留，先后无法观测`,
         );
       }
     }
