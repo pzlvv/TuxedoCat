@@ -70,8 +70,15 @@ export interface PreviewLimitOptions {
 }
 
 export interface PreviewLimit {
-  /** 挂到「预览框内容」的容器上，用于测量真实高度（`line-box` 口径下只读行高） */
-  contentRef: React.RefObject<HTMLDivElement>;
+  /**
+   * 挂到「预览框内容」的容器上。是**回调 ref**（不是 `RefObject`）：节点挂上 / 卸载
+   * 都要通知 hook——流式容器与完成态折叠容器是两个节点，后者第一次挂上时行数与
+   * 修订值可能与流式期间完全相同，只依赖它们会让测量整段跳过
+   * （`specs/defects/bash-output-collapse-missed-when-preview-unchanged.md`）。
+   */
+  contentRef: React.RefCallback<HTMLDivElement | null>;
+  /** 当前挂着的预览容器节点（供调用方滚动 / 读尺寸；未挂载时为 `null`） */
+  contentEl: HTMLDivElement | null;
   /** 需要渲染的行数：缩略态为候选行数，展开态为全部行 */
   visibleLines: number;
   /** 在 PREVIEW_CONTENT_HEIGHT 内完整放得下的行数（按真实高度累加） */
@@ -119,7 +126,20 @@ export function usePreviewLimit(
   // 用户在授权阶段点过"显示全部"后，即使确认完成也应保持展开
   const expanded = showAll || forceExpand;
 
-  const contentRef = useRef<HTMLDivElement>(null);
+  // 被测量的节点本身是测量的一等输入：ref 回调把「挂上 / 换节点」写进 state，
+  // 让下面 effect 的依赖真正变化。否则「流式容器 → 完成态折叠容器」这种
+  // 行数与文本都相同的切换不会重测，输出框停在未测量状态（无框高、无提示条）。
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
+  /**
+   * 已经测过的节点。与 `contentEl` 不同表示「当前节点还没测过」——此时必须按
+   * 「放不下」处理（缩略、固定框高），不能因为 `fit` 还是挂载时的初值就放开高度。
+   */
+  const [measuredEl, setMeasuredEl] = useState<HTMLDivElement | null>(null);
+  const contentRef = useCallback((node: HTMLDivElement | null) => {
+    setContentEl(node);
+    // 卸载后不保留已脱离文档的节点引用（否则 measuredEl 会把整段预览子树留在内存里）
+    if (node === null) setMeasuredEl(null);
+  }, []);
   const [fit, setFit] = useState(() => ({
     lines: Math.min(totalLines, PREVIEW_LINES),
     height: contentHeight,
@@ -131,7 +151,7 @@ export function usePreviewLimit(
   // 只读前 PREVIEW_LINES 个孩子：更靠后的行无论如何都放不下，避免长内容
   // 展开时对成千上万个节点逐个 getBoundingClientRect。
   useLayoutEffect(() => {
-    const el = contentRef.current;
+    const el = contentEl;
     if (!el) return;
 
     const measure = () => {
@@ -167,6 +187,9 @@ export function usePreviewLimit(
             ? prev
             : { lines, height: lines * lineHeight, overflow: totalLines > lines },
         );
+        // 只有真读到行高才算「这个节点已测过」；读不出来（隐藏 / 未挂载）时保持
+        // 「未测过」，hasMore 继续按「放不下」处理，不放开框高。
+        setMeasuredEl(el);
         return;
       }
 
@@ -210,6 +233,7 @@ export function usePreviewLimit(
           ? prev
           : { lines, height: used, overflow },
       );
+      setMeasuredEl(el);
     };
 
     measure();
@@ -217,14 +241,24 @@ export function usePreviewLimit(
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [totalLines, expanded, revision, contentHeight, measurement]);
+    // `contentEl` 必须在依赖里：节点挂上 / 换成另一个节点本身就是一次「需要重测」，
+    // 与行数、修订值是否变化无关（流式容器与完成态折叠容器是两个节点）。
+  }, [contentEl, totalLines, expanded, revision, contentHeight, measurement]);
+
+  // 当前节点是否已测过。没测过时 fit 还停在挂载初值（`overflow: false`），
+  // 直接用它判断「内容放得下」会让大输出按自然高度铺满消息区
+  // （specs/defects/bash-output-collapse-missed-when-preview-unchanged.md）。
+  const measured = contentEl !== null && measuredEl === contentEl;
 
   // 是否还有内容没显示：
+  //   - 当前节点还没测过 → 按「放不下」处理（测完即按实测修正）；
   //   - 前 PREVIEW_LINES 行按真实高度已经放不下（两种口径都有）；
   //   - 逻辑行数超过上限（无论怎么折行都不可能全放下）。这一条只对 `children`
   //     口径成立：它限制的是**渲染了多少行**；`line-box` 口径下内容始终整段
   //     渲染、没被切开，放不放得下已经由`fit.overflow` 表达。
-  const hasMore = fit.overflow || (measurement === 'children' && totalLines > PREVIEW_LINES);
+  const hasMore = !measured
+    || fit.overflow
+    || (measurement === 'children' && totalLines > PREVIEW_LINES);
   const truncated = !expanded && hasMore;
   // `line-box` 口径不分段渲染，行数恒为全部；`children` 口径缩略态只渲染候选段。
   const visibleLines = measurement === 'line-box' || expanded
@@ -253,6 +287,7 @@ export function usePreviewLimit(
 
   return {
     contentRef,
+    contentEl,
     visibleLines,
     fittedLines: fit.lines,
     fittedHeight: fit.height,
