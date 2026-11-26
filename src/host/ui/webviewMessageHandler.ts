@@ -18,6 +18,7 @@ import { buildEditDiffHunks } from '../../shared/utils/editDiff.js';
 import { buildReplayMessageData } from '../../shared/utils/replayMessages.js';
 import { buildUserContent, extractUserContent } from '../../shared/utils/contentBlocks.js';
 import type { ApiType } from '../../shared/utils/modelConfig.js';
+import { readModelContextFromEntry } from '../../shared/utils/modelConfig.js';
 import { getSessionWorkspace, setSessionWorkspace } from '../../shared/history/Config.js';
 import { getSettingsStore } from '../SettingsStore.js';
 import { modelRefOf, sameModelRef, type ModelRef } from '../../shared/llm/modelRef.js';
@@ -1574,12 +1575,27 @@ export class WebviewMessageHandler {
     return out;
   }
 
+  /** 从消息里提取「模型名 -> 上下文窗口」映射（只保留正整数，非法值直接丢弃） */
+  private extractModelContextMap(raw: unknown): Record<string, number> {
+    const out: Record<string, number> = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (const [model, context] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof context === 'number' && Number.isSafeInteger(context) && context > 0) {
+        out[model] = context;
+      }
+    }
+    return out;
+  }
+
   /**
-   * 处理设置页的「自动获取模型」请求 —— 阶段一：只拉取模型列表。
+   * 处理设置页的「自动获取模型」请求 —— 阶段一：拉取模型列表，并顺路取回上下文窗口。
    *
    * 协议探测会向服务商发送探测请求（虽然极小，但可能产生少量 token），
    * 因此这里只把「哪些模型还没有协议」回传给面板，由用户确认后再执行探测
    * （见 handleDetectProviderModelApiTypes）。
+   *
+   * 上下文窗口跟着同一次响应体回来，不额外发请求（specs/060 FR-001）；取不到的模型
+   * 不出现在 `modelContexts` 里，面板据此判断是否置灰「尝试获取 context 大小」。
    */
   private async handleFetchProviderModels(message: Extract<WebviewToHostMessage, { type: 'fetchProviderModels' }>): Promise<void> {
     const baseURL = typeof message?.baseURL === 'string' ? message.baseURL.trim() : '';
@@ -1587,12 +1603,12 @@ export class WebviewMessageHandler {
     // 面板已知的模型协议：已有值的不需要再探测
     const knownApiTypes = this.extractApiTypeMap(message?.knownApiTypes);
     if (!baseURL || !apiKey) {
-      this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [] });
+      this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [], modelContexts: {} });
       return;
     }
     try {
       this.log(`[WebviewMessageHandler] Fetching provider models from ${baseURL}`);
-      const models = await this.fetchModelsFromProvider(baseURL, apiKey);
+      const { models, modelContexts } = await this.fetchModelsFromProvider(baseURL, apiKey);
 
       // 只回传「本次列表里且已有协议」的映射，避免把无关模型带回面板
       const modelApiTypes: Record<string, string> = {};
@@ -1600,17 +1616,21 @@ export class WebviewMessageHandler {
         if (knownApiTypes[model]) modelApiTypes[model] = knownApiTypes[model];
       }
       const needDetect = models.filter((m) => !modelApiTypes[m]);
-      this.log(`[WebviewMessageHandler] Fetched ${models.length} models, ${needDetect.length} without API type`);
-      this.host.sendToWebview({ type: 'providerModelsFetched', models, modelApiTypes, needDetect });
+      this.log(`[WebviewMessageHandler] Fetched ${models.length} models, ${needDetect.length} without API type, ${Object.keys(modelContexts).length} with context size`);
+      this.host.sendToWebview({ type: 'providerModelsFetched', models, modelApiTypes, needDetect, modelContexts });
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to fetch provider models: ${err.message}`);
-      this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [] });
+      this.host.sendToWebview({ type: 'providerModelsFetched', models: [], modelApiTypes: {}, needDetect: [], modelContexts: {} });
     }
   }
 
   /**
    * 处理设置页的「确认后自动检测模型协议」请求 —— 阶段二。
    * 面板已就「可能消耗少量 token」征得用户同意，这里才真正发起探测。
+   *
+   * `modelContexts` 是阶段一取回的上下文候选，原样带回 `providerModelsResult`：
+   * 阶段二不重新拉模型列表（那会重复请求），宿主也不在两次消息之间缓存
+   * （同一事实只留面板一份，specs/060 FR-006）。
    */
   private async handleDetectProviderModelApiTypes(message: Extract<WebviewToHostMessage, { type: 'detectProviderModelApiTypes' }>): Promise<void> {
     const baseURL = typeof message?.baseURL === 'string' ? message.baseURL.trim() : '';
@@ -1623,6 +1643,7 @@ export class WebviewMessageHandler {
         ))
       : [];
     const knownApiTypes = this.extractApiTypeMap(message?.knownApiTypes);
+    const modelContexts = this.extractModelContextMap(message?.modelContexts);
 
     const modelApiTypes: Record<string, string> = {};
     for (const model of models) {
@@ -1631,7 +1652,7 @@ export class WebviewMessageHandler {
     const toDetect = models.filter((m) => !modelApiTypes[m]);
 
     if (!baseURL || !apiKey || toDetect.length === 0) {
-      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes });
+      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes, modelContexts });
       return;
     }
 
@@ -1647,15 +1668,23 @@ export class WebviewMessageHandler {
         if (item.apiType) modelApiTypes[item.model] = item.apiType;
       }
       this.log(`[WebviewMessageHandler] API type detection finished in ${Date.now() - started}ms (${Object.keys(modelApiTypes).length}/${models.length} resolved)`);
-      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes });
+      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes, modelContexts });
     } catch (err: any) {
       this.log(`[WebviewMessageHandler] Failed to detect provider model api types: ${err.message}`);
-      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes });
+      this.host.sendToWebview({ type: 'providerModelsResult', models, modelApiTypes, modelContexts });
     }
   }
 
-  /** 从服务商拉取模型列表（兼容 /v1/models 与 /models，兼容 data[].id / data[].model / data[].slug / string） */
-  private async fetchModelsFromProvider(baseURL: string, apiKey: string): Promise<string[]> {
+  /**
+   * 从服务商拉取模型列表（兼容 /v1/models 与 /models，兼容 data[].id / data[].model / data[].slug / string）。
+   *
+   * 上下文窗口在**同一次响应体**里顺路取回（specs/060 FR-001）：不新增请求、不另探端点。
+   * 取不到的模型不进 `modelContexts`——「映射为空」即面板的置灰判据。
+   */
+  private async fetchModelsFromProvider(baseURL: string, apiKey: string): Promise<{
+    models: string[];
+    modelContexts: Record<string, number>;
+  }> {
     const trimmed = baseURL.replace(/\/+$/, '');
     const probeSessionId = `probe-${Date.now()}`;
     const headers: Record<string, string> = {
@@ -1679,6 +1708,7 @@ export class WebviewMessageHandler {
           : Array.isArray(data.models) ? data.models
           : Array.isArray(data.model_ids) ? data.model_ids
           : [];
+        const modelContexts: Record<string, number> = {};
         const models = rawList
           .map((item: unknown) => {
             if (typeof item === 'string') return item.trim();
@@ -1689,19 +1719,30 @@ export class WebviewMessageHandler {
                 : typeof record.model === 'string' ? record.model
                 : typeof record.slug === 'string' ? record.slug
                 : '';
-              return id.trim();
+              const name = id.trim();
+              // 先按条目提候选再 trim：字段在条目上，与模型名是否合法无关
+              const context = readModelContextFromEntry(record);
+              if (name && context !== null) modelContexts[name] = context;
+              return name;
             }
             return '';
           })
           .filter((m): m is string => !!m);
         if (models.length > 0) {
-          return Array.from(new Set(models));
+          const deduped = Array.from(new Set(models));
+          // 去重后只保留仍在列表里的名字（同一条目的候选以先出现者为准）
+          const contexts: Record<string, number> = {};
+          for (const model of deduped) {
+            const context = modelContexts[model];
+            if (context !== undefined) contexts[model] = context;
+          }
+          return { models: deduped, modelContexts: contexts };
         }
       } catch {
         // 尝试下一个候选地址
       }
     }
-    return [];
+    return { models: [], modelContexts: {} };
   }
 
   /**

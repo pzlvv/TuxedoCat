@@ -447,6 +447,86 @@ test('US-25 每个空间两个按钮：清除历史 / 移除，各自弹窗确�
   expect(removed).toBeTruthy();
 });
 
+test('US-23 自动获取：两个勾选项默认勾选，context 取到即随保存上送', async () => {
+  const { page, host } = handle;
+  await host.setFetchModelResults({
+    models: ['mock-model', 'probe-model'],
+    apiTypes: { 'mock-model': 'OpenAI' },
+    contexts: { 'mock-model': 73728, 'probe-model': 32768 },
+  });
+  await openSettings(page);
+
+  await page.getByRole('button', { name: '自动获取', exact: true }).click();
+  await expect(page.getByText('模型列表已更新')).toBeVisible();
+
+  // 两个勾选项并列且默认勾选（specs/060 FR-005 / AC-5）
+  const protocolBox = page.getByRole('checkbox', { name: /自动检测 API 协议/ });
+  const contextBox = page.getByRole('checkbox', { name: /尝试获取 context 大小/ });
+  await expect(protocolBox).toBeChecked();
+  await expect(contextBox).toBeChecked();
+
+  await page.getByRole('button', { name: '确定', exact: true }).click();
+  await expect(page.getByText('模型列表已更新')).toBeHidden();
+
+  // 阶段二回包后保存：探测值随 provider 条目上送
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  expect(saved.providers[0].modelContexts).toEqual({ 'mock-model': 73728, 'probe-model': 32768 });
+});
+
+test('US-23 自动获取：取消勾选 context 时不上送探测值', async () => {
+  const { page, host } = handle;
+  // 带上一个新增模型：模型列表发生变化才会让保存带上 provider 表
+  await host.setFetchModelResults({
+    models: ['mock-model', 'probe-model'],
+    apiTypes: { 'mock-model': 'OpenAI', 'probe-model': 'OpenAI' },
+    contexts: { 'mock-model': 73728 },
+  });
+  await openSettings(page);
+
+  await page.getByRole('button', { name: '自动获取', exact: true }).click();
+  await expect(page.getByText('模型列表已更新')).toBeVisible();
+
+  // 协议项无待探测模型 → 置灰；context 项有候选 → 可取消勾选
+  await expect(page.getByRole('checkbox', { name: /自动检测 API 协议/ })).toBeDisabled();
+  const contextBox = page.getByRole('checkbox', { name: /尝试获取 context 大小/ });
+  await expect(contextBox).toBeChecked();
+  await contextBox.uncheck();
+  await page.getByRole('button', { name: '确定', exact: true }).click();
+  await expect(page.getByText('模型列表已更新')).toBeHidden();
+
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSentWhere(
+    'saveLLMConfig',
+    (m) => Array.isArray(m.providers) && m.providers.length > 0,
+    15_000,
+  );
+  expect(saved.providers[0].modelContexts).toEqual({});
+});
+
+test('US-23 自动获取：协议项按待探测数置灰，context 项按候选数置灰', async () => {
+  const { page, host } = handle;
+  // 全部模型都已有协议 + 服务商未返回上下文窗口 → 两个勾选项都不可用
+  await host.setFetchModelResults({
+    models: ['mock-model'],
+    apiTypes: { 'mock-model': 'OpenAI' },
+    contexts: {},
+  });
+  await openSettings(page);
+
+  await page.getByRole('button', { name: '自动获取', exact: true }).click();
+  await expect(page.getByText('模型列表已更新')).toBeVisible();
+
+  const protocolBox = page.getByRole('checkbox', { name: /自动检测 API 协议/ });
+  const contextBox = page.getByRole('checkbox', { name: /尝试获取 context 大小/ });
+  await expect(protocolBox).toBeDisabled();
+  await expect(protocolBox).not.toBeChecked();
+  await expect(contextBox).toBeDisabled();
+  await expect(contextBox).not.toBeChecked();
+  await expect(page.getByText('所有模型都已有协议，无需检测')).toBeVisible();
+  await expect(page.getByText('服务商未返回上下文窗口，现有值保持不变')).toBeVisible();
+});
+
 test('US-25 缺失目录很多时列表滚动，按钮固定在滚动区外', async () => {
   const { page, host } = handle;
   const count = 30;

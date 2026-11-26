@@ -131,7 +131,7 @@ UI 侧提前弹框会造成双重确认。
 | 消息 / 压缩 / 中止 | `sendMessage`（→ `handleUserMessage`：登记排队项 / 乐观回显后发 `UiEvent.userMessageSubmitted`）/ `abort` / `backgroundBashTool`（Bash 卡片「转后台」，→ `UiEvent.bashBackgroundRequested`）/ `discardQueuedMessage` / `requestCompress`（除 `sendMessage` 外均 → `UiEvent`） |
 | 会话生命周期 | `loadConversation` / `startNewConversation` / `deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace`（`deleteConversation` / `renameConversation` / `updateConversationContext` / `clearConversationSpace` → `UiEvent`；多视图宿主的 `deleteConversation` 由宿主消息入口先接管，见 [docs/architecture/contracts.md 第 5 节](contracts.md#5-宿主侧入口动作翻译为-uievent)「载体 / 视图层动作」） |
 | 会话配置 | `setModel` / `setThinkingMode` / `setAgentMode` / `setWebSearch` / `setMcpEnabled` / `setMcpEnabledList`（全部 → `UiEvent`，core 处理后广播 `sessionConfigChanged` 回推多端）。`setModel` 的 wire 载荷是扁平的 `model` + `provider`，在 handler 入口组装成 `ModelRef`（provider 空串非法：记录日志并忽略，不回退到其它 provider） |
-| 其它 | `saveLLMConfig`（provider 条目按字段校验后并入 `settings.json`：`modelApiTypes` / `modelMultimodal` 逐模型上送，`modelLimits` 是「设置」弹层碰过的 context / output——正数为显式值、`null` 为清空（回落注册表）、缺省为未碰；合并与校验在 `llmConfigSave.ts`） / `requestSmartNaming` |
+| 其它 | `saveLLMConfig`（provider 条目按字段校验后并入 `settings.json`：`modelApiTypes` / `modelMultimodal` 逐模型上送，`modelLimits` 是「设置」弹层碰过的 context / output——正数为显式值、`null` 为清空（回落注册表）、缺省为未碰；`modelContexts` 是本次自动获取到的上下文窗口（正数，覆盖弹层值与既有值，缺省为「本次没取到」）；合并与校验在 `llmConfigSave.ts`） / `requestSmartNaming` |
 
 前两个分区留在本模块内（只操作宿主或只读 core）；其余要么发 `UiEvent`，要么是**显示类**动作。
 完整映射见[docs/architecture/events.md 第 2.3 节](events.md#23-uieventui--core单向)的「UI 侧触发点」列。
@@ -142,8 +142,16 @@ UI 侧提前弹框会造成双重确认。
 `hasActiveProviderSetting` / `readMcpServersForDefaults`），wire message 的组装与投递在 UI 层
 （[第 1 节](#1-userchoicemanager)）。三条触发路径共用同一份面板载荷（含 MCP 默认启用列表），差异只在守卫。
 
-**留在模块内的两处例外**：
+**自动获取模型的两阶段**：`fetchProviderModels` 拉模型列表，并在**同一次响应体**里顺路取回
+上下文窗口——不新增请求、不另探端点，取不到的模型不出现在回包的 `modelContexts` 里
+（`fetchModelsFromProvider`：字段优先级 `meta.n_ctx` → `context_length` → `max_model_len` →
+`max_context_length`，`meta.n_ctx_train` 是训练上下文，不参与）。面板拿到阶段一结果后弹确认
+对话框（协议探测 / context 尝试两个勾选项），协议探测只对 `apiType` 为空的模型，context 尝试
+对列表里全部模型生效。阶段二的 `detectProviderModelApiTypes` 不重新拉模型列表：面板把阶段一的
+`modelContexts` 随请求回传，宿主原样带回 `providerModelsResult`（宿主不在两次消息之间缓存，
+同一事实只留面板一份）。
 
+**留在模块内的两处例外**：
 - `handleExpandCompact`：只读归档文件，按 `generationStarts` 分段转换成显示消息后随
   `expandCompactDone` 一次交给 webview，不改 core 状态（纯显示）。展开到第几层由 webview
   决定——宿主不持有展开层级（多视图下会互相串味，也违反「UI 决定表现」）。

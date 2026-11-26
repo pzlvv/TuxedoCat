@@ -25,6 +25,12 @@ interface ModelDraft {
   contextText?: string;
   /** 同 `contextText`，output 侧 */
   outputText?: string;
+  /**
+   * 本次自动获取探测到的 context（specs/060）。
+   * `undefined` = 本次没有候选（或未勾选「尝试获取 context 大小」）；有值时保存为
+   * `modelContexts[name].context`，在合并链里覆盖弹层值与既有值。
+   */
+  contextProbe?: number;
 }
 
 /** 一个 Provider 草稿（对应设置页里的一个 tab） */
@@ -216,9 +222,27 @@ const sanitizeApiTypeMap = (raw: unknown): Record<string, string> => {
 };
 
 /**
+ * 规范化扩展端回传的上下文候选（specs/060 FR-006）：
+ * 只保留正整数、且模型名在本次模型列表里——回包带出的无关名字一律丢弃。
+ */
+const sanitizeModelContextMap = (raw: unknown, models: string[]): Record<string, number> => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [model, context] of Object.entries(raw as Record<string, unknown>)) {
+    if (!models.includes(model)) continue;
+    if (typeof context === 'number' && Number.isSafeInteger(context) && context > 0) {
+      out[model] = context;
+    }
+  }
+  return out;
+};
+
+/**
  * 把自动获取到的模型合并进指定 provider 草稿：
  * - 已有模型的协议保持不变（不覆盖用户手动选择的结果）
  * - 新增模型使用探测结果；没有结果时留空（= 未探测，UI 显示默认协议）
+ * - 上下文候选对各模型一视同仁（specs/060）：新增与既有条目都写 `contextProbe`，
+ *   原本没有候选的条目清掉旧候选——候选只对「本次获取」有效，不跨次残留
  * - 默认模型若仍在列表中则保留，否则取第一个
  */
 const mergeFetchedModels = (
@@ -226,23 +250,41 @@ const mergeFetchedModels = (
   providerId: string,
   models: string[],
   detected: Record<string, string>,
+  probeContexts: Record<string, number>,
 ): ProviderDraft[] => prev.map((p) => {
   if (p.id !== providerId) return p;
   const byName = new Map<string, ModelDraft>();
   for (const m of p.models) {
     const name = m.name.trim();
     if (!name) continue;
-    byName.set(name, { name, apiType: m.apiType, multimodal: m.multimodal, contextText: m.contextText, outputText: m.outputText });
+    // 逐字段复制而不是展开整份草稿：`contextProbe` 由下面的「本次列表」分支决定，
+    // 这里带上既有值只是为了让「阶段二只回带部分模型」时不丢阶段一已应用的候选
+    const draft: ModelDraft = {
+      name,
+      apiType: m.apiType,
+      multimodal: m.multimodal,
+      contextText: m.contextText,
+      outputText: m.outputText,
+    };
+    if (m.contextProbe !== undefined) draft.contextProbe = m.contextProbe;
+    byName.set(name, draft);
   }
   for (const name of models) {
     const detectedType = detected[name] || '';
+    const probeContext = probeContexts[name];
     const existing = byName.get(name);
     if (!existing) {
       // 自动获取的新模型默认勾选「多模态」；限值未碰过（宿主按注册表补齐）
-      byName.set(name, { name, apiType: detectedType, multimodal: true });
-    } else if (!existing.apiType && detectedType) {
-      // 已有但尚未配置协议的模型：补上探测结果
-      byName.set(name, { ...existing, apiType: detectedType });
+      const draft: ModelDraft = { name, apiType: detectedType, multimodal: true };
+      if (probeContext !== undefined) draft.contextProbe = probeContext;
+      byName.set(name, draft);
+    } else {
+      // 既有模型：只补协议（空才补）与本次候选，弹层碰过的文本原样保留
+      const next: ModelDraft = { ...existing };
+      if (!existing.apiType && detectedType) next.apiType = detectedType;
+      if (probeContext !== undefined) next.contextProbe = probeContext;
+      else delete next.contextProbe;
+      byName.set(name, next);
     }
   }
   const merged = Array.from(byName.values());
@@ -447,11 +489,19 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null);
   const [fetchModelsError, setFetchModelsError] = useState<string | null>(null);
   const pendingFetchProviderIdRef = useRef<string | null>(null);
-  /** 模型列表已拉取、等待用户确认是否自动检测协议的暂存数据 */
+  /**
+   * 模型列表已拉取、等待用户在确认对话框里选两个动作（specs/060 FR-005）：
+   * 协议探测（只对未设置协议的模型）与 context 尝试（对全部模型）。
+   */
   const [pendingDetection, setPendingDetection] = useState<{
     models: string[];
     modelApiTypes: Record<string, string>;
     needDetect: string[];
+    /** 本次响应里取到的上下文候选（模型名 -> token 数）；空映射 = 一个都没取到 */
+    modelContexts: Record<string, number>;
+    /** 两个勾选项：默认都勾选，置灰时以未勾选呈现 */
+    detectApiType: boolean;
+    fetchContext: boolean;
   } | null>(null);
   /** 对话空间管理 */
   const [conversationSpaces, setConversationSpaces] = useState<ConversationSpaceItem[] | null>(null);
@@ -696,25 +746,57 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     });
   };
 
-  /** 用户确认：对「未设置协议」的模型执行自动检测（可能消耗少量 token） */
-  const handleConfirmDetectApiType = () => {
+  /**
+   * 确认对话框的两个勾选项（specs/060 FR-005）。
+   * 置灰的项按未勾选处理：勾选状态与可操作性同源，不出现「勾着但不可用」的中间态。
+   */
+  const togglePendingDetectApiType = () => {
+    setPendingDetection((prev) => (prev && prev.needDetect.length > 0
+      ? { ...prev, detectApiType: !prev.detectApiType }
+      : prev));
+  };
+  const togglePendingFetchContext = () => {
+    setPendingDetection((prev) => (prev && Object.keys(prev.modelContexts).length > 0
+      ? { ...prev, fetchContext: !prev.fetchContext }
+      : prev));
+  };
+
+  /**
+   * 对话框确定：按两个勾选项组合执行（specs/060 FR-005）。
+   *
+   * 未勾 context 时必须清掉草稿上的候选——`mergeFetchedModels` 已经写进去了，
+   * 留着会在下次保存时把用户不要的值覆盖上去。
+   */
+  const handleConfirmPendingActions = () => {
     const providerId = pendingFetchProviderIdRef.current;
     const pending = pendingDetection;
     if (!providerId || !pending) return;
     const provider = providers.find((p) => p.id === providerId);
     if (!provider) return;
     setPendingDetection(null);
-    // 保持 fetching 状态，按钮继续显示「获取中...」
-    postMessage({
-      type: 'detectProviderModelApiTypes',
-      baseURL: provider.baseURL.trim(),
-      apiKey: provider.apiKey.trim(),
-      models: pending.needDetect,
-      knownApiTypes: pending.modelApiTypes,
-    });
+    const probeContexts = pending.fetchContext ? pending.modelContexts : {};
+    setProviders((prev) => mergeFetchedModels(prev, providerId, pending.models, pending.modelApiTypes, probeContexts));
+    setFetchModelsError(null);
+    setModelError(null);
+
+    if (pending.detectApiType && pending.needDetect.length > 0) {
+      // 保持 fetching 状态，按钮继续显示「获取中...」，等阶段二回包
+      postMessage({
+        type: 'detectProviderModelApiTypes',
+        baseURL: provider.baseURL.trim(),
+        apiKey: provider.apiKey.trim(),
+        models: pending.needDetect,
+        knownApiTypes: pending.modelApiTypes,
+        modelContexts: probeContexts,
+      });
+      return;
+    }
+    // 不探测协议：合并模型列表即收尾（协议留空，运行时回退到默认协议）
+    setFetchingProviderId(null);
+    pendingFetchProviderIdRef.current = null;
   };
 
-  /** 用户跳过检测：只把模型列表合并进来，协议留空（运行时回退到默认协议） */
+  /** 跳过 / 点遮罩：等同「两个都不勾」——只合并模型列表，不探测、不应用候选 */
   const handleSkipDetectApiType = () => {
     const providerId = pendingFetchProviderIdRef.current;
     const pending = pendingDetection;
@@ -722,7 +804,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     setFetchingProviderId(null);
     pendingFetchProviderIdRef.current = null;
     if (!providerId || !pending) return;
-    setProviders((prev) => mergeFetchedModels(prev, providerId, pending.models, pending.modelApiTypes));
+    setProviders((prev) => mergeFetchedModels(prev, providerId, pending.models, pending.modelApiTypes, {}));
     setFetchModelsError(null);
     setModelError(null);
   };
@@ -751,6 +833,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       modelApiTypes: Record<string, string>;
       modelMultimodal: Record<string, boolean>;
       modelLimits: Record<string, { context?: number | null; output?: number | null }>;
+      modelContexts: Record<string, number>;
       defaultModel: string;
     }> = [];
     for (const p of providers) {
@@ -763,6 +846,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       const modelApiTypes: Record<string, string> = {};
       const modelMultimodal: Record<string, boolean> = {};
       const modelLimits: Record<string, { context?: number | null; output?: number | null }> = {};
+      const modelContexts: Record<string, number> = {};
       for (const m of p.models) {
         const name = m.name.trim();
         if (!name || models.includes(name)) continue;
@@ -771,6 +855,10 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         if (m.apiType) modelApiTypes[name] = m.apiType;
         // 多模态勾选每个模型都显式上送（默认勾选，取消勾选后保存 false）
         modelMultimodal[name] = m.multimodal;
+        // 本次自动获取的候选（specs/060）：宿主按「取到就覆盖」写入，压过弹层值
+        if (typeof m.contextProbe === 'number' && Number.isSafeInteger(m.contextProbe) && m.contextProbe > 0) {
+          modelContexts[name] = m.contextProbe;
+        }
         // 弹层碰过的限值才上送（specs/013）：touched 字段收进 modelLimits
         const context = parseLimitText(m.contextText);
         const output = parseLimitText(m.outputText);
@@ -783,7 +871,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           }
         }
       }
-      payload.push({ key, baseURL, apiKey, models, modelApiTypes, modelMultimodal, modelLimits, defaultModel: p.defaultModel.trim() });
+      payload.push({ key, baseURL, apiKey, models, modelApiTypes, modelMultimodal, modelLimits, modelContexts, defaultModel: p.defaultModel.trim() });
     }
     return payload;
   };
@@ -1079,19 +1167,22 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
         }
         const known = sanitizeApiTypeMap(msg.modelApiTypes);
         const needDetect = normalizeModelList(msg.needDetect).filter((m) => models.includes(m));
-        // 先刷新模型列表（让用户立即看到最新拉取到的模型），再决定是否弹出自动检测提示。
+        // 上下文候选只认本次列表里的模型（specs/060 FR-006）
+        const modelContexts = sanitizeModelContextMap(msg.modelContexts, models);
+        // 先刷新模型列表（让用户立即看到最新拉取到的模型），再决定是否弹出确认对话框。
         // 未探测出协议的模型 apiType 保持为空，UI 暂按默认协议展示。
-        setProviders((prev) => mergeFetchedModels(prev, providerId, models, known));
+        setProviders((prev) => mergeFetchedModels(prev, providerId, models, known, modelContexts));
         setFetchModelsError(null);
         setModelError(null);
-        if (needDetect.length > 0) {
-          // 保持 fetching 状态（按钮继续显示「获取中...」），等待用户确认
-          setPendingDetection({ models, modelApiTypes: known, needDetect });
-          return;
-        }
-        // 全部模型都已有协议：无需检测，直接结束
-        setFetchingProviderId(null);
-        pendingFetchProviderIdRef.current = null;
+        // 对话框总会弹出（specs/060 FR-005）：协议项与 context 项各自按可用性置灰
+        setPendingDetection({
+          models,
+          modelApiTypes: known,
+          needDetect,
+          modelContexts,
+          detectApiType: needDetect.length > 0,
+          fetchContext: Object.keys(modelContexts).length > 0,
+        });
         return;
       }
 
@@ -1104,7 +1195,10 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       setPendingDetection(null);
       const models = normalizeModelList(msg.models);
       if (models.length > 0) {
-        setProviders((prev) => mergeFetchedModels(prev, providerId, models, sanitizeApiTypeMap(msg.modelApiTypes)));
+        // 候选在阶段一已应用过一次；这里按同一份候选重放（同值幂等），
+        // 避免阶段二回包把候选清掉（`mergeFetchedModels` 会清掉本次没有候选的条目）
+        const modelContexts = sanitizeModelContextMap(msg.modelContexts, models);
+        setProviders((prev) => mergeFetchedModels(prev, providerId, models, sanitizeApiTypeMap(msg.modelApiTypes), modelContexts));
         setFetchModelsError(null);
         setModelError(null);
       } else {
@@ -2003,7 +2097,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       </div>
       {/* /限宽内容列 */}
 
-      {/* 自动检测 API 类型确认（模型列表已拉取，但存在未设置协议的模型） */}
+      {/* 自动获取后的确认对话框（specs/060 FR-005）：协议探测与 context 尝试两个勾选项 */}
       {pendingDetection && (
         <div
           style={{
@@ -2015,7 +2109,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
             justifyContent: 'center',
             backgroundColor: 'rgba(0, 0, 0, 0.45)',
           }}
-          // 点击遮罩等同于「跳过」：不做消耗 token 的检测
+          // 点击遮罩等同于「跳过」：两个动作都不做
           onClick={handleSkipDetectApiType}
         >
           <div
@@ -2025,17 +2119,76 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               border: `1px solid ${colors.border}`,
               borderRadius: '8px',
               padding: '16px',
-              maxWidth: '340px',
+              maxWidth: '380px',
               width: 'calc(100% - 32px)',
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
             }}
           >
             <div className="ui-fs-13 font-semibold mb-2" style={{ color: colors.textPrimary }}>
-              {t('llmConfig.detectApiTypeTitle')}
+              {t('llmConfig.fetchModelsDoneTitle')}
             </div>
-            <div className="ui-fs-12 mb-2 leading-snug" style={{ color: colors.textPrimary }}>
-              {t('llmConfig.detectApiTypeConfirm', { count: pendingDetection.needDetect.length })}
+            <div className="ui-fs-12 mb-3 leading-snug" style={{ color: colors.textSystem }}>
+              {t('llmConfig.fetchModelsDoneHint', { count: pendingDetection.models.length })}
             </div>
+
+            {/* 勾选项一：协议探测（只对未设置协议的模型） */}
+            <label
+              className="ui-fs-12 mb-2 leading-snug"
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '6px',
+                color: pendingDetection.needDetect.length > 0 ? colors.textPrimary : colors.textSystem,
+                opacity: pendingDetection.needDetect.length > 0 ? 1 : 0.6,
+                cursor: pendingDetection.needDetect.length > 0 ? 'pointer' : 'not-allowed',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={pendingDetection.detectApiType}
+                onChange={togglePendingDetectApiType}
+                disabled={pendingDetection.needDetect.length === 0}
+                style={{ marginTop: '2px' }}
+              />
+              <span>
+                {t('llmConfig.detectApiTypeOption')}
+                <span style={{ display: 'block', color: colors.textSystem }}>
+                  {pendingDetection.needDetect.length > 0
+                    ? t('llmConfig.detectApiTypeOptionDetail', { count: pendingDetection.needDetect.length })
+                    : t('llmConfig.detectApiTypeOptionNone')}
+                </span>
+              </span>
+            </label>
+
+            {/* 勾选项二：context 大小（对本次列表里的全部模型） */}
+            <label
+              className="ui-fs-12 mb-3 leading-snug"
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '6px',
+                color: Object.keys(pendingDetection.modelContexts).length > 0 ? colors.textPrimary : colors.textSystem,
+                opacity: Object.keys(pendingDetection.modelContexts).length > 0 ? 1 : 0.6,
+                cursor: Object.keys(pendingDetection.modelContexts).length > 0 ? 'pointer' : 'not-allowed',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={pendingDetection.fetchContext}
+                onChange={togglePendingFetchContext}
+                disabled={Object.keys(pendingDetection.modelContexts).length === 0}
+                style={{ marginTop: '2px' }}
+              />
+              <span>
+                {t('llmConfig.fetchContextOption')}
+                <span style={{ display: 'block', color: colors.textSystem }}>
+                  {Object.keys(pendingDetection.modelContexts).length > 0
+                    ? t('llmConfig.fetchContextOptionDetail', { count: Object.keys(pendingDetection.modelContexts).length })
+                    : t('llmConfig.fetchContextOptionNone')}
+                </span>
+              </span>
+            </label>
+
             <div className="ui-fs-12 mb-4 leading-snug" style={{ color: colors.textSystem }}>
               {t('llmConfig.detectApiTypeWarning')}
             </div>
@@ -2054,7 +2207,7 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
               </button>
               <button
                 type="button"
-                onClick={handleConfirmDetectApiType}
+                onClick={handleConfirmPendingActions}
                 className="px-3 py-1.5 rounded ui-fs-12 text-white transition-colors"
                 style={{
                   backgroundColor: colors.harness,

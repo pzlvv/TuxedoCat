@@ -341,6 +341,116 @@ runTests('hostSettings', async () => {
     );
   }
 
+  // 自动获取的探测值（specs/060）：取到就覆盖、取不到则既有值不动
+  {
+    const cfg: Record<string, any> = {
+      llm: {
+        providers: {
+          'a.example': {
+            baseURL: 'https://a.example',
+            apiKey: 'k',
+            models: ['existing', 'probed-over-popup', 'probed-over-clear', 'probe-absent'],
+            modelConfigs: {
+              existing: { context: 1024000, output: 8192 },
+              'probed-over-popup': { context: 500, output: 8192 },
+              'probed-over-clear': { context: 500, output: 8192 },
+              // 探测映射里没有它 → 既有值不动
+              'probe-absent': { context: 200000, output: 8192 },
+            },
+          },
+        },
+      },
+    };
+    applyLlmConfigSave(cfg, {
+      saveProviders: true,
+      providers: [{
+        baseURL: 'https://a.example',
+        apiKey: 'k',
+        models: ['existing', 'probed-over-popup', 'probed-over-clear', 'probe-absent', 'no-existing-no-probe'],
+        modelApiTypes: { existing: 'OpenAI' },
+        modelLimits: {
+          // 弹层显式值被探测值覆盖（AC-11）
+          'probed-over-popup': { context: 200000 },
+          // 弹层清空也被探测值覆盖（AC-12）
+          'probed-over-clear': { context: null },
+        },
+        modelContexts: {
+          existing: 73728,
+          'probed-over-popup': 73728,
+          'probed-over-clear': 73728,
+          // 非法探测值按「没取到」处理
+          'probe-absent': -1,
+        },
+      }],
+    });
+    const configs = cfg.llm.providers['a.example'].modelConfigs;
+    check('AC-10 探测值覆盖 settings.json 已有 context', configs.existing.context === 73728);
+    check('AC-11 探测值覆盖弹层显式值', configs['probed-over-popup'].context === 73728);
+    check('AC-12 探测值覆盖弹层清空', configs['probed-over-clear'].context === 73728);
+    check('AC-15 无候选时既有值不动', configs['probe-absent'].context === 200000);
+    check(
+      'AC-16 无候选且无既有值时回落注册表',
+      configs['no-existing-no-probe'].context === getModelConfig('no-existing-no-probe').contextWindow,
+    );
+    check('AC-14 探测值只动 context，不动 apiType / output', configs.existing.apiType === 'OpenAI' && configs.existing.output === 8192);
+  }
+
+  // 未勾选 context（不传 modelContexts）：既有值原样保留（AC-17）
+  {
+    const cfg: Record<string, any> = {
+      llm: {
+        providers: {
+          'a.example': {
+            baseURL: 'https://a.example',
+            apiKey: 'k',
+            models: ['m'],
+            modelConfigs: { m: { context: 200000, output: 8192 } },
+          },
+        },
+      },
+    };
+    applyLlmConfigSave(cfg, {
+      saveProviders: true,
+      providers: [{ baseURL: 'https://a.example', apiKey: 'k', models: ['m'] }],
+    });
+    check('AC-17 未勾选时不传探测值，既有 context 不动', cfg.llm.providers['a.example'].modelConfigs.m.context === 200000);
+  }
+
+  // 逐字节一致（AC-19）：候选全空时，落盘与「从未探测」的路径完全相同
+  {
+    const withEmptyProbe: Record<string, any> = {
+      llm: {
+        providers: {
+          'a.example': {
+            baseURL: 'https://a.example',
+            apiKey: 'k',
+            models: ['m', 'deepseek-flash'],
+            modelConfigs: { m: { context: 200000, output: 8192 } },
+          },
+        },
+      },
+    };
+    const withoutProbe: Record<string, any> = JSON.parse(JSON.stringify(withEmptyProbe));
+    applyLlmConfigSave(withEmptyProbe, {
+      saveProviders: true,
+      providers: [{
+        baseURL: 'https://a.example',
+        apiKey: 'k',
+        models: ['m', 'deepseek-flash'],
+        modelContexts: {},
+      }],
+    });
+    applyLlmConfigSave(withoutProbe, {
+      saveProviders: true,
+      providers: [{ baseURL: 'https://a.example', apiKey: 'k', models: ['m', 'deepseek-flash'] }],
+    });
+    check(
+      'AC-19 空候选落盘与不传探测值逐字节一致',
+      JSON.stringify(withEmptyProbe.llm.providers['a.example'].modelConfigs)
+        === JSON.stringify(withoutProbe.llm.providers['a.example'].modelConfigs),
+    );
+  }
+
   // uiLanguage：只有 UI 消费，不进快照
   {
     const cfg: Record<string, any> = {};
