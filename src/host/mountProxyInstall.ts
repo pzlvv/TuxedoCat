@@ -117,17 +117,21 @@ class SecretBytes {
 }
 
 /**
- * 把「密码行 + 载荷」拼成一条 stdin 流。
+ * 凭据校验命令（FR-004 第 3 条：密码只写一行进**提权校验**子进程的 stdin）。
  *
- * **顺序不能交换**：`sudo -S` 从 stdin 读走**第一行**作为密码，随后它 exec 的目标
- * （代理的 `--install`）继承剩余的 stdin 作为自己的输入。所以密码行必须在前、代理
- * 内容在后——反过来 `sudo` 会把内容的第一行当密码，而代理读到空输入。
+ * 为什么不能沿用「密码行 + 载荷拼一段 stdin」：那条路依赖「`sudo -S` 必定消费首行」，
+ * 而该前提在**免密账号**与 **sudo 时间戳缓存命中**时不成立——`sudo -S` 根本不读 stdin，
+ * 整段字节原样进 `cat > "$tmp"`，密码成了代理二进制的前缀。ELF 魔数不在偏移 0 时内核
+ * 返回 `ENOEXEC`，`sh` 退化成把它当脚本解释，代理压根没执行；密码除了落进 root 侧临时
+ * 文件，还会经 stderr 回显（见 specs/defects/mount-proxy-credential-line-pollutes-payload.md）。
+ *
+ * 因此凭据通道拆成两次调用：本条只做认证与提权校验（`-v` 不执行任何命令、不落字节），
+ * 通过后再由安装命令单独吃载荷——两条 stdin 的字节集合互不相交。
+ *
+ * `-p ""` 抑制提示符：普通 pipe 下提示文本只会污染 stderr，而密码本来就不等人。
  */
-function secretThenPayload(credential: Uint8Array, payload: Uint8Array): Uint8Array {
-  const out = new Uint8Array(credential.length + payload.length);
-  out.set(credential, 0);
-  out.set(payload, credential.length);
-  return out;
+function credentialProbeCommand(method: Exclude<MountProxyCredentialMethod, 'manual'>): string {
+  return method === 'sudoPassword' ? 'sudo -S -v -p ""' : 'su -c true root';
 }
 
 /** 一次部署的结果 */
@@ -189,6 +193,20 @@ const BOOTSTRAP_INSTALL_SCRIPT = [
  */
 export function passwordlessInstallCommand(): string {
   return `sudo -n sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'`;
+}
+
+/**
+ * 免密可用性探测命令（FR-004 第 1 条，AC-10 / AC-11 的分界）。
+ *
+ * 为什么需要单独一条：安装命令的退出码同时受「认证过没过」与「安装成不成」影响，用一条
+ * 退出码判两件事必然误判——落点目录缺失（Arch 上没有 `/usr/libexec`）这类与免密无关的
+ * 失败会被当成「需要密码」，弹出一个根本不解决问题的密码框
+ * （specs/defects/mount-proxy-passwordless-probe-uses-exit-code.md）。
+ *
+ * `sudo -n true` 只回答「有没有密码要问」：不带密码、不执行安装、不落任何字节。
+ */
+export function passwordlessProbeCommand(): string {
+  return 'sudo -n true';
 }
 
 /**
@@ -296,18 +314,113 @@ export function auditLine(options: {
 /**
  * 尝试免密安装（FR-004 第 1 条：先试不带密码的 `sudo`）。
  *
- * 免密不可用时 `sudo -n` 立刻非零退出、stderr 说明原因，不等待输入。这一步不是一次
- * 失败的认证，只是「这条通道不可用」，因此不算失败——交给用户三选一。
+ * 分两步取两个**互不重叠**的事实：
+ *
+ * 1. `sudo -n true` 探「有没有密码要问」——失败才是 `needsCredential`（AC-11）；
+ * 2. 免密可用则执行安装，安装本身的失败是 `failed` 并点名原因（AC-16 / AC-18）。
+ *
+ * 为什么不能只看安装命令的退出码：认证通过但安装失败（落点目录不存在、祖先分量可写、
+ * `nosuid`、内容不一致）同样返回非零，混在一起判会把这些问题报成「免密不可用」，让用户
+ * 输一个永远解决不了问题的密码（specs/defects/mount-proxy-passwordless-probe-uses-exit-code.md）。
  */
 export async function deployWithPasswordlessSudo(
   options: MountProxyDeployOptions,
 ): Promise<MountProxyDeployOutcome> {
   const target = options.target;
+  // 探测不带载荷：它只回答认证可达性，不执行安装、不落字节
+  const probe = await target.shell.run(passwordlessProbeCommand(), {});
+  if (probe.code !== 0) {
+    return { kind: 'needsCredential', manualCommand: target.manualCommand() };
+  }
   const proxyBytes = await target.readProxyBytes();
   const result = await target.shell.run(passwordlessInstallCommand(), { stdin: proxyBytes });
-  if (result.code === 0) {
-    // FR-005：按内容比对——代理回显的 sha256 必须与喂进去的字节一致。
-    // FR-012：安装者 uid 也从这次回显里取（目标机上的真实安装者）。
+  if (result.code !== 0) {
+    // 认证已确认可用：这里的非零一定来自安装本身，把代理给的原因原样带回
+    return { kind: 'failed', failure: sanitizeFailure(result.stderr || result.stdout, '') };
+  }
+  // FR-005：按内容比对——代理回显的 sha256 必须与喂进去的字节一致。
+  // FR-012：安装者 uid 也从这次回显里取（目标机上的真实安装者）。
+  const report = parseInstallReport(result.stdout, proxyBytes);
+  if (report.digest.length === 0) {
+    return {
+      kind: 'failed',
+      failure: '安装命令没有回显 sha256，无法确认装进去的是发出去的那份',
+    };
+  }
+  if (report.digest !== sha256Hex(proxyBytes)) {
+    return {
+      kind: 'failed',
+      failure: `安装后的 sha256 与源内容不一致（落点 ${report.digest}）`,
+    };
+  }
+  if (report.installerUid === null) {
+    return {
+      kind: 'failed',
+      failure: '安装命令没有回显安装者 uid，审计记录无法落笔',
+    };
+  }
+  if (await target.isInstalled()) {
+    return { kind: 'installed', digest: report.digest, installerUid: report.installerUid };
+  }
+  // 退出码 0 却没装上：代理自称成功却没落位，属于实现不一致，不静默放过
+  return {
+    kind: 'failed',
+    failure: '安装命令返回成功，但落点处没有可用的代理',
+  };
+}
+
+/**
+ * 用一次凭据尝试安装（FR-004 第 2 / 3 / 5 条）。
+ *
+ * - `sudoPassword`：`sudo -S` 从 stdin 首行取密码，剩余部分转给代理读内容；
+ * - `rootPassword`：`su -c` + 同样的「密码行在前」布局。`su` 在多数发行版上要求
+ *   `/dev/tty`，无 tty 时会失败——此时按 FR-004 第 5 条回到三选一，**不**改用其它
+ *   提权工具、也**不**为它分配 pty（那条约束更硬）。
+ *
+ * 密码用完立刻清零缓冲；失败原因经过回显剔除。
+ */
+export async function deployWithCredential(
+  options: MountProxyDeployOptions,
+  method: Exclude<MountProxyCredentialMethod, 'manual'>,
+  secret: string,
+): Promise<MountProxyDeployOutcome> {
+  const target = options.target;
+  const credential = new SecretBytes(secret);
+  try {
+    // 第一步只校验凭据（FR-004 第 3 条）：密码单独一条 stdin，写完即关，不执行任何命令。
+    // 先校验再安装的好处是密码与载荷的字节集合互不相交——免密账号 / 时间戳缓存命中时
+    // `sudo -S` 不读 stdin，若把密码行拼在载荷前，它会被当成代理内容的前缀落盘
+    // （specs/defects/mount-proxy-credential-line-pollutes-payload.md）。
+    const probe = await target.shell.run(credentialProbeCommand(method), {
+      stdin: credential.line(),
+    });
+    if (probe.code !== 0) {
+      return {
+        kind: 'failed',
+        failure: sanitizeFailure(probe.stderr || probe.stdout, secret),
+      };
+    }
+    // 第二步才是安装：载荷从第一个字节起就是代理本身，没有任何前缀
+    const proxyBytes = await target.readProxyBytes();
+    // 首次安装时落点还不存在，而源（随包产物 / 远端暂存位）在用户可写目录里——
+    // **绝不能**直接 `sudo <源> --install`：那等于让 root 执行用户可写的文件，是典型的
+    // 提权漏洞。spec 的 FR-005 第 1 条也明令「内容经管道、不经路径」。
+    //
+    // 因此安装命令本身是固定的内联脚本：它把 stdin 里的字节写进 root 私有的临时文件、
+    // 置 04755、立即执行、随后清理。字节只经 stdin，任何用户可控路径都不参与。
+    const command =
+      method === 'sudoPassword'
+        ? `sudo -n sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'`
+        : `su -c "sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'" root`;
+    const result = await target.shell.run(command, { stdin: proxyBytes });
+    if (result.code !== 0) {
+      return {
+        kind: 'failed',
+        failure: sanitizeFailure(result.stderr || result.stdout, secret),
+      };
+    }
+    // 与免密路径同口径：回显的 sha256 必须与发出去的字节一致（FR-005），
+    // 安装者 uid 也取自同一次回显（FR-012）
     const report = parseInstallReport(result.stdout, proxyBytes);
     if (report.digest.length === 0) {
       return {
@@ -330,78 +443,7 @@ export async function deployWithPasswordlessSudo(
     if (await target.isInstalled()) {
       return { kind: 'installed', digest: report.digest, installerUid: report.installerUid };
     }
-    // 退出码 0 却没装上：代理自称成功却没落位，属于实现不一致，不静默放过
-    return {
-      kind: 'failed',
-      failure: '安装命令返回成功，但落点处没有可用的代理',
-    };
-  }
-  return { kind: 'needsCredential', manualCommand: target.manualCommand() };
-}
-
-/**
- * 用一次凭据尝试安装（FR-004 第 2 / 3 / 5 条）。
- *
- * - `sudoPassword`：`sudo -S` 从 stdin 首行取密码，剩余部分转给代理读内容；
- * - `rootPassword`：`su -c` + 同样的「密码行在前」布局。`su` 在多数发行版上要求
- *   `/dev/tty`，无 tty 时会失败——此时按 FR-004 第 5 条回到三选一，**不**改用其它
- *   提权工具、也**不**为它分配 pty（那条约束更硬）。
- *
- * 密码用完立刻清零缓冲；失败原因经过回显剔除。
- */
-export async function deployWithCredential(
-  options: MountProxyDeployOptions,
-  method: Exclude<MountProxyCredentialMethod, 'manual'>,
-  secret: string,
-): Promise<MountProxyDeployOutcome> {
-  const target = options.target;
-  const proxyBytes = await target.readProxyBytes();
-  const credential = new SecretBytes(secret);
-  try {
-    // 首次安装时落点还不存在，而源（随包产物 / 远端暂存位）在用户可写目录里——
-    // **绝不能**直接 `sudo <源> --install`：那等于让 root 执行用户可写的文件，是典型的
-    // 提权漏洞。spec 的 FR-005 第 1 条也明令「内容经管道、不经路径」。
-    //
-    // 因此安装命令本身是固定的内联脚本：它把 stdin 里的字节写进 root 私有的临时文件、
-    // 置 04755、立即执行、随后清理。字节只经 stdin，任何用户可控路径都不参与。
-    const command =
-      method === 'sudoPassword'
-        ? `sudo -S -p "" sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'`
-        : `su -c "sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'" root`;
-    const stdin = secretThenPayload(credential.line(), proxyBytes);
-    const result = await target.shell.run(command, { stdin });
-    // stdin 已交给子进程；本地缓冲立刻清零（子进程那份由 OS 在 exec 后转手）
-    stdin.fill(0);
-    if (result.code === 0) {
-      // 与免密路径同口径：回显的 sha256 必须与发出去的字节一致（FR-005），
-      // 安装者 uid 也取自同一次回显（FR-012）
-      const report = parseInstallReport(result.stdout, proxyBytes);
-      if (report.digest.length === 0) {
-        return {
-          kind: 'failed',
-          failure: '安装命令没有回显 sha256，无法确认装进去的是发出去的那份',
-        };
-      }
-      if (report.digest !== sha256Hex(proxyBytes)) {
-        return {
-          kind: 'failed',
-          failure: `安装后的 sha256 与源内容不一致（落点 ${report.digest}）`,
-        };
-      }
-      if (report.installerUid === null) {
-        return {
-          kind: 'failed',
-          failure: '安装命令没有回显安装者 uid，审计记录无法落笔',
-        };
-      }
-      if (await target.isInstalled()) {
-        return { kind: 'installed', digest: report.digest, installerUid: report.installerUid };
-      }
-    }
-    return {
-      kind: 'failed',
-      failure: sanitizeFailure(result.stderr || result.stdout, secret),
-    };
+    return { kind: 'failed', failure: '安装命令返回成功，但落点处没有可用的代理' };
   } finally {
     credential.dispose();
   }

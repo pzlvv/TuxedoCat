@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import {
   MOUNT_PROXY_INSTALL_PATH,
   passwordlessInstallCommand,
+  passwordlessProbeCommand,
   deployWithCredential,
   deployWithPasswordlessSudo,
   manualInstallCommand,
@@ -83,6 +84,11 @@ function options(
 /** 目标机上执行安装的账号 uid（代理 `installer-uid=` 行的值） */
 const INSTALLER_UID = 1002;
 
+/** 假 shell 按「命令里有没有自举脚本」区分探测与安装：自举脚本含 `--install` */
+function isInstallCommand(command: string): boolean {
+  return command.includes('--install');
+}
+
 /**
  * 代理 `--install` 成功时的 stdout：sha256 一行 + `installer-uid=<n>` 一行。
  *
@@ -99,21 +105,28 @@ function installStdout(payload: Uint8Array = PAYLOAD, uid: number | null = INSTA
 
 test('免密 sudo 可用时直接装上，不进入凭据通道', async () => {
   // 代理 --install 成功时在 stdout 回显 sha256（FR-005 按内容比对）
-  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
 
   const outcome = await deployWithPasswordlessSudo(options(shell));
 
   assert.equal(outcome.kind, 'installed');
-  assert.equal(calls.length, 1);
+  // 先探免密可达性、再安装（两个事实分开取，见缺陷规格）
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].command, passwordlessProbeCommand());
+  const install = calls[1];
   // 命令固定为 `sudo -n`：不带密码，不可用就立刻失败
-  assert.equal(calls[0].command, passwordlessInstallCommand());
-  assert.ok(calls[0].command.includes('sudo -n'));
+  assert.equal(install.command, passwordlessInstallCommand());
+  assert.ok(install.command.includes('sudo -n'));
   // FR-005 第 1 条：源路径不参与安装命令（内容只经 stdin）
-  assert.ok(!calls[0].command.includes(BUNDLED), '安装命令不得含源路径');
-  assert.ok(!calls[0].command.includes(MOUNT_PROXY_INSTALL_PATH), '安装命令不得含落点');
+  assert.ok(!install.command.includes(BUNDLED), '安装命令不得含源路径');
+  assert.ok(!install.command.includes(MOUNT_PROXY_INSTALL_PATH), '安装命令不得含落点');
   // 内容经 stdin 进 root 侧（FR-005 第 1 条），不进 argv
-  assert.equal(calls[0].stdin, new TextDecoder().decode(PAYLOAD));
-  assert.ok(!calls[0].command.includes('7f45'), '代理内容不出现在命令行里');
+  assert.equal(install.stdin, new TextDecoder().decode(PAYLOAD));
+  assert.ok(!install.command.includes('7f45'), '代理内容不出现在命令行里');
 });
 
 test('免密不可用时转三选一（这不是一次失败）', async () => {
@@ -148,31 +161,43 @@ test('安装命令返回 0 但落点没有代理时报错，不静默放过', as
 
 // ────────────────────── FR-004 第 3 条：密码只走 stdin ──────────────────────
 
-test('sudo 密码只出现在 stdin：密码行在前、代理内容在后', async () => {
-  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
+test('sudo 密码只走 stdin：凭据校验与安装是两条流', async () => {
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
 
   const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
 
   assert.equal(outcome.kind, 'installed');
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   // 不进 argv（AC-13）
   assert.ok(!calls[0].command.includes('hunter2'), '密码不得出现在命令行');
-  // 密码行必须是 stdin 的第一行：sudo -S 读首行做密码，剩余转给代理读内容
-  const lines = calls[0].stdin.split('\n');
-  assert.equal(lines[0], 'hunter2');
-  assert.equal(lines[1], new TextDecoder().decode(PAYLOAD));
+  // 密码单独一条 stdin：恰好一行、写完即关（FR-004 第 3 条）
+  assert.equal(calls[0].stdin, 'hunter2\n');
   assert.ok(calls[0].command.includes('sudo -S'));
+  // 安装流里没有密码：否则免密 / 时间戳命中时它会成为载荷前缀
+  assert.equal(calls[1].stdin, new TextDecoder().decode(PAYLOAD));
+  assert.ok(!calls[1].stdin.includes('hunter2'));
 });
 
 test('root 密码走 su -c，同样只经 stdin', async () => {
-  const { shell, calls } = fakeShell(() => ({ code: 0, stdout: installStdout(), stderr: '' }));
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
 
   const outcome = await deployWithCredential(options(shell), 'rootPassword', 'rootpw');
 
   assert.equal(outcome.kind, 'installed');
+  assert.equal(calls.length, 2);
   assert.ok(!calls[0].command.includes('rootpw'), '密码不得出现在命令行');
-  assert.equal(calls[0].stdin.split('\n')[0], 'rootpw');
+  assert.equal(calls[0].stdin, 'rootpw\n');
   assert.ok(calls[0].command.startsWith('su -c'));
+  // su 从 /dev/tty 读密码，安装 stdin 只有载荷
+  assert.equal(calls[1].stdin, new TextDecoder().decode(PAYLOAD));
 });
 
 test('认证失败无限次可重试：失败只带原因，不带次数', async () => {
@@ -329,4 +354,123 @@ test('本机审计行用 localhost 占位，不留空', () => {
   });
 
   assert.ok(line.includes('host=localhost'));
+});
+
+// ─────────── specs/defects/mount-proxy-passwordless-probe-uses-exit-code.md ───────────
+//
+// 免密是否可用与安装是否成功是两个独立事实（FR-004 第 1 / 2 条，AC-10 / AC-11）。
+
+test('RT-1 免密可用但安装失败时回 failed，不误判成需要密码', async () => {
+  // 认证通过（探测返回 0），安装被代理的落点判据拒绝——WSL Arch 上 /usr/libexec 缺失的形态
+  const { shell } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? {
+          code: 3,
+          stdout: '',
+          stderr: `[${CORE_MOUNT_PROXY_NAME}] 安装失败：安装落点目录 /usr/libexec 不存在`,
+        }
+      : { code: 0, stdout: '', stderr: '' },
+  );
+
+  const outcome = await deployWithPasswordlessSudo(options(shell));
+
+  assert.equal(outcome.kind, 'failed', '免密可用时安装失败不能退化成凭据通道');
+  if (outcome.kind !== 'failed') return;
+  // AC-16 / AC-18：原因要点名可行动的那一条，不概括成「认证失败」
+  assert.match(outcome.failure, /\/usr\/libexec/);
+});
+
+test('RT-2 免密确实不可用时仍回 needsCredential', async () => {
+  // AC-11：stderr 明确回报需要密码——这是唯一该进凭据通道的成因
+  const { shell } = fakeShell(() => ({
+    code: 1,
+    stdout: '',
+    stderr: 'sudo: a password is required',
+  }));
+
+  const outcome = await deployWithPasswordlessSudo(options(shell));
+
+  assert.equal(outcome.kind, 'needsCredential');
+  if (outcome.kind !== 'needsCredential') return;
+  assert.equal(outcome.manualCommand, manualInstallCommand(BUNDLED));
+});
+
+test('RT-3 免密探测与安装分成两条命令，探测不携带载荷', async () => {
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
+
+  const outcome = await deployWithPasswordlessSudo(options(shell));
+
+  assert.equal(outcome.kind, 'installed');
+  assert.equal(calls.length, 2, '先探免密可用性，再执行安装');
+  // 探测不落字节、不执行安装程序：它只回答「有没有密码要问」
+  assert.ok(!isInstallCommand(calls[0].command), '探测命令不得执行安装');
+  assert.equal(calls[0].stdin, '', '探测不携带代理字节');
+  // 安装仍走固定常量命令，载荷完整且无前缀（FR-005 / FR-009）
+  assert.equal(calls[1].command, passwordlessInstallCommand());
+  assert.equal(calls[1].stdin, new TextDecoder().decode(PAYLOAD));
+});
+
+// ─────────── specs/defects/mount-proxy-credential-line-pollutes-payload.md ───────────
+//
+// 密码只写一行进**提权校验**子进程的 stdin（FR-004 第 3 条）；安装命令的 stdin 只有载荷。
+
+test('RT-1 sudo 密码与安装载荷分两条流，载荷不带密码前缀', async () => {
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
+
+  const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
+
+  assert.equal(outcome.kind, 'installed');
+  assert.equal(calls.length, 2, '先校验凭据，再执行安装');
+  const credential = calls[0];
+  // 不进 argv（AC-13）
+  assert.ok(!credential.command.includes('hunter2'), '密码不得出现在命令行');
+  assert.equal(credential.stdin, 'hunter2\n', '密码恰好一行、写完即关');
+  const install = calls[1];
+  assert.ok(!install.command.includes('hunter2'), '安装命令不得含密码');
+  // 核心断言：载荷从头就是代理字节，没有密码前缀（否则 NOPASSWD 下会被当脚本执行）
+  assert.equal(install.stdin, new TextDecoder().decode(PAYLOAD));
+  assert.ok(isInstallCommand(install.command));
+});
+
+test('RT-2 root 密码通道的安装 stdin 只有载荷', async () => {
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
+
+  const outcome = await deployWithCredential(options(shell), 'rootPassword', 'rootpw');
+
+  assert.equal(outcome.kind, 'installed');
+  assert.equal(calls.length, 2);
+  assert.ok(!calls[0].command.includes('rootpw'), '密码不得出现在命令行');
+  assert.equal(calls[0].stdin, 'rootpw\n');
+  const install = calls[1];
+  assert.ok(!install.command.includes('rootpw'));
+  // `su` 从 /dev/tty 读密码，拼进安装 stdin 只会污染载荷
+  assert.equal(install.stdin, new TextDecoder().decode(PAYLOAD));
+});
+
+test('RT-3 凭据校验失败时不执行安装，失败原因不含密码', async () => {
+  const { shell, calls } = fakeShell(() => ({
+    code: 1,
+    stdout: '',
+    stderr: 'sudo: password hunter2 rejected',
+  }));
+
+  const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
+
+  assert.equal(outcome.kind, 'failed');
+  if (outcome.kind !== 'failed') return;
+  assert.ok(!outcome.failure.includes('hunter2'), '失败原因不得回显密码');
+  // 校验没过就不该让 root 侧落任何字节
+  assert.ok(!calls.some((call) => isInstallCommand(call.command)), '校验失败不得执行安装');
 });
