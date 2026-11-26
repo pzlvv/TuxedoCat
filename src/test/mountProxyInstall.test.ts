@@ -30,6 +30,12 @@ import {
 } from '../host/mountProxyInstall.js';
 
 const PAYLOAD = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00, 0xff]);
+/**
+ * 密码行与载荷之间的标记行（`src/host/mountProxyInstall.ts` 的 `PAYLOAD_MARKER`）。
+ *
+ * 不导出常量：它是实现细节，测试断言的是「有且只有这一行起划界作用」这个形状。
+ */
+const PAYLOAD_MARKER = '--pz-mount-proxy-payload--';
 const BUNDLED = `/opt/app/${CORE_MOUNT_PROXY_NAME}`;
 
 /** 记录每次调用的假 shell：命令、stdin 的快照（解码后）与是否含 pty */
@@ -161,7 +167,7 @@ test('安装命令返回 0 但落点没有代理时报错，不静默放过', as
 
 // ────────────────────── FR-004 第 3 条：密码只走 stdin ──────────────────────
 
-test('sudo 密码只走 stdin：凭据校验与安装是两条流', async () => {
+test('sudo 密码只走 stdin：认证与安装同一次调用、由标记行划界', async () => {
   const { shell, calls } = fakeShell(({ command }) =>
     isInstallCommand(command)
       ? { code: 0, stdout: installStdout(), stderr: '' }
@@ -171,18 +177,21 @@ test('sudo 密码只走 stdin：凭据校验与安装是两条流', async () => 
   const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
 
   assert.equal(outcome.kind, 'installed');
-  assert.equal(calls.length, 2);
+  // 拆成两次调用会让第二步匹配不到上一步的 session record
+  // （specs/defects/mount-proxy-credential-split-exec-loses-auth.md）
+  assert.equal(calls.length, 1, '认证与安装必须在同一次调用里');
   // 不进 argv（AC-13）
   assert.ok(!calls[0].command.includes('hunter2'), '密码不得出现在命令行');
-  // 密码单独一条 stdin：恰好一行、写完即关（FR-004 第 3 条）
-  assert.equal(calls[0].stdin, 'hunter2\n');
-  assert.ok(calls[0].command.includes('sudo -S'));
-  // 安装流里没有密码：否则免密 / 时间戳命中时它会成为载荷前缀
-  assert.equal(calls[1].stdin, new TextDecoder().decode(PAYLOAD));
-  assert.ok(!calls[1].stdin.includes('hunter2'));
+  // stdin 布局：密码行 → 标记行 → 载荷
+  const [first, second] = calls[0].stdin.split('\n');
+  assert.equal(first, 'hunter2', '密码是首行');
+  assert.equal(second, PAYLOAD_MARKER, '第二行是载荷标记');
+  // 脚本靠标记行划界，而不是靠「sudo 会不会读首行」——后者在免密 / 缓存命中时不成立
+  assert.ok(calls[0].command.includes(PAYLOAD_MARKER), '脚本必须按标记行划界');
+  assert.ok(!calls[0].command.includes('sudo -S -v'), '不再依赖先认证再安装的两步式提权');
 });
 
-test('root 密码走 su -c，同样只经 stdin', async () => {
+test('root 密码走 su -c，同样按标记行划界', async () => {
   const { shell, calls } = fakeShell(({ command }) =>
     isInstallCommand(command)
       ? { code: 0, stdout: installStdout(), stderr: '' }
@@ -192,12 +201,12 @@ test('root 密码走 su -c，同样只经 stdin', async () => {
   const outcome = await deployWithCredential(options(shell), 'rootPassword', 'rootpw');
 
   assert.equal(outcome.kind, 'installed');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.ok(!calls[0].command.includes('rootpw'), '密码不得出现在命令行');
-  assert.equal(calls[0].stdin, 'rootpw\n');
-  assert.ok(calls[0].command.startsWith('su -c'));
-  // su 从 /dev/tty 读密码，安装 stdin 只有载荷
-  assert.equal(calls[1].stdin, new TextDecoder().decode(PAYLOAD));
+  const [first, second] = calls[0].stdin.split('\n');
+  assert.equal(first, 'rootpw', '密码是首行');
+  assert.equal(second, PAYLOAD_MARKER, '第二行是载荷标记');
+  assert.ok(calls[0].command.includes('su -c'));
 });
 
 test('认证失败无限次可重试：失败只带原因，不带次数', async () => {
@@ -416,9 +425,9 @@ test('RT-3 免密探测与安装分成两条命令，探测不携带载荷', asy
 
 // ─────────── specs/defects/mount-proxy-credential-line-pollutes-payload.md ───────────
 //
-// 密码只写一行进**提权校验**子进程的 stdin（FR-004 第 3 条）；安装命令的 stdin 只有载荷。
+// 密码只写一行进提权子进程的 stdin（FR-004 第 3 条）；安装拿到的字节里没有密码。
 
-test('RT-1 sudo 密码与安装载荷分两条流，载荷不带密码前缀', async () => {
+test('RT-1 标记行把密码与载荷划开，载荷不带密码前缀', async () => {
   const { shell, calls } = fakeShell(({ command }) =>
     isInstallCommand(command)
       ? { code: 0, stdout: installStdout(), stderr: '' }
@@ -428,19 +437,25 @@ test('RT-1 sudo 密码与安装载荷分两条流，载荷不带密码前缀', a
   const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
 
   assert.equal(outcome.kind, 'installed');
-  assert.equal(calls.length, 2, '先校验凭据，再执行安装');
-  const credential = calls[0];
+  assert.equal(calls.length, 1, '认证与安装同一次调用');
+  const call = calls[0];
   // 不进 argv（AC-13）
-  assert.ok(!credential.command.includes('hunter2'), '密码不得出现在命令行');
-  assert.equal(credential.stdin, 'hunter2\n', '密码恰好一行、写完即关');
-  const install = calls[1];
-  assert.ok(!install.command.includes('hunter2'), '安装命令不得含密码');
-  // 核心断言：载荷从头就是代理字节，没有密码前缀（否则 NOPASSWD 下会被当脚本执行）
-  assert.equal(install.stdin, new TextDecoder().decode(PAYLOAD));
-  assert.ok(isInstallCommand(install.command));
+  assert.ok(!call.command.includes('hunter2'), '密码不得出现在命令行');
+  // 核心断言：脚本靠标记行停下来，之后才是载荷。于是「sudo 不读 stdin」也不污染载荷。
+  assert.ok(call.command.includes(PAYLOAD_MARKER), '脚本按标记行划界');
+  const idx = call.stdin.indexOf(`${PAYLOAD_MARKER}\n`);
+  assert.ok(idx > 0, 'stdin 里必须有标记行');
+  // 标记行之前只有密码行，标记行之后就是载荷本身
+  assert.equal(call.stdin.slice(0, idx), 'hunter2\n', '标记之前只有密码行');
+  const afterMarker = call.stdin.slice(idx + PAYLOAD_MARKER.length + 1);
+  assert.equal(
+    afterMarker.length,
+    new TextDecoder().decode(PAYLOAD).length,
+    '标记之后就是载荷，没有多余字节',
+  );
 });
 
-test('RT-2 root 密码通道的安装 stdin 只有载荷', async () => {
+test('RT-2 root 密码通道同样按标记行划界', async () => {
   const { shell, calls } = fakeShell(({ command }) =>
     isInstallCommand(command)
       ? { code: 0, stdout: installStdout(), stderr: '' }
@@ -450,18 +465,34 @@ test('RT-2 root 密码通道的安装 stdin 只有载荷', async () => {
   const outcome = await deployWithCredential(options(shell), 'rootPassword', 'rootpw');
 
   assert.equal(outcome.kind, 'installed');
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.ok(!calls[0].command.includes('rootpw'), '密码不得出现在命令行');
-  assert.equal(calls[0].stdin, 'rootpw\n');
-  const install = calls[1];
-  assert.ok(!install.command.includes('rootpw'));
-  // `su` 从 /dev/tty 读密码，拼进安装 stdin 只会污染载荷
-  assert.equal(install.stdin, new TextDecoder().decode(PAYLOAD));
+  assert.ok(calls[0].stdin.startsWith(`rootpw\n${PAYLOAD_MARKER}\n`), '密码行 + 标记行在前');
 });
 
-test('RT-3 凭据校验失败时不执行安装，失败原因不含密码', async () => {
+// ─────────── specs/defects/mount-proxy-credential-split-exec-loses-auth.md ───────────
+//
+// 认证与安装必须在同一次调用里：拆成两次 exec 时第二步匹配不到上一步的 session record
+// （sudo-rs 按 tty / 进程组匹配），安装根本不会执行。
+
+test('RT-1 认证与安装只发一次调用，不退化成两步 exec', async () => {
+  const { shell, calls } = fakeShell(({ command }) =>
+    isInstallCommand(command)
+      ? { code: 0, stdout: installStdout(), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' },
+  );
+
+  const outcome = await deployWithCredential(options(shell), 'sudoPassword', 'hunter2');
+
+  assert.equal(outcome.kind, 'installed');
+  // 两次调用 = 第二段的提权必然拿不到上一步的认证
+  assert.equal(calls.length, 1, '认证与安装必须在同一次 exec 里完成');
+});
+
+test('RT-2 认证失败时不再执行安装，且原因不含密码', async () => {
+  // 脚本在认证段非零退出（ss 码 91），安装段永远不跑
   const { shell, calls } = fakeShell(() => ({
-    code: 1,
+    code: 91,
     stdout: '',
     stderr: 'sudo: password hunter2 rejected',
   }));
@@ -471,6 +502,5 @@ test('RT-3 凭据校验失败时不执行安装，失败原因不含密码', asy
   assert.equal(outcome.kind, 'failed');
   if (outcome.kind !== 'failed') return;
   assert.ok(!outcome.failure.includes('hunter2'), '失败原因不得回显密码');
-  // 校验没过就不该让 root 侧落任何字节
-  assert.ok(!calls.some((call) => isInstallCommand(call.command)), '校验失败不得执行安装');
+  assert.equal(calls.length, 1);
 });

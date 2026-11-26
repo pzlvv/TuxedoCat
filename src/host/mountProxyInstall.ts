@@ -117,21 +117,93 @@ class SecretBytes {
 }
 
 /**
- * 凭据校验命令（FR-004 第 3 条：密码只写一行进**提权校验**子进程的 stdin）。
+ * stdin 上「密码行」与「载荷」之间的标记行。
  *
- * 为什么不能沿用「密码行 + 载荷拼一段 stdin」：那条路依赖「`sudo -S` 必定消费首行」，
- * 而该前提在**免密账号**与 **sudo 时间戳缓存命中**时不成立——`sudo -S` 根本不读 stdin，
- * 整段字节原样进 `cat > "$tmp"`，密码成了代理二进制的前缀。ELF 魔数不在偏移 0 时内核
- * 返回 `ENOEXEC`，`sh` 退化成把它当脚本解释，代理压根没执行；密码除了落进 root 侧临时
- * 文件，还会经 stderr 回显（见 specs/defects/mount-proxy-credential-line-pollutes-payload.md）。
- *
- * 因此凭据通道拆成两次调用：本条只做认证与提权校验（`-v` 不执行任何命令、不落字节），
- * 通过后再由安装命令单独吃载荷——两条 stdin 的字节集合互不相交。
- *
- * `-p ""` 抑制提示符：普通 pipe 下提示文本只会污染 stderr，而密码本来就不等人。
+ * 只用一行明文标记划界，载荷从标记的下一行起逐字节原样流进临时文件。标记必须足够
+ * 不可能在代理二进制里出现（`--pz-...--` 形态），且**不含换行**——它是被逐行读到的
+ * 那一行本身。
  */
-function credentialProbeCommand(method: Exclude<MountProxyCredentialMethod, 'manual'>): string {
-  return method === 'sudoPassword' ? 'sudo -S -v -p ""' : 'su -c true root';
+const PAYLOAD_MARKER = '--pz-mount-proxy-payload--';
+
+/**
+ * 带凭据安装的远端脚本（`sudoPassword`）。
+ *
+ * 两个互相冲突的前提要同时满足：
+ *
+ * 1. **认证必须与安装在同一次调用里**。只做认证（`sudo -S -v`）再另起一次调用装载荷
+ *    （`sudo -n`）依赖「上一次的认证缓存对下一次调用有效」。该前提在 sudo-rs 上不成立
+ *    ——session record 的匹配范围（`RecordScope`）按「tty 设备 + 会话」或「进程组 +
+ *    该组创建时间」判定，每次 SSH exec 是新的会话 / 进程组，`sudo -S -v` 写下的记录
+ *    下一次 exec 匹配不到，`sudo -n` 一律报 `interactive authentication is required`，
+ *    安装脚本一行都没跑，能力停在 `absent`
+ *    （`specs/defects/mount-proxy-credential-split-exec-loses-auth.md`）。
+ * 2. **密码不能变成载荷前缀**。`sudo -S` 只在确实需要密码时才读 stdin；免密账号或
+ *    时间戳缓存命中时它根本不读，于是拼在前面的密码行会成为代理二进制的前缀，内核
+ *    以 `ENOEXEC` 拒执行、`sh` 退化成逐行解释、密码还落进 root 侧临时文件
+ *    （`specs/defects/mount-proxy-credential-line-pollutes-payload.md`）。
+ *
+ * 兼顾两者的做法是**用标记行划界**，让「谁消费密码行」不再取决于 sudo 的行为：
+ *
+ * ```text
+ * <密码行>
+ * --pz-mount-proxy-payload--
+ * <代理字节…>
+ * ```
+ *
+ * 自举脚本先逐行读到标记为止，再把剩余字节原样写进 root 侧临时文件。于是两种情形都正确：
+ *
+ * - sudo **要**密码：它取走首行，脚本第一行就读到标记，立即进入 `cat`；
+ * - sudo **不要**密码（免密 / 缓存命中）：它不读 stdin，脚本先读到密码行、因不等于标记
+ *   而继续，下一行读到标记后停下，密码行被丢弃，不会进载荷。
+ *
+ * 认证与安装仍是**同一次调用**，因此不存在跨 exec 的 session record 失配问题。
+ *
+ * 脚本是**固定字符串**，不含任何用户输入（FR-009 末句）；密码只经 stdin 进提权子进程，
+ * 不进 argv、不进环境变量（AC-13）。
+ */
+/**
+ * 提权后要跑的自举片段：先按标记行划界，再把载荷写进 root 侧临时文件。
+ *
+ * 划界循环必须在**提权之后**跑（它是 `sudo` / `su` 的目标命令的一部分），因为它读的是
+ * `sudo` 处理完之后剩下的 stdin。
+ */
+function credentialBootstrap(): string {
+  return [
+    // 逐行丢弃直到标记：密码行（若 sudo 没读走）与标记本身都在这一步被吃掉
+    `while IFS= read -r pz_line && [ "$pz_line" != "${PAYLOAD_MARKER}" ]; do :; done`,
+    // 标记之后的字节才是载荷；此处起 stdin 与密码的字节集合已不相交
+    BOOTSTRAP_INSTALL_SCRIPT,
+  ].join('; ');
+}
+
+function sudoCredentialInstallScript(): string {
+  // `-S` 让 sudo 需要密码时从 stdin 取首行；不需要（免密 / 缓存命中）时它不读，
+  // 首行留给下面自举片段里的划界循环丢掉——两种情形都不会把密码带进载荷。
+  return `sudo -S -p "" sh -c '${credentialBootstrap()}'`;
+}
+
+/**
+ * 带凭据安装的远端脚本（`rootPassword`）。
+ *
+ * `su` 从 `/dev/tty` 读密码而不是 stdin（FR-004 第 3 条同时禁止为密码路径分配 pty），
+ * 因此无 tty 的 exec 上它本就无法完成认证——此时按 FR-004 第 5 条回到三选一，由用户
+ * 改用其它来源。stdin 布局与 `sudo` 路径一致（密码行、标记行、载荷），`su` 在有 tty
+ * 的环境中自行消费首行。
+ */
+function suCredentialInstallScript(): string {
+  // `su` 从 /dev/tty 取密码（无 tty 时失败，按 FR-004 第 5 条回三选一）；stdin 上的
+  // 密码行同样由自举片段里的划界循环丢掉。
+  return `su -c "sh -c '${credentialBootstrap()}'" root`;
+}
+
+/** 带凭据安装时喂给 `shell.run` 的 stdin：密码行 + 标记行 + 载荷 */
+function credentialStdin(credentialLine: Uint8Array, payload: Uint8Array): Uint8Array {
+  const marker = new TextEncoder().encode(`${PAYLOAD_MARKER}\n`);
+  const out = new Uint8Array(credentialLine.length + marker.length + payload.length);
+  out.set(credentialLine, 0);
+  out.set(marker, credentialLine.length);
+  out.set(payload, credentialLine.length + marker.length);
+  return out;
 }
 
 /** 一次部署的结果 */
@@ -372,10 +444,12 @@ export async function deployWithPasswordlessSudo(
 /**
  * 用一次凭据尝试安装（FR-004 第 2 / 3 / 5 条）。
  *
- * - `sudoPassword`：`sudo -S` 从 stdin 首行取密码，剩余部分转给代理读内容；
- * - `rootPassword`：`su -c` + 同样的「密码行在前」布局。`su` 在多数发行版上要求
- *   `/dev/tty`，无 tty 时会失败——此时按 FR-004 第 5 条回到三选一，**不**改用其它
- *   提权工具、也**不**为它分配 pty（那条约束更硬）。
+ * 认证与安装在**同一次调用**里完成（理由见 `sudoCredentialInstallScript`）：密码行与
+ * 载荷之间由标记行划界，脚本先丢掉标记之前的所有行、再把剩余字节写进 root 侧临时文件。
+ *
+ * - `sudoPassword`：`sudo -S` 需要密码时取走首行；不需要时首行由划界循环丢掉。
+ * - `rootPassword`：`su` 从 `/dev/tty` 取密码。无 tty 的 exec 上它本就无法认证，此时
+ *   按 FR-004 第 5 条回到三选一，**不**改用其它提权工具、也**不**为它分配 pty。
  *
  * 密码用完立刻清零缓冲；失败原因经过回显剔除。
  */
@@ -386,33 +460,28 @@ export async function deployWithCredential(
 ): Promise<MountProxyDeployOutcome> {
   const target = options.target;
   const credential = new SecretBytes(secret);
+  const proxyBytes = await target.readProxyBytes();
   try {
-    // 第一步只校验凭据（FR-004 第 3 条）：密码单独一条 stdin，写完即关，不执行任何命令。
-    // 先校验再安装的好处是密码与载荷的字节集合互不相交——免密账号 / 时间戳缓存命中时
-    // `sudo -S` 不读 stdin，若把密码行拼在载荷前，它会被当成代理内容的前缀落盘
-    // （specs/defects/mount-proxy-credential-line-pollutes-payload.md）。
-    const probe = await target.shell.run(credentialProbeCommand(method), {
-      stdin: credential.line(),
-    });
-    if (probe.code !== 0) {
-      return {
-        kind: 'failed',
-        failure: sanitizeFailure(probe.stderr || probe.stdout, secret),
-      };
-    }
-    // 第二步才是安装：载荷从第一个字节起就是代理本身，没有任何前缀
-    const proxyBytes = await target.readProxyBytes();
     // 首次安装时落点还不存在，而源（随包产物 / 远端暂存位）在用户可写目录里——
     // **绝不能**直接 `sudo <源> --install`：那等于让 root 执行用户可写的文件，是典型的
     // 提权漏洞。spec 的 FR-005 第 1 条也明令「内容经管道、不经路径」。
     //
     // 因此安装命令本身是固定的内联脚本：它把 stdin 里的字节写进 root 私有的临时文件、
     // 置 04755、立即执行、随后清理。字节只经 stdin，任何用户可控路径都不参与。
-    const command =
-      method === 'sudoPassword'
-        ? `sudo -n sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'`
-        : `su -c "sh -c '${BOOTSTRAP_INSTALL_SCRIPT}'" root`;
-    const result = await target.shell.run(command, { stdin: proxyBytes });
+    //
+    // stdin 布局：`<密码行>\n<载荷>`。密码行由脚本里的 `read` 消费（不是由 `sudo` 消费），
+    // 所以「`sudo` 不读 stdin」这类情形不会再把密码变成载荷前缀。
+    const command = method === 'sudoPassword'
+      ? sudoCredentialInstallScript()
+      : suCredentialInstallScript();
+    const stdin = credentialStdin(credential.line(), proxyBytes);
+    let result;
+    try {
+      result = await target.shell.run(command, { stdin });
+    } finally {
+      // stdin 已交给子进程；本地缓冲立刻清零（子进程那份由 OS 在 exec 后转手）
+      stdin.fill(0);
+    }
     if (result.code !== 0) {
       return {
         kind: 'failed',
