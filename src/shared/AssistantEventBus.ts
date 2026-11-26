@@ -1165,7 +1165,7 @@ export interface SessionRuntimeState {
   /**
    * 该会话运行中的后台 Bash 任务清单（specs/019 FR-001），按注册序；空集为 `[]`。
    * 与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），
-   * abort 按钮黄色态的悬停明细据此列出任务（`docs/features/abort-button.md`）。
+   * abort 按钮的悬停明细据此列出任务（`docs/features/abort-button.md`）。
    */
   backgroundTasks: readonly BackgroundTaskBrief[];
   /**
@@ -1176,7 +1176,7 @@ export interface SessionRuntimeState {
   /**
    * 子代理会话为创建时 Agent 工具调用的 description（specs/019 FR-001）；
    * 普通会话与恢复路径取不到时为 `null`，UI 对 `null` 显示回退文案。
-   * abort 按钮黄色态的悬停明细据此列出子代理。
+   * abort 按钮的悬停明细据此列出子代理。
    */
   subAgentDescription: string | null;
   /**

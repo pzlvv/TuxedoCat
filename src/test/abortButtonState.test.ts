@@ -1,5 +1,5 @@
 /**
- * abort 按钮三态推导单测（`docs/features/abort-button.md` FR-001）。
+ * abort 按钮三态推导单测（`docs/features/abort-button.md` FR-001 / FR-004）。
  *
  * 根事实 → 颜色 / 可点性的唯一实现是 `src/host/abortButtonState.ts` 的纯函数，
  * webview 与测试共用它，不在组件里另写一遍 `if`。
@@ -8,7 +8,7 @@
  */
 
 import * as assert from 'assert';
-import { resolveAbortButtonState, type AbortButtonFacts } from '../host/abortButtonState';
+import { abortHoverTipEnabled, resolveAbortButtonState, type AbortButtonFacts } from '../host/abortButtonState';
 import { createChecker, runTests } from './helpers/harness';
 
 function facts(overrides: Partial<AbortButtonFacts> = {}): AbortButtonFacts {
@@ -77,6 +77,15 @@ async function run(): Promise<void> {
     'spin 与后台 / 子代理同档',
   );
   check('spin 模式 → background（黄，只中止子代理）', true);
+
+  // 悬停明细浮层的启用判定（FR-004）：可点（红 / 黄）+ 有明细
+  assert.equal(abortHoverTipEnabled('query', true), true, '红色态有后台明细 → 出浮层');
+  assert.equal(abortHoverTipEnabled('background', true), true, '黄色态有明细 → 出浮层');
+  assert.equal(abortHoverTipEnabled('query', false), false, '红色态无明细 → 不出浮层（保留 title）');
+  assert.equal(abortHoverTipEnabled('background', false), false, '恢复态 spin 无明细 → 不出浮层');
+  assert.equal(abortHoverTipEnabled('none', true), false, '灰态不可点 → 不出浮层');
+  assert.equal(abortHoverTipEnabled('none', false), false, '灰态无明细 → 不出浮层');
+  check('悬停明细浮层启用：可点（红 / 黄）且有明细', true);
 
   finish();
 }

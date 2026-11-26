@@ -33,7 +33,7 @@ last_reviewed: 2026-11-25
 
 | 用例 | 覆盖的 US | 层级 |
 | --- | --- | --- |
-| `e2e/webview/conversation.spec.ts` | US-1、US-2、US-3、US-4、US-12、US-52（黄灯悬停明细浮层） | webview UI |
+| `e2e/webview/conversation.spec.ts` | US-1、US-2、US-3、US-4、US-12、US-52（悬停明细浮层） | webview UI |
 | `e2e/webview/permission.spec.ts` | US-18 | webview UI |
 | `e2e/webview/sessions.spec.ts` | US-19、US-20、US-21、US-22 | webview UI |
 | `e2e/webview/settings.spec.ts` | US-7、US-23、US-24、US-25、US-26、US-50（复选框不置灰） | webview UI |

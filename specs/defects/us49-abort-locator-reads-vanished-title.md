@@ -7,8 +7,8 @@ status: 已修
 `e2e/electron/subagentConcurrency.spec.ts` 的「US-49 前台中止：排队中的 2 个调用取消、
 不创建子代理会话」用 `button[title="终止"]` 定位 abort 按钮，点击之后再用同一个定位器断言
 `toBeEnabled()`。点击使会话从前台运行转入「只剩后台子代理」态，按钮随之转黄；而
-[docs/features/abort-button.md 第 2 节](../../docs/features/abort-button.md#fr-004黄色态悬停运行明细specs019specs054)
-规定黄色态**不设 native `title`**（悬停明细浮层取代），该属性被移除。定位器在点击后即匹配
+[docs/features/abort-button.md 第 2 节](../../docs/features/abort-button.md#fr-004悬停运行明细specs019specs054)
+规定有悬停明细时**不设 native `title`**（悬停明细浮层取代），该属性被移除。定位器在点击后即匹配
 不到任何元素，断言报 `element(s) not found`。
 
 `all.yml` 的 `e2e-electron` 车道因此整条红（123 passed / 1 failed），产品行为本身正确。
@@ -25,10 +25,10 @@ status: 已修
   await expect(abortButton).toBeEnabled({ timeout: 15_000 });
   ```
 
-- 按钮渲染（`src/webview/InputArea.tsx`）：`title={abortButtonState === 'background' ? undefined : t('inputArea.abort')}`。
-  转入 `background` 后该属性为 `undefined`，DOM 上不出现 `title`。
-- 规格依据（`docs/features/abort-button.md` FR-004）：『黄色态不设 native `title`（浮层取代），
-  红 / 灰维持「终止」文案』——实现符合规格，用例的定位方式不符合。
+- 按钮渲染（`src/webview/InputArea.tsx`）：`title={abortTipEnabled ? undefined : t('inputArea.abort')}`。
+  有明细可弹浮层时该属性为 `undefined`，DOM 上不出现 `title`。
+- 规格依据（`docs/features/abort-button.md` FR-004）：『有明细时按钮不设 `title`（浮层取代），
+  灰态与无明细维持「终止」文案』——实现符合规格，用例的定位方式不符合。
 - 本地实测（临时探针，跑完已还原）：点击后每 500ms 采样 3s，按钮稳定为
   `data-abort-state=background`、`title=null`、`button[title="终止"]` 匹配数 `0`，
   随后的 `toBeEnabled()` 报 `element(s) not found`。
@@ -55,7 +55,7 @@ status: 已修
 
 ## 不变量
 
-- 产品行为不变：abort 按钮的三态推导（`src/host/abortButtonState.ts`）、黄色态无 native
+- 产品行为不变：abort 按钮的三态推导（`src/host/abortButtonState.ts`）、有明细时无 native
   `title`、悬停明细浮层（`docs/features/abort-button.md` FR-004）全部不改。
 - 本用例原有的产品断言全部保留且不得放宽：侧栏稳定 5 条（父 1 + 子 4）、
   `subFirstRequests([1..6])` 恒为 4、「排队者不补位启动」的 3s 等待窗口、

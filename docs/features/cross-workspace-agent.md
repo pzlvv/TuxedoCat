@@ -122,8 +122,9 @@ TUI 不提供本能力。
   包含该子代理的 description。远程子代理在本进程没有会话条目，明细由发起方 Core 的
   远程登记投影成快照成员 `remoteSubAgents`（`sessionId` / `description` / `workspaceId` /
   `startedAt`，登记序），随 `subAgentRunning` 同源同发：结束事件到达或目标工作区不可用时
-  一起收敛。悬停浮层为远程条目显示描述、目标工作区身份与已执行时间
-  （[abort-button.md FR-004](../features/abort-button.md#fr-004黄色态悬停运行明细specs019specs054)）。
+  一起收敛。悬停浮层为远程条目显示描述、目标工作区身份与已执行时间；发起方前台在跑而
+  远程子代理仍在时按钮为红色，悬停同样列出它
+  （[abort-button.md FR-004](../features/abort-button.md#fr-004悬停运行明细specs019specs054)）。
 - abort 范围沿用 [docs/features/abort-button.md](../features/abort-button.md) 的三段判定；
   「中止已登记子代理」对远程子代理发 `CoreEvent.crossWorkspaceAgentAbortRequested`，
   由宿主转发 `UiEvent.abortRequested` 到目标 Core。
