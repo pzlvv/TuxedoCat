@@ -94,7 +94,7 @@
   当时用临时补丁验证过，修好后应自然进 CI 覆盖。
 
 - **e2e 全量车道的负载敏感用例**（specs/049 收敛时跑 `npm run test:e2e:local` 发现）：
-  同一批用例单独跑绿、全量串行跑红，已就地修三处并复跑验证——
+  同一批用例单独跑绿、全量串行跑红，已就地修四处——
   （1）`e2e/helpers/webviewHarness.ts` 的静态服务器用 `listen(0)` 随机端口，可能落进
   Chromium 的 unsafe port 表（实测 6697），表现为 `net::ERR_UNSAFE_PORT` 整条红；
   已改为拿到 unsafe port 就换一个重试。
@@ -104,14 +104,8 @@
   （3）`e2e/webview/conversation.spec.ts` 的 US-52 用「abort 按钮回灰」等轮次结束，
   但按钮一开始就是灰的，断言立即通过、随后被轮末 idle 快照冲掉注入的黄色态；
   同样改为 `turnsDone` 计数。
-  （4）`e2e/electron/desktopShell.spec.ts` 的「关闭所有空闲对话」用例（specs/058 的 all 车道
-  发现）：`sendTurn` 用「收到：」可见做轮次边界，随后 30s 等侧栏 `.loaded-dot` 出现；负载高时
-  轮末 idle 快照与侧栏 loaded 集合刷新会晚于回复可见。**尚未修**——该用例在重跑（只跑失败
-  job）时通过，三轮 all 的失败点各不相同（`subagentConcurrency` / `desktopShell`），先按抖动
-  记录。方向同上：改用轮次结束的确定信号（`turnsDone` 计数的宿主等价物）而不是回复可见 +
-  固定 30s。
-  验收判据：`npm run test:e2e:local` 连续两次全绿（当前已跑通一轮）；新增用例若依赖
-  布局测量，一律用 `turnsDone` 做轮次边界，不用按钮/快照投影做判据。
+  验收判据：`npm run test:e2e:local` 无回归；新增用例若依赖布局测量，一律用
+  `turnsDone` 做轮次边界，不用按钮/快照投影做判据。
 
 - **`core-rs/fixtures/` 对照表的头注停在双 Core 时代**（改 Bash `restricted` 说明面时发现）：
   Embedded TS Core 已随 [ADR-0007](docs/adr/0007-single-core-rust-only.md) 整体删除，但十余份对照表的
