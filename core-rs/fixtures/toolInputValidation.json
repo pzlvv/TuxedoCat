@@ -1,5 +1,5 @@
 {
-  "note": "工具入参 schema 校验对照表（Zod safeParse）。两侧共用：src/test/toolInputValidationParity.test.ts 断言 Embedded schema 产出该表，core-rs 的 tool_input_validation_parity_tests 断言 Rust parse_input 产出同结果。由 scripts/gen-tool-input-validation.mjs 生成。",
+  "note": "工具入参 schema 校验的期望值表（手工维护）。core-rs 的 tool_input_validation_parity_tests 断言 Rust parse_input 产出同结果。",
   "cases": [
     {
       "name": "Read-0",

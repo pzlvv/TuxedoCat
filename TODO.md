@@ -107,17 +107,6 @@
   验收判据：`npm run test:e2e:local` 无回归；新增用例若依赖布局测量，一律用
   `turnsDone` 做轮次边界，不用按钮/快照投影做判据。
 
-- **`core-rs/fixtures/` 对照表的头注停在双 Core 时代**（改 Bash `restricted` 说明面时发现）：
-  Embedded TS Core 已随 [ADR-0007](docs/adr/0007-single-core-rust-only.md) 整体删除，但十余份对照表的
-  `note` 与对应测试注释仍写着「Embedded（`n/...`）与 Standalone 逐字一致」「TS 侧测试断言本表 ==
-  `toolToLlmFormat` 的真实输出」，`toolSchema.json` 的 `divergences` 还留着一条只为迁就已删 TS 实现
-  的豁免（`Edit.replace_all` 的 `type=string` + 必填）。`rg toolSchema.json src/ e2e/ scripts/` 零命中，
-  这些对侧说明现在是纯噪音，会让读者以为仓库里仍有第二条实现。方向：走 L0 清理——逐份对照表把
-  `note` / 测试注释改成只描述 Rust 侧现状（对照表是冻结的期望值快照，测试断言 `definitions()` / 各
-  纯函数与它逐字段一致），清掉失去对侧的 `divergences` 条目。验收判据：`rg -n "Embedded" core-rs/fixtures/
-  core-rs/src/` 只剩真正描述历史的注释；`cargo test --manifest-path core-rs/Cargo.toml` 全绿（清理后
-  `schema_parity_tests` 的豁免集合收缩，`Edit.replace_all` 的类型 / 必填比对转入常规断言且仍然通过）。
-
 - **加密私钥的 passphrase 交互与手选私钥**（[specs/053](specs/053-ssh-key-first-connect/spec.md) 非目标）：
   远程接入的认证链当前把带 passphrase 的私钥当作不可用直接跳过，也不提供手选私钥文件
   的入口。方向：认证链在「所有来源都不可用」时把「输入 passphrase 解一条加密私钥」与

@@ -1,5 +1,5 @@
 {
-  "note": "Embedded（src/core/tools/PermissionPolicy.ts resolveToolPermission）与 Standalone（core-rs/src/permission.rs resolve_tool_permission）的权限加工对照表。TS 侧测试断言 resolveToolPermission 的真实输出等于本表；Rust 侧测试断言 resolve_tool_permission 的输出等于本表。路径用 __CWD__ 占位，两侧测试运行时替换为会话工作目录。displayArgs.diffHunks 在两侧比较前统一剔除：Standalone 不预计算该键，webview 会用同一份 beforeContent/afterContent 调 buildEditDiffHunks 得到一致渲染。",
+  "note": "权限加工的期望值表（手工维护）。core-rs/src/permission.rs 的 resolve_tool_permission 断言其输出与本表一致。路径用 __CWD__ 占位，测试运行时替换为会话工作目录。displayArgs.diffHunks 在比较前统一剔除：Core 不预计算该键，webview 会用同一份 beforeContent/afterContent 调 buildEditDiffHunks 得到一致渲染。",
   "cases": [
     {
       "name": "edit-single-line",
@@ -863,7 +863,7 @@
     },
     {
       "name": "edit-missing-file",
-      "why": "目标文件不存在：deny 文案与 Embedded 一致",
+      "why": "目标文件不存在：deny 文案按本表逐字断言",
       "tool": "Edit",
       "mode": "manual",
       "files": {},
@@ -1956,7 +1956,7 @@
     },
     {
       "name": "ask-user-question-auto-deny",
-      "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，message 与 Embedded 逐字一致，displayArgs 原样透传",
+      "why": "auto 模式下 AskUserQuestion 不可用：auto 分支覆盖 checkPermissions 直接 deny，message 按本表逐字一致，displayArgs 原样透传",
       "tool": "AskUserQuestion",
       "mode": "auto",
       "args": {

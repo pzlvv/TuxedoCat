@@ -1,5 +1,5 @@
 {
-  "note": "Embedded 的 Read 用 isbinaryfile 判定二进制；Standalone 的 core-rs is_binary_content 必须给出同样的结论。hex 为文件前若干字节（Rust 只读前 512+3 字节，Node 只读前 512 字节），expected 为 isbinaryfile 的真实结果。",
+  "note": "Read 判定二进制文件的期望值表（手工维护）。core-rs 的 is_binary_content 断言给出本表结论。hex 为文件前若干字节（Rust 只读前 512+3 字节），expected 为期望结果。",
   "cases": [
     {
       "name": "empty",

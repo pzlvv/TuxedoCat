@@ -1,5 +1,5 @@
 {
-  "note": "Embedded（src/core/tools/edit/Edit.ts）与 Standalone（core-rs/src/tools.rs run_edit）的 Edit 工具结果对照表。TS 侧测试断言本表等于 EditTool 的真实输出；Rust 侧测试断言 run_edit 的结果等于本表。error 为工具抛出的原始错误文案（Rust 侧 ToolOutcome::Error 的文本）。",
+  "note": "Edit 工具结果的期望值表（手工维护）。core-rs/src/tools.rs 的 run_edit 断言其结果与本表一致；error 为 ToolOutcome::Error 的原始文案。",
   "cases": [
     {
       "name": "single-line-partial",

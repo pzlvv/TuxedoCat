@@ -1,5 +1,5 @@
 {
-  "note": "Bash 权限决策随机对等对照表（固定种子生成）：Embedded `resolveToolPermission` ↔ Standalone `core-rs/src/permission.rs::decide`。",
+  "note": "Bash 权限决策的随机对等期望值表（固定种子生成）：core-rs/src/permission.rs::decide 断言决策结果与本表一致。",
   "seed": "0x5eedc0de",
   "cases": [
     {

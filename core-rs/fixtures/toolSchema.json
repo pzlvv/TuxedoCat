@@ -85,8 +85,7 @@
       "required": [
         "file_path",
         "old_string",
-        "new_string",
-        "replace_all"
+        "new_string"
       ],
       "properties": {
         "file_path": {
@@ -102,7 +101,7 @@
           "description": "The new string to replace it with"
         },
         "replace_all": {
-          "type": "string",
+          "type": "boolean",
           "description": "Replace all occurrences within the search range (default: false)"
         },
         "offset": {
@@ -340,11 +339,5 @@
       }
     }
   ],
-  "divergences": [
-    {
-      "tool": "Edit",
-      "property": "replace_all",
-      "reason": "TS 的 zodToJsonSchema 对 .default() 字段产出 type=string 且列为必填；Rust 按 zod 声明的 boolean/可选实现。此处豁免类型与必填差异。"
-    }
-  ]
+  "divergences": []
 }

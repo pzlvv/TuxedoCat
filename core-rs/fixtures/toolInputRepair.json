@@ -1,5 +1,5 @@
 {
-  "note": "工具入参修复对照表（RunTools.fixToolInput）。两侧共用：src/test/toolInputRepairParity.test.ts 断言 Embedded fixToolInput 产出该表，core-rs 的 fix_tool_input_parity_tests 断言 Rust engine::fix_tool_input 产出同结果（output 与 input 深度相等表示「未修复」）。由 scripts/gen-tool-input-repair-parity.mjs 生成。",
+  "note": "工具入参修复的期望值表（手工维护）。core-rs 的 fix_tool_input_parity_tests 断言 engine::fix_tool_input 产出同结果（output 与 input 深度相等表示「未修复」）。",
   "cases": [
     {
       "name": "top-string-object",

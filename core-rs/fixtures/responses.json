@@ -1,5 +1,5 @@
 {
-  "note": "OpenAI Responses API 纯函数对照表（Embedded `llm/ResponsesApi.ts` ↔ Standalone `core-rs/src/responses.rs`）。覆盖 URL / 工具 / 消息转换、status 映射、usage 提取、本地输入估算、usage 可信度与 output 校准；SSE 事件循环由 Rust 侧假 LLM 端到端用例覆盖。",
+  "note": "OpenAI Responses API 纯函数的期望值表（手工维护）。由 core-rs/src/responses.rs 断言。覆盖 URL / 工具 / 消息转换、status 映射、usage 提取、本地输入估算、usage 可信度与 output 校准；SSE 事件循环由 Rust 侧假 LLM 端到端用例覆盖。",
   "urls": [
     {
       "baseURL": "https://api.deepseek.com",

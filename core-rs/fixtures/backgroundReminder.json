@@ -1,5 +1,5 @@
 {
-  "note": "后台任务周期性提醒对照表：Embedded（src/core/tools/bash/BackgroundReminder.ts）与 Standalone（core-rs/src/bash_task.rs）逐字一致。由 scripts/gen-background-reminder-parity.mjs 生成。",
+  "note": "后台任务周期性提醒的期望值表（手工维护）。core-rs/src/bash_task.rs 的提醒文案与节奏断言本表逐字一致。",
   "intervalsMin": [
     5,
     10,

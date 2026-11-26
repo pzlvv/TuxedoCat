@@ -1,5 +1,5 @@
 {
-  "note": "Skill 系统纯函数的期望值表（**手工维护**：原 Embedded `skills/*` 生成器已随 ADR-0007 退役，改行为时直接改这里）。覆盖 frontmatter 解析、变量替换与技能清单格式化；目录扫描 / 内置注册 / 同名仲裁由 `core-rs/src/skills_tests.rs` 的单测覆盖。",
+  "note": "Skill 系统纯函数的期望值表（手工维护：改行为时直接改这里）。覆盖 frontmatter 解析、变量替换与技能清单格式化；目录扫描 / 内置注册 / 同名仲裁由 core-rs/src/skills_tests.rs 的单测覆盖。",
   "frontmatter": [
     {
       "content": "plain text, no frontmatter",
