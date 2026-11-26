@@ -959,7 +959,9 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   // 基线：真实磁盘上不存在
   expect((await sshExec(`test -e ${shQuote(realPath)} && echo yes || echo no`)).stdout.trim()).toBe('no');
 
-  // 建 Overlay 会话并让模型写文件。handler 先就位再勾选（理由见 FR-002 用例）
+  // 建 Overlay 会话并让模型写文件。handler 先就位再勾选（理由见 FR-002 用例）。
+  // 第二轮的收尾文本只是让会话正常收口，**不作为判据**——判据落在下面「工具结果已回投」
+  // 与「磁盘没变」两条上，见紧随其后的注释。
   mockLlm!.setHandler((req) => {
     if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
       return { kind: 'text', text: 'OVERLAY-WRITE-DONE' };
@@ -973,7 +975,16 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   await checkWorkViewOption(chatPage);
   await chatPage.fill('textarea.input-textarea', '在隔离视图里写文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
-  await expect(chatPage.getByText('OVERLAY-WRITE-DONE').first()).toBeVisible({ timeout: 45_000 });
+  // 轮次边界等**工具结果回投到下一轮请求**，不等 `OVERLAY-WRITE-DONE` 上屏：
+  // 后者是 UI 渲染结果，慢 runner 上「工具执行 → 回投 → 下一轮请求 → 文本落 DOM」
+  // 四段都可能被负载拖长，45s 内看不到就被判红（run 45767358312 / 45562189030 两次
+  // 实证，同一条用例同一断言，而它的 17 条邻居全绿——链路本身是通的）。
+  // 这里等的事实是「某次模型请求的末条消息是含目标文件的工具结果」，它由 Core 发出的
+  // HTTP 请求定义，不经 UI、不依赖渲染时序。文本是否上屏不是本用例要判的事实
+  // （AC-31 判的是「视图内写成功、真实磁盘没变」，落在下面两条断言上）。
+  await expect
+    .poll(() => toolResultMatching(mockLlm!.requests, targetName), { timeout: 45_000 })
+    .toContain(targetName);
 
   // AC-31：写进了叠加视图，真实磁盘没变。
   //
