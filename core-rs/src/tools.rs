@@ -689,7 +689,7 @@ const BASH_DETACH_GATE_MESSAGE: &str = "Bash: command uses `{}`.\n\
 const BASH_RESTRICTED_FIELD: &str = "Defaults to true; normally pass true.";
 
 /// `restricted` 闸门的 sleep 分支失败文案
-/// （`docs/features/background-bash.md` 第 2 节 FR-002，逐字锁定、不插值）。
+/// （`docs/features/background-bash.md` 第 2 节 FR-005，逐字锁定、不插值）。
 ///
 /// 只写模型可感知的两条出路：条件 poll，或者干脆结束本轮等完成通知；末尾一句给误拦截
 /// 的逃生口（`restricted: false` 重跑，`docs/features/background-bash.md` 第 2 节 FR-007）。
@@ -697,14 +697,16 @@ pub(crate) const BASH_RESTRICTED_SLEEP_MESSAGE: &str = "Bash: do not use `sleep`
 poll on a condition (e.g. until the output exists) or simply stop and wait: you are notified when the background task completes and the turn continues.\n\
 - If you are certain this is a false positive, re-run the same command with restricted: false.";
 
-/// `restricted` 闸门的 sed 分支失败文案
-/// （`docs/features/background-bash.md` 第 2 节 FR-003，逐字锁定、不插值）。
+/// 「`cd` + `sed` 读 / 改文件」的工具结果提醒
+/// （`docs/features/background-bash.md` 第 2 节 FR-009，逐字锁定、不插值）。
 ///
-/// `cd` + `sed` 组合是把 `sed` 当文件读取器用，读文件的入口是 `Read` 工具；末尾一句给
-/// 误拦截的逃生口（`restricted: false` 重跑，`docs/features/background-bash.md` 第 2 节 FR-007）。
-pub(crate) const BASH_RESTRICTED_SED_MESSAGE: &str = "Bash: `sed` is being used to read a file — \
-use the `Read` tool to read the file instead.\n\
-- If you are certain this is a false positive, re-run the same command with restricted: false.";
+/// 这条写法**不再被闸门拒绝**，命令照常执行——提醒只引导模型改用 `Read` / `Edit`
+/// （读文件的结构化入口），并保留「内容要流进另一条命令时照常用 `sed`」的例外。
+pub(crate) const BASH_SED_READ_REMINDER: &str =
+    "[reminder] The command reads or edits a file with `sed` — \
+use the `Read` tool instead: it returns line numbers, an `offset` / `limit` window, and handles \
+xlsx / image files; use `Edit` for changes. Keep `sed` when the text must flow into another \
+command (pipes, redirection).";
 
 /// 工具定义（Anthropic 风格：`name` / `description` / `input_schema`）
 pub fn definitions() -> Vec<Value> {
@@ -1437,7 +1439,7 @@ pub(crate) fn contains_sleep_command(command: &str) -> bool {
 
 /// `restricted` 闸门的共用切段：闸门判据只看「真正的命令」。
 ///
-/// 口径（`docs/features/background-bash.md` 第 2 节 FR-002）：heredoc 正文先在屏蔽副本上
+/// 口径（`docs/features/background-bash.md` 第 2 节 FR-005）：heredoc 正文先在屏蔽副本上
 /// 去掉（正文对 shell 是字面文本），换行与 `;` / `&&` / `||` / `|` 一样是命令分隔，纯注释
 /// 段不构成命令。换行只在这里切开——`permission::split_by_separators` 是只读 / 破坏性 /
 /// detach 共用的口径，不为闸门改它。
@@ -1453,7 +1455,7 @@ pub(crate) fn gate_segments(command: &str) -> Vec<String> {
         .collect()
 }
 
-/// 命令里是否含 `sleep` 命令（`restricted` 闸门，FR-002）：任一段命令名是 `sleep` 即命中，
+/// 命令里是否含 `sleep` 命令（`restricted` 闸门，FR-005）：任一段命令名是 `sleep` 即命中，
 /// 不再区分它在首段还是后续段、后面有没有别的命令。
 ///
 /// 与 `contains_sleep_command` 的差别是口径：后者服务前台超时死线后移与兜底提醒，不认换行、
@@ -1464,10 +1466,22 @@ pub(crate) fn has_sleep_command(command: &str) -> bool {
         .any(|segment| extract_command_name(segment) == "sleep")
 }
 
-/// 命令是否是「去掉所有 `cd` 段后只剩 `sed`」（`restricted` 闸门，FR-003）。
+/// 把「`cd` + `sed` 读 / 改文件」的提醒追加到 Bash 工具结果末尾（FR-009）。
+///
+/// 命中判据与旧闸门同口径（`is_cd_sed_only_command`），但命令**照常执行**：提醒只引导
+/// 模型改用 `Read` / `Edit` 这类结构化入口。未命中时原样返回，不改变既有结果。
+fn with_sed_read_reminder(command: &str, content: String) -> String {
+    if !is_cd_sed_only_command(command) {
+        return content;
+    }
+    format!("{content}\n{BASH_SED_READ_REMINDER}")
+}
+
+/// 命令是否是「去掉所有 `cd` 段后只剩 `sed`」（工具结果提醒的判据，FR-009）。
 ///
 /// 这类写法把 `sed` 当文件读取器用，读文件的入口是 `Read` 工具。读形态（`-n`）与写形态
-/// （`-i`）一视同仁；只要还有别的段（管道上下游、其它命令）就不算「只剩 sed」。
+/// （`-i`）一视同仁；只要还有别的段（管道上下游、其它命令）就不算「只剩 sed」——
+/// 那是有上下游的文本加工，不追加提醒。
 pub(crate) fn is_cd_sed_only_command(command: &str) -> bool {
     let mut saw_sed = false;
     for segment in gate_segments(command) {
@@ -1949,9 +1963,10 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             ctx.background.clone(),
             view,
         ) {
-            Ok(task_id) => {
-                ToolOutcome::Success(background_result_text(&task_id, "", "", false, None))
-            }
+            Ok(task_id) => ToolOutcome::Success(with_sed_read_reminder(
+                &command,
+                background_result_text(&task_id, "", "", false, None),
+            )),
             // spawn / 打开输出文件失败时 stdout 为空、退出码 1，
             // 错误文本走普通拼接路径（`Result.ts` 会再补一行 `Exit code: 1`）。
             Err(error) => ToolOutcome::CommandFailed {
@@ -2191,6 +2206,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     if cancelled {
         content.push_str("\nCommand was interrupted");
     }
+    content = with_sed_read_reminder(&command, content);
     // 非零退出 / 中断：UI 状态为 error（但 tool_result 不带 is_error）。
     // 会话中止：退出码 130。
     //
@@ -2303,6 +2319,7 @@ fn run_bash_through_proxy(
 Command was interrupted",
                 );
             }
+            content = with_sed_read_reminder(command, content);
             if status != 0 || cancelled {
                 ToolOutcome::CommandFailed {
                     text: content,
@@ -2441,12 +2458,9 @@ fn auto_background_command(
         ""
     };
 
-    ToolOutcome::Success(background_result_text(
-        &task_id,
-        &stdout,
-        reminder,
-        true,
-        Some(elapsed),
+    ToolOutcome::Success(with_sed_read_reminder(
+        command,
+        background_result_text(&task_id, &stdout, reminder, true, Some(elapsed)),
     ))
 }
 
@@ -2500,7 +2514,7 @@ pub(crate) fn js_coerce_bool(value: Option<&Value>) -> bool {
 /// Bash 的 `restricted` 参数（缺省 `true`）。
 ///
 /// 与 `detach` / `run_in_background`（缺省 `false`）方向相反：**没传就是收紧**，只有显式给出
-/// 假值才关闭两条限制。给定值一律走 `js_coerce_bool`（与既有布尔字段同一套 JS 真值语义，
+/// 假值才关闭 `sleep` 这条限制。给定值一律走 `js_coerce_bool`（与既有布尔字段同一套 JS 真值语义，
 /// 即字符串 `"false"` 视为真）。默认值只在这一处定义
 /// （`docs/architecture/principles.md` 第 9 节）。
 pub(crate) fn bash_restricted(input: &Value) -> bool {

@@ -739,7 +739,7 @@ fn contains_sleep_command_splits_on_separators() {
     assert!(!contains_sleep_command("echo done"));
 }
 
-/// `restricted` 闸门的 sleep 判据（`docs/features/background-bash.md` 第 2 节 FR-002）：
+/// `restricted` 闸门的 sleep 判据（`docs/features/background-bash.md` 第 2 节 FR-005）：
 /// 任一段命令名是 `sleep` 即命中，不再区分首段 / 后续段；换行与 `;` / `&&` / `||` / `|`
 /// 一样是分隔；纯注释段、引号内的字样与 heredoc 正文都不构成命中。
 #[test]
@@ -752,7 +752,7 @@ fn restricted_gate_rejects_sleep_anywhere() {
         "sleep 10\ncat a.txt",
         "FOO=1 sleep 5 && x",
         "sleep 30  # wait\ncat a.txt",
-        // 首段不是 sleep、只有单条 sleep 也命中（FR-002 收紧后的口径）
+        // 首段不是 sleep、只有单条 sleep 也命中（闸门收紧后的口径）
         "cat a.txt; sleep 30",
         "echo anything; sleep 10",
         "npm run build && sleep 5",
@@ -781,10 +781,10 @@ fn restricted_gate_rejects_sleep_anywhere() {
     }
 }
 
-/// `restricted` 闸门的 sed 判据（`docs/features/background-bash.md` 第 2 节 FR-003）：
-/// 去掉所有 `cd` 段后只剩 `sed` 才算命中；有别的段就不是「拿 sed 替代读文件」。
+/// 「`cd` + `sed` 读 / 改文件」的提醒判据（`docs/features/background-bash.md` 第 2 节
+/// FR-009）：去掉所有 `cd` 段后只剩 `sed` 才算命中；有别的段是文本加工，不追加提醒。
 #[test]
-fn restricted_gate_rejects_cd_and_sed_only() {
+fn sed_read_reminder_needs_cd_and_sed_only() {
     for command in [
         "sed -n '1,40p' f.txt",
         "sed -i 's/a/b/' f.txt",
@@ -817,6 +817,44 @@ fn restricted_gate_rejects_cd_and_sed_only() {
     ] {
         assert!(!is_cd_sed_only_command(command), "{command}");
     }
+}
+
+/// 命中判据的 `sed` 命令**照常执行**，结果末尾追加一条改用 `Read` / `Edit` 的提醒
+/// （FR-009）；未命中时不追加。
+#[test]
+fn sed_read_command_runs_and_carries_the_read_reminder() {
+    let sandbox = Sandbox::new("tools-bash-sed-reminder");
+    let target = sandbox.workspace.join("note.txt");
+    std::fs::write(&target, "alpha\nbeta\n").expect("write fixture");
+
+    let hit = execute(
+        "Bash",
+        &json!({ "command": "sed -n 2p note.txt", "description": "read with sed" }),
+        &context(&sandbox),
+    );
+    let hit_text = text(&hit);
+    assert!(!hit.is_error(), "sed 不再被闸门拒绝：{hit_text}");
+    assert!(hit_text.contains("beta"), "命令照常执行：{hit_text}");
+    assert!(
+        hit_text.contains(crate::tools::BASH_SED_READ_REMINDER),
+        "结果末尾应带改用 Read / Edit 的提醒：{hit_text}"
+    );
+    assert!(
+        hit_text.contains("use the `Read` tool"),
+        "提醒要点名 Read：{hit_text}"
+    );
+
+    let miss = execute(
+        "Bash",
+        &json!({ "command": "sed -n 2p note.txt | head -1", "description": "pipeline with sed" }),
+        &context(&sandbox),
+    );
+    let miss_text = text(&miss);
+    assert!(
+        !miss_text.contains("[reminder]"),
+        "有上下游的文本加工不追加提醒：{miss_text}"
+    );
+    assert!(miss_text.contains("beta"), "命令照常执行：{miss_text}");
 }
 
 #[test]
@@ -5292,7 +5330,7 @@ fn bash_schema_exposes_detach_with_minimal_description() {
 /// 只声明默认值与常规取值，判据细节与逃生口只在闸门失败文案里给，`default: true`
 /// 与运行期读取口径（`bash_restricted` 缺省 true）同值。
 ///
-/// 模型可见文本一律英文，且不提前点明它管的是哪两类写法——用途由失败文案在命中时揭示
+/// 模型可见文本一律英文，且不提前点明它管的是哪类写法——用途由失败文案在命中时揭示
 /// （`docs/features/background-bash.md` 第 2 节 FR-006）。
 #[test]
 fn bash_schema_exposes_restricted_with_minimal_description() {

@@ -72,14 +72,14 @@ fn risk_mode_allows_safe_commands() {
     );
 }
 
-/// `restricted` 闸门的 sleep 分支（`docs/features/background-bash.md` 第 2 节 FR-002 /
-/// FR-005）：三档工作模式给同一个 deny 与同一段文案——闸门不是权限分级，不能因为
+/// `restricted` 闸门的 sleep 分支（`docs/features/background-bash.md` 第 2 节 FR-005）：
+/// 三档工作模式给同一个 deny 与同一段文案——闸门不是权限分级，不能因为
 /// auto / risk 把 ask 放行就漏过去。
 #[test]
 fn restricted_sleep_gate_denies_in_every_agent_mode() {
     for command in [
         "sleep 30 && cat a.txt",
-        // 单条 sleep 同样命中（FR-002 收紧后的口径）
+        // 单条 sleep 同样命中（闸门收紧后的口径）
         "sleep 30",
         "echo anything; sleep 10",
     ] {
@@ -99,25 +99,21 @@ fn restricted_sleep_gate_denies_in_every_agent_mode() {
     }
 }
 
-/// 两条失败文案都以「误拦截逃生口」收尾（FR-007）：模型能照着把同一个命令带
+/// 失败文案以「误拦截逃生口」收尾（FR-007）：模型能照着把同一个命令带
 /// `restricted: false` 重跑，而不需要去猜这一句的措辞。
 #[test]
 fn restricted_messages_name_the_escape_hatch() {
-    for message in [
-        crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE,
-        crate::tools::BASH_RESTRICTED_SED_MESSAGE,
-    ] {
-        assert!(
-            message.ends_with(
-                "- If you are certain this is a false positive, re-run the same command with restricted: false."
-            ),
-            "got {message}"
-        );
-        assert!(
-            message.contains("restricted: false"),
-            "逃生口必须点名参数：{message}"
-        );
-    }
+    let message = crate::tools::BASH_RESTRICTED_SLEEP_MESSAGE;
+    assert!(
+        message.ends_with(
+            "- If you are certain this is a false positive, re-run the same command with restricted: false."
+        ),
+        "got {message}"
+    );
+    assert!(
+        message.contains("restricted: false"),
+        "逃生口必须点名参数：{message}"
+    );
 }
 
 /// sleep 判据不误伤「不是命令」的 sleep 字样（FR-002 边界）：引号内、heredoc 正文、
@@ -141,35 +137,40 @@ fn restricted_gate_ignores_quoted_comment_and_heredoc_sleep() {
     }
 }
 
-/// `restricted` 闸门的 sed 分支（FR-003 / FR-005）：三档同一个 deny 文案；`sed` 不在只读
-/// 白名单，判据点必须在只读判定之前——否则 manual 会先弹一次确认框再由闸门拒绝。
+/// `sed` 读 / 改文件的写法**不被闸门拒绝**（FR-009）：命令照常执行，引导改走 `Read` /
+/// `Edit` 是工具结果里的提醒，不是权限判定。`sed` 不在只读白名单，因此按既有权限路径
+/// 判定：`manual` 询问、`risk` / `auto` 放行（它不是破坏性命令，也不带 detach）。
 #[test]
-fn restricted_sed_gate_denies_in_every_agent_mode() {
+fn sed_read_commands_follow_the_existing_permission_path() {
     for command in [
         "sed -n '1,40p' f.txt",
         "cd src && sed -n 1p a.ts",
         "cd a; sed -n 1p f; cd b; sed -i 's/x/y/' f",
     ] {
         let args = bash(command);
-        for mode in ["manual", "risk", "auto"] {
-            assert_eq!(
-                decide("Bash", &args, mode, CWD),
-                Decision::Deny(crate::tools::BASH_RESTRICTED_SED_MESSAGE.to_string()),
-                "command={command} mode={mode}"
-            );
-        }
+        assert_eq!(
+            decide("Bash", &args, "manual", CWD),
+            Decision::Ask,
+            "command={command}"
+        );
+        assert_eq!(
+            decide("Bash", &args, "risk", CWD),
+            Decision::Allow,
+            "command={command}"
+        );
+        assert_eq!(
+            decide("Bash", &args, "auto", CWD),
+            Decision::Allow,
+            "command={command}"
+        );
     }
 }
 
-/// `restricted: false` 关闭两条限制（FR-004）：sleep 与 cd+sed 都回到既有权限路径
-/// （sleep 不是只读 → manual 询问；sed 同样不是只读 → manual 询问）。
+/// `restricted` 只关 sleep 一条限制（FR-005）：`sed` 在任何取值下都走既有权限路径，
+/// 开不开 `restricted` 不改变它的判定。
 #[test]
-fn restricted_false_lifts_both_gates() {
-    for command in [
-        "sleep 30",
-        "sleep 30 && cat a.txt",
-        "cd src && sed -n 1p a.ts",
-    ] {
+fn restricted_false_lifts_the_sleep_gate_only() {
+    for command in ["sleep 30", "sleep 30 && cat a.txt"] {
         let args = json!({ "command": command, "restricted": false });
         assert_eq!(
             decide("Bash", &args, "manual", CWD),
@@ -182,14 +183,24 @@ fn restricted_false_lifts_both_gates() {
             "{command}"
         );
     }
+    // sed：`restricted` 的真假给出同一结果
+    for command in ["cd src && sed -n 1p a.ts"] {
+        for restricted in [true, false] {
+            let args = json!({ "command": command, "restricted": restricted });
+            assert_eq!(
+                decide("Bash", &args, "manual", CWD),
+                Decision::Ask,
+                "{command} restricted={restricted}"
+            );
+        }
+    }
 }
 
-/// `restricted` 两条判据都用 deny、不是 ask（FR-005 / AC-5）：ask 在 auto 模式会被
-/// 放行、在 manual 下会先弹一次确认框，三档一致性就没了；`sed` 也不在只读白名单，
-/// 落在只读判定之后还会多弹一次确认框。
+/// `restricted` 的 sleep 判据用 deny、不是 ask（FR-005 / AC-5）：ask 在 auto 模式会被
+/// 放行、在 manual 下会先弹一次确认框，三档一致性就没了。
 #[test]
-fn restricted_gates_do_not_use_ask() {
-    for command in ["sleep 30 && cat a.txt", "cd src && sed -n 1p a.ts"] {
+fn restricted_gate_does_not_use_ask() {
+    for command in ["sleep 30 && cat a.txt", "echo anything; sleep 10"] {
         for mode in ["manual", "risk", "auto"] {
             let decision = decide("Bash", &bash(command), mode, CWD);
             assert!(
@@ -241,10 +252,10 @@ fn restricted_gate_is_not_lifted_by_detach() {
     );
 }
 
-/// 两条判据同时命中时的优先顺序（FR-005）：sleep 分支先判，报 sleep 文案——
-/// 命令的主因是拿 `sleep` 等结果，`sed` 只是附带的替读写法。
+/// 含 `sed` 的写法命中 sleep 判据时只报 sleep 文案（FR-005）：`sed` 不再参与闸门，
+/// 命令的主因是拿 `sleep` 等结果。
 #[test]
-fn restricted_sleep_branch_wins_over_sed_branch() {
+fn restricted_sleep_gate_reports_sleep_message_for_mixed_commands() {
     assert_eq!(
         decide(
             "Bash",

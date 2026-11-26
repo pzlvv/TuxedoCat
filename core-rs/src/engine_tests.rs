@@ -5275,6 +5275,11 @@ fn field_level_json_string_input_is_unwrapped_and_persisted_as_an_update() {
         })
         .expect("加载后应当有 tool_use block");
     assert_eq!(loaded["input"]["todos"][0]["content"], "写测试");
+
+    // TodoWrite 会写全局会话表（`tools::TODOS`）：不清理会让同片的其它用例
+    // （如 `main_tests` 的 `ui_request_answers_session_todos`，同样用 `s1`）读到
+    // 这条清单。分片是按用例名取模切的，同片组合随用例增删而变——清理是必须的。
+    crate::tools::clear_session_todos("s1");
 }
 
 /// 工具不存在：不发 toolCall、不执行，但仍发一次 toolPermissionRequested

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-25
+last_reviewed: 2026-11-27
 ---
 
 # <product-name> 用户故事（US）
@@ -121,12 +121,14 @@ US-66 的双实例争用——双实例场景依赖两个宿主进程（electron
 对照 `core-rs/fixtures/coreTextKeys.json` 锁定；US-67 的 detach 闸门与授权——构造判据、
 闸门文案与权限分级由 core-rs 单测（`tools_tests` / `permission_tests` 的 detach 用例）
 锁定，确认弹窗复用既有权限确认组件（US-18 的 e2e 已覆盖渲染与提交链路），不新增
-e2e 用例；US-76 / US-78 的 `restricted` 闸门——判定只看命令文本（分隔符、换行、引号、
+e2e 用例；US-76 的 `restricted` 闸门——判定只看命令文本（分隔符、换行、引号、
 纯注释段、heredoc 正文屏蔽），由 core-rs 单测（`tools_tests` 的
-`restricted_gate_rejects_sleep_anywhere` / `restricted_gate_rejects_cd_and_sed_only`
-与 `permission_tests` 的 `restricted_*` 用例）锁定三档模式一致与放行范围；US-78 的
-「优先用 `Read` 看文件内容」是提示词规则（`cat` 不进闸门），由 `prompt_tests` 的
-`tool_details_prefer_read_over_cat_and_sed` 与 `systemPrompt.json` 对照表锁定；e2e 车道
+`restricted_gate_rejects_sleep_anywhere` 与 `permission_tests` 的 `restricted_*` 用例）
+锁定三档模式一致与放行范围；US-78 的「优先用 `Read` 读文件」是提示词规则与工具结果提醒
+（`cat` / `sed` 都不进闸门），由 `tools_tests` 的
+`sed_read_command_runs_and_carries_the_read_reminder`、`permission_tests` 的 `sed_read_*`
+与 `prompt_tests` 的 `tool_details_prefer_read_over_cat_and_sed` /
+`tool_details_prefer_grep_and_glob_tools`、`systemPrompt.json` 对照表锁定；e2e 车道
 不为纯文本判定新增用例）；US-77 的工具 shell PATH 前置与远端部署——端到端验证要真实
 LLM 轮次与四平台产物，由 core-rs 的 `shell_env_tests`（前置顺序 / 去重 / 空表不改 PATH）、
 `prompt_tests`（提示词规则与对照表）、`sshDaemonBootstrap.test.ts`（两份工具补齐）与
