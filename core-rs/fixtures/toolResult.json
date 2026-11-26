@@ -1,5 +1,5 @@
 {
-  "note": "Embedded（src/core/tools/*，真实 tool.call + mapToolResultToToolResultBlockParam）与 Standalone（core-rs/src/tools.rs 的 tools::execute）的工具结果对照表。TS 侧测试断言本表等于真实输出；Rust 侧测试断言 tools::execute 的结果等于本表。用例只在临时目录里跑，expected / expectedError 不含绝对路径。",
+  "note": "工具结果的期望值表（手工维护）。core-rs/src/tools.rs 的 tools::execute 断言其结果与本表一致。用例只在临时目录里跑，expected / expectedError 不含绝对路径。",
   "cases": [
     {
       "name": "read-empty-file-path",

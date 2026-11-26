@@ -1,5 +1,5 @@
 {
-  "description": "历史链重建对照表（Embedded loadConversation ↔ Standalone history::parse_messages）：行序 → parentUuid BFS 后的消息顺序。每条 message 带 marker 字段用于断言顺序；lines 里的字符串按原始行写入 jsonl（用于损坏行用例）。",
+  "description": "历史链重建的期望值表（手工维护）：行序 → parentUuid BFS 后的消息顺序。core-rs/src/history.rs 的 parse_messages 断言其结果与本表一致。每条 message 带 marker 字段用于断言顺序；lines 里的字符串按原始行写入 jsonl（用于损坏行用例）。",
   "cases": [
     {
       "name": "乱序行按 parentUuid 链重排",

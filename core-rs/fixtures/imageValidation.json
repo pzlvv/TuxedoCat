@@ -1,5 +1,5 @@
 {
-  "note": "Read 读图片时的「魔数 + 结构完整性」校验对照表：Embedded 的 src/core/tools/read/imageValidation.ts::validateImageBytes 与 Standalone 的 tools::image_validation_failure 必须给出同一个结论。hex 是完整文件字节，mediaType 是扩展名声明的 MIME，expected 为 null（通过）或失败原因标识。校验只看文件头与结构自洽性（声明长度 / 结束标记），不校验 CRC、不解码像素——那两类问题 provider 侧同样会报错。",
+  "note": "Read 读图片时的「魔数 + 结构完整性」校验期望值表（手工维护）。core-rs/src/tools.rs 的 image_validation_failure 断言给出本表结论。hex 是完整文件字节，mediaType 是扩展名声明的 MIME，expected 为 null（通过）或失败原因标识。校验只看文件头与结构自洽性（声明长度 / 结束标记），不校验 CRC、不解码像素——那两类问题 provider 侧同样会报错。",
   "cases": [
     {
       "name": "png-empty",

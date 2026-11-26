@@ -1,5 +1,5 @@
 {
-  "note": "Spin Design 引擎纯函数对照表（Embedded `spin/Engine.ts` / `spin/SpinJudger.ts` ↔ Standalone `core-rs/src/spin.rs`）。只覆盖未赋值变量 / 结构问题分类 / 拓扑排序 / 下一个节点 / rollout 归一化 / For Each 分行 / 子代理 prompt 拼装 / 变量替换 / 验收 JSON 提取 / 迭代进度计算；真正跑子代理与文件读写的流程由 Rust 侧假 SpinHost 单测覆盖。",
+  "note": "Spin Design 引擎纯函数的期望值表（手工维护）。由 core-rs/src/spin.rs 断言。只覆盖未赋值变量 / 结构问题分类 / 拓扑排序 / 下一个节点 / rollout 归一化 / For Each 分行 / 子代理 prompt 拼装 / 变量替换 / 验收 JSON 提取 / 迭代进度计算；真正跑子代理与文件读写的流程由 Rust 侧假 SpinHost 单测覆盖。",
   "variablesWithoutValue": [
     {
       "name": "缺少 variables",

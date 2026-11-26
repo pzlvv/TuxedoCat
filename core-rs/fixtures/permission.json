@@ -1,5 +1,5 @@
 {
-  "note": "Embedded（src/core/tools/PermissionPolicy.ts）与 Standalone（core-rs/src/permission.rs）的权限决策对照表。两侧测试读同一份文件，任一侧偏离都会失败。expect: allow | ask | deny。",
+  "note": "权限决策的期望值表（手工维护）。core-rs/src/permission.rs 断言决策结果与本表一致。expect: allow | ask | deny。",
   "cases": [
     { "tool": "Bash", "mode": "risk", "args": { "command": "npm test" }, "expect": "allow", "why": "普通命令，risk 模式自动放行" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "npm test" }, "expect": "ask", "why": "manual 模式一律询问" },

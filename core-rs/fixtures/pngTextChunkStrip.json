@@ -1,5 +1,5 @@
 {
-  "note": "Read 读 PNG 时的「文本元数据块剥离」对照表：Embedded 的 src/core/tools/read/imageValidation.ts::stripPngTextChunks 与 Standalone 的 tools::strip_png_text_chunks 必须给出同一份载荷。hex 是输入 PNG 的完整字节，expectedHex 是剥离后应发出去的字节；块类型按 ASCII 精确匹配，只丢 tEXt / zTXt / iTXt，其余块（含 gAMA / tRNS 等非文本块与非法类型 text）原样保留。用例都是结构自洽、CRC 正确的合法 PNG（IDAT 是真实 zlib 流）。",
+  "note": "Read 读 PNG 时的「文本元数据块剥离」期望值表（手工维护）。core-rs/src/tools.rs 的 strip_png_text_chunks 断言产出本表的 expectedHex。hex 是输入 PNG 的完整字节；块类型按 ASCII 精确匹配，只丢 tEXt / zTXt / iTXt，其余块（含 gAMA / tRNS 等非文本块与非法类型 text）原样保留。用例都是结构自洽、CRC 正确的合法 PNG（IDAT 是真实 zlib 流）。",
   "cases": [
     {
       "name": "png-no-text-chunks",

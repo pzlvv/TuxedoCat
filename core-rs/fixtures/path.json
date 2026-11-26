@@ -1,5 +1,5 @@
 {
-  "note": "路径展开对照表（Embedded `utils/path.ts::expandPath` ↔ Standalone `core-rs/src/tools.rs::expand_path`）。输入 / 期望里的 `__CWD__` / `__HOME__` 是占位符，分隔符统一为 `/`。`platform` 标出只在对应平台成立的用例。",
+  "note": "路径展开的期望值表（手工维护）。core-rs/src/tools.rs 的 expand_path 断言与本表一致。输入 / 期望里的 __CWD__ / __HOME__ 是占位符，分隔符统一为 /。platform 标出只在对应平台成立的用例。",
   "cases": [
     {
       "name": "empty",

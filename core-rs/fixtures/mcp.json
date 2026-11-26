@@ -1,5 +1,5 @@
 {
-  "note": "MCP 纯函数对照表（Embedded `mcp/*` ↔ Standalone `core-rs/src/mcp.rs` + `mcp_config.rs`）。只覆盖 `tools/call` 结果展平 / `tools/list` 分页与过滤 / 工具名拼接 / Windows 参数引号 / 传输类型判定 / `mcp.json` 解析与启用状态合并；stdio 子进程与 HTTP 传输由 Rust 侧真实进程 / 假 HTTP 服务器单测覆盖。",
+  "note": "MCP 纯函数的期望值表（手工维护）。由 core-rs/src/mcp.rs + mcp_config.rs 断言。只覆盖 tools/call 结果展平 / tools/list 分页与过滤 / 工具名拼接 / Windows 参数引号 / 传输类型判定 / mcp.json 解析与启用状态合并；stdio 子进程与 HTTP 传输由 Rust 侧真实进程 / 假 HTTP 服务器单测覆盖。",
   "callResults": [
     {
       "name": "纯文本",
