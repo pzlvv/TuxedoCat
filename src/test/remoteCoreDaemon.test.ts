@@ -315,6 +315,23 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * 按墙钟等满 `ms` 毫秒。
+ *
+ * `setTimeout` 的到期判定用的是事件循环缓存的时钟，可能与注册那一刻的 `Date.now()` 差
+ * 一点：注册前刚跑过同步代码时，缓存时钟落后于墙钟，于是回调触发时墙钟差小于延时
+ * （本机实测 3000 次 `sleep(600)` 里 10 次，最小 599ms）。断言里「观察窗真的盖住了这么久」
+ * 这类语义要求按墙钟兑现，单次 `setTimeout` 兑现不了，所以循环到墙钟满足为止。
+ */
+async function waitForWallClock(ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await sleep(remaining);
+  }
+}
+
+/**
  * 同步卡住事件循环 `ms` 毫秒。
  *
  * 用来复现「本进程被调度出去」：`setTimeout` 只保证不早于，迟到量没有上界，
@@ -1026,26 +1043,43 @@ async function run(): Promise<void> {
       event: { type: 'conversationOpened', sessionId: 's1' },
     } as never);
     check('RT-1 大帧开始下传（字节已流动，但没有完整帧）', await waitFor(() => fake.written() > 0));
-    const startedAt = Date.now();
+    const pongsBeforeWindow = fake.independentPongs();
     // 观察窗覆盖「死线 + 宽限」（80 + 250 = 330ms）再加余量：大帧停在中途、业务链路此后
-    // 不再有字节，若心跳真被大帧饿死，判死会落在窗内而让断言变红——灵敏度不靠掐紧窗口
+    // 不再有字节，若心跳真被大帧饿死，判死会落在窗内而让断言变红——灵敏度不靠掐紧窗口。
+    //
+    // 窗必须**按墙钟真的等满**：单次 `setTimeout(600)` 的到期判定用事件循环缓存的时钟，
+    // 与注册那一刻的 `Date.now()` 是两个来源——注册前刚跑过一段同步代码时墙钟领先计时
+    // 原点，回调触发时墙钟差可以小于延时（本机 3000 次 `sleep(600)` 里 10 次，最小
+    // 599ms）。因此「等完再拿 `Date.now()` 复核是否等够」会偶发把正常等待判成没等够：
+    // run 45794334146 的 tests job 就是这个组合（该条红，而产品侧的判死一条都没发生、
+    // 心跳 pong 一直在往返）。改成循环按墙钟推进，等多久与判多久同一来源。
     const OBSERVE_MS = 600;
-    await sleep(OBSERVE_MS);
+    await waitForWallClock(OBSERVE_MS);
+    // 排空一轮 poll 再计数：进程被整个调度出去时，对端写出的 pong 停在 socket 缓冲里，
+    // 要等 `data` 回调（poll 阶段）才进 `independentPongs`；宽限的收口判定本身也是靠
+    // 「先排一轮再判」处理同一件事（`finishSilenceRecheck` 的 setImmediate）。少这一轮，
+    // 计数就成了「本进程在这 600ms 里跑没跑过」，而不是「心跳通路活没活」。
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // 判据只认**本缺陷的形态**：沉默判死。不能用「完全没有 fatal」——这条链路上的
     // fatal 还有握手超时 / channel closed / daemon 退出等多条来源，共享 runner 上
-    // 出现任意一条都与「心跳被大帧饿死」无关，却会让断言红（CI 上已三次复现：
-    // run 45771172578 / 45776251860 该条红，而同批「未以沉默判死」「pong 独立往返」
-    // 两条都绿——正是「有 fatal 但不是沉默判死」这个组合）。
+    // 出现任意一条都与「心跳被大帧饿死」无关，却会让断言红（run 45771172578 /
+    // 45776251860 该条红，而同用例「是否以沉默判死」的另一条绿——正是「有 fatal 但
+    // 不是沉默判死」这个组合）。
     const silentDeath = failure.error !== null && /silent for/.test(failure.error.message);
-    check(
-      'RT-1 大帧停顿期间心跳独立通路保活（不判死）',
-      !silentDeath && Date.now() - startedAt >= OBSERVE_MS,
-    );
-    // 失败时把实际 fatal 打出来：CI 日志此前完全看不到是什么 error，只能靠两条相邻
-    // 断言的结果反推，排查成本过高
     if (failure.error !== null) {
+      // 失败时把实际 fatal 打出来：CI 日志此前完全看不到是什么 error，只能靠相邻断言
+      // 的结果反推，排查成本过高
       console.log(`      RT-1 观察窗内出现的非沉默 fatal：${failure.error.message}`);
     }
+    // 停顿窗内的心跳往返同时证明两件事：观察窗真的盖住了停顿期（心跳间隔 20ms，600ms
+    // 的窗内必然有多次往返），以及心跳独立通路在传大帧期间仍然活着——心跳若被大帧
+    // 饿死，两条通路都没有入站，这条先红。
+    const pongsInWindow = fake.independentPongs() - pongsBeforeWindow;
+    console.log(`      RT-1 观察窗内心跳链路写出 pong ${pongsInWindow} 次（心跳间隔 20ms）`);
+    check(
+      'RT-1 大帧停顿期间心跳独立通路保活（不判死）',
+      !silentDeath && pongsInWindow > 0,
+    );
     check('RT-1 心跳链路的 pong 独立往返', fake.independentPongs() > 0);
     await daemon.shutdown();
     await fake.close();
