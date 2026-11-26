@@ -1,6 +1,6 @@
 # ADR-0016：Bash 的 restricted 定为模型面收紧开关，缺省为真
 
-- 状态：已采纳
+- 状态：被取代（`sed` 分支由 [ADR-0021](0021-bash-sed-reminder-instead-of-gate.md) 取代）
 - 日期：2026-11
 - 规格：[docs/features/background-bash.md](../features/background-bash.md)（闸门判据 / 文案 / 边界），随 specs/049 落地
 

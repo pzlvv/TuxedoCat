@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-27
 ---
 
 # 用户故事分册：工具与技能
@@ -106,7 +106,8 @@ last_reviewed: 2026-11-16
 2. 远端工作区经 SSH 引导后同样具备两份工具（落在 `~/.local/share/<core.deployPrefix>/`
    的共享位），远端工具 shell 里 `rg` / `fd` 可用。
 3. 系统提示词写明优先 `rg` 代替 `grep`、`fd` 代替 `find`；单个搜索优先用 `Grep` / `Glob`
-   工具，需要与其它命令组合时用 Bash 的 `rg` / `fd`。
+   工具（找内容不写 `rg`、找文件不写 `fd`），结果要喂给另一条命令或需要工具不暴露的
+   旗标时才用 Bash 的 `rg` / `fd`。
 4. 内置工具缺失时命令由 shell 自身报 `command not found`，普通命令照常执行。
 
 ### US-78 读文件优先用 Read 工具
@@ -117,16 +118,16 @@ last_reviewed: 2026-11-16
 
 验收标准：
 
-1. `restricted` 缺省为真时，去掉所有 `cd` 段后只剩 `sed`（读形态 `-n` 与写形态 `-i`
-   一视同仁）就使 Bash 调用直接失败，文案引导改用 `Read` 工具；三档工作模式一致。
-   闸门不覆盖 `cat`：它是只读命令，还有 `cat > f <<EOF` 这类写形态。
+1. 去掉所有 `cd` 段后只剩 `sed`（读形态 `-n` 与写形态 `-i` 一视同仁）的命令照常执行，
+   工具结果末尾追加一条提醒，点名用 `Read` 读文件、`Edit` 改文件；`restricted` 的取值与
+   这条判定无关。闸门同样不覆盖 `cat`：它是只读命令，还有 `cat > f <<EOF` 这类写形态。
 2. 系统提示词的 Bash 段写明「用 `Read` 代替 `cat` / `sed` 看文件内容」并给出两条对照
    （`cat a.txt` → `Read` 的 `file_path`；`sed -n '1,40p' f` → `Read` 的
    `offset` / `limit`），同时保留例外：内容要流进另一条命令（管道 / 重定向）时照常用
    `cat` / `sed`。
-3. 有上下游的文本加工照常执行：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
-   `git diff | sed -n '1,20p'`；`restricted: false` 时回到既有权限路径（`sed` 不在只读
-   白名单，`manual` 询问、`risk` / `auto` 放行）。
+3. 有上下游的文本加工照常执行且不追加提醒：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
+   `git diff | sed -n '1,20p'`；`sed` 不在只读白名单，权限按既有口径判定
+   （`manual` 询问、`risk` / `auto` 放行）。
 
 ## 联网搜索（客户端工具）
 

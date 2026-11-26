@@ -49,9 +49,11 @@ Bash 工具的 `detach` 字段是**管辖豁免开关**：命令的进程需要�
 任何构造时字段惰性，正常执行。
 
 豁免只覆盖后台化构造闸门，**不解除** `restricted` 闸门：`detach: true` 且命令含
-`sleep` 或只有 `cd` + `sed` 时同样失败；反过来 `restricted: false` 也不豁免本闸门——
-两个字段互不豁免（判据与文案见
-[background-bash.md FR-005](background-bash.md#fr-005restricted-闸门sleep-与-sed)）。
+`sleep` 时同样失败；反过来 `restricted: false` 也不豁免本闸门——两个字段互不豁免
+（判据与文案见
+[background-bash.md FR-005](background-bash.md#fr-005restricted-闸门sleep)）。
+`sleep` 之外的读 / 改文件写法（`cd` + `sed`）不参与闸门：命令照常执行，改用
+`Read` / `Edit` 的引导在工具结果里（[FR-009](background-bash.md#fr-009sed-读--改文件的结果提醒)）。
 
 ### FR-003：脱离管理的授权分级
 

@@ -66,12 +66,12 @@
     { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 30 && cat a.txt" }, "expect": "deny", "why": "restricted 闸门用 deny 而非 ask：auto 模式不放行" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30" }, "expect": "deny", "why": "单条 sleep 同样命中：restricted 下 sleep 一律拒绝" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "echo anything; sleep 10" }, "expect": "deny", "why": "sleep 在后续段同样命中：不再有「首段不是 sleep」的逃逸写法" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "cd src && sed -n 1p a.ts" }, "expect": "deny", "why": "restricted 闸门：去掉 cd 后只剩 sed，引导改用 Read 工具" },
-    { "tool": "Bash", "mode": "auto", "args": { "command": "sed -n 1p a.ts" }, "expect": "deny", "why": "restricted 闸门的 sed 分支同样用 deny：auto 模式不放行" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "sed -n 1p f | head" }, "expect": "ask", "why": "有上下游的文本加工不是「拿 sed 读文件」：不命中闸门，按普通命令询问" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "cd src && sed -n 1p a.ts" }, "expect": "ask", "why": "sed 读文件不参与 restricted 闸门：命令照常执行（改用 Read 由工具结果提醒引导），不在只读白名单 → 询问" },
+    { "tool": "Bash", "mode": "auto", "args": { "command": "sed -n 1p a.ts" }, "expect": "allow", "why": "sed 不参与 restricted 闸门：auto 模式按既有权限语义放行" },
+    { "tool": "Bash", "mode": "manual", "args": { "command": "sed -n 1p f | head" }, "expect": "ask", "why": "有上下游的文本加工不是「拿 sed 读文件」：不追加提醒，也不在只读白名单 → 询问" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "echo 'sleep 10 && cat a.txt'" }, "expect": "allow", "why": "引号内的 sleep 字样不是命令：不命中闸门，只读命令直接放行" },
     { "tool": "Bash", "mode": "manual", "args": { "command": "sleep 30", "restricted": false }, "expect": "ask", "why": "restricted=false 关闭限制：回到既有权限路径（sleep 不是只读 → 询问）" },
     { "tool": "Bash", "mode": "auto", "args": { "command": "sleep 30", "restricted": false }, "expect": "allow", "why": "restricted=false 且 auto：回到既有放行语义" },
-    { "tool": "Bash", "mode": "manual", "args": { "command": "cd src && sed -n 1p a.ts", "restricted": false }, "expect": "ask", "why": "restricted=false 时 sed 同样回到既有权限路径（不在只读白名单 → 询问）" }
+    { "tool": "Bash", "mode": "manual", "args": { "command": "cd src && sed -n 1p a.ts", "restricted": false }, "expect": "ask", "why": "restricted 只关 sleep 一条限制：sed 的判定与 restricted 取值无关（不在只读白名单 → 询问）" }
   ]
 }

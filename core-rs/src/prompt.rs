@@ -25,7 +25,9 @@ Execute shell commands.
 
 **IMPORTANT**: Always use bash/POSIX syntax for commands, regardless of the actual shell. This ensures commands work across bash, PowerShell, and cmd.exe.
 
-**Prefer ripgrep and fd**: use `rg` instead of `grep`, and `fd` instead of `find`:
+**Prefer the Grep and Glob tools**: for a single search use `Grep` (file contents) or `Glob` (file names) instead of Bash `rg` / `fd`; use the Bash commands only when the result feeds another command (pipes, redirection, `xargs`) or you need a flag the tool does not expose.
+
+**Prefer ripgrep and fd**: inside Bash, use `rg` instead of `grep`, and `fd` instead of `find`:
 - Content search: `rg -n 'pattern' src` instead of `grep -rn 'pattern' src`
 - File search: `fd -e ts util` instead of `find . -name '*util*.ts'`
 - Use `grep` / `find` only when the command must run outside this environment.

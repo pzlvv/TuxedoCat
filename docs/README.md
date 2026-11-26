@@ -112,7 +112,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/features/compaction.md` | 对话压缩：触发、摘要、归档、跨压缩的用户输入历史 |
 | `docs/features/abort-button.md` | abort 按钮的状态判定与中止范围（含 spin 模式） |
 | `docs/features/spin-execution.md` | Spin 模式执行循环：子对话完成判定（Reply / 收尾 Idle）、失败分类与重试、进度反馈 |
-| `docs/features/background-bash.md` | Bash 后台任务（手工转后台的暂停 / 接续、两类任务提醒）与 `restricted` 闸门、`cat` / `sed` 改走 `Read` 的提示词规则 |
+| `docs/features/background-bash.md` | Bash 后台任务（手工转后台的暂停 / 接续、两类任务提醒）、`restricted` 闸门（`sleep`）、`sed` 读 / 改文件的结果提醒与 `Read` / `Grep` / `Glob` 的提示词规则 |
 | `docs/features/bash-detach.md` | Bash 命令的 detach 豁免：后台化构造闸门、脱离管理的授权分级与两面文案 |
 | `docs/features/tui-installer.md` | TUI 版分发与 Core 部署安装程序 |
 | `docs/features/web-search.md` | 联网搜索与网页抓取（WebSearch / WebFetch 客户端工具） |

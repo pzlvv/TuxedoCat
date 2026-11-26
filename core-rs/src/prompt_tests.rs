@@ -569,6 +569,33 @@ fn tool_details_do_not_ban_bash_rg() {
     );
 }
 
+/// 提示词写明「单个搜索优先用 `Grep` / `Glob` 工具，需要组合时才用 Bash 的 `rg` / `fd`」
+/// （`docs/features/user-stories/tools.md` 的 US-77）。
+///
+/// 这条块必须出现在 Bash 段的 `rg` / `fd` 规则之前：先给工具，再给退路。
+#[test]
+fn tool_details_prefer_grep_and_glob_tools() {
+    let details = tool_usage_section(&crate::tools::definitions(), None);
+    assert!(
+        details.contains("**Prefer the Grep and Glob tools**"),
+        "缺少 Grep / Glob 工具优先块"
+    );
+    assert!(
+        details.contains("`Grep` (file contents) or `Glob` (file names)"),
+        "缺少 Grep / Glob 工具代替 Bash rg / fd 的规则"
+    );
+    assert!(
+        details.contains("only when the result feeds another command"),
+        "缺少需要组合时才用 Bash rg / fd 的例外"
+    );
+    let tools_at = details.find("**Prefer the Grep and Glob tools**").unwrap_or(0);
+    let ripgrep_at = details.find("**Prefer ripgrep and fd**").unwrap_or(0);
+    assert!(
+        tools_at < ripgrep_at,
+        "工具优先块应写在 Bash rg / fd 规则之前"
+    );
+}
+
 /// 提示词只写使用规则，不写实现事实（specs/044 AC-18）。
 #[test]
 fn tool_details_describe_rules_not_mechanism() {
