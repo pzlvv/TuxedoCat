@@ -310,7 +310,11 @@ test('复制选区与粘贴快捷键', async () => {
   await page.keyboard.type('hello world');
 
   // 等回显渲染出来，用鼠标在第 0 行拖选一段 → Ctrl+Shift+C 复制。
-  // 字符切片受字体度量影响，断言收在「复制到的是回显文本的一段非空子串」。
+  // 拖选起点按固定像素偏移，落在哪一列取决于提示符 `welcome-1$ ` 的实际宽度
+  // （字体度量在不同 runner 上有差异）：起点可能落在提示符里，于是复制到的是
+  // 「提示符的一部分」而不是输入文本。这不是产品缺陷，是断言的观测口径问题——
+  // 断言只应收在「复制到了非空的回显片段」这条产品承诺上（CI run 45776251860
+  // 实测复制到 `welcome`、粘贴侧读到 `hello world`，第 325 行却先通过了）。
   await expect.poll(() => page.locator('#pane-1 .xterm-rows').textContent()).toContain('hello');
   const rows = page.locator('#pane-1 .xterm-rows');
   const box = await rows.boundingBox();
@@ -322,11 +326,17 @@ test('复制选区与粘贴快捷键', async () => {
   await page.keyboard.press('Control+Shift+c');
   await expect.poll(async () => (await state(page)).clipboard).not.toBe('');
   const copied = (await state(page)).clipboard;
+  // 复制内容是第 0 行文本的非空片段（提示符或输入文本都算，取决于起点落在哪）
   expect('welcome-1hello world'.includes(copied)).toBe(true);
 
-  // Ctrl+Shift+V 把剪贴板内容原样送进 stdin
+  // Ctrl+Shift+V 把剪贴板内容原样送进 stdin。
+  // 判据是「送进去的正是剪贴板里那段」——不再要求它出现在回显里：拖选到的若是
+  // 提示符片段，它本就不会出现在 type 出来的输入文本中。
+  const before = (await state(page)).inputs.map((i) => i.data).join('');
   await page.keyboard.press('Control+Shift+v');
-  await expect.poll(async () => (await state(page)).inputs.map((i) => i.data).join('')).toContain(copied);
+  await expect
+    .poll(async () => (await state(page)).inputs.map((i) => i.data).join(''))
+    .toBe(before + copied);
 });
 
 test('粘贴只发生一次：Ctrl+Shift+V 只产生一条 input（系统剪贴板是唯一数据源）', async () => {
