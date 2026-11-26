@@ -333,6 +333,17 @@ export class VSCodeUIHost implements UIHost {
   }
 
   /**
+   * 对话切换锁（specs/059 FR-007）：单视图宿主不需要宿主侧拦截。
+   *
+   * VS Code 只有一个 webview，对话树 / 历史按钮 / 新建入口都在这一个视图里，
+   * 部署确认框的遮罩层与惰性已经把切换挡住——没有「视图之外的入口」可拦。
+   * 空实现是明示的选择，不是漏接线（对比 Electron 的同名实现）。
+   */
+  setConversationSwitchLock(_sender: WebviewViewHandle | null, _locked: boolean, _reason: string): void {
+    // no-op：单视图宿主的入口全在被遮罩的视图内
+  }
+
+  /**
    * 会话所属的工作区引用。
    *
    * VS Code 单工作区窗口：直接取当前工作区。会话与工作区的对应关系在 Core 侧，

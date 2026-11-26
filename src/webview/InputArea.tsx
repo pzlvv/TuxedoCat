@@ -185,6 +185,13 @@ interface InputAreaProps {
    */
   sessionEnded?: boolean;
   /**
+   * 是否有一提交已上行、还没拿到裁决（specs/059 FR-004）。
+   *
+   * 未决期间输入区只读：一次只允许有一条提交在飞（与「一次只有一条」排队守卫同一口径）。
+   * 裁决返回（受理或拒绝）即解除——拒绝时用户看到的就是发送前原样的内容。
+   */
+  submitPending?: boolean;
+  /**
    * 当前会话的子代理角色（`conversationLoaded.metadata.role`，specs/020 FR-005）；
    * 普通会话 / 旧数据为 null。非 Master 子代理会话锁定选项菜单的联网搜索 / MCP
    * 两项（判定走 `resolveSessionOptionsLocked`）。
@@ -1699,6 +1706,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   workMode,
   creator,
   sessionEnded = true,
+  submitPending = false,
   subAgentRole,
   mcpServers,
   onMcpToggle,
@@ -1836,6 +1844,8 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     workMode,
     notUserCreated: isAgentCreator(creator ?? { kind: 'user' }),
     sessionEnded,
+    // 提交未决（specs/059 FR-004）：同一时刻只允许一条提交在飞
+    submitPending,
   };
   const disabledReason = resolveInputDisabledReason(disableFacts);
   const isInputDisabled = disabledReason !== null;
@@ -2212,6 +2222,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
       {queuedMessage && (
         <div
           className="px-3 py-1.5 flex items-center gap-2 ui-fs-12 border-b"
+          data-queued-message="true"
           style={{
             backgroundColor: isDark ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.08)',
             borderColor: colors.border,
@@ -2257,7 +2268,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
             borderColor: colors.border,
             color: colors.textSystem,
           }}
-          data-idle-suspended="true"
+          data-idle-suspended-message="true"
         >
           <Icon name="clock" size={14} style={{ flexShrink: 0, color: colors.harness }} />
           <span className="truncate flex-1">
@@ -2293,7 +2304,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
         {pastedImages.length > 0 && (
           <div className="flex flex-wrap gap-2 pb-1.5">
             {pastedImages.map((img, idx) => (
-              <div key={idx} className="relative group">
+              <div key={idx} className="relative group" data-pasted-image="">
                 <img
                   src={img.dataUrl}
                   alt="pasted image"

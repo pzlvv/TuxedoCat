@@ -180,6 +180,8 @@ test('FR-002 能力已就绪时勾选发消息直接建会话，不弹任何对�
 
   // AC-6：直接建会话，不弹任何部署或提权对话框
   await selectWorkViewAndSend(page, '已就绪的 Overlay 对话');
+  // specs/059 FR-001：用户按下发送先走提交请求，受理之后才上行已受理消息
+  await handle.host.waitForSent('submitMessage', 15_000);
   await handle.host.waitForSent('sendMessage', 15_000);
   await expect(page.locator(CONFIRM_DIALOG)).toHaveCount(0);
 });
@@ -198,7 +200,15 @@ test('FR-003 未就绪时发消息弹确认框，消息不进 Core、不建会�
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   expect(await dialog.getAttribute('aria-modal')).toBe('true');
   const added = (await handle.host.sentAll()).slice(before.length);
-  expect(added.some((m) => m.type === 'sendMessage'), '被拦的消息不得上行').toBe(false);
+  // 被拦下的是提交请求：既没有 submitMessage 之外的已受理上行，也没有把提交放行
+  expect(
+    added.some((m) => m.type === 'sendMessage'),
+    '被拦的提交不得上行已受理消息',
+  ).toBe(false);
+  expect(
+    added.some((m) => m.type === 'submitMessage'),
+    '用户按下发送应上行提交请求（宿主据此裁决）',
+  ).toBe(true);
 
   // AC-8：四要素文案逐项存在且非空
   for (const name of ['root-setuid', 'install-path', 'target-host', 'userns']) {
@@ -208,7 +218,7 @@ test('FR-003 未就绪时发消息弹确认框，消息不进 Core、不建会�
   }
 });
 
-test('FR-003 取消部署：消息留在输入框、勾选态保留、无提权动作', async ({ browser }) => {
+test('FR-003 取消部署：逐项回到发送前、勾选态保留、无提权动作', async ({ browser }) => {
   handle = await openWithCapabilities(browser, DEPLOYABLE);
   const { page } = handle;
 
@@ -220,14 +230,101 @@ test('FR-003 取消部署：消息留在输入框、勾选态保留、无提权�
   await page.locator(action('cancel')).click();
   await expect(page.locator(CONFIRM_DIALOG)).toHaveCount(0);
 
-  // AC-9：内容与勾选态都保留，没有任何部署 / 凭据消息上行
+  // AC-5 / AC-6（specs/059）：载体从未被消费——内容、勾选态、光标都还在，
+  // 没有排队项 / 空闲挂起项，没有任何会话侧动静
   await expect(page.locator('textarea.input-textarea')).toHaveValue(text);
   await expect(page.locator(WORK_VIEW_OPTION)).toBeChecked();
+  await expect(page.locator('[data-queued-message]')).toHaveCount(0);
+  await expect(page.locator('[data-idle-suspended-message]')).toHaveCount(0);
+
   const added = (await handle.host.sentAll()).slice(before.length);
   const privileged = added.filter(
     (m) => m.type === 'requestMountProxyDeploy' || m.type === 'submitMountProxyCredential',
   );
   expect(privileged, '取消后不得有任何提权动作').toHaveLength(0);
+  // AC-15：这次尝试没有上行过已受理消息（Core 从未收到）
+  expect(
+    added.some((m) => m.type === 'sendMessage'),
+    '取消后不得上行已受理消息',
+  ).toBe(false);
+  // AC-14：回填补偿通道已删除——上行里从来不该有它（下行更没有该类型）
+  expect(
+    added.some((m) => m.type === 'userMessageDraftRestored' as never),
+    '取消不得再发 userMessageDraftRestored',
+  ).toBe(false);
+});
+
+test('FR-003 取消后逐项还原：图片与文件引用同样不动（AC-5）', async ({ browser }) => {
+  handle = await openWithCapabilities(browser, DEPLOYABLE);
+  const { page } = handle;
+
+  // 勾选 Overlay 才有部署闸门可触发（能力不可用 + 可部署）
+  await page.locator(WORK_VIEW_OPTION).check();
+
+  // 粘贴一张图片（1x1 PNG），确认它在取消后仍在输入区
+  await page.evaluate(() => {
+    const input = document.querySelector('textarea.input-textarea');
+    if (!input) throw new Error('主输入框缺失');
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], 'dot.png', { type: 'image/png' }));
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+  });
+
+  await page.fill('textarea.input-textarea', '带图片的草稿');
+  await page.press('textarea.input-textarea', 'Enter');
+  await expect(page.locator(CONFIRM_DIALOG)).toBeVisible({ timeout: 15_000 });
+
+  await page.locator(action('cancel')).click();
+  await expect(page.locator(CONFIRM_DIALOG)).toHaveCount(0);
+
+  await expect(page.locator('textarea.input-textarea')).toHaveValue('带图片的草稿');
+  // 图片区仍在：粘贴图片的缩略图数量与发送前一致
+  const thumbnails = await page.locator('[data-pasted-image]').count();
+  expect(thumbnails, '取消后粘贴图片必须原样保留').toBeGreaterThan(0);
+});
+
+test('FR-007 模态锁：确认框打开时对话切换入口不可用、焦点圈在框内（AC-16 / AC-19）', async ({ browser }) => {
+  handle = await openWithCapabilities(browser, DEPLOYABLE);
+  const { page } = handle;
+
+  await selectWorkViewAndSend(page, '模态锁');
+  const dialog = page.locator(CONFIRM_DIALOG);
+  await expect(dialog).toBeVisible({ timeout: 15_000 });
+
+  // 锁事实已上报（AC-16 的宿主侧投影）
+  await expect.poll(async () => (await handle!.host.state()).conversationSwitchLocked, {
+    timeout: 5_000,
+  }).toBe(true);
+  expect((await handle.host.state()).conversationSwitchLockReason).toBe('mount-proxy-dialog');
+
+  // 焦点圈定：连按 Tab 都落在框内
+  for (let i = 0; i < 6; i += 1) {
+    await page.keyboard.press('Tab');
+    const inside = await page.evaluate(() => {
+      const active = document.activeElement;
+      return active !== null && active.closest('[data-mount-proxy-dialog]') !== null;
+    });
+    expect(inside, `第 ${i + 1} 次 Tab 后焦点必须仍在确认框内`).toBe(true);
+  }
+
+  // Shift+Tab 同样不逃出去
+  for (let i = 0; i < 3; i += 1) {
+    await page.keyboard.press('Shift+Tab');
+    const inside = await page.evaluate(() => {
+      const active = document.activeElement;
+      return active !== null && active.closest('[data-mount-proxy-dialog]') !== null;
+    });
+    expect(inside, `第 ${i + 1} 次 Shift+Tab 后焦点必须仍在确认框内`).toBe(true);
+  }
+
+  // 取消后解锁（AC-16 的收尾）
+  await page.locator(action('cancel')).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(async () => (await handle!.host.state()).conversationSwitchLocked, {
+    timeout: 5_000,
+  }).toBe(false);
 });
 
 test('FR-003 模态层：Escape 与点遮罩都等价取消', async ({ browser }) => {

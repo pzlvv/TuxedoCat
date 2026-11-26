@@ -15,6 +15,16 @@ import { MountProxyGate, type MountProxyGateState } from '../host/mountProxyGate
 
 const INSTALL_PATH = `${CORE_MOUNT_PROXY_DIR}/${CORE_MOUNT_PROXY_NAME}`;
 
+/**
+ * 被拦提交的载荷快照（specs/059 FR-005）：闸门原样保存、成功后原样继续。
+ *
+ * 用例只关心会话与内容两项时用这个成形函数，其余字段留空——它们是「快照原样」的证据，
+ * 由 `userMessageSubmitAck.test.ts` 的 AC-12 用例逐字段断言。
+ */
+function PAYLOAD(sessionId: string, content: string) {
+  return { sessionId, content, storage: 'isolated' as const };
+}
+
 function makeGate(targetHost: string | null = null): {
   gate: MountProxyGate;
   states: MountProxyGateState[];
@@ -33,7 +43,7 @@ function makeGate(targetHost: string | null = null): {
 test('拦截一条消息后进入 confirm，载荷带四要素所需的落点与主机', () => {
   const { gate, states } = makeGate('user@remote-host');
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
 
   assert.equal(gate.currentPhase, 'confirm');
   assert.equal(states.length, 1);
@@ -49,7 +59,7 @@ test('拦截一条消息后进入 confirm，载荷带四要素所需的落点与
 test('本机部署时 targetHost 为 null（确认框不显示主机行）', () => {
   const { gate, states } = makeGate(null);
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
 
   assert.equal(states[0].targetHost, null);
 });
@@ -57,7 +67,7 @@ test('本机部署时 targetHost 为 null（确认框不显示主机行）', () 
 test('取消后状态整体清空，被拦消息一并丢弃', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
   gate.cancel();
 
   assert.equal(gate.currentPhase, null);
@@ -73,7 +83,7 @@ test('取消后状态整体清空，被拦消息一并丢弃', () => {
 test('免密不可用进入 needsCredential，默认不给零密码命令', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
   gate.confirmDeploy();
   gate.requireCredential('sudo /path --install');
 
@@ -87,7 +97,7 @@ test('用户选择「显示命令自己执行」后才下发完整命令', () =>
   const { gate, states } = makeGate();
   const command = 'sudo /opt/proxy --install';
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
   gate.confirmDeploy();
   gate.requireCredential(command);
   gate.showManualCommand(command);
@@ -100,7 +110,7 @@ test('用户选择「显示命令自己执行」后才下发完整命令', () =>
 test('失败态带原因，仍可确认重试（不限次数）', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
   gate.confirmDeploy();
   gate.beginCredentialAttempt();
   gate.fail('Sorry, try again.');
@@ -119,7 +129,7 @@ test('失败态带原因，仍可确认重试（不限次数）', () => {
 test('连试多次失败后仍可继续重试，没有次数上限', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
   gate.confirmDeploy();
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -138,17 +148,23 @@ test('连试多次失败后仍可继续重试，没有次数上限', () => {
 
 // ───────────────────────── FR-008：成功与重发 ─────────────────────────
 
-test('成功进入 done，被拦消息可被取走重发（只取一次）', () => {
+test('成功进入 done，被拦提交可被取走继续（只取一次）', () => {
   const { gate, states } = makeGate();
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'hello' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'hello') });
   gate.confirmDeploy();
   gate.succeed();
 
   assert.equal(states[states.length - 1].phase, 'done');
   const blocked = gate.takeBlocked();
-  assert.equal(blocked?.sessionId, 's1');
-  assert.equal(blocked?.kind === 'message' ? blocked.content : null, 'hello');
+  assert.equal(blocked?.kind, 'message');
+  // 载荷快照原样（specs/059 FR-005）：继续时不再重新采集
+  assert.equal(
+    blocked?.kind === 'message' ? blocked.payload.sessionId : null,
+    's1',
+  );
+  assert.equal(blocked?.kind === 'message' ? blocked.payload.content : null, 'hello');
+  assert.equal(blocked?.kind === 'message' ? blocked.submitId : null, 'sub_1');
   // 取走即清空：避免同一条消息被重发两次
   assert.equal(gate.takeBlocked(), null);
 });
@@ -156,29 +172,27 @@ test('成功进入 done，被拦消息可被取走重发（只取一次）', () 
 test('重复拦截新消息时重置手动通道标志', () => {
   const { gate } = makeGate();
 
-  gate.block({ kind: 'message', sessionId: 's1', content: 'first' });
+  gate.block({ kind: 'message', submitId: 'sub_1', payload: PAYLOAD('s1', 'first') });
   gate.confirmDeploy();
   gate.requireCredential('sudo /opt/proxy --install');
   gate.showManualCommand('sudo /opt/proxy --install');
   gate.fail('nope');
 
   // 新的一条消息重新开始（FR-003：每次首条消息各自走一遍确认）
-  gate.block({ kind: 'message', sessionId: 's2', content: 'second' });
+  gate.block({ kind: 'message', submitId: 'sub_2', payload: PAYLOAD('s2', 'second') });
   assert.equal(gate.currentPhase, 'confirm');
-  assert.equal(
-    gate.takeBlocked()?.kind === 'message' ? 'second' : null,
-    'second',
-  );
+  const next = gate.takeBlocked();
+  assert.equal(next?.kind === 'message' ? next.payload.content : null, 'second');
 });
 
-test('打开对话的拦截项没有消息内容（取消时无可回填）', () => {
+test('打开对话的拦截项没有载荷快照（取消时无可回填）', () => {
   const { gate } = makeGate();
 
   gate.block({ kind: 'openConversation', sessionId: 's1' });
-  // 取消路径据此判断是否回填输入框：openConversation 不带 content
+  // 取消路径据此判断是否回执：openConversation 没有 submitId / payload
   const blocked = gate.peekBlocked();
   assert.equal(blocked?.kind, 'openConversation');
-  assert.equal(blocked !== null && 'content' in blocked, false);
+  assert.equal(blocked !== null && 'payload' in blocked, false);
 
   gate.cancel();
   assert.equal(gate.currentPhase, null);

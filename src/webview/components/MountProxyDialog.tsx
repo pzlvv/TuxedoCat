@@ -1,6 +1,7 @@
 import React from 'react';
 import { t } from '../i18n';
 import type { Colors } from '../types';
+import { FOCUSABLE_SELECTOR, currentFocusIndex, nextFocusIndex } from './focusTrap';
 
 /**
  * 挂载代理部署对话框（specs/051 FR-003 / FR-004）。
@@ -89,11 +90,48 @@ export const MountProxyDialog: React.FC<MountProxyDialogProps> = ({
     secretRef.current?.focus();
   }, [state.phase, state.manualCommand, secretMethod]);
 
+  /**
+   * 模态层的键盘纪律（specs/059 FR-007）：
+   * - `Escape` 等价于取消（沿用既有语义，所有态一致）；
+   * - `Tab` / `Shift+Tab` 只在框内控件之间循环，不逃到被遮罩的界面（焦点圈定）。
+   *
+   * 圈定的算术在 `focusTrap.ts` 的纯函数里（可单测），这里只负责读写 DOM 焦点。
+   */
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  /**
+   * 只读浏览保留（specs/059 FR-007 的 AC-18）：遮罩层不吞滚轮，把它转发到消息区。
+   *
+   * 模态锁的是**动作**（点击、切换、提交），不是「看上下文」——用户要读上面几轮对话
+   * 才能判断这个代理该不该装。转发只在滚轮落在遮罩上时发生（框内滚动由框自己处理），
+   * 且只改滚动位置，不改任何状态。
+   */
+  const onWheel = (event: React.WheelEvent<HTMLDivElement>): void => {
+    // 滚轮落在框内（内容溢出时）交给框自己滚
+    if (event.target instanceof Element && event.target.closest('[data-mount-proxy-body]')) return;
+    const scroller = document.querySelector<HTMLElement>('.messages-container, .messages-container-empty');
+    if (!scroller) return;
+    scroller.scrollTop += event.deltaY;
+  };
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (event.key === 'Escape') {
       event.preventDefault();
       onCancel();
+      return;
     }
+    if (event.key !== 'Tab') return;
+    const container = containerRef.current;
+    if (!container) return;
+    // 阻止浏览器默认的 Tab：它会走出框外。循环由纯函数算出的下标决定
+    event.preventDefault();
+    const next = nextFocusIndex(
+      currentFocusIndex(container, document.activeElement),
+      container.querySelectorAll(FOCUSABLE_SELECTOR).length,
+      event.shiftKey,
+    );
+    if (next < 0) return;
+    const items = container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+    items[next]?.focus();
   };
 
   /** 提交密码：直接从 DOM 读值，读完立刻清空输入框 */
@@ -116,6 +154,7 @@ export const MountProxyDialog: React.FC<MountProxyDialogProps> = ({
 
   return (
     <div
+      ref={containerRef}
       className="fixed inset-0 z-[9999]"
       data-mount-proxy-dialog="confirm"
       data-mount-proxy-phase={state.phase}
@@ -127,11 +166,13 @@ export const MountProxyDialog: React.FC<MountProxyDialogProps> = ({
       }}
       onClick={onCancel}
       onKeyDown={onKeyDown}
+      onWheel={onWheel}
       role="dialog"
       aria-modal="true"
       aria-label={t('mountProxyDialog.title')}
     >
       <div
+        data-mount-proxy-body=""
         onClick={(event) => event.stopPropagation()}
         style={{
           width: 520,

@@ -194,6 +194,7 @@ export class ElectronUIHost implements UIHost {
 | `getLocale` | `vscode.env.language`（BCP-47，如 `zh-cn`） | `app.getLocale()`（BCP-47，如 `zh-CN`）——与 VS Code 同一值域，不做归一化 |
 | `openFile` | 编辑器打开并选中行；图片 / 二进制退到 `vscode.open` | Overlay 会话的链接先按 `resolveOverlayOpenTarget` 走视图取数（`storage: isolated` + 正式会话 id + 根内路径），其余按远程两级解析：root 内按打开集合、root 外按来源视图工作区（`view` 为 `null` 只按打开集合）经 SFTP 读出进内置窗口；图片开内置查看器；Markdown 开 Markdown 预览窗口（带选中行号时初始文本视图）；其余开 Monaco 窗口（`mode: 'view'`） |
 | `sessionStorageOf` | 恒 `workspace`（本宿主不提供 Overlay 能力，打开对话永不进部署闸门） | 投影 Core `meta.json` 的 `storage`（`ConversationManager` 列表快照注入）；缺失即 `workspace`。打开 `isolated` 对话且代理未部署时先弹部署确认，失败则放弃打开、界面停在原位置（`docs/archive/specs/052-overlay-open-deploy-gate/spec.md`） |
+| `setConversationSwitchLock` | 空实现：单视图宿主只有一份 webview，对话树 / 历史按钮 / 新建入口都在被确认框遮住的那一个视图里，锁由视图内的 `conversationSwitchLocked` 成立 | 按 `sender` 记进 `ConversationSwitchLock`（`src/host/conversationSwitchLock.ts`），让标签页、原生侧栏与菜单动作的对话 / 工作区切换入口早返回。`sender` 为 `null` 时不记锁（锁必须指明是哪个视图） |
 | `showVirtualDocument` | `DocumentManager` → 虚拟文档预览标签 | Monaco 窗口（`mode: 'content'`） |
 | `showDiff` | `DocumentManager.showDiff` → 原生 diff 标签 | 空实现（diff 归 webview） |
 | `openMermaidPreview` | 复用单个 `WebviewPanel` | 复用单个 `BrowserWindow`（语义一致） |

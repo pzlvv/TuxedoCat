@@ -25,26 +25,39 @@ export interface InputAreaDisableFacts {
    * 等待态宁禁勿放）。仅对非用户创建的会话参与禁用判定。
    */
   sessionEnded: boolean;
+  /**
+   * 是否有一次提交已上行、还没拿到裁决（specs/059 FR-004）。
+   *
+   * 未决期间输入区只读：同一时刻只能有一条提交在飞。裁决返回后自动解除——它是
+   * 瞬时等待态，不是会话状态，因此不落在 placeholder 上（沿用默认文案，不额外说明）。
+   */
+  submitPending: boolean;
 }
 
 /** 输入禁用的判别原因（specs/025 FR-004：与 spin / 未配置服务商方案区分） */
-export type InputDisabledReason = 'providerNotConfigured' | 'spinMode' | 'conversationEnded';
+export type InputDisabledReason = 'providerNotConfigured' | 'spinMode' | 'conversationEnded' | 'submitPending';
 
 /**
  * 输入禁用原因；`null` = 可输入。
- * 优先级沿用既有次序并在其后插入（specs/025 FR-004）：Spin > 非用户创建已结束 >
- * 未配置服务商（引导覆盖层只属于 provider 分支，仅作用于可输入会话）。
+ * 优先级沿用既有次序并在其后插入（specs/025 FR-004；specs/059 FR-004）：Spin >
+ * 非用户创建已结束 > 未配置服务商 > 提交未决。
+ *
+ * 「提交未决」排在最后：它只在用户刚刚按下发送、等裁决的瞬间成立，且此时前面几项
+ * 早已判定过（能按下发送说明当时可输入）。放在最后避免它的 placeholder 覆盖更重要的
+ * 会话级说明。
  */
 export function resolveInputDisabledReason(facts: InputAreaDisableFacts): InputDisabledReason | null {
   if (facts.workMode === 'spin') return 'spinMode';
   if (facts.notUserCreated && facts.sessionEnded) return 'conversationEnded';
   if (facts.providerConfigured === false) return 'providerNotConfigured';
+  if (facts.submitPending) return 'submitPending';
   return null;
 }
 
 /**
  * placeholder 文案按禁用原因选择：spin / 非用户创建已结束换提示文案，provider 未配置
- * 取空串（引导由覆盖层负责，specs/016 FR-004），可输入取默认文案。
+ * 取空串（引导由覆盖层负责，specs/016 FR-004），提交未决与可输入都取默认文案——它是
+ * 瞬时等待态，不值得换文案（换文案会让用户以为出了状况）。
  */
 export function resolveInputPlaceholderText(
   reason: InputDisabledReason | null,

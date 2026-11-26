@@ -124,7 +124,8 @@ test('FR-010 能力不可用时宿主拦下 isolated 归属的消息，不建会
   test.skip(capabilities.isolatedWorkView, '本机代理已就位，无法构造「能力不可用」的前置');
 
   // 归属随第一条消息生效（specs/045 FR-001，specs/051 FR-003）：勾选只是本地意图，
-  // 因此这里直接发一条带 `isolated` 归属的消息，看宿主闸门是否在它进 Core 之前拦下。
+  // 因此这里直接发一条带 `isolated` 归属的**提交请求**（specs/059 FR-001：用户按下发送
+  // 走 submitMessage），看宿主闸门是否在它进 Core 之前拦下。
   const sessionId = await page.evaluate(() => String((window as unknown as { __currentSessionId?: string }).__currentSessionId ?? ''));
   expect(sessionId, '空状态应已有会话 id').toBeTruthy();
   await page.evaluate((sid) => {
@@ -135,7 +136,13 @@ test('FR-010 能力不可用时宿主拦下 isolated 归属的消息，不建会
     };
     const wire = host.electronAPI ?? host.vscode;
     if (!wire) throw new Error('未找到宿主消息 API');
-    wire.postMessage({ type: 'sendMessage', sessionId: sid, content: '归属拒绝探针', storage: 'isolated' });
+    wire.postMessage({
+      type: 'submitMessage',
+      submitId: `submit_probe_${Date.now()}`,
+      sessionId: sid,
+      content: '归属拒绝探针',
+      storage: 'isolated',
+    });
   }, sessionId);
 
   if (capabilities.deployable) {

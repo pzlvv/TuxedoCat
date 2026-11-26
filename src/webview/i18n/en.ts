@@ -47,6 +47,7 @@ export const enDict: Record<string, string> = {
     'Run this command in your own terminal. Your password never passes through the host:',
   'mountProxyDialog.copyCommand': 'Copy',
   'mountProxyDialog.copied': 'Copied',
+  'mountProxyDialog.rejected': 'This message was not sent: {reason}',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': 'Are you sure you want to delete "{title}"?',

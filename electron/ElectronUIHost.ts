@@ -18,6 +18,7 @@ import { WebviewViewHandle } from '../src/host/UIHost.js';
 import { findWorkspaceRefByKey, workspaceRefKey, type WorkspaceRef } from '../src/host/workspaceRef.js';
 import { resolveRemoteFileWorkspace } from '../src/host/remoteFileResolve.js';
 import type { MountProxyTarget } from '../src/host/mountProxyInstall.js';
+import { ConversationSwitchLock } from '../src/host/conversationSwitchLock.js';
 import {
   bundledProxyPathFor,
   isLocalMountProxyInstalled,
@@ -137,6 +138,15 @@ export class ElectronUIHost implements UIHost {
    * `ConversationManager` 分发后的投影）。未注入按 `workspace`。
    */
   private sessionStorageLookup: ((sessionId: string) => 'workspace' | 'isolated') | null = null;
+  /**
+   * 锁着对话切换的视图（specs/059 FR-007）：部署确认框打开、或一次提交还没拿到裁决时，
+   * 该视图上报 `conversationSwitchLockChanged{locked:true}`，收尾时清除。
+   *
+   * 判据在纯模块 `ConversationSwitchLock` 里（可单测）：按视图的 `WebContents` 对象本身
+   * 做键，一个视图弹着确认框不该锁住其它标签页里的正常操作。不持久化——锁的生命周期
+   * 只有一次提交。
+   */
+  private readonly conversationSwitchLock = new ConversationSwitchLock();
   /** 复用的 Mermaid 预览窗口（与 VSCodeUIHost 的单面板语义一致） */
   private mermaidWindow: BrowserWindowCtor | undefined;
   /**
@@ -195,6 +205,34 @@ export class ElectronUIHost implements UIHost {
    */
   sessionStorageOf(sessionId: string): 'workspace' | 'isolated' {
     return this.sessionStorageLookup?.(sessionId) ?? 'workspace';
+  }
+
+  /**
+   * 对话切换锁（specs/059 FR-007）：落到主进程的动作入口上。
+   *
+   * Electron 每个对话一个视图，确认框的遮罩只盖住当前视图，标签页与原生侧栏在视图之外。
+   * 这里把「锁着的是哪个视图」记进 `ConversationSwitchLock`（按 `sender` 的真实句柄过滤），
+   * 主进程的 `openConversation` / `sidebar:*` / 标签页切换入口据此早返回。
+   *
+   * `sender` 为 `null`（宿主主动推送路径）时**不记锁**：锁只能由某个视图发起，没有来源
+   * 就是接线错误，猜一个视图去锁会误伤其它标签页。
+   */
+  setConversationSwitchLock(sender: WebviewViewHandle | null, locked: boolean, reason: string): void {
+    if (!sender) {
+      this.log('[ElectronUIHost] 忽略无来源视图的对话切换锁上报（锁必须指明是哪个视图）');
+      return;
+    }
+    this.conversationSwitchLock.set(sender.view as object, locked);
+    this.log(`[ElectronUIHost] 对话切换锁 → ${locked ? '上锁' : '解锁'}（${reason}）`);
+  }
+
+  /**
+   * 该视图是否锁着（主进程的对话切换入口用它早返回）。
+   *
+   * `sender` 为 `null` 时按「未锁」处理：宿主主动推送路径没有来源视图，不能凭它锁任何人。
+   */
+  isConversationSwitchLocked(sender: WebviewViewHandle | null): boolean {
+    return this.conversationSwitchLock.isLocked((sender?.view as object | undefined) ?? null);
   }
 
   setChatViewManager(m: ChatViewManager): void {

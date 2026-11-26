@@ -233,8 +233,8 @@ runTests('overlayOpenDeployGate', async () => {
     await handler.handleWebviewMessage({ type: 'cancelMountProxyDeploy' }, { sender: null });
     check('AC-2 取消后仍不加载', coreLoaded.length === 0);
     check(
-      'AC-2 取消 openConversation 不回填输入框（没有内容可回填）',
-      !broadcasts.some((m) => m.type === 'userMessageDraftRestored'),
+      'AC-2 取消 openConversation 不回执提交（没有提交可作废）',
+      !broadcasts.some((m) => m.type === 'userMessageRejected'),
     );
   }
 
@@ -290,8 +290,8 @@ runTests('overlayOpenDeployGate', async () => {
       'AC-4 部署失败不写归属（没有归属类 UiEvent 上行）',
       !(uiEvents ?? []).some((e) => e.type === 'storageChanged'),
     );
-    check('AC-4 部署失败不回填输入框（无内容可回填）',
-      !broadcasts.some((m) => m.type === 'userMessageDraftRestored'));
+    check('AC-4 部署失败不回执提交（没有提交可作废）',
+      !broadcasts.some((m) => m.type === 'userMessageRejected'));
   }
 
   // ---------- AC-5：失败后再次打开，重新走一遍部署流程 ----------

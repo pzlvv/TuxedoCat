@@ -14,6 +14,52 @@ import type { UiFontSize } from './fontSize';
 /** `sendMessage` 的 wire 载荷形态（宿主契约 `src/host/webviewMessages.ts`，webview 只消费不另定义） */
 export type SendMessageWire = Extract<WebviewToHostMessage, { type: 'sendMessage' }>;
 
+/**
+ * `submitMessage` 的 wire 载荷形态（specs/059 FR-001）：用户按下发送时的**提交请求**，
+ * 比 `sendMessage` 多一个 `submitId`，其余逐字段相同。
+ */
+export type SubmitMessageWire = Extract<WebviewToHostMessage, { type: 'submitMessage' }>;
+
+/**
+ * 一次提交用的是哪份载体（specs/059 FR-001）：立即发送是输入区草稿，空闲发送是横幅上的
+ * 挂起项。受理时按它消费——取消时两处都原样不动。
+ */
+export type SubmitCarrier = 'input' | 'idleSuspended';
+
+/**
+ * 未决提交（specs/059 FR-004）：已上行、还没拿到裁决的那一次。
+ *
+ * 只可能有一条（「一次只有一条」守卫），因此是单值而非集合。
+ */
+export interface PendingSubmit {
+  submitId: string;
+  wire: SubmitMessageWire;
+  carrier: SubmitCarrier;
+}
+
+/**
+ * 提交载荷 → 已受理消息载荷（specs/059 FR-004）：只剥掉 `type` 与 `submitId`。
+ *
+ * 受理之后的载荷与提交时逐字段相同，部署成功后宿主按原载荷继续（FR-005）也靠这条一致性。
+ */
+export function wireAsSendMessage(wire: SubmitMessageWire): SendMessageWire {
+  return {
+    type: 'sendMessage',
+    sessionId: wire.sessionId,
+    content: wire.content,
+    images: wire.images,
+    filePath: wire.filePath,
+    fileHidden: wire.fileHidden,
+    selectedLines: wire.selectedLines,
+    agentMode: wire.agentMode,
+    thinkingMode: wire.thinkingMode,
+    webSearch: wire.webSearch,
+    model: wire.model,
+    provider: wire.provider,
+    storage: wire.storage,
+  };
+}
+
 /** 会话 Todo 条目（`docs/features/todo-list.md` FR-001）：事实来自 core，webview 只渲染 */
 export type { TodoEntry };
 
