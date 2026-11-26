@@ -248,9 +248,11 @@ test('US-5 输入历史：空输入框按 ↑ 翻阅已发送消息', async () =
 
   await page.fill('textarea.input-textarea', '第二条历史');
   await page.press('textarea.input-textarea', 'Enter');
-  await expect(
-    (await host.sentAll()).filter((m) => m.type === 'sendMessage'),
-  ).toHaveLength(2);
+  // 上送发生在受理之后（specs/059 FR-001）：等裁决往返走完再断言条数
+  await expect.poll(
+    async () => (await host.sentAll()).filter((m) => m.type === 'sendMessage').length,
+    { timeout: 20_000 },
+  ).toBe(2);
 
   // 清空后按 ↑：先回到第二条，再按一次回到第一条；↓ 退到底恢复草稿
   const input = page.locator('textarea.input-textarea');

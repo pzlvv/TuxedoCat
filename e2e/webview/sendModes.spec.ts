@@ -10,6 +10,10 @@ import type { WebviewHandle } from '../helpers/webviewHarness';
  * 状态：忙碌时选「空闲发送」不上送，等会话快照回 idle 才自动提交——上行断言用
  * sendMessage 计数锁定「未投递 / 触发投递」，横幅断言锁定「空闲后发送」标签与忙碌
  * 排队（「等待中」）可区分。
+ *
+ * **上送发生在受理之后**（specs/059 FR-001）：用户按下发送先走 `submitMessage`，宿主的
+ * `userMessageAccepted` 到达后才上行 `sendMessage`，因此条数断言一律用 `expect.poll`
+ * 等待，不用同步取值——那会把「还没走完裁决往返」误判成「没有上送」。
  */
 
 let handle: WebviewHandle;
@@ -50,7 +54,7 @@ test('US-46 空闲发送：忙碌时本地挂起不上送，空闲后自动提�
   await page.fill('textarea.input-textarea', '第一条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(page.locator('button[title="终止"]')).toBeVisible({ timeout: 15_000 });
-  expect((await sendMessages(host)).length).toBe(1);
+  await expect.poll(async () => (await sendMessages(host)).length, { timeout: 20_000 }).toBe(1);
 
   // 忙碌中选「空闲发送」：挂起横幅出现且标明「空闲后发送」（与忙碌排队「等待中」可区分），
   // 内容不上送、输入框被挂起接管清空
@@ -62,6 +66,7 @@ test('US-46 空闲发送：忙碌时本地挂起不上送，空闲后自动提�
   await expect(page.getByText(/等待中/).first()).toBeHidden();
   await expect(page.locator('textarea.input-textarea')).toHaveValue('');
   await page.waitForTimeout(500);
+  // 挂起期间不得上送（等一会儿再断言，给裁决往返留出时间）
   expect((await sendMessages(host)).length).toBe(1);
 
   // 第一轮结束（快照回 idle）：挂起项自动按立即发送语义提交，横幅清除
@@ -109,7 +114,7 @@ test('US-46 挂起期间禁止发送；编辑撤回 / 删除为纯本地动作',
   await page.fill('textarea.input-textarea', '第二条消息');
   await page.press('textarea.input-textarea', 'Enter');
   await expect(abortEnabled).toBeVisible({ timeout: 15_000 });
-  expect((await sendMessages(host)).length).toBe(2);
+  await expect.poll(async () => (await sendMessages(host)).length, { timeout: 20_000 }).toBe(2);
 
   await page.fill('textarea.input-textarea', '再挂起一条');
   await page.locator('button[data-send-mode-caret="true"]').click();

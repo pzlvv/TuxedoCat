@@ -5022,7 +5022,12 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   const sourceViewKey = chatViews?.getKeyByWebContents(sender) ?? null;
   const establishesViewSession = message.type === 'startNewConversation'
     || message.type === 'loadConversation'
-    || (message.type === 'sendMessage' && !!sessionId && sourceViewKey?.startsWith('new-') === true);
+    // 首条消息的两个上行阶段都要认（specs/059 FR-001）：用户按下发送先到 `submitMessage`，
+    // 受理后 webview 才发 `sendMessage`。只认后者会让视图键停在 `new-` 临时键——宿主永远
+    // 不知道这个视图现在是哪个会话，`isSessionOpen()` 恒 false，绿点 / 待答请求全挂
+    // （`specs/defects/first-message-preempts-view-registration.md` 的同一形态）。
+    || ((message.type === 'sendMessage' || message.type === 'submitMessage')
+      && !!sessionId && sourceViewKey?.startsWith('new-') === true);
   if (establishesViewSession) {
     if (sessionId) {
       // 该视图自己的工作区是权威来源（新建对话继承它；加载对话本就属于它）；
@@ -5042,7 +5047,7 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
   // 必须放在上面的晋升之后：registerSession 会把临时键的「未发送」标记迁移到正式 id，
   // 先标记会漏删、视图被误判为仍可复用的新对话。
-  if (message.type === 'sendMessage' && sessionId) {
+  if ((message.type === 'sendMessage' || message.type === 'submitMessage') && sessionId) {
     chatViews?.markSessionUsed(sessionId);
   }
 

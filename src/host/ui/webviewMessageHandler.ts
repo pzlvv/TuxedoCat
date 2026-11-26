@@ -916,6 +916,12 @@ export class WebviewMessageHandler {
       return;
     }
 
+    // 先登记会话的工作目录：裁决要按**该会话所属的 Core** 查能力，查不到归属就落不到
+    // 正确的连接（多工作区宿主下会问到另一个 Core 的能力）。新会话在此之前只存在于
+    // webview 的内存里——宿主侧的 `startNewConversation` 上报可能还没到（预热视图不发它，
+    // 首条消息也可能抢在它前面）。
+    this.ensureSessionWorkspace(sessionId);
+
     const verdict = await this.mountProxyVerdict(sessionId, payload.storage);
     if (verdict.kind === 'reject') {
       this.replySubmitRejected(submit.submitId, verdict.reason);

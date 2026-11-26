@@ -458,8 +458,9 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
    * 快照缺失（未登记的新会话等）视为本就空闲、等价立即发送——是否排队最终仍由宿主
    * 按引擎忙碌状态裁决，消息不会因判定缺失而滞留。挂起项由空闲触发 effect 提交。
    *
-   * 空闲触发时**不再删挂起项**（specs/059 FR-003 的 AC-8）：载体要留到受理之后，
-   * 取消时挂起项仍登记在横幅上。清除由 `commitSubmit` 的调用方负责。
+   * **挂起即消费输入区**：载体在这一刻从输入框转移到横幅（specs/059 FR-001 的载体两处），
+   * 不消费的话同一份内容会同时显示在两处。之后空闲触发走提交请求，挂起项要留到受理之后
+   * 才清（FR-003 的 AC-8）——取消部署时它必须还在横幅上。
    */
   const handleSendIdle = async () => {
     const wire = await buildSubmitPayloadFromInput();
@@ -473,6 +474,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       uuid: `idle_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
       wire: wireAsSendMessage(wire),
     });
+    props.inputAreaRef.current?.clear();
     props.setIdleSuspendedVersion((v) => v + 1);
   };
 
