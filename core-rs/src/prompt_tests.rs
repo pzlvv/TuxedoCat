@@ -588,7 +588,9 @@ fn tool_details_prefer_grep_and_glob_tools() {
         details.contains("only when the result feeds another command"),
         "缺少需要组合时才用 Bash rg / fd 的例外"
     );
-    let tools_at = details.find("**Prefer the Grep and Glob tools**").unwrap_or(0);
+    let tools_at = details
+        .find("**Prefer the Grep and Glob tools**")
+        .unwrap_or(0);
     let ripgrep_at = details.find("**Prefer ripgrep and fd**").unwrap_or(0);
     assert!(
         tools_at < ripgrep_at,

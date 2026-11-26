@@ -702,7 +702,8 @@ poll on a condition (e.g. until the output exists) or simply stop and wait: you 
 ///
 /// 这条写法**不再被闸门拒绝**，命令照常执行——提醒只引导模型改用 `Read` / `Edit`
 /// （读文件的结构化入口），并保留「内容要流进另一条命令时照常用 `sed`」的例外。
-pub(crate) const BASH_SED_READ_REMINDER: &str = "[reminder] The command reads or edits a file with `sed` — \
+pub(crate) const BASH_SED_READ_REMINDER: &str =
+    "[reminder] The command reads or edits a file with `sed` — \
 use the `Read` tool instead: it returns line numbers, an `offset` / `limit` window, and handles \
 xlsx / image files; use `Edit` for changes. Keep `sed` when the text must flow into another \
 command (pipes, redirection).";
