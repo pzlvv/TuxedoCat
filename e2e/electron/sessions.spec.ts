@@ -271,3 +271,65 @@ test('US-19 列表等待超过 100ms 才显示加载中，快速切换不闪转�
     await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
   }
 });
+
+test('US-19 陈旧 loaded 回包不覆盖新推送的绿点', async () => {
+  // specs/defects/sidebar-loaded-set-overwritten-by-stale-refetch.md
+  //
+  // 侧栏切工作目录时会主动重取一次「已打开」快照。这个回包没有版本号：若它在一次 owner
+  // 推送**之后**才落地，旧值会整体替换掉新事实，绿点永久消失（loaded 流只在变化时推，
+  // 没有周期性补推）。主进程的 <envPrefix>_E2E_SLOW_LOADED_MS 钩子让回包携带发起时刻的
+  // 快照并延迟返回，精确复刻这条交错。
+  //
+  // 判据：切到第二个工作区并发起一轮对话，轮次结束后该会话的绿点必须在——不论那次陈旧的
+  // 重取回包何时到达。
+  const sb = await sidebar();
+  const e2eSlowLoadedEnv = `${ENV_PREFIX}_E2E_SLOW_LOADED_MS`;
+  const dir2 = await makeWorkspace({}, 'e2e-stale-loaded');
+  try {
+    // 先让当前工作区有一个已打开会话（首播种与首个推送就位）
+    await sendMessage('旧工作区里的一轮');
+    await expect(items(sb).first()).toBeVisible({ timeout: 30_000 });
+    await expect(items(sb).first().locator('.loaded-dot')).toBeVisible({ timeout: 30_000 });
+
+    // 注入延迟：此后每次 get-loaded-sessions 都回「发起时刻的旧快照」，且晚 8s 才到。
+    // 延迟必须**长于**下面那一轮对话：只有旧回包晚于「视图装载完成」的推送落地，才会
+    // 出现「新事实被旧快照盖掉」；回包先到则推送随后取胜，测不出缺陷。
+    await app.evaluateInMain(`process.env.${e2eSlowLoadedEnv} = '8000'`);
+
+    // 加第二个工作区（添加即激活）：侧栏在该分支里发起重取，回包将陈旧且迟到
+    await sb.evaluate((dir) =>
+      (window as unknown as { sidebarAPI?: { addWorkspaces: (paths: string[]) => void } })
+        .sidebarAPI!.addWorkspaces([dir as string]), dir2);
+    await expect.poll(
+      () => sb.evaluate(async (dir) => {
+        const w = window as unknown as {
+          sidebarAPI?: {
+            getWorkspaces: () => Promise<{ active: string | null; workspaces: Array<{ id: string; path: string }> }>;
+          };
+        };
+        const state = await w.sidebarAPI!.getWorkspaces();
+        const target = state.workspaces.find((t) => t.path === (dir as string));
+        return target !== undefined && state.active === target.id;
+      }, dir2),
+      { timeout: 30_000 },
+    ).toBe(true);
+
+    // 在新工作区跑一轮。视图按工作区过滤解析：不带过滤会选中旧工作区的视图，
+    // 消息就发到了别处（绿点自然不会出现在新行上）。
+    const chatB = await app.chatPage({ workspaceIncludes: 'e2e-stale-loaded' });
+    await expect(chatB.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
+    await chatB.fill('textarea.input-textarea', '新工作区里的一轮');
+    await chatB.press('textarea.input-textarea', 'Enter');
+    const newItem = items(sb).filter({ hasText: '新工作区里的一轮' });
+    await expect(newItem).toBeVisible({ timeout: 60_000 });
+
+    // 视图装载完成会推一次含该会话的新集合；陈旧的重取回包仍在路上
+    await expect(newItem.locator('.loaded-dot')).toBeVisible({ timeout: 30_000 });
+    // 等过陈旧回包的落地时刻：修复前它会把刚亮的绿点抹掉且不再恢复
+    await sb.waitForTimeout(9000);
+    await expect(newItem.locator('.loaded-dot')).toBeVisible();
+  } finally {
+    await app.evaluateInMain(`delete process.env.${e2eSlowLoadedEnv}`).catch(() => undefined);
+    await fs.promises.rm(dir2, { recursive: true, force: true }).catch(() => undefined);
+  }
+});

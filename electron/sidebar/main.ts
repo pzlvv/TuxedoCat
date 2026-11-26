@@ -75,6 +75,7 @@ import {
   type FilesMode,
   type StoredModes,
 } from '../sidebarFilesMode.js';
+import { createLoadedSetTracker, type LoadedRefetchTicket } from '../sidebarLoadedSet.js';
 import type { ChangeScope } from '../sidebarDocView.js';
 
 interface ConversationMeta {
@@ -296,8 +297,18 @@ let subscribed = false;
 
 /** 会话运行时状态（idle / waiting），来自 `sidebar:session-states-updated` 全量推送 */
 let sessionStates = new Map<string, SessionRuntimeState>();
-/** 已打开（有活动视图）的会话集合，来自 `sidebar:session-loaded-changed` */
-let loadedSessions = new Set<string>();
+/**
+ * 已打开（有活动视图）的会话集合投影，owner 是 `ChatViewManager`。
+ *
+ * 写入仲裁交给 `sidebarLoadedSet.ts`：推送与「切目录时的重取回包」两种来源的先后由它
+ * 判定，旧快照不得覆盖发起后到达的推送
+ * （`specs/defects/sidebar-loaded-set-overwritten-by-stale-refetch.md`）。
+ */
+const loadedSet = createLoadedSetTracker();
+/** 当前渲染用的「已打开」集合（每次从仲裁器取一份新副本） */
+function loadedSessions(): Set<string> {
+  return loadedSet.current();
+}
 
 /** 「任务完成」呼吸动画的时长（与 styles.css 的 animation 周期一致） */
 const COMPLETION_BREATH_MS = 1600;
@@ -320,12 +331,6 @@ function normalizeSessionStates(states: unknown): Map<string, SessionRuntimeStat
     }
   }
   return map;
-}
-
-/** 归一化 IPC 传来的 loaded sessionId 列表 */
-function normalizeLoadedSessions(sessionIds: unknown): Set<string> {
-  if (!Array.isArray(sessionIds)) return new Set();
-  return new Set(sessionIds.filter((id): id is string => typeof id === 'string'));
 }
 
 /** 应用一份未读完成集合快照：整体替换（已有条目保留原到达时刻，不重播呼吸） */
@@ -576,11 +581,13 @@ function render(): void {
 
   // 按前序展开成「父在前、展开的子紧随其后」的渲染序列
   const ordered: Array<{ c: ConversationMeta; html: string }> = [];
+  // 一次渲染取一份「已打开」快照，逐行查它：每行各取一份会退化成 O(n²)
+  const loadedNow = loadedSessions();
   const collect = (c: ConversationMeta, depth: number): void => {
     const kids = childrenMap.get(c.sessionId) || [];
     const expanded = kids.length > 0 && isSubExpanded(c.sessionId);
     const state = sessionStates.get(c.sessionId);
-    ordered.push({ c, html: itemHtml(c, depth, kids.length, expanded, state) });
+    ordered.push({ c, html: itemHtml(c, depth, kids.length, expanded, state, loadedNow) });
     if (expanded) {
       for (const child of kids) collect(child, depth + 1);
     }
@@ -657,11 +664,12 @@ function itemHtml(
   childCount: number,
   isExpanded: boolean,
   state: SessionRuntimeState | undefined,
+  loadedNow: Set<string>,
 ): string {
   const title = c.title && c.title.trim() ? c.title : '(未命名对话)';
   const roleTag = c.role && c.role !== 'Master' ? ` · ${escapeHtml(c.role)}` : '';
   // 已打开（视图层状态）与运行状态（core 运行时状态）来自各自的流，不挂在列表项上
-  const dot = loadedSessions.has(c.sessionId) ? '<span class="loaded-dot" title="已打开"></span>' : '';
+  const dot = loadedNow.has(c.sessionId) ? '<span class="loaded-dot" title="已打开"></span>' : '';
   // 非 idle 对话显示左边流水灯条（与 webview 对话列表一致；当前活跃会话同样显示）
   // 正在等待用户输入（ask user / 权限确认）时显示黄色；
   // 空闲但未读完成（用户没看到的任务结束）显示绿色：呼吸一次后常亮，直到该对话
@@ -984,7 +992,8 @@ function subscribe(): void {
     applySessionCompletion(sessionIds);
   });
   window.sidebarAPI.onSessionLoadedChanged((sessionIds) => {
-    loadedSessions = normalizeLoadedSessions(sessionIds);
+    // owner 推送：唯一推进「已打开」版本的来源，在途的重取回包据此判为旧快照
+    loadedSet.applyPush(sessionIds);
     render();
   });
   window.sidebarAPI.onActiveSessionChanged((sessionId) => {
@@ -1000,11 +1009,14 @@ function subscribe(): void {
     // 代次 +1：此前发出的 getConversations 回包已属于旧目录，回来时必须丢弃
     listGeneration += 1;
     const generation = listGeneration;
-    // 列表按目录重新拉取；loaded 也重拉（视图集合的 owner 是 ChatViewManager）。
-    // 运行时状态（流水灯 / 等待标记）不清空：sessionRuntime 是跨工作目录的全局快照，
-    // 会话视图切目录时保留，而状态流「只在变化时推」——清空后没有任何通道能补回来，
-    // 流水灯就会在切换标签页 / 切到别目录的对话后一直不亮。
-    loadedSessions = new Set();
+    // 列表按目录重新拉取；loaded 也重拉一次（视图集合的 owner 是 ChatViewManager）。
+    //
+    // 但 loaded 这份投影**不清空**：切工作目录并不改变「哪些会话视图开着」这个事实，
+    // 它与运行时状态同为跨目录的全局快照。清空的代价是制造一个「行在、绿点没」的空窗，
+    // 而这期间唯一能把它补回来的只有下面那次重取——推送是「变化时才推」、没有周期性
+    // 补推，重取一旦迟到或失败（见 .catch 的日志）绿点就永久缺失
+    // （specs/defects/sidebar-loaded-set-overwritten-by-stale-refetch.md）。
+    // 同理，重取回包只是「补空档」：发起之后若已有 owner 推送，它就是旧快照，必须丢弃。
     if (activeChanged) {
       // 旧目录的列表不能继续展示（否则切换后一瞬间还能看到/点开上一个目录的对话）；
       // 新目录的列表尚未取到，置回等待态（null）：延时内留白，超过 100ms 显示「加载中」
@@ -1022,13 +1034,16 @@ function subscribe(): void {
         render();
       })
       .catch((err) => console.error('[sidebar] reload conversations failed:', err));
+    // 凭据在发起前取：回包只有在「发起之后没有新推送」时才可应用
+    const loadedTicket: LoadedRefetchTicket = loadedSet.beginRefetch();
     window.sidebarAPI?.getLoadedSessions()
       .then((ids) => {
-        if (generation !== listGeneration) return;
-        loadedSessions = normalizeLoadedSessions(ids);
+        if (generation !== listGeneration) return; // 目录已再次变化，丢弃过期回包
+        // 发起后已有 owner 推送：回包是旧快照，丢弃（缺陷修复点）
+        if (!loadedSet.applyRefetch(loadedTicket, ids)) return;
         render();
       })
-      .catch(() => undefined);
+      .catch((err) => console.error('[sidebar] reload loaded sessions failed:', err));
     window.sidebarAPI?.getActiveSession()
       .then((sid) => {
         if (generation !== listGeneration) return;
@@ -2117,7 +2132,9 @@ async function init(): Promise<void> {
     if (generation !== listGeneration) return;
     conversations = list;
     activeSessionId = active;
-    loadedSessions = normalizeLoadedSessions(loaded);
+    // 播种「已打开」投影：与下面的运行时状态同口径——只有本进程还没收到过 owner 推送时
+    // 才用这份首拉快照，否则它可能早于订阅期间的推送、把新事实盖回旧值。
+    if (loadedSet.current().size === 0) loadedSet.applyPush(loaded);
     // 播种运行时状态：状态流只在变化时推，若推送早于侧栏就绪（或侧栏刚重载），
     // 不主动拉一次就会永远缺这份快照，流水灯 / 等待标记不亮。
     // 仅在本进程尚无推送时播种，避免晚到的旧快照覆盖订阅期间收到的更新状态。
