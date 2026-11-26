@@ -25,7 +25,7 @@ owner 与投影的口径（as-built 规格）：`loaded` 是 Electron 视图层�
 2. `onWorkspacesChanged` —— **无条件执行 `loadedSessions = new Set()` 清空**，随后 render 一次，
    再发异步 `getLoadedSessions()` 重取，回包在 `generation === listGeneration` 时整体替换，
    否则丢弃；`.catch(() => undefined)` 静默吞掉失败；
-3. 启动播种（`loadInitialData`）—— 正常。
+3. 启动播种（`init` 里首次 `getLoadedSessions()` 的回包）—— 正常。
 
 清空之后的恢复只有那条异步重取，而它是**没有版本号的快照**：主进程的
 `ipcMain.handle('sidebar:get-loaded-sessions')` 直接同步返回 `chatViews.getLoadedSessionIds()`
@@ -73,8 +73,8 @@ owner 与投影的口径（as-built 规格）：`loaded` 是 Electron 视图层�
   目录代次丢弃旧回包的行为不变（`loaded` 之外的部分不碰）。
 - 侧栏绿点的渲染条件不变（`loadedSessions.has(sessionId)`），「已打开」仍按装载完成计。
 - 「关闭所有空闲对话」等依赖绿点断言的功能语义不变。
-- 不新增 IPC 通道、不新增落盘字段；e2e 钩子若引入必须与 `E2E_SLOW_LIST_MS` /
-  `E2E_REMOTE_GIT_OPS` 同口径（env 门控、不设时零行为差异）。
+- 不新增 IPC 通道、不新增落盘字段；e2e 钩子若引入必须与 `E2E_SLOW_LIST_ENV` /
+  `E2E_REMOTE_GIT_OPS_ENV` 同口径（env 门控、不设时零行为差异）。
 
 ## 回归测试
 
@@ -99,5 +99,5 @@ owner 与投影的口径（as-built 规格）：`loaded` 是 Electron 视图层�
 | 既有回归（多工作区 / 关闭空闲对话） | `npx playwright test -c e2e/playwright.config.ts --project=electron-app e2e/electron/desktopShell.spec.ts` | 绿 | 见下一条备注 |
 | 类型 / lint | `npm run check-types && npm run lint` | 绿 | 三份 tsconfig + eslint 无报错 |
 | docsLint（本规格） | `npm run test:unit -- docs-lint` | 绿 | 章节引用失效 0 处、缺陷规格结构 0 处问题 |
-| docsLintLocalOnlyPaths | `npm run test:unit -- docs-lint` | 红 | 与本次改动无关的本机环境问题：该用例要求「缺本机专属文件时仍绿」，在本机 gitignore 状态下恒红；改动前的 main 上同样红 |
+| docsLintLocalOnlyPaths | `npm run test:unit -- docs-lint` | 绿 | 它 spawn 一次编译后的 docsLint 判退出码，docsLint 红时必然跟着红（本规格初次提交时即由此被带红） |
 | CI 那次失败的实际交错 | — | not-run | `all.yml` 未开 `E2E_DEBUG`、侧栏无 loaded 日志，无法从 artifact 反查；本缺陷由「结构性违反 + 可复现的回归用例」立据，RT-3 已在回退版上红、在修复版上绿 |
