@@ -1,8 +1,9 @@
 //! 内置工具：定义、路径展开与执行。
 //!
 //! 契约锁定部分：工具名、输入 schema 字段、Read 的行号格式、
-//! 工具结果上限（前 2K + 后 2K）。搜索类工具复用随 Core 分发的 ripgrep 产物
-//! （部署布局里与指纹槽位共享的 `ripgrep/` 目录，见 `ripgrep_path`）。
+//! 工具结果上限（前 2K + 后 2K；Read 例外，见 `READ_MAX_RESULT_CHARS`）。搜索类工具复用
+//! 随 Core 分发的 ripgrep 产物（部署布局里与指纹槽位共享的 `ripgrep/` 目录，见
+//! `ripgrep_path`）。
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -20,15 +21,23 @@ use crate::web_search;
 
 /// Read 的窗口上限
 const READ_MAX_SIZE_BYTES: u64 = 256 * 1024;
+/// 入参 `limit` 的上界。窗口本身由 `READ_MAX_RESULT_CHARS` 的预算决定——带行号前缀的
+/// 2000 行已经超过 10K，行数不是渲染期的独立约束。
 const READ_MAX_LINES: usize = 2000;
 const READ_MAX_LINE_CHARS: usize = 2000;
-const READ_MAX_OUTPUT_BYTES: usize = 50 * 1024;
+/// Read 结果整段上限（含 `N|` 行号前缀与续读 footer，按 UTF-16 code unit 计）
+pub const READ_MAX_RESULT_CHARS: usize = 10 * 1024;
+/// 截断时续读 footer 的预留量。footer 形如
+/// `(Output capped. Showing lines a-b of c. Use offset=d to continue.)`，两端数字各按
+/// `usize` 最大位宽计仍在 110 以内；取 160 留余量，保证「正文 + footer」不越过
+/// `READ_MAX_RESULT_CHARS`。
+const READ_FOOTER_RESERVE_CHARS: usize = 160;
 /// 图片文件上限（15MB，对齐 `Read.ts` 的 `MAX_IMAGE_SIZE_BYTES`）
 const READ_MAX_IMAGE_BYTES: u64 = 15 * 1024 * 1024;
 /// 工具结果上限：前 2K + 后 2K
 pub const TOOL_RESULT_HEAD: usize = 2048;
 pub const TOOL_RESULT_TAIL: usize = 2048;
-/// 工具结果统一上限
+/// 工具结果统一上限（Read 例外：`READ_MAX_RESULT_CHARS`，且不落盘）
 pub const MAX_RESULT_SIZE_CHARS: usize = 4 * 1024;
 /// 持久化文件最大大小（对齐 `toolResultStorage.ts` 的 `MAX_PERSISTED_SIZE`，64MB）
 const MAX_PERSISTED_SIZE: usize = 64 * 1024 * 1024;
@@ -48,8 +57,22 @@ const PIPE_DRAIN_GRACE_MS: u64 = 1000;
 /// 工具结果裁剪：超过上限时把**完整内容**落盘，返回带「前 2K + 后 2K」预览的
 /// `<persisted-output>` 消息；未超过上限时原样返回。
 ///
+/// `Read` 是唯一例外：它的结果窗口由 `render_read_window` 按 `READ_MAX_RESULT_CHARS`
+/// 截到整行边界，返回值本身就是完整的窗口——落盘只会多出一份要随会话清理的副本，
+/// 而模型能看到的不会多一个字。因此 `Read` 不落盘、原样返回。
+///
 /// 对齐 `src/core/tools/RunTools.ts` 的持久化分支与 `toolResultStorage.ts` 的消息格式。
 pub fn cap_tool_result(text: &str, session_id: &str, project: &str, tool_name: &str) -> String {
+    // `Read` 的窗口上限由 `render_read_window` 承担（整 `READ_MAX_RESULT_CHARS`，
+    // 行号前缀与续读 footer 都算在内），续读入口就在 footer 里，落盘副本给不出新内容。
+    // 这里不静默裁剪：上游越过上限是接线漂移，debug 构建直接炸出来。
+    if tool_name == "Read" {
+        debug_assert!(
+            util::utf16_len(text) <= READ_MAX_RESULT_CHARS,
+            "Read 的结果必须由 render_read_window 截到 {READ_MAX_RESULT_CHARS} code unit 以内"
+        );
+        return text.to_string();
+    }
     // 阈值按 JS `.length`（UTF-16 code unit），不是字节数 / 字符数。
     if util::utf16_len(text) <= MAX_RESULT_SIZE_CHARS {
         return text.to_string();
@@ -3500,17 +3523,20 @@ fn is_binary_content(bytes: &[u8]) -> bool {
 
 // ==================== Read 窗口与输出格式 ====================
 
-/// `buildBoundedWindow`：maxLines / maxLineLength / maxOutputBytes。
+/// Read 的窗口渲染：按单行长度与结果总字符上限选出窗口，渲染成 `N|text` 行号 + 续读 footer。
 ///
-/// 返回 `(content, line_count, truncated_by_bytes)`。文本路径与 xlsx 路径共用。
-fn build_bounded_window(lines: &[&str]) -> (String, usize, bool) {
+/// 预算按 **UTF-16 code unit** 计（对齐 JS `.length`），行号前缀与 footer 都算在内：
+/// 上限约束的是模型实际拿到的文本，只算正文会把结果越过 `READ_MAX_RESULT_CHARS`。
+/// 截断落在整行边界上，续读靠 footer 的 `Use offset=N to continue.`——Read 的续读
+/// 入口就在结果里，不需要落盘副本，因此 `cap_tool_result` 对 Read 原样放行。
+/// 文本路径与 xlsx 路径共用。
+fn render_read_window(lines: &[&str], start_line: usize, total_lines: usize) -> String {
     let mut kept: Vec<String> = Vec::new();
-    let mut output_bytes = 0usize;
-    let mut truncated_by_bytes = false;
-    for raw_line in lines {
-        if kept.len() >= READ_MAX_LINES {
-            break;
-        }
+    let mut used = 0usize;
+    // 只有结果预算（`READ_MAX_RESULT_CHARS`）截断才标注 `Output capped.`：
+    // 调用方给的 `limit` 是「按窗口取」，多一行少一行不影响可读性。
+    let mut capped_by_budget = false;
+    for (index, raw_line) in lines.iter().enumerate() {
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
         // 按 JS `.length`（UTF-16 code unit）判定与截断。
         let text = if util::utf16_len(line) > READ_MAX_LINE_CHARS {
@@ -3521,48 +3547,45 @@ fn build_bounded_window(lines: &[&str]) -> (String, usize, bool) {
         } else {
             line.to_string()
         };
-        // UTF-8 字节数 + 非首行的换行分隔符 1 字节
-        let bytes = text.len() + if kept.is_empty() { 0 } else { 1 };
-        if output_bytes + bytes > READ_MAX_OUTPUT_BYTES {
-            truncated_by_bytes = true;
+        let numbered = format!("{}|{text}", start_line + index + 1);
+        let separator = if kept.is_empty() { 0 } else { 1 };
+        // 这一行之后还有内容（窗口外的后续行也算）时，后面必然跟 footer，先留出位置。
+        let more_after = index + 1 < lines.len() || start_line + index + 1 < total_lines;
+        let reserve = if more_after {
+            READ_FOOTER_RESERVE_CHARS
+        } else {
+            0
+        };
+        let chars = separator + util::utf16_len(&numbered);
+        if used + chars + reserve > READ_MAX_RESULT_CHARS {
+            capped_by_budget = true;
             break;
         }
-        output_bytes += bytes;
-        kept.push(text);
+        used += chars;
+        kept.push(numbered);
     }
     let line_count = kept.len();
-    (kept.join("\n"), line_count, truncated_by_bytes)
-}
-
-/// `mapToolResultToToolResultBlockParam`：`N|text` 行号 + 续读 footer。
-fn format_read_output(
-    content: &str,
-    start_line: usize,
-    line_count: usize,
-    total_lines: usize,
-    truncated_by_bytes: bool,
-) -> String {
-    let numbered = content
-        .split('\n')
-        .enumerate()
-        .map(|(index, line)| format!("{}|{line}", start_line + index + 1))
-        .collect::<Vec<_>>()
-        .join("\n");
     let last_shown_line = start_line + line_count;
-    let mut result = numbered;
+    let mut rendered = if kept.is_empty() {
+        // 窗口为空（offset 越过文件尾、xlsx 无数据行）时仍给出起点行号，
+        // 与行号前缀口径一致（`99|` 表示第 99 行就是空内容）。
+        format!("{}|", start_line + 1)
+    } else {
+        kept.join("\n")
+    };
     if line_count > 0 && last_shown_line < total_lines {
-        let cap_note = if truncated_by_bytes {
+        let cap_note = if capped_by_budget {
             "Output capped. "
         } else {
             ""
         };
-        result.push_str(&format!(
+        rendered.push_str(&format!(
             "\n({cap_note}Showing lines {}-{last_shown_line} of {total_lines}. Use offset={} to continue.)",
             start_line + 1,
             last_shown_line + 1,
         ));
     }
-    result
+    rendered
 }
 
 // ==================== xlsx / xlsm ====================
@@ -3571,18 +3594,6 @@ fn format_read_output(
 const XLSX_MAX_LINES: usize = 50;
 /// 单列最大宽度（避免极端情况撑爆输出）
 const XLSX_MAX_COL_WIDTH: usize = 120;
-
-/// xlsx 读取结果。
-///
-/// `sheetName` / `sheets` 不进结果结构：
-/// UI 渲染与 tool_result 管线都不消费它们，无处承载，故不保留。
-struct XlsxReadResult {
-    content: String,
-    line_count: usize,
-    start_line: usize,
-    total_lines: usize,
-    truncated_by_bytes: bool,
-}
 
 /// ECMAScript `Number.prototype.toString()` 口径（ryu-js）。
 fn js_number_string(value: f64) -> String {
@@ -3653,12 +3664,8 @@ fn last_non_empty_col_index(data: &[&Vec<Value>]) -> usize {
 
 /// `readXlsxContent` 的格式化部分：过滤空行、去尾部空列、对齐列宽、`Row N:` 文本。
 ///
-/// 返回 `(content, line_count, start_line, total_lines, truncated_by_bytes)`。
-fn format_xlsx_data(
-    data: &[Vec<Value>],
-    offset: Option<u64>,
-    limit: Option<u64>,
-) -> (String, usize, usize, usize, bool) {
+/// 窗口按 `render_read_window` 的同一套单行长度 / 结果上限渲染。
+fn format_xlsx_data(data: &[Vec<Value>], offset: Option<u64>, limit: Option<u64>) -> String {
     let non_empty: Vec<&Vec<Value>> = data.iter().filter(|row| !is_row_empty(row)).collect();
     let total_lines = non_empty.len();
     let last_col = last_non_empty_col_index(&non_empty);
@@ -3712,14 +3719,7 @@ fn format_xlsx_data(
     }
 
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let (content, line_count, truncated_by_bytes) = build_bounded_window(&refs);
-    (
-        content,
-        line_count,
-        first_line,
-        total_lines,
-        truncated_by_bytes,
-    )
+    render_read_window(&refs, first_line, total_lines)
 }
 
 /// 读取 xlsx/xlsm。
@@ -3734,7 +3734,7 @@ fn read_xlsx_content(
     offset: Option<u64>,
     limit: Option<u64>,
     sheet_name: Option<&str>,
-) -> Result<XlsxReadResult, String> {
+) -> Result<String, String> {
     use calamine::{open_workbook_auto_from_rs, Reader};
     let _ = path;
 
@@ -3744,27 +3744,20 @@ fn read_xlsx_content(
     all_sheet_names.retain(|name| name != "WpsReserved_CellImgList");
 
     if all_sheet_names.is_empty() {
-        return Ok(XlsxReadResult {
-            content: "(Empty workbook - no sheets found)".to_string(),
-            line_count: 0,
-            start_line: 0,
-            total_lines: 0,
-            truncated_by_bytes: false,
-        });
+        return Ok(render_read_window(
+            &["(Empty workbook - no sheets found)"],
+            0,
+            1,
+        ));
     }
 
     let target_sheet = match sheet_name {
         Some(name) if !all_sheet_names.iter().any(|candidate| candidate == name) => {
-            return Ok(XlsxReadResult {
-                content: format!(
-                    "Sheet \"{name}\" not found. Available sheets: {}",
-                    all_sheet_names.join(", ")
-                ),
-                line_count: 0,
-                start_line: 0,
-                total_lines: 0,
-                truncated_by_bytes: false,
-            });
+            let message = format!(
+                "Sheet \"{name}\" not found. Available sheets: {}",
+                all_sheet_names.join(", ")
+            );
+            return Ok(render_read_window(&[message.as_str()], 0, 1));
         }
         Some(name) => name.to_string(),
         None => all_sheet_names[0].clone(),
@@ -3777,16 +3770,7 @@ fn read_xlsx_content(
         .rows()
         .map(|row| row.iter().map(xlsx_cell_value).collect())
         .collect();
-    let (content, line_count, start_line, total_lines, truncated_by_bytes) =
-        format_xlsx_data(&data, offset, limit);
-
-    Ok(XlsxReadResult {
-        content,
-        line_count,
-        start_line,
-        total_lines,
-        truncated_by_bytes,
-    })
+    Ok(format_xlsx_data(&data, offset, limit))
 }
 
 fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
@@ -3863,13 +3847,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             Err(err) => return ToolOutcome::Error(format!("Read failed: {err}")),
         };
         return match read_xlsx_content(&bytes, &path, offset, limit, sheet.as_deref()) {
-            Ok(result) => ToolOutcome::Success(format_read_output(
-                &result.content,
-                result.start_line,
-                result.line_count,
-                result.total_lines,
-                result.truncated_by_bytes,
-            )),
+            Ok(result) => ToolOutcome::Success(result),
             Err(err) => ToolOutcome::Error(err),
         };
     }
@@ -3950,14 +3928,7 @@ fn run_read(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     // 分支在上面已返回，不建立记录（它们不能被 Edit / Write 按文本编辑）。
     crate::read_guard::record_read(&ctx.session_id, &ctx.cwd, &path, &bytes);
 
-    let (content, line_count, truncated_by_bytes) = build_bounded_window(selected);
-    ToolOutcome::Success(format_read_output(
-        &content,
-        first_line,
-        line_count,
-        total_lines,
-        truncated_by_bytes,
-    ))
+    ToolOutcome::Success(render_read_window(selected, first_line, total_lines))
 }
 
 /// 标准 base64 编码（RFC 4648，带 `=` 补齐）
