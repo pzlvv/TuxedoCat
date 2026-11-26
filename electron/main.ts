@@ -210,6 +210,17 @@ const E2E_SLOW_LIST_ENV = `${ENV_PREFIX}_E2E_SLOW_LIST_MS`;
  */
 const E2E_REMOTE_GIT_OPS_ENV = `${ENV_PREFIX}_E2E_REMOTE_GIT_OPS`;
 
+/**
+ * e2e 专用的「已打开集合快照延迟回包」开关（`<envPrefix>_E2E_SLOW_LOADED_MS`）。
+ *
+ * 置为非零值时，`sidebar:get-loaded-sessions` **先取快照再延迟回包**，让回包携带发起时刻
+ * 的旧值并晚于其后到达的推送落地——这正是
+ * `specs/defects/sidebar-loaded-set-overwritten-by-stale-refetch.md` 要复现的交错。
+ * 与 `_E2E_SLOW_LIST_MS` / `_E2E_REMOTE_GIT_OPS` 同口径：不设时只多一次 env 读取，
+ * 不改产品行为、不引入落盘字段或 IPC 通道。
+ */
+const E2E_SLOW_LOADED_ENV = `${ENV_PREFIX}_E2E_SLOW_LOADED_MS`;
+
 /** 远端取数计数的落点（只在 `E2E_REMOTE_GIT_OPS_ENV` 打开时存在） */
 interface RemoteGitOpCounts {
   run: number;
@@ -5300,8 +5311,16 @@ function setupIpc(): void {
   });
 
   // 视图流：已打开会话集合（owner 是 ChatViewManager）
-  ipcMain.handle('sidebar:get-loaded-sessions', () => {
-    return chatViews?.getLoadedSessionIds() ?? [];
+  ipcMain.handle('sidebar:get-loaded-sessions', async () => {
+    // 先取值再延迟：这样「延迟回包」携带的是**发起时刻**的快照，正是
+    // specs/defects/sidebar-loaded-set-overwritten-by-stale-refetch.md 描述的交错形态。
+    // 反过来（先延迟再取值）永远拿到最新值，测不出陈旧回包。
+    const snapshot = chatViews?.getLoadedSessionIds() ?? [];
+    const e2eSlowLoadedMs = Number(process.env[E2E_SLOW_LOADED_ENV]);
+    if (e2eSlowLoadedMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, e2eSlowLoadedMs));
+    }
+    return snapshot;
   });
 
   // 运行时状态流：最近一次全量快照（owner 是 core 的 sessionRuntime，宿主缓存的是它
