@@ -345,29 +345,39 @@ export function createCoreChannelBus(
       });
       return;
     }
-    // 把 handler 的调用放进 promise 链：同步抛错也会走 reject 分支回 ok:false，
-    // 而不是冒泡到 FrameDecoder 被误报成 malformed frame（那会让对端一直等）。
+    // 处理器**随帧同步启动**：同一 chunk 内排在这个 request 之后的 event 帧（`toolCall` /
+    // `toolResult`）必须落在它的同步段之后。处理器的同步段就是「上架工具卡片、进入工具阶段」，
+    // 一旦被推到微任务就会晚于同 chunk 的 `toolResult` 上屏——卡片直接以完成态出现、thinking
+    // 也已熄灭，工具批次收尾到下一轮 `aiBegin` 之间没有任何进行中指示
+    // （specs/defects/standalone-request-handler-defers-breaks-frame-order.md；
+    // 帧序要求见 `docs/core/standalone-core.md` 第 5.2 节）。
+    // 同步抛错仍在本地的 try 里接住、落到同一个 ok:false 分支：不冒泡到 FrameDecoder
+    // （那会被误报成 malformed frame，让对端一直等）。
     const epoch = connectionEpoch;
-    Promise.resolve()
-      .then(() => handler(request))
-      .then(
-        (result) => {
-          if (epoch === connectionEpoch) sendFrame({ kind: 'response', id, ok: true, result });
-          else log(`[core] dropped stale response for request ${id} (connection changed)`);
-        },
-        (error: unknown) => {
-          if (epoch === connectionEpoch) {
-            sendFrame({
-              kind: 'response',
-              id,
-              ok: false,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          } else {
-            log(`[core] dropped stale failure for request ${id} (connection changed)`);
-          }
-        },
-      );
+    let settled: Promise<unknown>;
+    try {
+      settled = Promise.resolve(handler(request));
+    } catch (error) {
+      settled = Promise.reject(error);
+    }
+    settled.then(
+      (result) => {
+        if (epoch === connectionEpoch) sendFrame({ kind: 'response', id, ok: true, result });
+        else log(`[core] dropped stale response for request ${id} (connection changed)`);
+      },
+      (error: unknown) => {
+        if (epoch === connectionEpoch) {
+          sendFrame({
+            kind: 'response',
+            id,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } else {
+          log(`[core] dropped stale failure for request ${id} (connection changed)`);
+        }
+      },
+    );
   }
 
   /** UI → core 请求的应答（`CoreToUiFrame.response`） */

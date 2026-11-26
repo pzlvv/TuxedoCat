@@ -7,6 +7,7 @@
  * - 连接态事件（hostEnvironmentProvided）与 conversationOpened 在重启后重放
  * - CoreEvent 分发；处理器未注册时先缓存
  * - CoreRequest → 处理器 → response 帧（id 回带）；缺处理器时回 ok:false
+ * - 同 chunk 内的帧序：`request` 的处理器随帧同步启动，排在后面的 event 帧不越位
  * - 崩溃重启：单次崩溃后恢复接线
  * - 重启次数超限：onFatal，不再重试
  * - 关闭：shutdown 帧 → 进程退出，exit.expected = true
@@ -19,7 +20,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  createCoreChannelBus,
   createStandaloneCoreBus,
+  NOOP_CORE_CHANNEL_HOOKS,
+  type CoreChannelTransport,
   type StandaloneCoreBus,
   type StandaloneCoreBusOptions,
 } from '../host/standalone/StandaloneEventBus';
@@ -29,6 +33,8 @@ import {
   encodeFrame,
   isCoreToUiFrame,
   isUiToCoreFrame,
+  type CoreToUiFrame,
+  type UiToCoreFrame,
 } from '../host/standalone/protocol';
 import {
   coreBinaryCandidates,
@@ -186,6 +192,57 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<boo
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   return predicate();
+}
+
+/**
+ * 手动驱动的帧通道：本进程直接把帧喂进 `hooks.onFrame`，不起子进程。
+ *
+ * 用来精确控制「同一次同步派发内的帧序」——真实管道下 Core 写出的多帧通常落在同一个
+ * chunk 里，`FrameDecoder` 会同步逐行派发，正好是这个桩的 `push` 语义。
+ */
+interface ManualChannel {
+  transport: CoreChannelTransport;
+  /** 按顺序喂帧，全部在同一个同步调用栈里完成（模拟同一个 chunk） */
+  push(frames: CoreToUiFrame[]): void;
+  /** 总线写出的 UiEvent / response 帧（按写出顺序） */
+  sent(): UiToCoreFrame[];
+  /** 触发握手 */
+  handshake(): void;
+}
+
+function createManualChannel(): ManualChannel {
+  const sentFrames: UiToCoreFrame[] = [];
+  const transport: CoreChannelTransport = {
+    hooks: NOOP_CORE_CHANNEL_HOOKS,
+    start: () => undefined,
+    send: (frame) => {
+      sentFrames.push(frame);
+    },
+    stop: async () => undefined,
+    detach: async () => undefined,
+    disconnectOnly: async () => undefined,
+    isReady: () => true,
+    isStopped: () => false,
+  };
+  return {
+    transport,
+    push: (frames) => {
+      for (const frame of frames) transport.hooks.onFrame(frame);
+    },
+    sent: () => sentFrames,
+    handshake: () => transport.hooks.onReady(),
+  };
+}
+
+/** 轮询取值：条件满足时返回该值，超时返回 null（用于等一个具体对象而不是布尔） */
+async function waitForValue<T>(produce: () => T | undefined, timeoutMs: number): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = produce();
+    if (value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return produce() ?? null;
 }
 
 /** 等子进程写出的 pid 文件出现 */
@@ -548,6 +605,164 @@ async function run(): Promise<void> {
       await waitFor(() => logMessages(core.recording).includes('seq:s1')),
     );
     await core.bus.shutdown();
+  }
+
+  // ---------- 同 chunk 内的 request / event 时序（specs/defects/standalone-request-handler-defers-breaks-frame-order.md）----------
+  {
+    const channel = createManualChannel();
+    const bus = createCoreChannelBus(channel.transport, () => undefined);
+    const observed: string[] = [];
+    const recording = createRecordingCoreEventHandlers();
+    bus.onCoreEvents({
+      ...recording.handlers,
+      toolCall: (event) => {
+        observed.push(`toolCall:${event.toolUseId}`);
+        recording.handlers.toolCall(event);
+      },
+      toolResult: (event) => {
+        observed.push(`toolResult:${event.toolUseId}`);
+        recording.handlers.toolResult(event);
+      },
+    });
+    bus.onCoreRequests({
+      toolPermissionRequested: async (request) => {
+        // 处理器的同步段就是「上架卡片 / 进入工具阶段」——它必须随帧同步跑
+        observed.push(`toolPermissionRequested:${request.toolUseId}`);
+        return { behavior: 'allow' };
+      },
+      userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
+      crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
+      crossWorkspaceTransferRequested: async () => ({ error: 'not supported' }),
+    });
+    channel.handshake();
+
+    // 三帧在同一个同步调用栈里派发：等价于 Core 把它们写进同一个 chunk
+    channel.push([
+      {
+        kind: 'request',
+        id: 7,
+        request: {
+          type: 'toolPermissionRequested',
+          sessionId: 's1',
+          toolUseId: 'call_1',
+          toolName: 'Bash',
+          permResult: { behavior: 'allow' },
+          displayArgs: { command: 'ls' },
+          agentMode: 'auto',
+        },
+      },
+      { kind: 'event', event: { type: 'toolCall', sessionId: 's1', toolUseId: 'call_1', toolName: 'Bash', messageUuid: 'uuid_1' } },
+      {
+        kind: 'event',
+        event: { type: 'toolResult', sessionId: 's1', toolUseId: 'call_1', toolName: 'Bash', output: 'ok', status: 'success' },
+      },
+    ]);
+
+    check(
+      'RT-1 同 chunk 内 request 的处理器同步启动，先于后续 event 帧派发'
+        + `（实际顺序：${observed.join(' → ')}）`,
+      observed.join(',') ===
+        'toolPermissionRequested:call_1,toolCall:call_1,toolResult:call_1',
+    );
+
+    // 应答仍异步回写、仍带回原 id
+    const responseFrame = await waitForValue(
+      () => channel.sent().find((frame) => frame.kind === 'response' && frame.id === 7),
+      500,
+    );
+    check(
+      'RT-1 request 的应答仍按原 id 异步回写（ok:true）',
+      responseFrame !== null &&
+        responseFrame.kind === 'response' &&
+        responseFrame.ok === true &&
+        JSON.stringify(responseFrame.result) === JSON.stringify({ behavior: 'allow' }),
+    );
+
+    // event → request → event：request 的同步段夹在两个事件之间，不被挪到最前或最后
+    observed.length = 0;
+    channel.push([
+      { kind: 'event', event: { type: 'toolCall', sessionId: 's2', toolUseId: 'call_2', toolName: 'Bash', messageUuid: 'uuid_2' } },
+      {
+        kind: 'request',
+        id: 8,
+        request: {
+          type: 'toolPermissionRequested',
+          sessionId: 's2',
+          toolUseId: 'call_2',
+          toolName: 'Bash',
+          permResult: { behavior: 'allow' },
+          displayArgs: { command: 'pwd' },
+          agentMode: 'auto',
+        },
+      },
+      {
+        kind: 'event',
+        event: { type: 'toolResult', sessionId: 's2', toolUseId: 'call_2', toolName: 'Bash', output: 'ok', status: 'success' },
+      },
+    ]);
+    check(
+      'RT-2 event → request → event 的时序不重排'
+        + `（实际顺序：${observed.join(' → ')}）`,
+      observed.join(',') ===
+        'toolCall:call_2,toolPermissionRequested:call_2,toolResult:call_2',
+    );
+
+    // 同步启动不能改坏异常路径：处理器同步抛错仍回 ok:false，且不冒泡到帧派发
+    // （冒泡会被 `FrameDecoder` 误报成 malformed frame，让对端一直等）。
+    const throwing = createManualChannel();
+    const throwingBus = createCoreChannelBus(throwing.transport, () => undefined);
+    const throwingRecording = createRecordingCoreEventHandlers();
+    throwingBus.onCoreEvents(throwingRecording.handlers);
+    throwingBus.onCoreRequests({
+      toolPermissionRequested: () => {
+        throw new Error('boom from handler');
+      },
+      userChoice: async () => ({ kind: 'permission', index: 0, reply: null }),
+      crossWorkspaceAgentRequested: async () => ({ error: 'not supported' }),
+      crossWorkspaceTransferRequested: async () => ({ error: 'not supported' }),
+    });
+    throwing.handshake();
+    let dispatchThrew = false;
+    try {
+      throwing.push([
+        {
+          kind: 'request',
+          id: 9,
+          request: {
+            type: 'toolPermissionRequested',
+            sessionId: 's3',
+            toolUseId: 'call_3',
+            toolName: 'Bash',
+            permResult: { behavior: 'allow' },
+            displayArgs: { command: 'ls' },
+            agentMode: 'auto',
+          },
+        },
+        { kind: 'event', event: { type: 'toolCall', sessionId: 's3', toolUseId: 'call_3', toolName: 'Bash', messageUuid: 'uuid_3' } },
+      ]);
+    } catch {
+      dispatchThrew = true;
+    }
+    const failedResponse = await waitForValue(
+      () => throwing.sent().find((frame) => frame.kind === 'response' && frame.id === 9),
+      500,
+    );
+    check(
+      '处理器同步抛错仍回 ok:false，且异常不冒泡到帧派发',
+      !dispatchThrew &&
+        failedResponse !== null &&
+        failedResponse.kind === 'response' &&
+        failedResponse.ok === false &&
+        failedResponse.error.includes('boom from handler'),
+    );
+    // 同一 chunk 里后续的 event 帧照常派发（抛错不掐断通道）
+    check(
+      '处理器抛错后同 chunk 的后续 event 帧照常派发',
+      throwingRecording.count('toolCall') === 1,
+    );
+    await throwingBus.shutdown();
+
+    await bus.shutdown();
   }
 
   // ---------- 崩溃重启：连接态事件与会话重放 ----------

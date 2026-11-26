@@ -403,8 +403,9 @@ Linux 两份均取 `unknown-linux-musl` 静态链接目标。
 | UI → Core | `shutdown` | `{ kind: 'shutdown' }` |
 
 - `request` 的 `id` 由**发起方**生成（Core 发 `CoreRequest`、UI 发 `UiRequest` 各自编号），
-  在单个连接内唯一；`response` 回带同一个 `id`。帧按写入顺序处理，但 `request` 的应答
-  顺序不受此约束——`balanceRequested` 在独立线程查余额，应答可晚于其后帧的应答（第 4 节）。
+  在单个连接内唯一；`response` 回带同一个 `id`。帧按写入顺序处理——`request` 帧的处理器随帧
+  同步启动，排在它之后的帧仍在它的同步段之后派发；但应答**顺序**不受此约束，
+  `balanceRequested` 在独立线程查余额，应答可晚于其后帧的应答（第 4 节）。
 
 ### 5.3 握手
 
