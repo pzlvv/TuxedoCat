@@ -40,3 +40,16 @@ export function resolveAbortButtonState(facts: AbortButtonFacts): AbortButtonSta
   if (facts.backgroundRunning || facts.subAgentRunning) return 'background';
   return 'none';
 }
+
+/**
+ * abort 按钮的悬停明细浮层是否启用（`docs/features/abort-button.md` FR-004）：
+ * 按钮可点（红 / 黄）且有明细可列。
+ *
+ * 前台在跑（红）时后台任务与子代理可能同时在跑，明细照常展示——中止前先看清
+ * 「点了红色会留下什么」。灰态（不可点）与两组明细皆空（恢复态 spin、前台没有
+ * 后台明细）不弹浮层，按钮保留 native `title`；浮层取代 native title，两者不并存。
+ * 判据只有这一份实现，webview 与测试共用（`docs/architecture/principles.md` 第 8 节）。
+ */
+export function abortHoverTipEnabled(state: AbortButtonState, hasDetail: boolean): boolean {
+  return state !== 'none' && hasDetail;
+}

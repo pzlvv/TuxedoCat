@@ -57,7 +57,7 @@ diff，无变化不发事件）。内部按来源分列（多个来源会重叠�
 | `compacting` | `compacting` 来源（正在压缩上下文） |
 | `pendingCompact` | `pendingCompact` 来源（手动压缩已登记、等待前台工作收尾时执行；不参与 `idle`） |
 | `backgroundRunning` | `background` 来源（有运行中的后台 Bash 任务） |
-| `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command` / `startedAt`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮黄色态的悬停明细据此列出任务与已执行时间（[docs/features/abort-button.md](../features/abort-button.md)）。`startedAt` 是任务的开始时刻（wall clock 毫秒），注册时写定 |
+| `backgroundTasks` | 运行中的后台 Bash 任务清单（specs/019），按注册序逐项 `taskId` / `description` / `command` / `startedAt`；空集为 `[]`。与 `backgroundRunning` 同源（同一注册表、同一次 `emit_runtime` 产出），abort 按钮的悬停明细据此列出任务与已执行时间（[docs/features/abort-button.md](../features/abort-button.md)）。`startedAt` 是任务的开始时刻（wall clock 毫秒），注册时写定 |
 | `subAgentRunning` | 派生字段：存在非 idle 的已登记子代理（递归到子代理自身的查询 / 压缩 / 后台任务 / 下层子代理）；跨工作区子代理没有本地会话状态，登记期间恒算非 idle，结束事件到达后注销 |
 | `subAgentDescription` | 子代理会话为创建时 Agent 工具调用的 description（specs/019）；普通会话与恢复路径取不到时为 `null`，UI 显示回退文案。悬停明细据此列出子代理 |
 | `subAgentStartedAt` | 本地子代理的登记时刻（wall clock 毫秒，specs/054）；普通会话、跨工作区对话与恢复路径取不到时为 `null`。悬停明细据此显示子代理的已执行时间，`null` 时只省略时长、不猜值 |

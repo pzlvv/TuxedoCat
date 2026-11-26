@@ -6,7 +6,7 @@ import type { Colors, QueuedMessagePayload, ThinkingMode, AgentMode, IdleSuspend
 import type { McpServerInfo, ProviderModels } from '../shared/webviewTypes';
 import type { ModelRef } from '../shared/llm/modelRef';
 import { postMessage, getWindowSessionId } from './webviewEnv';
-import type { AbortButtonState } from '../host/abortButtonState';
+import { abortHoverTipEnabled, type AbortButtonState } from '../host/abortButtonState';
 import type { TodoProgress } from '../host/todoProgress';
 import { TODO_STATUS_COLOR } from './tools/TodoWrite';
 import { resolveInputDisabledReason, resolveInputPlaceholderText, resolveSessionOptionsLocked } from './inputAreaState';
@@ -100,8 +100,9 @@ interface InputAreaProps {
   /**
    * abort 悬停明细（specs/019 FR-001 / FR-002；specs/054 FR-004 / FR-005）：当前会话
    * 运行中的后台任务与子代理清单（含远程登记），App 从 sessionRuntime 快照推导；
-   * 两组皆空时黄色态悬停不弹浮层（恢复态 spin）。每条带开始时刻，浮层可见期间由本组件
-   * 用本机时钟推算已执行时间。浮层只读：点击无任何上行，中止范围仍由 abort 点击整体判定。
+   * 两组皆空时按钮可点也不弹浮层（恢复态 spin、前台在跑但没有后台明细）。每条带开始
+   * 时刻，浮层可见期间由本组件用本机时钟推算已执行时间。浮层只读：点击无任何上行，
+   * 中止范围仍由 abort 点击整体判定。
    */
   abortHoverDetail: {
     tasks: { taskId: string; description: string; command: string; startedAt: number | null }[];
@@ -1712,9 +1713,12 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
 
   // ==================== abort 悬停明细浮层（specs/019 FR-002；specs/054 FR-004 / FR-005） ====================
 
-  // 仅黄色态（background）起 1s 计时；移出取消 / 立即隐藏；内容随快照刷新，
-  // 两组皆空时不渲染（恢复态 spin）。浮层 pointer-events-none：只读投影，
-  // 指针事件穿透（点击不产生任何上行），也避免移入浮层误触按钮 mouseleave。
+  // 红 / 黄两态都可点，只要有明细就起 1s 计时；移出取消 / 立即隐藏；内容随快照刷新。
+  // 浮层 pointer-events-none：只读投影，指针事件穿透（点击不产生任何上行），也避免
+  // 移入浮层误触按钮 mouseleave。启用判定走 `abortHoverTipEnabled` 这一份实现
+  // （docs/features/abort-button.md FR-004），不在组件里另写 `if`。
+  const abortTipHasDetail = abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0;
+  const abortTipEnabled = abortHoverTipEnabled(abortButtonState, abortTipHasDetail);
   const [abortTipVisible, setAbortTipVisible] = useState(false);
   const abortTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeAbortTip = useCallback(() => {
@@ -1725,9 +1729,9 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
     setAbortTipVisible(false);
   }, []);
   useEffect(() => {
-    // 离开黄色态（转红 / 转灰）或切换会话：取消计时并立即隐藏（specs/019 FR-003）
-    if (abortButtonState !== 'background') closeAbortTip();
-  }, [abortButtonState, closeAbortTip]);
+    // 浮层不再可用（转灰 / 明细清空）或切换会话：取消计时并立即隐藏（specs/019 FR-003）
+    if (!abortTipEnabled) closeAbortTip();
+  }, [abortTipEnabled, closeAbortTip]);
   useEffect(() => {
     closeAbortTip();
   }, [sessionId, closeAbortTip]);
@@ -1739,7 +1743,6 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
   // 隐藏后停止——不在不可见时维护常驻定时器。开始时刻来自快照（事实），时长在这里
   // 现算，不缓存第二份。
   const [abortTipNow, setAbortTipNow] = useState(() => Date.now());
-  const abortTipHasDetail = abortHoverDetail.tasks.length > 0 || abortHoverDetail.subAgents.length > 0;
   useEffect(() => {
     if (!abortTipVisible || !abortTipHasDetail) return undefined;
     // 首帧读数即当前时刻（不等下一个整秒），此后每秒递增
@@ -2502,12 +2505,13 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
                 opacity: abortButtonState === 'none' ? 0.5 : 1,
               }}
               onMouseEnter={() => {
-                // 仅黄色态起 1s 计时；红色 / 灰色态无浮层（specs/019 FR-002）
-                if (abortButtonState !== 'background') return;
+                // 红 / 黄两态都可点，有明细才起 1s 计时；灰态与无明细不出浮层（specs/019 FR-002）
+                if (!abortTipEnabled) return;
                 abortTipTimerRef.current = setTimeout(() => setAbortTipVisible(true), ABORT_TIP_DELAY_MS);
               }}
               onMouseLeave={closeAbortTip}
-              title={abortButtonState === 'background' ? undefined : t('inputArea.abort')}
+              // 浮层与 native title 不并存：有明细时交给悬停浮层，没有明细时保留「终止」文案
+              title={abortTipEnabled ? undefined : t('inputArea.abort')}
             >
               <Icon name="square" size={12} className="text-white" />
             </button>
@@ -2648,7 +2652,7 @@ const InputArea = forwardRef<InputAreaRef, InputAreaProps>(function InputArea({
           列表（图标 + 文本，docs/features/todo-list.md FR-003）。pointer-events-none：
           只读投影，点击不产生任何上行（FR-004）。放在任务进度浮层之后，两组浮层
           同时可见（进度已固定 + 悬停 abort）时 abort 浮层盖在上层。 */}
-        {abortTipVisible && abortTipHasDetail && (
+        {abortTipVisible && abortTipEnabled && (
           <div
             data-abort-tip
             className="absolute bottom-full right-0 mb-2 rounded-lg border shadow-lg px-3 py-2 pointer-events-none z-50"

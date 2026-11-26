@@ -427,7 +427,7 @@ test('US-1 输入法合成期间的 Enter 不发送（模拟 composition）', as
   expect(sends).toHaveLength(0);
 });
 
-test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务 / 子代理清单，只读，移出即隐', async () => {
+test('US-52 specs/019 abort 可点态（红 / 黄）悬停 1s 显示运行明细浮层：任务 / 子代理清单，只读，移出即隐', async () => {
   const { page, host } = handle;
   // 建会话：黄色态判定读当前会话的快照条目（与三态用例同一驱动方式）
   await host.setTurn({ text: 'ok' });
@@ -587,7 +587,42 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
   });
   await expect(abortTip).toBeHidden();
 
-  // AC-5：红色态（前台查询在跑）悬停超过 1s 无浮层
+  // AC-11（abort-button.md，按钮可点即含红色）：红色态（前台查询在跑）但后台任务 /
+  // 子代理仍在时同样出浮层——中止前先看清「点了红色会留下什么」。前台在跑与后台明细
+  // 可以并存（FR-001 里红色只是优先于黄色）
+  await host.send({
+    type: 'sessionRuntimeStates',
+    states: [
+      {
+        sessionId: sid, idle: false, waiting: false, queryRunning: true, compacting: false,
+        pendingCompact: false, backgroundRunning: true, subAgentRunning: true,
+        backgroundTasks: [
+          { taskId: 'bg-1', description: '打包日志', command: 'tar -czf log.tgz logs', startedAt: now - 5_000 },
+        ],
+        subAgentDescription: null, parentSessionId: null,
+        subAgentStartedAt: null,
+        remoteSubAgents: [],
+      },
+      {
+        sessionId: `${sid}-sub1`, idle: false, waiting: false, queryRunning: true, compacting: false,
+        pendingCompact: false, backgroundRunning: false, subAgentRunning: false, backgroundTasks: [],
+        subAgentDescription: '浏览文件找规格', parentSessionId: sid,
+        subAgentStartedAt: now - 65_000,
+        remoteSubAgents: [],
+      },
+    ],
+  });
+  await expect(abortButton).toHaveAttribute('data-abort-state', 'query', { timeout: 10_000 });
+  // 上一段结束时指针仍在按钮上：`hover()` 不会重发 mouseenter，故先移开再悬停
+  await page.mouse.move(10, 10);
+  await abortButton.hover();
+  await expect(abortTip).toBeVisible({ timeout: 3_000 });
+  await expect(abortTip).toContainText('打包日志');
+  await expect(abortTip).toContainText('浏览文件找规格');
+  await page.mouse.move(10, 10);
+  await expect(abortTip).toBeHidden();
+
+  // AC-13：红色态但没有任何后台明细 → 无浮层，按钮保留 native title
   await host.send({
     type: 'sessionRuntimeStates',
     states: [
@@ -600,11 +635,12 @@ test('US-52 specs/019 abort 黄色态悬停 1s 显示运行明细浮层：任务
     ],
   });
   await expect(abortButton).toHaveAttribute('data-abort-state', 'query', { timeout: 10_000 });
+  await expect(abortButton).toHaveAttribute('title', '终止');
   await abortButton.hover();
   await page.waitForTimeout(1500);
   await expect(abortTip).toHaveCount(0);
 
-  // AC-5（续）：灰色态（空闲）同样无浮层——同一守卫，补全另一分支
+  // AC-13（续）：灰色态（空闲）同样无浮层——同一守卫，补全另一分支
   await host.send({
     type: 'sessionRuntimeStates',
     states: [
