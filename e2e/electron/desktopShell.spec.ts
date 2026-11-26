@@ -392,17 +392,31 @@ test('桌面端主菜单「关闭所有空闲对话」跨全部打开工作区�
     await expect(tabs).toHaveCount(2, { timeout: 20_000 });
 
     // 各工作区发一轮：先 A（初始活动项），切到 B 再发一轮，最后切回 A
+    const sidebar = await app.sidebarPage();
+    const loadedDots = sidebar.locator('#list .item[data-session-id] .loaded-dot');
+    // 轮次结束的判据用**侧栏的会话状态**（`sidebar:session-states-updated` 推送的
+    // running / idle），不用「回复文本可见」：回复上屏与轮末 idle 快照之间没有顺序
+    // 保证，负载高时「收到：」已可见而会话仍在 running，随后才落 idle——本用例因此
+    // 在 all 车道概率性红（TODO.md 记的同一类问题：按钮 / 快照投影不能做轮次边界）。
+    //
+    // 只取**未 idle** 的那一种灯条：`.running-bar` 还兼作「空闲但未读完成」的绿色条
+    // （`electron/sidebar/main.ts` 的 completionBar），把它算进来会让本判据永远等不到 0。
+    const runningBars = sidebar.locator(
+      '#list .item[data-session-id] .running-bar:not(.running-bar--completed)',
+    );
     const sendTurn = async (ws: string): Promise<void> => {
       const chat = await app.chatPage({ workspaceIncludes: ws });
       await expect(chat.locator('textarea.input-textarea')).toBeEnabled({ timeout: 30_000 });
       await chat.fill('textarea.input-textarea', `在 ${ws} 里跑一轮`);
       await chat.press('textarea.input-textarea', 'Enter');
-      await expect(chat.getByText(/收到：/).first()).toBeVisible({ timeout: 60_000 });
+      // 先等这一轮真的跑起来：否则「本来就没有 running-bar」会让下一步立即通过
+      await expect(runningBars.first()).toBeVisible({ timeout: 60_000 });
+      // 再等它收口——轮次结束的确定信号
+      await expect(runningBars).toHaveCount(0, { timeout: 60_000 });
     };
-    const sidebar = await app.sidebarPage();
-    const loadedDots = sidebar.locator('#list .item[data-session-id] .loaded-dot');
 
     await sendTurn('e2e-menu-idle-a');
+    // 「已打开」绿点与轮次结束是两条不同的流，各自等各自的信号
     await expect(loadedDots.first()).toBeVisible({ timeout: 30_000 });
 
     await tabs.filter({ hasText: 'e2e-menu-idle-b' }).click();
