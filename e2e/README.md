@@ -351,10 +351,10 @@ e2e/
     ——那是产品行为，重试会掩盖 `specs/defects/` 里那一类缺陷。
 11. **远端残留的 daemon 会拖住下一轮**：上一轮用例被杀时远端 Core 进程可能还在空闲
     退出倒计时里，`~/.<configDir>/run/core-daemon-<fingerprint>.json` 也还在。
-    连真实远端的用例开头与收尾都要清场（`pkill -f '<core 名>'` + 删状态文件），
-    标识符从 `src/config/project.ts` 取、不写字面量（`remoteSshExecution.spec.ts` 的
-    `CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`，`remoteChangeList.spec.ts` 的
-    `afterAll` 同一套）。
+    连真实远端的用例开头与收尾都要清场（`pkill -f '<本指纹的 core 模式>'` + 删状态文件），
+    标识符从 `src/config/project.ts` 取、不写字面量（四条 ssh 车道统一经
+    `e2e/helpers/remoteCoreProcess.ts` 的 `coreProcessPattern` 取模式，状态目录常量是
+    `REMOTE_RUN_DIR`；按指纹收口的口径见已知坑 23）。
     清场与探测都按 **SSH 用户自己的 uid** 收口（`pkill -u "$(id -u)"` / `pgrep -u "$(id -u)"`）：
     裸 `pgrep -af` 是全机口径，把远端当本机自测时会把开发机正在用的 Core 数成残留——
     「Core 已退出」这类断言永远不满足。车道只对自己部署的进程负责（槽位与状态文件都在
@@ -457,7 +457,7 @@ e2e/
     同源现象：`~/.<configDir>/run/` 会留下上一轮 daemon 的状态文件，而「远端就是本机」时
     `pgrep -u "$(id -u)"` 是**整个 uid 口径**——手工跑过用例后再跑 `remoteSshExecution`
     的清理类断言，会看到自己刚才那轮的进程。复现前先按已知坑 11 的清场口径
-    （`CORE_PROCESS_PATTERN` / `REMOTE_RUN_DIR`）杀进程并删状态文件。
+    （`coreProcessPattern` / `REMOTE_RUN_DIR`）杀进程并删状态文件。
 21. **自托管机器取 artifact 必须并发分片，官方 action 会慢到撞穿 job 上限**：
     `actions/download-artifact` 用**单条连接**拉 blob。本机到
     `*.blob.core.windows.net` 的单连接吞吐只有 25–31KB/s（直连实测），
@@ -505,4 +505,17 @@ e2e/
     有代理环境时置 `ELECTRON_GET_USE_PROXY=true`（RT-16 钉住三条）。
     本机实测：GitHub 直连 30KB/s、经代理 3.5MB/s；`cdn.npmmirror.com/binaries/electron/`
     直连 14MB/s；走镜像后 `@electron/get` 真实下载 117.1MB / 10.2s = 11.7MB/s。
+23. **同一远端上并存的多个部署槽位会被误判成「本车道残留」**：远端是共享机器（CI 里
+    自托管 runner 与 SSH 远端同机，`E2E_SSH_HOST=127.0.0.1`），同机可以并存多个部署槽位
+    `~/.local/share/<core.deployPrefix>/<指纹>/`——一个指纹一个 daemon、一份状态文件，
+    多版本各占一个槽位互不踩踏（[docs/core/core-remote.md 第 2.3 节](../docs/core/core-remote.md#23-状态文件)）。
+    只按 `<core.binaryName>` 匹配进程有两条后果，run `45877287618` 两条都踩到：
+    - **别人的 Core 被算成自己的残留**：`US-65 离场完成` 等的是「本层孤儿 Core 已被收尾」，
+      判据是远端没有 ` stdio` 形态的 Core——另一个槽位的 Core 让条件永远不成立，
+      失败信息里三条残留进程分属两个指纹（`c601…` 与 `2429…`）。
+    - **清场时误杀别人的进程**：`pkill -f '<binaryName>'` 是无差别口径，会顺手杀掉同机
+      另一个槽位正在服务的 daemon / Core。
+    因此四条 ssh 车道统一经 `e2e/helpers/remoteCoreProcess.ts` 取模式：`pgrep` / `pkill`
+    的模式里带本机构建指纹（部署槽位名就是它），只命中自己这轮部署的进程；指纹产物缺失
+    直接抛错而不是退回名字口径。口径由 `src/test/e2eRemoteCoreProcess.test.ts` 锁定。
 

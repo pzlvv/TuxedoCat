@@ -10,12 +10,26 @@ import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm, RecordedRequest } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_DEPLOY_PREFIX, LOG_FILE_NAME } from '../../src/config/project';
+import { coreProcessPattern, daemonProcessPattern, requireLocalCoreFingerprint } from '../helpers/remoteCoreProcess';
 
-/** 远端部署目录 / 状态目录 / 进程匹配模式（产品身份唯一来源 `src/config/project.json`，
- *  用例里不落字面量；pgrep / pkill 模式首字符加 [] 不匹配执行它的远端 shell 自身） */
+/** 远端部署目录 / 状态目录（产品身份唯一来源 `src/config/project.json`，用例里不落字面量） */
 const REMOTE_DEPLOY_DIR = `~/.local/share/${CORE_DEPLOY_PREFIX}`;
 const REMOTE_RUN_DIR = `~/${CONFIG_DIR_NAME}/run`;
-const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1)}`;
+
+/**
+ * 本指纹的 Core / daemon 进程模式。
+ *
+ * 按**部署槽位的构建指纹**收敛而不是只按二进制名：远端是共享机器（CI 里自托管 runner
+ * 与 SSH 远端同机），同机上可能并存多个槽位的 Core（`e2e/helpers/remoteCoreProcess.ts`
+ * 记了后果——别人的 Core 被算成自己的残留、清场时误杀别人的 daemon）。
+ */
+function corePattern(): string {
+  return coreProcessPattern(requireLocalCoreFingerprint());
+}
+
+function daemonPattern(): string {
+  return daemonProcessPattern(requireLocalCoreFingerprint());
+}
 
 /**
  * 【临时用例】真实 SSH 远程工作区的工具执行链路（US-37/US-42 之外补的执行面）。
@@ -306,15 +320,15 @@ test('Read 读远端文件：内容来自目标机器', async () => {
 // ==================== 冷启动 / 生命周期 ====================
 
 /**
- * 远端还活着的 Core 进程（daemon 与 workspace Core 都算）。
+ * 远端还活着的**本指纹** Core 进程（daemon 与 workspace Core 都算）。
  *
- * 按 SSH 用户自己的 uid 收敛（`pgrep -u`）：裸 `pgrep -af` 是全机口径，会把**别的用户**
- * 正在用的 Core 也算成「本车道残留」——本机自测（远端就是开发机）时尤其致命：断言
- * 「workspace Core 已退出」会永远看到开发机会话的进程，判定必然超时。车道只对自己部署
- * 的进程负责（部署槽位在 `~/.<configDir>/`，属同一 uid）。
+ * 两道收敛：`pgrep -u` 按 SSH 用户自己的 uid（裸 `pgrep -af` 是全机口径，会把**别的用户**
+ * 正在用的 Core 算成「本车道残留」），模式里的部署槽位指纹再收一次（同一 uid 下并存的
+ * 多个构建各占一个槽位——远端是共享机器，`e2e/helpers/remoteCoreProcess.ts` 记了后果）。
+ * 车道只对自己部署的进程负责。
  */
 function remoteCoreProcesses(): Promise<Array<{ pid: string; cmd: string }>> {
-  return sshExec(`pgrep -u "$(id -u)" -af '${CORE_PROCESS_PATTERN}' || true`).then(({ stdout }) =>
+  return sshExec(`pgrep -u "$(id -u)" -af '${corePattern()}' || true`).then(({ stdout }) =>
     stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => {
       const space = line.indexOf(' ');
       return { pid: line.slice(0, space), cmd: line.slice(space + 1) };
@@ -341,11 +355,7 @@ async function pollRemote(
 
 /** 本机携带产物的指纹（与远端部署槽位同名） */
 function localFingerprint(): string {
-  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
-  return fs.readFileSync(
-    path.join(repoRoot, 'dist', 'resources', 'core', 'x64-linux', 'fingerprint'),
-    'utf8',
-  ).trim();
+  return requireLocalCoreFingerprint();
 }
 
 test('冷部署：槽位与共享 ripgrep 全部缺失时首次连接完成部署并可用', async () => {
@@ -354,7 +364,7 @@ test('冷部署：槽位与共享 ripgrep 全部缺失时首次连接完成部�
   const fingerprint = localFingerprint();
   // 清场：杀残留 daemon / 删本指纹槽位与共享 ripgrep / 删状态文件——模拟「第一次连这台机器」
   // pkill 模式带 []：不匹配执行这条命令的远端 shell 自身（否则 pkill 杀掉自己的父 shell，清场半途而废）
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true`);
   // 等进程真的退出而不是等固定时长（e2e/README.md 已知坑 11）：半死的 daemon 会在冷部署
   // 之后抢走新状态文件，本用例要的恰恰是「一台什么都没跑的机器」
   await pollRemote(
@@ -428,14 +438,14 @@ test('客户端强杀后远端清理：workspace Core 秒级退出、daemon 30s 
 
 test('陈旧状态文件：daemon 被强杀后按「没有 daemon」重新引导', async () => {
   const fingerprint = localFingerprint();
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true; sleep 1`);
   // 手工拉起 daemon 再 kill -9：留下指向死端口的状态文件
   const started = await sshExec(
     `${REMOTE_DEPLOY_DIR}/${fingerprint}/${CORE_BINARY_NAME} start --idle-exit 30 >/dev/null 2>&1; true`,
     60_000,
   );
   expect(started.code ?? 0, `手工 start 失败: ${started.stderr}`).toBe(0);
-  await sshExec('pkill -u "$(id -u)" -9 -f "start-daemo[n]" || true; sleep 1');
+  await sshExec(`pkill -u "$(id -u)" -9 -f '${daemonPattern()}' || true; sleep 1`);
 
   const chatPage = await launchWithRemoteWorkspace();
   mockLlm!.setHandler((req) => {
@@ -823,7 +833,7 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
   const localDirB = await fs.promises.mkdtemp(pathMod.join(os.tmpdir(), 'e2e-ws-local-b-'));
   // 清场：杀残留 daemon / 删状态文件——上一轮用例的 daemon 可能还在空闲退出倒计时里，
   // 复用半死的 daemon 会让本轮建链挂起（对齐冷部署用例的清场做法）
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true; sleep 1`);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true; sleep 1`);
   const fingerprint = localFingerprint();
   await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`);
   mockLlm = await startMockLlm({ workspaceDir: remoteWs, listenHost: '0.0.0.0', reverseTunnel: SSH });
@@ -865,13 +875,13 @@ test('SSH 断连标红重连：孤儿视图清零、恢复后发送正常往返'
     .toBeGreaterThan(1);
 
   // 3) SIGSTOP 远端 daemon → Host 沉默判死（≤10s）→ 远程标签标红
-  await sshExec(`pkill -u "$(id -u)" -STOP -f 'start-daemo[n]' || true`);
+  await sshExec(`pkill -u "$(id -u)" -STOP -f '${daemonPattern()}' || true`);
   const titlebar0 = await app!.titlebarPage();
   const remoteTab0 = titlebar0.locator('#workspaceTabs [role="tab"]').filter({ hasText: 'tuxedo-e2e-ssh' });
   await expect(remoteTab0.locator('.ws-tab-dot')).toBeVisible({ timeout: 60_000 });
 
   // 4) SIGCONT 复活 daemon（避免 30s 空闲退出）；点红标签激活 → 占位页「重新连接」
-  await sshExec(`pkill -u "$(id -u)" -CONT -f 'start-daemo[n]' || true`);
+  await sshExec(`pkill -u "$(id -u)" -CONT -f '${daemonPattern()}' || true`);
   await remoteTab0.click();
   const placeholder = await app!.waitForPage('data:text/html', 60_000);
   await expect(placeholder.locator('#reconnectBtn')).toBeVisible({ timeout: 30_000 });
