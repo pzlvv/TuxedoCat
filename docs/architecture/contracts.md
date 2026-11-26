@@ -372,7 +372,7 @@ import core 的只读函数与类型（[docs/architecture/layering.md 第 2 节]
 | 类别 | 内容 |
 | --- | --- |
 | 纯宿主操作 | `openFile` / `openMermaidPreview` / `openSpinDesign` / `openUrl` / `showVirtualDocument` / `requestToolMeta` / `debugLog` |
-| 无副作用查询 | `requestModels` / `fetchProviderModels` / `detectProviderModelApiTypes` / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSmartNaming` |
+| 无副作用查询 | `requestModels` / `fetchProviderModels`（拉模型列表并在同一次响应里取回上下文窗口，回包带 `modelContexts`） / `detectProviderModelApiTypes`（协议探测，回包原样带回请求里的 `modelContexts`） / `requestLLMConfig` / `requestSettingsDefaults` / `requestMcpServers` / `requestSkills` / `requestConversationSpaces` / `requestSmartNaming` |
 | 纯显示操作 | `expandCompact`（只读归档，回一条带完整序列与每代起始下标的 `expandCompactDone`；逐层展示由 webview 决定，不改 core 状态） |
 | 配置文件写入 | `UIHost.updateSettingsJson`（LLM 配置 / MCP 默认值 / 高亮语言）——写全局 `settings.json` 是宿主能力；项目清单 `workspace.meta.json` 归 core，不在宿主 |
 | 宿主本地偏好写入 | `electron/main.ts` 的 `writeThemeMode` / `writeWakeShortcut`（`theme` / `shortcut`）——经 `electron/workspaceStateStore.ts` 落 `userData/workspace-state.json`（原子落盘），与 core 的 settings.json 无关 |
