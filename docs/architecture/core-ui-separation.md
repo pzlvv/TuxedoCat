@@ -213,9 +213,14 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
   合并规则在 UI 侧执行，Core 只做「查表，查不到用兜底」，不持有注册表、不做模型名匹配。
   `multimodal` 为 `false` 的模型，Core 发送 LLM 请求前过滤全部图片内容
   （用户消息与工具结果，三种协议一致；过滤只作用于请求副本，落盘记录保留完整图片）。
-  context / output 的合并优先级（specs/013-model-settings-popup）：面板「设置」弹层的
-  显式值 > 已有 `modelConfigs` 值 > 内置注册表 > 兜底；弹层清空该字段即移除显式值，
+  context 的合并优先级：**本次自动获取的探测值** > 面板「设置」弹层的显式值 > 已有
+  `modelConfigs` 值 > 内置注册表 > 兜底。探测值来自「自动获取」那一次模型列表响应
+  （llama.cpp 系在 `data[].meta.n_ctx`，另有 `context_length` / `max_model_len` /
+  `max_context_length` 三级兜底字段；`meta.n_ctx_train` 是训练上下文，不参与）——
+  **取到就覆盖、取不到既有值不动**，且只作用于 `context`，不动的字段还包括弹层的清空动作
+  （清空表达「回落注册表」，探测值仍然优先于它）。弹层清空且没有探测值时移除显式值、
   写回注册表数字——与从未设置的模型保存后的落盘内容逐字节同态。
+  `output` 的合并优先级不变：弹层显式值 > 已有 `modelConfigs` 值 > 内置注册表 > 兜底。
 - 兜底是全局常量、与 provider 无关，因此放在 `llm` 级而不是每个 provider 一份。
 - `modelLimits` 的 `context` / `output` / `thinkingTokenBudget` 与 `llm.maxTokens` 在 Core
   侧都是 `u64`（`core-rs/src/settings.rs` 的 `ModelLimits` / `LlmSettings`）。快照解析把它们

@@ -48,6 +48,8 @@ interface PanelProvider {
   modelMultimodal?: unknown;
   /** 模型名 -> 弹层碰过的限值（specs/013-model-settings-popup） */
   modelLimits?: unknown;
+  /** 模型名 -> 本次自动获取到的上下文窗口（specs/060） */
+  modelContexts?: unknown;
   defaultModel?: unknown;
 }
 
@@ -125,15 +127,32 @@ export function applyLlmConfigSave(cfg: Record<string, any>, payload: LlmConfigS
           }
         }
       }
+      // 面板传来的「模型 -> 本次自动获取的上下文窗口」（specs/060）：只有正整数才算，
+      // 其余丢弃（该模型按「本次没取到」处理，走既有回落链）
+      const probeContexts: Record<string, number> = {};
+      if (raw?.modelContexts && typeof raw.modelContexts === 'object' && !Array.isArray(raw.modelContexts)) {
+        for (const [model, value] of Object.entries(raw.modelContexts as Record<string, unknown>)) {
+          if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) {
+            probeContexts[model] = value;
+          }
+        }
+      }
       // modelConfigs：保留已有 context/output/apiType/multimodal，缺失的 context/output
       // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果），
-      // multimodal 来自面板 checkbox，context/output 的弹层覆盖按三级合并
+      // multimodal 来自面板 checkbox，context 另有一级「本次探测值」（取到就覆盖）
       const oldProvider = cfg.llm.providers?.[key];
       const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
         && typeof oldProvider.modelConfigs === 'object'
         ? oldProvider.modelConfigs
         : {};
-      const modelConfigs = normalizeModelTokenLimits(providerModels, oldModelConfigs, apiTypeOverrides, multimodalOverrides, limitOverrides);
+      const modelConfigs = normalizeModelTokenLimits(
+        providerModels,
+        oldModelConfigs,
+        apiTypeOverrides,
+        multimodalOverrides,
+        limitOverrides,
+        probeContexts,
+      );
       providersMap[key] = {
         baseURL: providerBaseURL,
         apiKey: providerApiKey,

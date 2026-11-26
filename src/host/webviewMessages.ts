@@ -706,6 +706,11 @@ export type HostToWebviewMessage = {
   models?: string[];
   /** 自动探测出的模型协议：模型名 -> apiType（Responses | OpenAI | Anthropic） */
   modelApiTypes?: Record<string, string>;
+  /**
+   * 本次模型列表响应里取到的上下文窗口：模型名 -> token 数（specs/060）。
+   * 取不到的模型不出现在映射里；映射为空表示本次一个都没取到。
+   */
+  modelContexts?: Record<string, number>;
   /** 错误信息（可选） */
   error?: string;
 } | {
@@ -720,6 +725,11 @@ export type HostToWebviewMessage = {
   modelApiTypes?: Record<string, string>;
   /** 尚未设置协议、需要用户确认后探测的模型 */
   needDetect?: string[];
+  /**
+   * 本次模型列表响应里取到的上下文窗口：模型名 -> token 数（specs/060）。
+   * 与阶段二的 `providerModelsResult` 携带同一份内容；空映射 = 本次未取到。
+   */
+  modelContexts?: Record<string, number>;
 } | {
   type: 'conversationSpacesData';
   spaces: import('../shared/webviewTypes.js').ConversationSpaceInfo[];
@@ -765,6 +775,13 @@ export interface SaveLlmConfigProvider {
    * `null` = 清空（回落注册表）；字段缺失 = 未碰过。
    */
   modelLimits?: Record<string, { context?: number | null; output?: number | null }>;
+  /**
+   * 模型名 -> 本次自动获取到的上下文窗口（specs/060 FR-004）。
+   *
+   * 勾选「尝试获取 context 大小」且该模型有候选时才出现；它优先于 `modelLimits`
+   * 的弹层值与既有配置——取到就覆盖，取不到则整体缺省（既有值不动）。
+   */
+  modelContexts?: Record<string, number>;
   defaultModel?: string;
 }
 
@@ -1021,6 +1038,11 @@ export type WebviewToHostMessage = (
   apiKey: string;
   models: string[];
   knownApiTypes?: Record<string, string>;
+  /**
+   * 阶段一取回的上下文候选，原样带回 `providerModelsResult`（specs/060 FR-006）。
+   * 阶段二不重新拉模型列表，宿主也不在两次消息之间缓存候选。
+   */
+  modelContexts?: Record<string, number>;
 } | {
   /** 保存 LLM 配置：宿主整段并入 settings.json（`applyLlmConfigSave` 逐字段校验） */
   type: 'saveLLMConfig';

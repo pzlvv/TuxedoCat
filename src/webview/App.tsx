@@ -553,11 +553,11 @@ const App = () => {
     [sessionTodos, currentSessionId],
   );
 
-  // abort 悬停明细（specs/019 FR-002 / specs/054 FR-004）：黄色态悬停 1s 显示的后台任务 /
-  // 子代理清单。tasks 读当前会话快照的 backgroundTasks（每条带开始时刻）；子代理由唯一
-  // 纯函数 collectRunningSubAgents 按 parentSessionId 从全量快照聚合，并合并该会话快照里的
-  // 远程登记（远程子代理在本进程没有会话条目）。`?? []` 是 specs/019 与 specs/054
-  // 「边界与错误路径」明文的缺字段口径（旧宿主 / 假宿主未带新字段）。
+  // abort 悬停明细（specs/019 FR-002 / specs/054 FR-004）：按钮可点（红 / 黄）时悬停 1s
+  // 显示的后台任务 / 子代理清单。tasks 读当前会话快照的 backgroundTasks（每条带开始时刻）；
+  // 子代理由唯一纯函数 collectRunningSubAgents 按 parentSessionId 从全量快照聚合，并合并该
+  // 会话快照里的远程登记（远程子代理在本进程没有会话条目）。`?? []` 是 specs/019 与
+  // specs/054「边界与错误路径」明文的缺字段口径（旧宿主 / 假宿主未带新字段）。
   const abortHoverDetail: {
     tasks: { taskId: string; description: string; command: string; startedAt: number | null }[];
     subAgents: RunningSubAgentBrief[];

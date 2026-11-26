@@ -96,6 +96,50 @@ export function resolveApiTypeForModel(
 }
 
 /**
+ * 模型列表响应里表示「上下文窗口」的字段，按优先级排列（specs/060 FR-002）。
+ *
+ * 各家口径不同：llama.cpp 系在 `meta.n_ctx`，多数 OpenAI 兼容网关用
+ * `context_length` / `max_context_length`，vLLM 系用 `max_model_len`。
+ * 顺序即「先信谁」——`meta.n_ctx` 是服务端本次实际加载的窗口，最贴近真实可用值。
+ */
+const MODEL_CONTEXT_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
+  ['meta', 'n_ctx'],
+  ['context_length'],
+  ['max_model_len'],
+  ['max_context_length'],
+];
+
+/**
+ * 从模型列表响应的单个条目里读取上下文窗口。
+ *
+ * 只认真实可用的窗口，不认训练上下文：`meta.n_ctx_train` 是训练时的上限，
+ * 服务端本次加载的窗口可能远小于它，用它会把限值高估（specs/060 FR-002）。
+ *
+ * 合法值 = 大于 0 的安全整数；`0` / 负数 / 小数 / 非数字一律视为「该字段不存在」，
+ * 继续看下一个字段（不做四舍五入，也不把它当成 0 值写入）。
+ *
+ * @param entry 模型列表响应 `data[]` 里的单个原始条目（形态不受控）
+ * @returns 上下文窗口 token 数；一个都取不到时返回 `null`
+ */
+export function readModelContextFromEntry(entry: unknown): number | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  for (const path of MODEL_CONTEXT_FIELDS) {
+    let cursor: unknown = entry;
+    for (const key of path) {
+      if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) {
+        cursor = undefined;
+        break;
+      }
+      cursor = (cursor as Record<string, unknown>)[key];
+    }
+    if (typeof cursor === 'number' && Number.isSafeInteger(cursor) && cursor > 0) {
+      return cursor;
+    }
+  }
+  return null;
+}
+
+/**
  * 未命中 MODEL_CONFIGS 注册表时的兜底参数。
  *
  * 它不对应任何具体模型，也不是「默认模型」——默认模型由用户在
@@ -193,6 +237,9 @@ export interface ModelLimitOverride {
  * - context/output 按 limitOverrides（设置弹层，specs/013）> 已有值 > 注册表写入；
  *   override 为 `null`（用户清空）时跳过已有值直接取注册表——与「从未设置」的模型
  *   保存后写入的注册表数字逐字节同态；
+ * - context 另有一级更高的来源 probeContexts（自动获取探测值，specs/060）：勾选
+ *   「尝试获取 context 大小」且该模型取到候选时，它覆盖弹层值与已有值——「取到就覆盖、
+ *   取不到则既有值不动」；只在 context 上生效，`output` 不受影响；
  * - existing 中不在本次 models 列表里的历史条目也会保留（避免误删用户自定义限值）。
  */
 export function normalizeModelTokenLimits(
@@ -201,6 +248,7 @@ export function normalizeModelTokenLimits(
   apiTypeOverrides?: Record<string, ApiType> | null,
   multimodalOverrides?: Record<string, boolean> | null,
   limitOverrides?: Record<string, ModelLimitOverride | null> | null,
+  probeContexts?: Record<string, number> | null,
 ): Record<string, ModelTokenLimits> {
   const result: Record<string, ModelTokenLimits> = {};
   // 只有正数才视为「已存在」的限值，0/负数/非数字都按缺失处理
@@ -244,8 +292,13 @@ export function normalizeModelTokenLimits(
       if (isValidLimit(override)) return override;
       return isValidLimit(existingValue) ? existingValue : registryValue;
     };
+    // context 的最高一级：本次自动获取的探测值（specs/060 FR-004）。
+    // 排在弹层动作之前——「取到就覆盖」连弹层显式值一起覆盖；取不到时整条链照旧。
+    const probeContext = probeContexts?.[model];
     const entry: ModelTokenLimits = {
-      context: resolveLimit(limitOverride?.context, current.context, fallback.contextWindow),
+      context: isValidLimit(probeContext)
+        ? probeContext
+        : resolveLimit(limitOverride?.context, current.context, fallback.contextWindow),
       output: resolveLimit(limitOverride?.output, current.output, fallback.maxOutputTokens),
     };
     const overrideType = apiTypeOverrides?.[model];

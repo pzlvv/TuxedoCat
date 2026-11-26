@@ -111,6 +111,14 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
     // 对话切换锁（specs/059 FR-007）：webview 上报的锁事实，用例断言发送前 / 确认框期间的值
     conversationSwitchLocked: false,
     conversationSwitchLockReason: '',
+    // ── 自动获取模型（specs/060）──
+    // 阶段一回包的模型列表与已知协议（用例可改写；缺省两个模型、都未设协议）
+    fetchModelResults: ['probe-model', 'probe-model-pro'],
+    fetchModelApiTypes: {},
+    // 阶段一回包的上下文候选：模型名 -> token 数（空对象 = 服务商未返回，context 勾选项置灰）
+    fetchModelContexts: {},
+    // 阶段二探测出的协议（与 fetchModelApiTypes 合并后回包）
+    fetchDetectedApiTypes: {},
   };
   // 注入期预置：挂载时只问一次的请求（能力查询）必须在启动前就位
   state.mountProxyCapabilities = ${JSON.stringify(init.storageCapabilities ?? null)};
@@ -453,6 +461,26 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
           type: 'setModels',
           providers: [{ key: 'mock-provider', models: ['mock-model', 'mock-model-pro'] }],
           activeProvider: 'mock-provider',
+        });
+        break;
+      case 'fetchProviderModels':
+        // 「自动获取」阶段一（specs/060）：模型列表 + 上下文候选同一份回包。
+        // 候选来自 state.fetchModelContexts（用例按需改写；空对象 = 服务商没返回窗口）。
+        send({
+          type: 'providerModelsFetched',
+          models: state.fetchModelResults,
+          modelApiTypes: state.fetchModelApiTypes,
+          needDetect: state.fetchModelResults.filter((m) => !state.fetchModelApiTypes[m]),
+          modelContexts: state.fetchModelContexts,
+        });
+        break;
+      case 'detectProviderModelApiTypes':
+        // 阶段二：把请求里的候选原样带回（真实宿主同口径，specs/060 FR-006）
+        send({
+          type: 'providerModelsResult',
+          models: msg.models,
+          modelApiTypes: { ...state.fetchModelApiTypes, ...(state.fetchDetectedApiTypes || {}) },
+          modelContexts: msg.modelContexts || {},
         });
         break;
       case 'requestSettingsDefaults':
@@ -815,6 +843,26 @@ export class FakeHostDriver {
       (list) => { (window as any).__fakeHost.state.conversations = list; },
       conversations,
     );
+  }
+
+  /**
+   * 设定「自动获取模型」阶段一的回包内容（specs/060）：
+   * 模型列表、已知协议与上下文候选。`contexts` 为空 = 服务商未返回窗口，
+   * 面板据此把「尝试获取 context 大小」置灰。
+   */
+  async setFetchModelResults(args: {
+    models: string[];
+    apiTypes?: Record<string, string>;
+    contexts?: Record<string, number>;
+    detectedApiTypes?: Record<string, string>;
+  }): Promise<void> {
+    await this.page.evaluate((a) => {
+      const host = (window as any).__fakeHost;
+      host.state.fetchModelResults = a.models;
+      host.state.fetchModelApiTypes = a.apiTypes || {};
+      host.state.fetchModelContexts = a.contexts || {};
+      host.state.fetchDetectedApiTypes = a.detectedApiTypes || {};
+    }, args);
   }
 
   /** 改写对话空间统计应答数据 */
