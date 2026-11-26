@@ -121,6 +121,7 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
   // （不可逆，与卡片共存亡）。
   const {
     contentRef,
+    contentEl,
     fittedLines,
     hasMore,
     expanded,
@@ -143,10 +144,10 @@ export const Bash: React.FC<ToolCallProps> = ({ args, output, colors, toolCallId
   // 用户手动滚动后依赖不变，不会被拽回底部。
   useLayoutEffect(() => {
     if (!hasMore) return;
-    const el = contentRef.current;
+    const el = contentEl;
     if (!el) return;
     el.scrollTop = SCROLL_TO_BOTTOM;
-  }, [hasMore, expanded, fittedLines, blockText, contentRef]);
+  }, [hasMore, expanded, fittedLines, blockText, contentEl]);
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();

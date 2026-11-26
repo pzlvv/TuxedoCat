@@ -453,3 +453,139 @@ test('US-14 持久化输出：「完整输出」按钮与复制按钮并排在�
   ]);
   expect(fullFont).toBe(commandFont);
 });
+
+/**
+ * 流式文本与最终预览**逐字相同**时的折叠回归。
+ *
+ * Core 对同一份超限输出做「前 2K + 后 2K」裁剪，流式 `full_output` 与持久化信封的
+ * `Preview (first 2K + last 2K):` 正文因此逐字相同、行数相同。流式容器与完成态折叠
+ * 容器是**两个不同节点**：测量 effect 若只依赖行数 / 修订值，节点在完成态第一次挂上
+ * 时依赖没变、effect 不再执行，输出框拿不到测量结果 → 既无固定框高也无提示条，
+ * 整段内容按自然高度铺满消息区
+ * （specs/defects/bash-output-collapse-missed-when-preview-unchanged.md）。
+ *
+ * 这里注入与真实链路同形的两份文本（预览逐字相同），断言完成态仍为折叠形态；
+ * 随后点提示条展开，守护「节点挂上 → 测量 → 展开」整条链路。
+ */
+/** 流式预览：超限输出按 Core 的 clamp_output 口径裁剪（前 2K + 后 2K）后的形态 */
+function clampedPreview(): string {
+  const head = Array.from({ length: 70 }, (_, i) => `  "head-${String(i + 1).padStart(3, '0')}": ${i},`);
+  const tail = Array.from({ length: 70 }, (_, i) => `  "tail-${String(i + 1).padStart(3, '0')}": ${i},`);
+  return [...head, '  ... (8000 chars omitted) ...', ...tail].join('\n');
+}
+
+/** 持久化信封：预览正文与流式预览逐字相同 */
+function persistedEnvelope(preview: string): string {
+  return [
+    '<persisted-output>',
+    'Output too large (12KB). Full output saved to: C:\\tmp\\out.txt',
+    '',
+    'Preview (first 2K + last 2K):',
+    preview,
+    '</persisted-output>',
+  ].join('\n');
+}
+
+/** 注入一条「流式全方位预览 → 持久化信封」的 Bash 卡片 */
+async function addStreamingThenPersisted(toolCallId: string): Promise<void> {
+  const { host } = handle;
+  const started = await host.waitForSent('startNewConversation');
+  const sessionId = started.sessionId as string;
+  const preview = clampedPreview();
+  await host.send({ type: 'addMessage', sessionId, role: 'user', content: 'cat 一下配置' });
+  await host.send({
+    type: 'addMessage',
+    sessionId,
+    role: 'toolcall',
+    content: '',
+    toolName: 'Bash',
+    toolArgs: { command: 'cat sample-12k.json', description: 'Big output' },
+    toolCallId,
+    status: 'running',
+  });
+  // 流式期间：宿主转发 Core 的 full_output（已是同一份前 2K + 后 2K 预览）
+  await host.send({
+    type: 'toolProgress',
+    sessionId,
+    toolCallId,
+    output: preview,
+    fullOutput: preview,
+  });
+  // 完成：持久化信封的预览正文与上面逐字相同
+  await host.send({
+    type: 'updateToolStatus',
+    sessionId,
+    toolCallId,
+    output: persistedEnvelope(preview),
+    status: 'success',
+  });
+}
+
+/** 读取目标输出框的折叠态指标（按末行定位，避免命中别的卡片） */
+async function readPersistedBox(): Promise<{
+  height: number;
+  overflowY: string;
+  scrollHeight: number;
+  clientHeight: number;
+  hintVisible: boolean;
+}> {
+  return handle.page.evaluate(() => {
+    const box = Array.from(
+      document.querySelectorAll<HTMLElement>('div[title="点击查看完整输出"]'),
+    ).find((b) => (b.textContent || '').includes('tail-070')) as HTMLElement | undefined;
+    if (!box) throw new Error('持久化输出框未渲染');
+    const hint = box.parentElement?.previousElementSibling as HTMLElement | null;
+    return {
+      height: box.getBoundingClientRect().height,
+      overflowY: getComputedStyle(box).overflowY,
+      scrollHeight: box.scrollHeight,
+      clientHeight: box.clientHeight,
+      hintVisible: !!hint && (hint.textContent || '').includes('仅显示末尾'),
+    };
+  });
+}
+
+test('US-14 流式结束后的持久化输出与流式预览逐字相同：框高仍为折叠态', async () => {
+  const { page } = handle;
+  await addStreamingThenPersisted('bash-identical-preview');
+
+  // 提示条按实测行数出现（修复前不渲染：hasMore 为 false）
+  await expect(page.getByText(/仅显示末尾 \d+ 行 \/ 共 \d+ 行，点击显示全部/)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const box = await readPersistedBox();
+  // 完成态与流式同高（115px + 1 容差）——修复前是自然高度（约 2600px+）
+  expect(box.height).toBeLessThanOrEqual(116);
+  // 缩略态不出滚动条：结构上不可能滚动
+  expect(box.overflowY).toBe('hidden');
+  expect(box.scrollHeight).toBeGreaterThan(box.clientHeight);
+  expect(box.hintVisible).toBe(true);
+});
+
+test('US-14 流式结束后的持久化输出：提示条仍可展开（让位 + 框内滚动 + 钉底）', async () => {
+  const { page } = handle;
+  await addStreamingThenPersisted('bash-identical-preview-expand');
+
+  const hint = page.getByText(/仅显示末尾 \d+ 行 \/ 共 \d+ 行，点击显示全部/);
+  await expect(hint).toBeVisible({ timeout: 15_000 });
+  const collapsed = await readPersistedBox();
+
+  await hint.click();
+  // 展开后提示条不再渲染、框高增加约一个提示条高度、出现框内滚动条
+  await expect(page.getByText('tail-070', { exact: false })).toBeVisible();
+  const expanded = await readPersistedBox();
+  expect(expanded.hintVisible).toBe(false);
+  expect(expanded.overflowY).toBe('auto');
+  expect(expanded.height - collapsed.height).toBeGreaterThanOrEqual(20);
+  expect(expanded.height - collapsed.height).toBeLessThanOrEqual(24);
+  // 初始视点仍在底部
+  const pinned = await page.evaluate(() => {
+    const box = Array.from(
+      document.querySelectorAll<HTMLElement>('div[title="点击查看完整输出"]'),
+    ).find((b) => (b.textContent || '').includes('tail-070')) as HTMLElement | undefined;
+    if (!box) throw new Error('展开后的输出框未渲染');
+    return { scrollTop: box.scrollTop, clientHeight: box.clientHeight, scrollHeight: box.scrollHeight };
+  });
+  expect(pinned.scrollTop + pinned.clientHeight).toBeGreaterThanOrEqual(pinned.scrollHeight - 2);
+});
