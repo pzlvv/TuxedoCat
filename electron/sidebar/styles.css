@@ -491,6 +491,9 @@ body.sidebar-resizing { cursor: col-resize; }
   .item .title { color: #3f3f46; }
   .item.active .title { color: #18181b; }
   .item .sub-tag { background: #e4e4e7; color: #71717a; }
+  /* 隔离视图标记同降一档（与同块的 ficon-text / doc-status-a 一个口径）：
+     深色主题的 #6ee7b7 是给深底提亮用的，落在浅灰侧栏上发白发刺眼。 */
+  .item .isolated-tag { color: #047857; }
 
   .workspace-title { color: #27272a; }
 
