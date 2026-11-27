@@ -1245,8 +1245,7 @@ function createMainWindow(): void {
     },
     onViewCreated: (view) => {
       // 无边框窗口下原生菜单栏不再绘制，菜单快捷键用 before-input-event 兜底
-      view.webContents.on('before-input-event', handleMenuAccelerator);
-      // 焦点移到聊天视图：关掉标题栏下拉菜单
+      view.webContents.on('before-input-event', handleMenuAccelerator);      // 焦点移到聊天视图：关掉标题栏下拉菜单
       view.webContents.on('focus', () => closeTitlebarMenu());
       view.webContents.on('did-finish-load', () => {
         showMainWindow(); // 聊天视图加载完成再显示窗口，避免空白闪烁
@@ -4036,6 +4035,12 @@ function switchToAdjacentWorkspace(direction: TabSwitchDirection): void {
   // 浮窗模式不切换（docs/hosts/electron-multi-workspace.md 第 5 节）：浮窗只呈现活动
   // 工作目录的对话、不呈现标签页区，组合键 / 菜单条目在该模式下不动作
   if (windowMode === 'floating') return;
+  // 锁期间不切标签页（specs/059 FR-007 的 AC-20）：Ctrl+Tab 是绕过遮罩的典型路径，
+  // 判据与侧栏 / 标题栏一致
+  if (isConversationSwitchLocked(null)) {
+    console.warn('[main] ignore switchToAdjacentWorkspace while conversation switch is locked');
+    return;
+  }
   const target = selectAdjacentId(
     openWorkspaces.map((ref) => refKey(ref)),
     workspacePath ? refKey(workspacePath) : null,
@@ -4900,6 +4905,22 @@ function defaultFloatingWindowRect(): { width: number; height: number } {
 }
 
 /**
+ * 对话切换锁的查询（specs/059 FR-007）：某来源视图（或其所属会话）是否锁着。
+ *
+ * 判据只有一个：`ElectronUIHost` 里按视图记的锁集合——webview 在部署确认框打开、或一次
+ * 提交还没拿到裁决时上报 `conversationSwitchLockChanged`。标签页、侧栏、菜单动作与内部
+ * 跳转全部经这一个 helper 早返回，不给每个入口单独加开关（新增入口自动落在锁内）。
+ *
+ * `webContents` 为 `null`（没有来源视图的内部调用）时退化为「任一视图锁着即锁」的保守
+ * 口径：那类调用不携带来源，锁着的时候一律不动，避免从内部绕过锁。
+ */
+function isConversationSwitchLocked(webContents: Electron.WebContents | null): boolean {
+  if (!uiHost) return false;
+  const handle = webContents ? uiHost.webviewHandleFor(webContents) : null;
+  return uiHost.isConversationSwitchLocked(handle);
+}
+
+/**
  * 关闭一个对话：卸运行时内存 + 销毁聊天视图。
  *
  * 侧栏「关闭」与聊天视图顶栏关闭按钮共用这一个入口——两条入口只是触发位置不同，
@@ -5001,7 +5022,12 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   const sourceViewKey = chatViews?.getKeyByWebContents(sender) ?? null;
   const establishesViewSession = message.type === 'startNewConversation'
     || message.type === 'loadConversation'
-    || (message.type === 'sendMessage' && !!sessionId && sourceViewKey?.startsWith('new-') === true);
+    // 首条消息的两个上行阶段都要认（specs/059 FR-001）：用户按下发送先到 `submitMessage`，
+    // 受理后 webview 才发 `sendMessage`。只认后者会让视图键停在 `new-` 临时键——宿主永远
+    // 不知道这个视图现在是哪个会话，`isSessionOpen()` 恒 false，绿点 / 待答请求全挂
+    // （`specs/defects/first-message-preempts-view-registration.md` 的同一形态）。
+    || ((message.type === 'sendMessage' || message.type === 'submitMessage')
+      && !!sessionId && sourceViewKey?.startsWith('new-') === true);
   if (establishesViewSession) {
     if (sessionId) {
       // 该视图自己的工作区是权威来源（新建对话继承它；加载对话本就属于它）；
@@ -5021,12 +5047,18 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // 清除该标记后，下次点侧栏「新建」才会创建新的聊天视图，而不是复用这个已有内容的对话。
   // 必须放在上面的晋升之后：registerSession 会把临时键的「未发送」标记迁移到正式 id，
   // 先标记会漏删、视图被误判为仍可复用的新对话。
-  if (message.type === 'sendMessage' && sessionId) {
+  if ((message.type === 'sendMessage' || message.type === 'submitMessage') && sessionId) {
     chatViews?.markSessionUsed(sessionId);
   }
 
   // webview 内点击子代理/回复/From 链接等跳转到指定会话：新起一个 webview 加载该对话
   if (message.type === 'openConversation') {
+    // 部署确认框开着 / 提交还没拿到裁决：不切对话（specs/059 FR-007）。视图内的入口已被
+    // 遮罩挡住，这里是第二道闸——webview 的点击与快捷键都可能绕过它。
+    if (isConversationSwitchLocked(sender)) {
+      console.warn('[main] ignore open-conversation while conversation switch is locked');
+      return;
+    }
     if (sessionId) {
       let workspace: string | undefined;
       if (message.targetWorkspaceId) {
@@ -5067,6 +5099,11 @@ function handleWebviewMessageFromSource(sender: Electron.WebContents, message: W
   // 单视图宿主不会发这条消息——webview 按 openConversationModeOf 分支，原地新建走
   // startNewConversation。工作目录取来源视图自己的工作目录，新对话与它同目录。
   if (message.type === 'openNewConversation') {
+    // 锁期间不新建（specs/059 FR-007）：与 openConversation 同一判据
+    if (isConversationSwitchLocked(sender)) {
+      console.warn('[main] ignore open-new-conversation while conversation switch is locked');
+      return;
+    }
     chatViews?.openNewConversation(chatViews?.getWorkspaceForWebContents(sender));
     return;
   }
@@ -5181,6 +5218,12 @@ function setupIpc(): void {
   // ── 标题栏工作目录标签页 ──
   ipcMain.on('titlebar:activate-workspace', (event, p: unknown) => {
     if (!isTitlebarSender(event.sender)) return;
+    // 锁期间不切标签页 / 工作目录（specs/059 FR-007）：标签页在聊天视图之外，
+    // 遮罩管不到，这里是唯一拦截点
+    if (isConversationSwitchLocked(null)) {
+      console.warn('[main] ignore titlebar activate-workspace while conversation switch is locked');
+      return;
+    }
     if (typeof p === 'string' && p) activateWorkspace(p);
   });
 
@@ -5392,6 +5435,12 @@ function setupIpc(): void {
     sessionId: string,
     project?: string,
   ) => {
+    // 部署确认框开着 / 提交还没拿到裁决：侧栏点选不打开对话（specs/059 FR-007）。
+    // 侧栏在视图之外，webview 的遮罩管不到，这里是唯一的拦截点。
+    if (isConversationSwitchLocked(null)) {
+      console.warn('[main] ignore sidebar open-conversation while conversation switch is locked');
+      return;
+    }
     if (typeof sessionId === 'string' && sessionId) {
       if (typeof project === 'string' && project) {
         // 只接受仍处于打开集合中的目录：陈旧列表项（工作目录已关闭）不得把
@@ -5416,6 +5465,11 @@ function setupIpc(): void {
   });
 
   ipcMain.on('sidebar:new-conversation', () => {
+    // 锁期间不新建（specs/059 FR-007）：侧栏在视图之外，这里是唯一拦截点
+    if (isConversationSwitchLocked(null)) {
+      console.warn('[main] ignore sidebar new-conversation while conversation switch is locked');
+      return;
+    }
     // 活动工作区建链中 / 不可用：没有可用的对话视图，占位页期间忽略新建
     if (workspacePath && workspaceAvailability(workspacePath) !== 'available') {
       console.warn('[main] ignore new-conversation for non-available workspace:', refDisplay(workspacePath));
@@ -5428,6 +5482,12 @@ function setupIpc(): void {
   // 发 UiEvent.conversationClosed 卸内存 + 宿主销毁视图；列表刷新走 conversationListChanged 流）。
   // 该对话非 idle 时先让用户二次确认，见 closeConversationWithConfirm。
   ipcMain.on('sidebar:close-conversation', (_event, sessionId: string) => {
+    // 锁期间不关闭对话（specs/059 FR-007）：关闭会销毁视图 / 卸载内存，等于把锁定中的
+    // 那次提交连载体一起扔掉
+    if (isConversationSwitchLocked(null)) {
+      console.warn('[main] ignore sidebar close-conversation while conversation switch is locked');
+      return;
+    }
     if (typeof sessionId === 'string' && sessionId) {
       void closeConversationWithConfirm(sessionId);
     }
@@ -5435,6 +5495,11 @@ function setupIpc(): void {
 
   // ── 侧栏对话操作：删除 / 重命名 / 智能命名 ──
   ipcMain.handle('sidebar:delete-conversation', async (_event, sessionId: string) => {
+    // 锁期间不删除对话（specs/059 FR-007）：删除会连视图一起关、连盘一起删
+    if (isConversationSwitchLocked(null)) {
+      console.warn('[main] ignore sidebar delete-conversation while conversation switch is locked');
+      return { ok: false, error: 'conversation-switch-locked' };
+    }
     try {
       await deleteConversationWithViews(sessionId);
       return { ok: true };

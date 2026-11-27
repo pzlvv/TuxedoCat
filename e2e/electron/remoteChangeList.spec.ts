@@ -7,31 +7,22 @@ import { launchApp, mainEval } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
-import { CONFIG_DIR_NAME, CORE_BINARY_NAME, ENV_PREFIX, LOG_FILE_NAME } from '../../src/config/project';
+import { CONFIG_DIR_NAME, ENV_PREFIX, LOG_FILE_NAME } from '../../src/config/project';
 import { requireSshEnvironment } from '../helpers/testEnvironment';
+import { coreProcessPattern, requireLocalCoreFingerprint } from '../helpers/remoteCoreProcess';
 
-/** 远端状态目录 / 进程匹配模式（产品身份唯一来源 `src/config/project.json`，
- *  用例里不落字面量；pkill 模式首字符加 [] 不匹配执行它的远端 shell 自身） */
+/** 远端状态目录（产品身份唯一来源 `src/config/project.json`，用例里不落字面量） */
 const REMOTE_RUN_DIR = `~/${CONFIG_DIR_NAME}/run`;
-const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1)}`;
 
 /**
- * 本机构建的 Core 指纹（部署到远端的槽位名就是它）。
+ * 本指纹的 Core 进程模式。
  *
- * 远端状态文件名形如 `core-daemon-<fingerprint>.json`，指纹由本机 Core 产物内容算出
- * （`dist/resources/core/<arch>-<platform>/fingerprint`），因此收尾时按本机指纹拼出
- * 文件名而不是猜一个。产物缺失时返回 null（产物缺失本身已由 playwright 配置在加载期
- * 拦下，这里只是不在那种状态下抛错）。
+ * 按**部署槽位的构建指纹**收敛而不是只按二进制名：远端是共享机器，同机上可能并存多个
+ * 槽位的 Core（`e2e/helpers/remoteCoreProcess.ts` 记了后果——别人的 Core 被算成自己的
+ * 残留、清场时误杀别人的 daemon）。
  */
-function localCoreFingerprint(): string | null {
-  try {
-    return fs.readFileSync(
-      path.join(process.cwd().replace(/[\\/]e2e$/, ''), 'dist', 'resources', 'core', 'x64-linux', 'fingerprint'),
-      'utf8',
-    ).trim();
-  } catch {
-    return null;
-  }
+function corePattern(): string {
+  return coreProcessPattern(requireLocalCoreFingerprint());
 }
 
 /** 侧栏文件分区的定位常量（与 e2e/electron/fileExplorer.spec.ts 的本地车道同一套选择器） */
@@ -181,26 +172,25 @@ test.beforeEach(async () => {
  * 也在 `beforeAll` 之外各自清场。
  */
 async function resetRemoteDaemon(): Promise<void> {
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true`).catch(() => undefined);
   // 等进程真的消失而不是等固定时长：pkill 只发信号，SIGTERM 到进程退出之间还有 Core 的
   // 收尾写盘；固定 1s 在负载高时不够，半死的 daemon 正是本函数要消除的东西
   await waitForNoCore(15_000);
-  const fingerprint = localCoreFingerprint();
-  if (fingerprint) {
-    await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
-  }
+  const fingerprint = requireLocalCoreFingerprint();
+  await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
 }
 
 /**
- * 轮询直到远端没有本 uid 的 Core（超时即放弃，留给后续建链自己报错）。
+ * 轮询直到远端没有**本指纹**的 Core（超时即放弃，留给后续建链自己报错）。
  *
- * 按 SSH 用户自己的 uid 收敛（`pgrep -u`）：裸 `pgrep -af` 是全机口径，会把别的用户
- * 正在用的 Core 算成本车道残留（本机自测时尤其明显）。
+ * 两道收敛：`pgrep -u` 按 SSH 用户自己的 uid（裸 `pgrep -af` 是全机口径，会把别的用户
+ * 正在用的 Core 算成本车道残留），模式里的部署槽位指纹再收一次（同一 uid 下并存的多个
+ * 构建——远端是共享机器）。
  */
 async function waitForNoCore(timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const { stdout } = await sshExec(`pgrep -u "$(id -u)" -af '${CORE_PROCESS_PATTERN}' || true`);
+    const { stdout } = await sshExec(`pgrep -u "$(id -u)" -af '${corePattern()}' || true`);
     if (stdout.trim().length === 0) return;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -267,7 +257,7 @@ async function launchWithRemoteWorkspace(remotePath: string): Promise<Awaited<Re
     console.log(`[诊断] 现有页面（${urls.length}）：\n${urls.join('\n')}`);
     console.log(`[诊断] 主进程日志末 ${logTail.length} 行：\n${logTail.join('\n')}`);
     const daemon = await sshExec(
-      `ls -la ~/${CONFIG_DIR_NAME}/run/ 2>/dev/null; ps -eo pid,etime,cmd | grep '[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1)}' | head -5`,
+      `ls -la ~/${CONFIG_DIR_NAME}/run/ 2>/dev/null; ps -eo pid,etime,cmd | grep -E '${corePattern()}' | head -5`,
     ).catch(() => null);
     console.log(`[诊断] 远端 daemon：\n${daemon?.stdout.trim() ?? '<查询失败>'}`);
     console.log(`[诊断] 沙箱 home（含日志）：${app.homeDir}`);

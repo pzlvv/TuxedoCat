@@ -220,6 +220,8 @@ export function createTestHost(overrides: Partial<UIHost> = {}): TestHost {
     resolveMountProxyTarget: async () => null,
     // 默认按存量普通会话处理（缺失即 workspace，specs/052 FR-001）
     sessionStorageOf: () => 'workspace',
+    // 对话切换锁（specs/059 FR-007）：单视图宿主不需要宿主侧拦截，空实现
+    setConversationSwitchLock: () => undefined,
   };
 
   const host = Object.assign(base, overrides, { sent, broadcast });

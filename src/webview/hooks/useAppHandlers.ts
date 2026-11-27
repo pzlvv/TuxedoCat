@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import type React from 'react';
 import { hasHostMessageApi, postMessage } from '../webviewEnv';
 import { profileLog } from '../debug';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire } from '../types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, UserChoiceAnswer, SessionState, SessionRuntimeState, AgentMode, ThinkingMode, SettingsDefaults, IdleSuspendedMessage, SendMessageWire, SubmitMessageWire, SubmitCarrier, PendingSubmit } from '../types';
+import { wireAsSendMessage } from '../types';
 import type { SessionCreator } from '../../shared/sessionCreator';
 import { createSessionState, type SessionStatesStore } from '../sessionState';
 import { ensureImageSize } from '../imageSize';
@@ -115,6 +116,14 @@ export interface UseAppHandlersProps {
   sessionRuntimeStatesRef: React.MutableRefObject<Map<string, SessionRuntimeState>>;
   /** 快照推送信号：每次 sessionRuntimeStates 到达递增，挂起项的触发与清理挂在其上 */
   sessionIdleVersion: number;
+  /**
+   * 未决提交（specs/059 FR-004）：已上行、还没拿到裁决的那一次。
+   *
+   * ref 是唯一写入点（协议往返不参与渲染），`pendingSubmitVersion` 递增触发重渲染
+   * ——与 `idleSuspendedRef` / `sessionIdleVersion` 同一手法。
+   */
+  pendingSubmitRef: React.MutableRefObject<PendingSubmit | null>;
+  setPendingSubmitVersion: (v: number | ((prev: number) => number)) => void;
 }
 
 export interface UseAppHandlersReturn {
@@ -140,6 +149,10 @@ export interface UseAppHandlersReturn {
   handleChoiceResponse: (index: number) => void;
   handleToggleFileHidden: () => void;
   toggleSubSession: (sessionId: string) => void;
+  /** 提交被受理（specs/059 FR-004）：消费载体、结算会话身份、上行 */
+  commitSubmit: (submitId: string) => void;
+  /** 提交被拒绝 / 取消（specs/059 FR-003）：丢弃未决提交，界面什么都不改 */
+  rejectSubmit: (submitId: string) => void;
 }
 
 export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn {
@@ -234,9 +247,11 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   };
 
   /**
-   * 用户消息提交的收尾（乐观列表刷新 + 命令历史 + 上送）：立即发送与空闲挂起的触发提交
-   * 共用这同一条管线（docs/features/user-message-pipeline.md FR-003「按立即发送语义提交」）。排队登记不在发送侧做——
-   * 宿主按引擎忙碌状态回推 queuedMessage，保证登记与清除都只有宿主一个来源
+   * 已受理消息的收尾（乐观列表刷新 + 命令历史 + 上送）。
+   *
+   * 只在**受理之后**调用（specs/059 FR-004）：立即发送走 `commitSubmit`，空闲挂起项的
+   * 触发提交与排队项的重投也汇到这里。排队登记不在发送侧做——宿主按引擎忙碌状态回推
+   * `queuedMessage`，保证登记与清除都只有宿主一个来源
    * （docs/features/user-message-pipeline.md FR-003、docs/architecture/principles.md 第 7 节）。
    */
   const submitUserMessage = useCallback((wire: SendMessageWire) => {
@@ -284,51 +299,108 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   }, []);
 
   /**
-   * 从输入框构造用户消息载荷：读文本 / 图片、判空、双来源排队守卫、清输入框、会话解析。
-   * 立即发送（handleSend）与空闲发送（handleSendIdle）共用同一段构造——空闲发送拿到
-   * 同一载荷后挂起而非提交（US-46/FR-003）。返回 null 表示无内容或被守卫拦下。
+   * 从输入框构造**载荷快照**：读文本 / 图片、补宽高、判空、双来源排队守卫、解析会话 id。
+   *
+   * **不消费任何载体**（specs/059 FR-001）：不清输入框、不清新对话草稿、不写当前会话 id、
+   * 不写对话列表与命令历史。那些都发生在受理之后（`commitSubmit`），因此「取消部署」
+   * 不需要回填——发送前是什么样，取消后还是什么样。
+   *
+   * 立即发送（handleSend）与空闲发送（handleSendIdle）共用同一段构造。返回 null 表示
+   * 无内容或被守卫拦下。
    */
-  const buildUserMessageFromInput = async (): Promise<SendMessageWire | null> => {
+  const buildSubmitPayloadFromInput = async (): Promise<SubmitMessageWire | null> => {
     const inputValue = props.inputAreaRef.current?.getValue() ?? '';
     const rawPastedImages: Array<{ dataUrl: string; mediaType?: string; width?: number; height?: number }> =
       props.inputAreaRef.current?.getPastedImages?.() ?? [];
     // 发送前补齐图片宽高，供 core 层生成 Image[<width>*<height>] 标题
     const pastedImages = await Promise.all(rawPastedImages.map((img) => ensureImageSize(img)));
     if (!inputValue.trim() && pastedImages.length === 0) return null;
-    // 已有待处理消息时不允许再发（发送按钮置灰 + Enter 同守卫）：忙碌排队项与空闲挂起项
-    // 同为「一次只有一条」，改主意走横幅上的编辑 / 删除（docs/features/user-message-pipeline.md FR-003），
-    // 不靠继续提交覆盖。
+    // 已有待处理消息时不允许再发（发送按钮置灰 + Enter 同守卫）：忙碌排队项、空闲挂起项与
+    // **未决提交**同为「一次只有一条」，改主意走横幅上的编辑 / 删除
+    // （docs/features/user-message-pipeline.md FR-003；specs/059 FR-004），不靠继续提交覆盖。
+    if (props.pendingSubmitRef.current !== null) return null;
     {
       const sid = props.currentSessionIdRef.current;
       if (sid && (props.queuedMessageRef.current.has(sid) || props.idleSuspendedRef.current.has(sid))) return null;
     }
 
-    // Preserve cursor position before clearing - we'll restore it when user types after abort
-    props.cursorPositionRef.current = props.mainInputRef.current?.selectionStart ?? inputValue.length;
-
-    props.inputAreaRef.current?.clear();
-
-    // Send message to VSCode extension
     if (!hasHostMessageApi()) {
       throw new Error('VSCode API not available - this webview must be run within VSCode');
     }
 
-    // ─── 普通消息发送 ───────────────────────────────────────────────
-    // 新对话里发出的第一条消息：草稿已被消费，清掉暂存，避免下次"新建"又把旧内容带回来。
-    // 判断必须在生成新 sessionId 之前做 —— 此时 currentSessionId 仍指向那个未发送的新对话。
-    if (props.currentSessionIdRef.current === props.newChatSessionRef.current) {
-      props.newChatSessionRef.current = null;
-      props.newChatDraftRef.current = null;
+    // 会话 id 在提交时**算好并随载荷带走**（宿主按它查该会话所属 Core 的能力），但只在
+    // 受理时才写进当前会话——取消之后这个 id 从未被使用（specs/059 FR-003 的 AC-6）。
+    const sessionId = props.currentSessionIdRef.current
+      ?? `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    return {
+      type: 'submitMessage',
+      submitId: `submit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      sessionId,
+      // 归属随消息一起带上（specs/051 FR-003）：部署闸门判据读它，不依赖
+      // `setConversationStorage` 的到达顺序。读 ref 而不是 state——同一次事件里
+      // state 还是旧值。
+      storage: props.workViewStorageRef.current,
+      content: inputValue,
+      images: pastedImages.length > 0 ? pastedImages : undefined,
+      filePath: props.currentFile,
+      fileHidden: props.fileHidden,
+      selectedLines: props.selectedLines ?? undefined,
+      // 会话配置只带「已从宿主获取到」的字段：未到达的字段留空，
+      // 由宿主按自己的配置解析（webview 不代宿主决定，`docs/hosts/webview-facts.md` 第 5 节）。
+      agentMode: props.agentMode,
+      thinkingMode: props.thinkingMode,
+      webSearch: props.webSearch,
+      // 模型身份随消息一起下发：避免 setModel 消息尚未处理时用错 provider。
+      // wire 协议保持扁平：拆成 model / provider 两个字段。
+      model: props.modelRef?.model,
+      provider: props.modelRef?.provider,
+    };
+  };
+
+  /**
+   * 发起一次提交（specs/059 FR-001 的两段式的第一段）：登记未决提交并上行请求。
+   *
+   * 载体此刻**不动**——`carrier` 只记下"这次提交用的是哪份载体"，受理时才按它消费。
+   */
+  const requestSubmit = useCallback((wire: SubmitMessageWire, carrier: SubmitCarrier): void => {
+    if (props.pendingSubmitRef.current !== null) return;
+    props.pendingSubmitRef.current = { submitId: wire.submitId, wire, carrier };
+    props.setPendingSubmitVersion((v) => v + 1);
+    postMessage(wire);
+  }, []);
+
+  /**
+   * 受理后的收尾（specs/059 FR-004）：消费载体、结算会话身份、写列表与命令历史、上行。
+   *
+   * 只在收到 `userMessageAccepted` 时由 `commitSubmit` 调用；幂等由调用方保证
+   * （未决提交被取走即清空，重复回执找不到记录）。
+   */
+  const commitSubmit = useCallback((submitId: string): void => {
+    const pending = props.pendingSubmitRef.current;
+    if (!pending || pending.submitId !== submitId) return;
+    props.pendingSubmitRef.current = null;
+    props.setPendingSubmitVersion((v) => v + 1);
+
+    const { wire } = pending;
+    const sessionId = wire.sessionId;
+
+    // 1. 消费载体：输入区草稿，或横幅上的空闲挂起项（specs/059 FR-004）
+    if (pending.carrier === 'input') {
+      props.inputAreaRef.current?.clear();
+    } else {
+      props.idleSuspendedRef.current.delete(sessionId);
+      props.setIdleSuspendedVersion((v) => v + 1);
     }
 
-    // Generate session ID if not exists
-    let sessionId = props.currentSessionIdRef.current;
-    if (!sessionId) {
-      sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    // 2. 会话身份结算：新对话在这里才拿到 id（发送前只是本地占位，未写入）
+    if (props.currentSessionIdRef.current !== sessionId) {
       props.setCurrentSessionIdRef(sessionId);
       props.setCurrentSessionId(sessionId);
-      // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）；
-      // 未就绪时保留当前值，不写入兜底默认。
+    }
+    // 新对话使用 settings.json 中的默认值（一次性设置，避免跳变）；
+    // 未就绪时保留当前值，不写入兜底默认。
+    if (!props.sessionStates.get(sessionId)) {
       const sd = settingsDefaultsRef.current;
       const nextAgentMode = sd.agentMode ?? props.agentMode;
       const nextThinkingMode = sd.thinkingMode ?? props.thinkingMode;
@@ -352,36 +424,32 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
       props.setCompactExpandDepth(0);
     }
 
-    const messagePayload: SendMessageWire = {
-      // 用户消息只有一个 wire 类型：是否排队由宿主按引擎忙碌状态决定，
-      // 排队项由宿主回推 queuedMessage 建立（见 docs/architecture/host-ui-modules.md 第 3 节）。
-      type: 'sendMessage',
-      sessionId,
-      // 归属随消息一起带上（specs/051 FR-003）：部署闸门判据读它，不依赖
-      // `setConversationStorage` 的到达顺序。读 ref 而不是 state——同一次事件里
-      // state 还是旧值。
-      storage: props.workViewStorageRef.current,
-      content: inputValue,
-      images: pastedImages.length > 0 ? pastedImages : undefined,
-      filePath: props.currentFile,
-      fileHidden: props.fileHidden,
-      selectedLines: props.selectedLines ?? undefined,
-      // 会话配置只带「已从宿主获取到」的字段：未到达的字段留空，
-      // 由宿主按自己的配置解析（webview 不代宿主决定，`docs/hosts/webview-facts.md` 第 5 节）。
-      agentMode: props.agentMode,
-      thinkingMode: props.thinkingMode,
-      webSearch: props.webSearch,
-      // 模型身份随消息一起下发：避免 setModel 消息尚未处理时用错 provider。
-      // wire 协议保持扁平：拆成 model / provider 两个字段。
-      model: props.modelRef?.model,
-      provider: props.modelRef?.provider,
-    };
-    return messagePayload;
-  };
+    // 3. 新对话里发出的第一条消息：草稿已被消费，清掉暂存，避免下次"新建"又把旧内容带回来
+    if (props.currentSessionIdRef.current === props.newChatSessionRef.current) {
+      props.newChatSessionRef.current = null;
+      props.newChatDraftRef.current = null;
+    }
+
+    // 4. 乐观列表刷新 + 命令历史 + 上行：与受理同一次收尾完成
+    submitUserMessage(wireAsSendMessage(wire));
+  }, []);
+
+  /**
+   * 拒绝后的收尾（specs/059 FR-003）：这次提交整体作废，界面**什么都不改**。
+   *
+   * 载体从未被消费，所以这里没有回填、没有清理、没有通知——这正是两段式要买的东西
+   * （对比已删除的 `userMessageDraftRestored`）。
+   */
+  const rejectSubmit = useCallback((submitId: string): void => {
+    const pending = props.pendingSubmitRef.current;
+    if (!pending || pending.submitId !== submitId) return;
+    props.pendingSubmitRef.current = null;
+    props.setPendingSubmitVersion((v) => v + 1);
+  }, []);
 
   const handleSend = async () => {
-    const wire = await buildUserMessageFromInput();
-    if (wire) submitUserMessage(wire);
+    const wire = await buildSubmitPayloadFromInput();
+    if (wire) requestSubmit(wire, 'input');
   };
 
   /**
@@ -389,19 +457,24 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
    * （`idle === false`）才挂起为 webview 本地待发项（不上送宿主，宿主契约不变）；
    * 快照缺失（未登记的新会话等）视为本就空闲、等价立即发送——是否排队最终仍由宿主
    * 按引擎忙碌状态裁决，消息不会因判定缺失而滞留。挂起项由空闲触发 effect 提交。
+   *
+   * **挂起即消费输入区**：载体在这一刻从输入框转移到横幅（specs/059 FR-001 的载体两处），
+   * 不消费的话同一份内容会同时显示在两处。之后空闲触发走提交请求，挂起项要留到受理之后
+   * 才清（FR-003 的 AC-8）——取消部署时它必须还在横幅上。
    */
   const handleSendIdle = async () => {
-    const wire = await buildUserMessageFromInput();
+    const wire = await buildSubmitPayloadFromInput();
     if (!wire) return;
     if (props.sessionRuntimeStatesRef.current.get(wire.sessionId)?.idle !== false) {
-      submitUserMessage(wire);
+      requestSubmit(wire, 'input');
       return;
     }
     props.idleSuspendedRef.current.set(wire.sessionId, {
       sessionId: wire.sessionId,
       uuid: `idle_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-      wire,
+      wire: wireAsSendMessage(wire),
     });
+    props.inputAreaRef.current?.clear();
     props.setIdleSuspendedVersion((v) => v + 1);
   };
 
@@ -500,14 +573,43 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
   /** 空闲挂起项「删除」：直接丢弃，不回填输入框 */
   const handleDeleteIdleSuspended = useCallback(() => discardIdleSuspended(false), [discardIdleSuspended]);
 
+  /**
+   * 空闲挂起项转**提交请求**（specs/059 FR-001 / FR-003 的 AC-8）。
+   *
+   * 挂起项本身**不动**：它既是这次提交的载荷来源，也是取消后要留在原处的那份载体。
+   * 受理之后由 `commitSubmit` 按 `carrier: 'idleSuspended'` 清掉；拒绝则原样留着——
+   * 用户回到横幅上还能编辑或再发一次。
+   */
+  const submitIdleSuspended = useCallback((item: IdleSuspendedMessage): void => {
+    const wire = item.wire;
+    requestSubmit({
+      type: 'submitMessage',
+      submitId: `submit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      sessionId: wire.sessionId,
+      content: wire.content,
+      images: wire.images,
+      filePath: wire.filePath,
+      fileHidden: wire.fileHidden,
+      selectedLines: wire.selectedLines,
+      agentMode: wire.agentMode,
+      thinkingMode: wire.thinkingMode,
+      webSearch: wire.webSearch,
+      model: wire.model,
+      provider: wire.provider,
+      storage: wire.storage,
+    }, 'idleSuspended');
+  }, []);
+
   // 空闲挂起的自动触发与清理（docs/features/user-message-pipeline.md FR-003），随运行时快照推送（sessionIdleVersion 递增）执行：
   // - 清理：**非空**快照中不再包含该会话（core 已卸载它 = 已关闭 / 释放）→ 挂起项清除、
   //   不提交；空快照视为信息不足（启动期补拉的种子 / 尚无会话），不回收、不触发。
   // - 触发：该会话快照显式 `idle === true` 才提交（快照缺失不猜——不过度 fallback），
-  //   提交走立即发送语义的同一管线；此刻若会话又忙碌，宿主按既有排队语义接收，消息不丢。
+  //   提交走**提交请求**（specs/059 FR-001），挂起项要留到受理之后才清除（AC-8）：
+  //   取消部署时它必须还在横幅上。
   useEffect(() => {
     const suspended = props.idleSuspendedRef.current;
     if (suspended.size === 0) return;
+    if (props.pendingSubmitRef.current !== null) return; // 一次只有一条
     const states = props.sessionRuntimeStatesRef.current;
     let touched = false;
     if (states.size > 0) {
@@ -520,12 +622,12 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     }
     for (const [sid, item] of [...suspended]) {
       if (states.get(sid)?.idle !== true) continue;
-      suspended.delete(sid);
+      submitIdleSuspended(item);
       touched = true;
-      submitUserMessage(item.wire);
+      break; // 一次只提交一条：裁决回来之前不再发起第二条
     }
     if (touched) props.setIdleSuspendedVersion((v) => v + 1);
-  }, [props.sessionIdleVersion, submitUserMessage]);
+  }, [props.sessionIdleVersion, submitIdleSuspended]);
 
   const handleCompress = useCallback(() => {
     if (!hasHostMessageApi()) {
@@ -702,5 +804,7 @@ export function useAppHandlers(props: UseAppHandlersProps): UseAppHandlersReturn
     handleChoiceResponse,
     handleToggleFileHidden,
     toggleSubSession,
+    commitSubmit,
+    rejectSubmit,
   };
 }

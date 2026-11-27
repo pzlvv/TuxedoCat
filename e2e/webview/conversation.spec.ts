@@ -401,6 +401,11 @@ test('US-12 代码块一键复制并反馈「已复制」', async ({ browserName
   await fillInput('给段代码');
   await page.press('textarea.input-textarea', 'Enter');
 
+  // 等本轮**流式结束**再取按钮：复制按钮在代码块首次渲染时就可见，而流式期间块里是半截
+  // 内容（假宿主按 6 段推流），此时点击复制到的正是那一截——全量车道负载下踩中即红
+  // （`console.log("copy-`）。判据用假宿主的轮次计数，与 `sendModes.spec.ts` 同口径。
+  await page.waitForFunction(() => (window as any).__fakeHost.turnsDone >= 1, undefined, { timeout: 30_000 });
+
   const copyButton = page.locator('button[title="复制代码"]');
   await expect(copyButton).toBeVisible({ timeout: 15_000 });
   await copyButton.click();

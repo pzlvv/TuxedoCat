@@ -12,13 +12,13 @@
  * ## 状态机
  *
  * ```text
- * idle ──sendMessage(需要部署)──▶ confirm
- * confirm ──deploy──▶ running ──免密成功──▶ done ──▶ 重发被拦消息
+ * idle ──submitMessage(需要部署)──▶ confirm
+ * confirm ──deploy──▶ running ──免密成功──▶ done ──▶ 按原载荷继续被拦的提交
  *                       │
  *                       └─免密不可用──▶ needsCredential ──提交密码──▶ running
  *                                          └─显示命令──▶ needsCredential(manualCommand)
  * running ──失败──▶ failed ──重试(不限次数)──▶ running
- * 任意态 ──cancel──▶ idle（会话保持空状态、消息留在输入框，FR-003）
+ * 任意态 ──cancel──▶ idle（本次提交作废、载体从未被消费，FR-003）
  * ```
  *
  * 重试不设上限：认证能试几次由服务端策略（`pam_faillock` / `sudoers`）决定，宿主不替
@@ -29,6 +29,8 @@
  * 部署成功**不自己判 ready**：本模块只把「装上且落点可用」告诉调用方，由调用方重新查询
  * `storageCapabilitiesRequested`（FR-008）。重启 Core 不再是必需步骤。
  */
+
+import type { SendMessagePayload } from './webviewMessages.js';
 
 /** 闸门的阶段（与 wire 消息 `mountProxyDeployState.phase` 同集合） */
 export type MountProxyGatePhase = 'confirm' | 'running' | 'needsCredential' | 'failed' | 'done' | 'cancelled';
@@ -45,12 +47,22 @@ export interface MountProxyGateState {
 /**
  * 被闸门拦下的**待续动作**：部署成功后原样继续（FR-008「用户不需要重发」）。
  *
- * 两种入口共用一个状态机，但成功后要做的事不同：发消息的入口重发那条消息，打开对话的
- * 入口继续加载那个对话（specs/052 FR-002）。用判别联合而不是可选字段——`content` 与
- * 「打开对话」互斥，可选字段会让两者同时成立、分派点无法穷尽（AGENTS.md 铁律 4.2）。
+ * 两种入口共用一个状态机，但成功后要做的事不同：发消息的入口按**原载荷**继续那条消息
+ * （specs/059 FR-005），打开对话的入口继续加载那个对话（specs/052 FR-002）。用判别联合
+ * 而不是可选字段——`payload` 与「打开对话」互斥，可选字段会让两者同时成立、分派点无法
+ * 穷尽（AGENTS.md 铁律 4.2）。
+ *
+ * `payload` 是用户按下发送时构造的完整载荷快照（specs/059 FR-001）：内容、图片、文件引用、
+ * 会话配置、模型身份与归属都在里面，部署成功后原样上送——不在继续的那一刻重新采集，
+ * 否则用户在这期间改过的输入框会串进这条消息（specs/059 FR-005）。
  */
 export type BlockedAction =
-  | { kind: 'message'; sessionId: string; content: string }
+  | {
+      kind: 'message';
+      /** 被拦下的那次提交的标识（取消时按它回 `userMessageRejected`） */
+      submitId: string;
+      payload: SendMessagePayload;
+    }
   | { kind: 'openConversation'; sessionId: string };
 
 /**
@@ -87,9 +99,9 @@ export class MountProxyGate {
   }
 
   /**
-   * 读被拦下的待续动作但**不清空**（取消时回填输入框用）。
+   * 读被拦下的待续动作但**不清空**（取消时据此回 `userMessageRejected`）。
    *
-   * 与 `takeBlocked` 分开：取消路径要先把内容送回界面、再让 `cancel()` 清状态，
+   * 与 `takeBlocked` 分开：取消路径要先把标识送出去、再让 `cancel()` 清状态，
    * 用 `takeBlocked` 会提前拿走、`cancel()` 里就什么都不剩了。
    */
   peekBlocked(): BlockedAction | null {
@@ -151,7 +163,8 @@ export class MountProxyGate {
   /**
    * 用户取消（FR-003）：不创建对话、不发送消息、不执行提权、不写文件。
    *
-   * 状态整体清空——下次再发消息重新走一遍确认。
+   * 状态整体清空——下次再发消息重新走一遍确认。载体从未被消费（specs/059 FR-001），
+   * 因此取消**不需要回填**：输入框里的内容压根没离开过。
    */
   cancel(): void {
     // 先把 `cancelled` 推给界面再清内部状态：webview 只在收到本消息时改变对话框，

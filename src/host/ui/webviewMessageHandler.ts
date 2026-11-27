@@ -27,6 +27,7 @@ import { userChoiceQueue, type UserChoiceResult } from '../../shared/UserChoiceQ
 import type {
   HostToWebviewMessage,
   HostToWebviewMessageWithoutSessionId,
+  SendMessagePayload,
   WebviewMessage,
   WebviewToHostMessage,
 } from '../webviewMessages.js';
@@ -82,6 +83,51 @@ const API_TYPE_PROBE_RETRY_BASE_DELAY_MS = 500;
 const API_TYPE_PROBE_MAX_RETRY_DELAY_MS = 5_000;
 /** 需要重试的探测状态码：限流 + 瞬时故障 */
 const API_TYPE_PROBE_RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+
+/** 一次提交请求（specs/059 FR-001 的两段式的第一段） */
+type SubmitMessage = Extract<WebviewToHostMessage, { type: 'submitMessage' }>;
+
+/**
+ * 提交请求 → 消息载荷：只剥掉两段式专用的 `submitId`，其余字段逐字保留。
+ *
+ * 写成显式字段表而不是解构 + rest：落盘与闸门比对的是同一份形状，多带字段（`type` /
+ * `submitId`）会让 `UiEvent.userMessageSubmitted` 的契约面出现不该有的成员。
+ */
+function toSendMessagePayload(submit: SubmitMessage): SendMessagePayload {
+  return {
+    sessionId: submit.sessionId,
+    content: submit.content,
+    images: submit.images,
+    filePath: submit.filePath,
+    fileHidden: submit.fileHidden,
+    selectedLines: submit.selectedLines,
+    agentMode: submit.agentMode,
+    thinkingMode: submit.thinkingMode,
+    webSearch: submit.webSearch,
+    model: submit.model,
+    provider: submit.provider,
+    storage: submit.storage,
+  };
+}
+
+/** 被拦下的待续动作归属的会话（能力重查按它路由到正确的 Core） */
+function blockedSessionId(action: BlockedAction | null): string | undefined {
+  if (!action) return undefined;
+  return action.kind === 'message' ? action.payload.sessionId : action.sessionId;
+}
+
+/**
+ * 一次用户消息提交的裁决（specs/059 FR-002）：三态互斥，分派点必须穷尽。
+ *
+ * - `send`：能力当下可用，或该会话不是 `isolated` 归属——受理。
+ * - `needsDeploy`：`isolated` 归属且当下建不了视图、但装代理可能解决——弹确认框。
+ * - `reject`：能力不可用且**不可部署**，说明入口本就不该渲染，属接线错误——
+ *   带 Core 的 `reason` 拒绝，不静默放行（铁律 1「不过度 fallback」）。
+ */
+type MountProxyVerdict =
+  | { kind: 'send' }
+  | { kind: 'needsDeploy' }
+  | { kind: 'reject'; reason: string };
 
 /**
  * 分发表登记器：按消息 type 收窄载荷类型。
@@ -359,8 +405,10 @@ export class WebviewMessageHandler {
       entry('backgroundBashTool', (msg) => this.emitUiEvent({ type: 'bashBackgroundRequested', sessionId: msg.sessionId, toolUseId: msg.toolUseId })),
       entry('discardQueuedMessage', (msg) => this.emitUiEvent({ type: 'queuedMessageDiscarded', sessionId: msg.sessionId, uuid: msg.uuid })),
 
-      // ===== 挂载代理部署（specs/051 FR-003 / FR-004 / FR-008）=====
-      // 闸门拦下的消息在 `handleUserMessage` 里，不在这里——这几条只推进部署状态机。
+      // ===== 挂载代理部署（specs/051 FR-003 / FR-004 / FR-008；specs/059 FR-002 / FR-007）=====
+      // 提交的裁决在 `handleSubmitMessage`：三态裁决是两段式的第一段，不是部署状态机的一步。
+      entry('submitMessage', (msg) => this.handleSubmitMessage(msg)),
+      entry('conversationSwitchLockChanged', (msg, ctx) => this.handleConversationSwitchLock(msg, ctx)),
       entry('requestMountProxyDeploy', () => this.handleMountProxyDeployRequest()),
       entry('submitMountProxyCredential', (msg) => this.handleMountProxyCredential(msg)),
       entry('showMountProxyManualCommand', () => this.handleMountProxyManualCommand()),
@@ -549,43 +597,67 @@ export class WebviewMessageHandler {
   // ===== Overlay 部署闸门（specs/051 FR-003 / FR-004 / FR-008）=====
 
   /**
-   * 这条消息是否该被部署闸门拦下（FR-003 的判据）。
+   * 判据（specs/051 FR-003 / specs/059 FR-002），两个入口共用同一份实现。
    *
    * 两道条件缺一不可：
-   * 1. 该会话的归属是 `isolated`——**关键的收窄**：`sendMessage` 不携带归属，若只看能力
+   * 1. 该会话的归属是 `isolated`——**关键的收窄**：消息不携带归属时若只看能力，
    *    就会把每个普通会话的首条消息也拦下，那就成了「不勾 Overlay 也要装代理」；
    * 2. `isolatedWorkView === false && deployable === true`——能力当下不可用，但装代理
-   *    可能解决它。`deployable === false` 说明入口本就不该渲染（FR-002），走到这里
-   *    是接线错误：直接报错，不静默放行（铁律 1「不过度 fallback」）。
+   *    可能解决它。
+   *
+   * 「不可部署」不再抛错：specs/059 之后这条判据有两个消费点（提交裁决要回执、已受理
+   * 消息的静默复核要丢弃并记日志），抛错会让后者把一次丢弃变成一条未处理异常。
+   * 调用方按 `kind` 各自决定表现形式。
    */
-  private async shouldBlockForMountProxy(sessionId: string, storage: 'workspace' | 'isolated'): Promise<boolean> {
-    // 归属取自**消息本身**，不读跨消息状态：`setConversationStorage` 与 `sendMessage`
+  private async mountProxyVerdict(
+    sessionId: string,
+    storage: 'workspace' | 'isolated',
+  ): Promise<MountProxyVerdict> {
+    // 归属取自**消息本身**，不读跨消息状态：`setConversationStorage` 与消息上行
     // 是两条独立上行，先后取决于渲染时序，用顺序推归属会让闸门时灵时不灵。
     //
     // 能力按**会话**问：这是「该会话所属 Core 能不能建 Overlay 视图」的判断。落到活动
     // 连接会把别的标签页的能力当成本会话的（本地 Core 恒不可用 → 远端会话被误拦 /
     // 误判接线错误），见 `specs/defects/prewarm-view-capability-query-hits-wrong-core.md`。
     const capabilities = await requestStorageCapabilities({ sessionId });
-    if (storage !== 'isolated') return false;
-    if (capabilities.isolatedWorkView) return false;
+    if (storage !== 'isolated') return { kind: 'send' };
+    if (capabilities.isolatedWorkView) return { kind: 'send' };
     if (!capabilities.deployable) {
       // 两个入口（发消息 / 打开对话）共用这条判据，措辞保持中性不点名入口
-      throw new Error(
-        `会话 ${sessionId} 是 isolated 归属，但 Core 报「不可用且不可部署」（${capabilities.reason}）：` +
-          '这是接线错误——入口不应渲染（specs/051 FR-002）',
-      );
+      return {
+        kind: 'reject',
+        reason:
+          `会话 ${sessionId} 是 isolated 归属，但 Core 报「不可用且不可部署」（${capabilities.reason}）：`
+          + '这是接线错误——入口不应渲染（specs/051 FR-002）',
+      };
     }
-    return true;
+    return { kind: 'needsDeploy' };
   }
 
   /**
-   * 拦下消息时同时解析部署目标（FR-003 / FR-009）。
+   * 本次提交是否该被部署闸门拦下（布尔视图，供「打开对话」入口使用）。
+   *
+   * 打开对话没有提交回执可发，`reject` 在这里仍然是抛错——那是接线错误，宿主侧必须
+   * 冒泡成一条明确日志（铁律 1）。
+   */
+  private async shouldBlockForMountProxy(
+    sessionId: string,
+    storage: 'workspace' | 'isolated',
+  ): Promise<boolean> {
+    const verdict = await this.mountProxyVerdict(sessionId, storage);
+    if (verdict.kind === 'reject') throw new Error(verdict.reason);
+    return verdict.kind === 'needsDeploy';
+  }
+
+  /**
+   * 拦下一次提交并进入部署确认（FR-003 / FR-009），载荷快照原样留给 `continueBlockedAction`。
    *
    * 目标必须在**拦截时**就确定：确认框要显示目标主机名（四要素之一），而那时用户还
    * 没点「部署」。解析结果缓存在 `mountProxyTarget` 上，后续确认 / 提交凭据复用同一
    * 个目标——中途重新解析会让「确认框显示 A 机、实际装到 B 机」。
    */
-  private async blockMessageForMountProxyAsync(sessionId: string, content: string): Promise<void> {
+  private async blockMessageForMountProxyAsync(submit: SubmitMessage): Promise<void> {
+    const sessionId = submit.sessionId;
     const target = await this.host.resolveMountProxyTarget(sessionId);
     if (!target) {
       // Core 说可部署、宿主却给不出目标：接线不一致，直接报错不静默降级（铁律 1）
@@ -596,7 +668,8 @@ export class WebviewMessageHandler {
     }
     this.mountProxyTarget = target;
     const gate = this.ensureMountProxyGate(target.host);
-    gate.block({ kind: 'message', sessionId, content });
+    // 载荷快照原样入闸（specs/059 FR-005）：部署成功后按它继续，不重新采集
+    gate.block({ kind: 'message', submitId: submit.submitId, payload: toSendMessagePayload(submit) });
     this.log(`[WebviewMessageHandler] 消息被部署闸门拦下（session=${sessionId}, host=${target.host ?? 'localhost'}）`);
   }
 
@@ -678,7 +751,8 @@ export class WebviewMessageHandler {
       }));
       // FR-008：装完**不自己判 ready**，交给 Core 重查能力。按被拦消息的会话问：
       // 部署目标是该会话所属的 Core，重查的必须是同一台机器的能力。
-      const capabilities = await requestStorageCapabilities({ sessionId: gate.peekBlocked()?.sessionId });
+      const blocked = gate.peekBlocked();
+      const capabilities = await requestStorageCapabilities({ sessionId: blockedSessionId(blocked) });
       if (!capabilities.isolatedWorkView) {
         gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
         return;
@@ -699,17 +773,15 @@ export class WebviewMessageHandler {
    *
    * 两个入口（发消息 / 打开对话）共用这一处：成功后要做什么由 `kind` 决定，两条部署通道
    * （免密与凭据、手动命令轮询）都走到这里。分开实现会让两条通道的行为各自漂移。
+   *
+   * 发消息入口按**原载荷**继续（specs/059 FR-005）：载荷是用户按下发送时的快照，
+   * 在这期间改过的输入框不会串进来。此时这次提交已经裁定为「可发送」，走的是
+   * 已受理消息的上行（`sendMessage`）而不是再提交一次。
    */
   private async continueBlockedAction(action: BlockedAction | null): Promise<void> {
     if (!action) return;
     if (action.kind === 'message') {
-      // 走同一条上行链路重发；被拦下的消息必然来自 Overlay 会话（闸门判据），归属不变
-      await this.handleUserMessage({
-        type: 'sendMessage',
-        sessionId: action.sessionId,
-        content: action.content,
-        storage: 'isolated',
-      });
+      await this.handleUserMessage({ type: 'sendMessage', ...action.payload });
       return;
     }
     // 打开对话：继续走原加载流程。此时闸门会重查能力，必然已就绪（FR-002）
@@ -736,7 +808,9 @@ export class WebviewMessageHandler {
       if (this.mountProxyGate !== gate) return; // 期间被取消 / 换了一轮部署
       if (await target.isInstalled()) {
         // 同 applyDeployOutcome：按被拦消息的会话问，问的是部署目标那台 Core
-        const capabilities = await requestStorageCapabilities({ sessionId: gate.peekBlocked()?.sessionId });
+        const capabilities = await requestStorageCapabilities({
+          sessionId: blockedSessionId(gate.peekBlocked()),
+        });
         if (!capabilities.isolatedWorkView) {
           gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
           return;
@@ -790,32 +864,100 @@ export class WebviewMessageHandler {
   }
 
   /**
-   * 用户取消部署（FR-003：窗口关闭、会话保持空状态、消息留在输入框）。
+   * 对话切换锁的登记（specs/059 FR-007）。
    *
-   * 「打开对话」入口没有输入框内容可回填，因此回填只对 `kind: 'message'` 发：两种入口
-   * 都不打开对话，界面停在原位置（specs/052 FR-003「失败的打开动作无副作用」）。
+   * webview 是锁的**发起方**（它知道「确认框开着」与「提交还没拿到裁决」），宿主是落点：
+   * Electron 主进程据此拦住标签页与原生侧栏的对话切换，VS Code 空实现（单视图靠遮罩
+   * 已经成立）。`sender` 原样交给宿主——锁是视图级事实，主进程按来源过滤才不会误伤
+   * 其它标签页里的正常操作。
+   */
+  private handleConversationSwitchLock(
+    message: Extract<WebviewToHostMessage, { type: 'conversationSwitchLockChanged' }>,
+    ctx: WebviewRequestContext,
+  ): void {
+    this.host.setConversationSwitchLock(ctx.sender, message.locked, message.reason);
+  }
+
+  /**
+   * 用户取消部署（FR-003：本次提交整体作废）。
+   *
+   * 载体从未被消费（specs/059 FR-001）：输入框内容、勾选态、光标、列表与历史都还在
+   * 发送前的样子，因此取消**什么都不需要写回**，只把这次提交按 `submitId` 回执作废。
+   *
+   * 「打开对话」入口没有提交标识可回执，只清闸门状态：界面停在原位置
+   * （specs/052 FR-003「失败的打开动作无副作用」）。
    */
   private async handleMountProxyCancel(): Promise<void> {
     const gate = this.mountProxyGate;
     if (!gate) return;
-    // AC-9：webview 在发送时已经清空了输入框，取消必须把内容送回去，否则文字丢失
     const blocked = gate.peekBlocked();
     gate.cancel();
     this.mountProxyGate = null;
     if (blocked && blocked.kind === 'message') {
-      this.host.broadcastToWebviews({
-        type: 'userMessageDraftRestored',
-        sessionId: blocked.sessionId,
-        content: blocked.content,
-      });
+      this.replySubmitRejected(blocked.submitId, '');
     }
   }
+
   /**
-   * 用户消息的唯一处理入口：取 / 建会话引擎，登记会话覆盖，入队到引擎待处理队列。
+   * 提交请求的处理入口（specs/059 FR-001 / FR-002）：三态裁决，不消费任何载体。
+   *
+   * 裁决用判别联合而不是两个布尔：三种结论互斥，分派点必须穷尽（铁律 4.2）。
+   */
+  private async handleSubmitMessage(submit: SubmitMessage): Promise<void> {
+    const payload = toSendMessagePayload(submit);
+    const { sessionId, content } = payload;
+    const images = payload.images;
+    if (!sessionId || typeof content !== 'string' || (!content.trim() && (!images || images.length === 0))) {
+      // 空提交：webview 的前置守卫已经拦过，走到这里是接线错误。直接报错不静默吞掉
+      // （铁律 1）——但也不同 ack，避免 webview 的未决提交永远挂着。
+      this.log(
+        '[WebviewMessageHandler] 收到空提交（内容与图片都为空）：webview 的前置守卫失效，'
+          + '不回执、不裁决',
+      );
+      return;
+    }
+
+    // 先登记会话的工作目录：裁决要按**该会话所属的 Core** 查能力，查不到归属就落不到
+    // 正确的连接（多工作区宿主下会问到另一个 Core 的能力）。新会话在此之前只存在于
+    // webview 的内存里——宿主侧的 `startNewConversation` 上报可能还没到（预热视图不发它，
+    // 首条消息也可能抢在它前面）。
+    this.ensureSessionWorkspace(sessionId);
+
+    const verdict = await this.mountProxyVerdict(sessionId, payload.storage);
+    if (verdict.kind === 'reject') {
+      this.replySubmitRejected(submit.submitId, verdict.reason);
+      return;
+    }
+    if (verdict.kind === 'needsDeploy') {
+      await this.blockMessageForMountProxyAsync(submit);
+      return;
+    }
+    // 可发送：先回执受理，由 webview 消费载体后走已受理消息的上行（`sendMessage`）
+    this.replySubmitAccepted(submit.submitId, sessionId);
+  }
+
+  /** 受理回执（specs/059 FR-004）：webview 据此消费载体并上行 */
+  private replySubmitAccepted(submitId: string, sessionId: string): void {
+    this.host.broadcastToWebviews({ type: 'userMessageAccepted', submitId, sessionId });
+  }
+
+  /** 拒绝回执（specs/059 FR-003 / FR-002）：webview 据此丢弃未决提交，界面原样 */
+  private replySubmitRejected(submitId: string, reason: string): void {
+    this.host.broadcastToWebviews({ type: 'userMessageRejected', submitId, reason });
+  }
+
+  /**
+   * 用户消息的**已受理**上行入口：取 / 建会话引擎，登记会话覆盖，入队到引擎待处理队列。
    *
    * 命令解析、Skill 注入、内置命令执行都发生在引擎的消费循环（轮次边界，见
    * QueryEngine.resolvePendingCommand）。入口不做这些事，因此查询进行中不会被立刻
    * 注入 Skill / 执行内置命令。
+   *
+   * 走上来的只有**已经被受理过**的消息：webview 在拿到受理回执后上行、宿主在部署成功后
+   * 按原载荷继续、宿主在查询收尾后重投排队项。部署检测因此不在这里做确认——它属于
+   * `submitMessage` 的裁决（specs/059 FR-001）。这里只做一次**静默**的能力复核：
+   * 判据不通过说明这条消息已经无处可去（例如代理这期间被卸载），丢弃并点名原因，
+   * 不弹确认框、不改输入区（specs/059 FR-003 的边界节）。
    */
   private async handleUserMessage(message: Extract<WebviewToHostMessage, { type: 'sendMessage' }>): Promise<void> {
     const { sessionId, content } = message;
@@ -826,12 +968,13 @@ export class WebviewMessageHandler {
       return;
     }
 
-    // ── 部署闸门（specs/051 FR-003）──
-    // 闸门必须在**上行之前**：放到 webview 只会变成「前端不调」，wire 上仍会出现这条
-    // sendMessage，Core 照样建会话、照样落盘（FR-003 的 AC-7 断言的正是「消息没有进入
-    // Core」）。判据读 Core 的能力事实，不在这里重算 deployable。
-    if (await this.shouldBlockForMountProxy(sessionId, message.storage)) {
-      await this.blockMessageForMountProxyAsync(sessionId, content);
+    // 静默复核：`!deployable` 不再抛错（这条消息没有载体可弹框），一律丢弃并点名原因
+    const verdict = await this.mountProxyVerdict(sessionId, message.storage);
+    if (verdict.kind !== 'send') {
+      const why = verdict.kind === 'reject' ? verdict.reason : '需要部署挂载代理';
+      this.log(
+        `[WebviewMessageHandler] 丢弃一条已受理但没有可用视图的消息（session=${sessionId}）：${why}`,
+      );
       return;
     }
 

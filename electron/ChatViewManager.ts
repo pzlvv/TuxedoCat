@@ -106,6 +106,13 @@ export interface ChatViewManagerOptions {
    * 由宿主推给侧栏（`sidebar:session-loaded-changed`），不并入对话列表流。
    */
   onLoadedChanged?: (sessionIds: string[]) => void;
+  /**
+   * 视图即将销毁（`WebContents` 已确定要关）。
+   *
+   * 宿主用它清掉视图级的外部登记——对话切换锁按视图记（specs/059 FR-007），
+   * 不清的话 `WebContents` 对象一旦被复用就带着残留的锁。
+   */
+  onViewDestroyed?: (webContents: WebContents) => void;
 }
 
 export class ChatViewManager {
@@ -966,6 +973,11 @@ export class ChatViewManager {
     }
     try {
       const view = this.views.get(key);
+      if (view) {
+        // 视图销毁即清掉它的对话切换锁（specs/059 FR-007）：`WebContents` 对象若被复用，
+        // 残留的锁会让界面在确认框早已不见之后仍切不动对话。
+        this.opts.onViewDestroyed?.(view.webContents);
+      }
       if (view && !view.webContents.isDestroyed()) {
         this.opts.win.contentView.removeChildView(view);
         if (opts?.closeIfAlive !== false) {

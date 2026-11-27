@@ -176,6 +176,10 @@ export interface UseMessageHandlerProps {
   choiceCursorPositionRef: React.MutableRefObject<number | null>;
   /** 由"+"或启动时新建、尚未发送过消息的会话 id */
   newChatSessionRef: React.MutableRefObject<string | null>;
+  /** 提交被受理（specs/059 FR-004）：消费载体、结算会话身份并上行 */
+  commitSubmit: (submitId: string) => void;
+  /** 提交被拒绝 / 取消（specs/059 FR-003）：丢弃未决提交，界面什么都不改 */
+  rejectSubmit: (submitId: string) => void;
   mainInputRef: React.RefObject<HTMLTextAreaElement | null>;
   choiceInputRef: React.RefObject<HTMLTextAreaElement | null>;
   messagesContainerRef: React.RefObject<HTMLDivElement>;
@@ -455,10 +459,19 @@ export function useMessageHandler(props: UseMessageHandlerProps): void {
           // （FR-003：需要部署时由宿主在发第一条消息时弹确认）。
           ctx.props.setWorkViewCapable(msg.isolatedWorkView || msg.deployable);
           break;
-        case 'userMessageDraftRestored':
-          // 部署闸门取消后把被拦消息送回输入框（specs/051 FR-003 的 AC-9）。
-          // 发送时输入框已被清空，不送回来那段文字就丢了。
-          ctx.props.inputAreaRef.current?.setValue(msg.content);
+        case 'userMessageAccepted':
+          // 提交被受理（specs/059 FR-004）：到这里才消费载体——清输入框 / 清挂起项、
+          // 结算会话 id、写对话列表与命令历史、上行已受理消息。裁决之前那些动作一个都
+          // 没发生，所以取消部署不需要回填（`userMessageRejected` 见下一条）。
+          ctx.props.commitSubmit(msg.submitId);
+          break;
+        case 'userMessageRejected':
+          // 提交被拒绝（specs/059 FR-003）：用户取消部署，或 Core 报「不可用且不可部署」。
+          // 载体从未被消费，因此这里**什么都不改**——丢弃未决提交即回到发送前。
+          if (msg.reason.length > 0) {
+            ctx.props.pushNotice('mountProxyDialog.rejected', { reason: msg.reason }, 'error');
+          }
+          ctx.props.rejectSubmit(msg.submitId);
           break;
         case 'mountProxyDeployState':
           // 部署状态是宿主的事实（FR-003 / FR-004）：webview 只存下来交给对话框渲染，

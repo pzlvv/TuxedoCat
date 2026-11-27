@@ -51,7 +51,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 入参显式 | 可选语义用 `null`，而不是省略参数 |
 | 返回值统一 `Promise<void>` | 不用 `void \| Promise<void>` 联合 |
 
-成员清单（全部必选，共 25 个：`UIHost` 自身 20 个 + 继承 `WorkspaceProvider` 的 5 个）：
+成员清单（全部必选，共 26 个：`UIHost` 自身 21 个 + 继承 `WorkspaceProvider` 的 5 个）：
 
 | 分组 | 成员 | 语义 |
 | --- | --- | --- |
@@ -79,6 +79,7 @@ surface，而不是向 `UIHost` 追加成员。工作区是进程级环境事实
 | 会话 / 状态 | `closeConversationView(sessionId: string): Promise<void>` | 只销毁该会话的 UI 视图（不删磁盘数据、不释放运行时内存） |
 | 配置文件 | `updateSettingsJson(mutator: (cfg: Record<string, any>) => void \| Record<string, any>): Promise<void>` | 串行化「读-改-写」全局 `settings.json` |
 | 挂载代理部署 | `resolveMountProxyTarget(sessionId: string): Promise<MountProxyTarget \| null>` | **按会话**解析部署目标（本地进程 / SSH 远端），返回执行面、字节来源、落点判据与零密码命令；`null` 表示解析不出，调用方报错不降级。目标由会话工作区决定，不由宿主平台决定 |
+| | `setConversationSwitchLock(sender: WebviewViewHandle \| null, locked: boolean, reason: string): void` | 落一次「对话切换锁」（specs/059 FR-007）：部署确认框打开、或一次提交还没拿到裁决时 webview 上报 `locked: true`，收尾报 `false`。单视图宿主空实现（入口全在被遮罩的视图内）；多视图宿主按 `sender` 记下锁着的视图、让标签页与侧栏的切换入口早返回。`sender` 为 `null` 时不记锁（锁必须指明是哪个视图） |
 
 `WorkspaceProvider`（同文件）是**宿主侧**的工作区契约：路径（`getWorkspacePath`）、引用
 （`getWorkspaceRef`）、打开集合（`getOpenWorkspaceRefs`）与变化订阅（`onWorkspaceChanged`）。
@@ -144,7 +145,7 @@ Electron 里是 `BrowserWindow`。它有自己的生命周期（打开 → 复�
 与 `UIHost` 分开的理由：
 
 1. 独立面板 / 窗口，生命周期与消息协议都与对话 webview 无关；
-2. `UIHost` 已承载 20 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
+2. `UIHost` 已承载 21 个成员，再混进 Spin 专属成员会让「宿主能力」失真；
 3. 拆出后 Spin 的整块（HTML 生成 + 导出 + 面板管理）可整体替换或搬走。
 
 接口只有两个成员：

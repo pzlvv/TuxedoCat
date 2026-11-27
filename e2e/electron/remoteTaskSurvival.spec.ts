@@ -1,18 +1,27 @@
 import { test, expect } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
 import { Client } from 'ssh2';
 import { startMockLlm } from '../helpers/mockLlmServer';
 import { launchApp, waitForMessageBox, clickMessageBoxButton, messageBoxText } from '../helpers/electronApp';
 import type { AppHandle } from '../helpers/electronApp';
 import type { MockLlm } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
-import { CONFIG_DIR_NAME, CORE_BINARY_NAME, CORE_DEPLOY_PREFIX } from '../../src/config/project';
+import { CONFIG_DIR_NAME, CORE_DEPLOY_PREFIX } from '../../src/config/project';
+import { coreProcessPattern, requireLocalCoreFingerprint } from '../helpers/remoteCoreProcess';
 
-/** 远端部署目录 / 状态目录 / 进程匹配模式（口径同 remoteSshExecution.spec.ts） */
+/** 远端部署目录 / 状态目录（口径同 remoteSshExecution.spec.ts） */
 const REMOTE_DEPLOY_DIR = `~/.local/share/${CORE_DEPLOY_PREFIX}`;
 const REMOTE_RUN_DIR = `~/${CONFIG_DIR_NAME}/run`;
-const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1)}`;
+
+/**
+ * 本指纹的 Core 进程模式。
+ *
+ * 按**部署槽位的构建指纹**收敛而不是只按二进制名：远端是共享机器，同机上可能并存多个
+ * 槽位的 Core（`e2e/helpers/remoteCoreProcess.ts` 记了后果），只按名字匹配会把别人的
+ * Core 算成自己的残留、清场时还会误杀。
+ */
+function corePattern(): string {
+  return coreProcessPattern(requireLocalCoreFingerprint());
+}
 
 const SIDEBAR_ITEM = '#list .item[data-session-id]';
 
@@ -99,7 +108,7 @@ test.beforeEach(async () => {
   // 每个用例从干净远端开始：杀残留 daemon / Core、清状态文件、清本组会话目录
   //（前一个用例的会话落盘会混进下一条断言的侧栏计数）
   const fingerprint = localFingerprint();
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true`).catch(() => undefined);
   // 等进程真的消失而不是等固定时长：pkill 只负责发信号，SIGTERM 到进程退出之间还有收尾
   // （Core 写盘），负载高时 1s 不够——半死的 daemon 会让下一条用例建链挂住
   //（e2e/README.md 已知坑 11）。本组用例的断言基数是「远端还剩几个 Core」，基线本身
@@ -117,14 +126,14 @@ test.beforeEach(async () => {
 
 test.afterAll(async () => {
   if (remoteWs) await sshExec(`rm -rf ${remoteWs}`).catch(() => undefined);
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true`).catch(() => undefined);
 });
 
-/** 远端还活着的 Core 进程（daemon 与 workspace Core 都算） */
+/** 远端还活着的本指纹 Core 进程（daemon 与 workspace Core 都算） */
 function remoteCoreProcesses(): Promise<Array<{ pid: string; cmd: string }>> {
-  // 按 SSH 用户自己的 uid 收敛（理由同 remoteSshExecution.spec.ts 的 remoteCoreProcesses）：
-  // 裸 pgrep 是全机口径，会把别的用户正在用的 Core 算成本车道残留
-  return sshExec(`pgrep -u "$(id -u)" -af '${CORE_PROCESS_PATTERN}' || true`).then(({ stdout }) =>
+  // 两道收敛：`-u` 按 SSH 用户自己的 uid（裸 pgrep 是全机口径，会把别的用户正在用的
+  // Core 算成本车道残留），模式里的部署槽位指纹再收一次（同一 uid 下并存的多个构建）。
+  return sshExec(`pgrep -u "$(id -u)" -af '${corePattern()}' || true`).then(({ stdout }) =>
     stdout.trim().split('\n').filter((line) => line.length > 0).map((line) => {
       const space = line.indexOf(' ');
       return { pid: line.slice(0, space), cmd: line.slice(space + 1) };
@@ -151,11 +160,7 @@ async function pollRemote(
 
 /** 本机携带产物的指纹（与远端部署槽位同名） */
 function localFingerprint(): string {
-  const repoRoot = process.cwd().replace(/[\\/]e2e$/, '');
-  return fs.readFileSync(
-    path.join(repoRoot, 'dist', 'resources', 'core', 'x64-linux', 'fingerprint'),
-    'utf8',
-  ).trim();
+  return requireLocalCoreFingerprint();
 }
 
 let app: AppHandle | null = null;

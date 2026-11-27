@@ -44,6 +44,7 @@ export const zhDict: Record<string, string> = {
   'mountProxyDialog.manualHint': '请在你自己的终端里执行这条命令，密码全程不经过宿主：',
   'mountProxyDialog.copyCommand': '复制',
   'mountProxyDialog.copied': '已复制',
+  'mountProxyDialog.rejected': '这条消息没有发送：{reason}',
 
   /* ── DeleteConfirmDialog.tsx ─────────────────────────────── */
   'deleteConfirm.confirm': '确定要删除 "{title}" 吗？',

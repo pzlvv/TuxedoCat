@@ -21,7 +21,7 @@ status: 已修
   （`core-rs/src/engine.rs`，`if let Some(enabled) = payload.get("webSearch") …
   state.web_search = Some(enabled)`），且该覆盖不落 meta.json。webview 每条
   `sendMessage` 都带自己的本地 `webSearch` 值（`useAppHandlers.ts`
-  `buildUserMessageFromInput`），宿主原样转发（`webviewMessageHandler.ts`
+  `buildSubmitPayloadFromInput`），宿主原样转发（`webviewMessageHandler.ts`
   `handleUserMessage`）。
 - webview 侧 `webSearch` 是唯一**没有**宿主同步 effect 的会话级配置：
   `App.tsx` 里 agentMode / thinkingMode / modelRef 各有一个

@@ -290,4 +290,20 @@ export interface UIHost extends WorkspaceProvider {
    * 没有 Overlay 能力的宿主（VS Code）恒回 `'workspace'`，因此永不进闸门。
    */
   sessionStorageOf(sessionId: string): 'workspace' | 'isolated';
+
+  /**
+   * 落一次「对话切换锁」（specs/059 FR-007）。
+   *
+   * 部署确认框打开、或一次提交还没拿到裁决时，webview 上报 `locked: true`；收尾时报
+   * `false`。落点的差别由宿主决定：
+   *
+   * - 单视图宿主（VS Code）：对话列表 / 新建入口 / 历史按钮都在同一个 webview 里，
+   *   遮罩已经把切换挡住——空实现。
+   * - 多视图宿主（Electron）：每个对话一个视图，标签页与原生侧栏在视图之外，遮罩盖不住。
+   *   主进程按 `sender` 记下「这个视图锁着」，并让对话 / 工作区切换入口早返回。
+   *
+   * `sender` 是**必须参与判断**的：锁是视图级事实，按它过滤才不会因为一个视图弹着确认框
+   * 就锁住其它标签页里的正常操作。`reason` 只用于日志与诊断，不渲染给用户。
+   */
+  setConversationSwitchLock(sender: WebviewViewHandle | null, locked: boolean, reason: string): void;
 }

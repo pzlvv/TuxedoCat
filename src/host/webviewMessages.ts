@@ -517,18 +517,31 @@ export type HostToWebviewMessage = {
   installPath: string;
 } | {
   /**
-   * 把一条被拦下的用户消息回填到输入框（specs/051 FR-003 的 AC-9）。
+   * 一次提交请求被受理（specs/059 FR-004）：webview 可以消费载体并上送了。
    *
-   * 为什么必须有这一条：webview 在发送时已经清空了输入框（`buildUserMessageFromInput`
-   * 里 `clear()`），如果取消时宿主不把内容送回来，用户点「取消」后那段文字就丢了——
-   * 而 FR-003 明确要求「消息留在输入框」。
+   * 两段式的第一段到这里结束——裁决到达之前 webview 不清空输入框、不建会话 id、不写
+   * 对话列表与命令历史（specs/059 FR-001），因此「回到发送前」不需要回填通道，
+   * 只要把这次提交丢掉（见 `userMessageRejected`）。
    *
-   * 只用于「消息根本没进 Core」的情形（部署闸门拦下后取消）；已进入 Core 的排队消息
-   * 另有 `queuedMessage` 的编辑回填链路。
+   * `submitId` 由 webview 生成并随 `submitMessage` 上行，宿主原样回带：裁决与提交一一对应，
+   * 不受同时存在的其它视图请求影响。
    */
-  type: 'userMessageDraftRestored';
+  type: 'userMessageAccepted';
+  submitId: string;
+  /** 本次提交归属的会话（webview 在提交时算好，受理时才写进当前会话） */
   sessionId: string;
-  content: string;
+} | {
+  /**
+   * 一次提交请求被拒绝（specs/059 FR-003 / FR-002）：用户取消部署，或 Core 报
+   * 「不可用且不可部署」的接线错误。
+   *
+   * webview 收到后**丢弃未决提交**——什么都不回填、什么都不改，因为载体从未被消费
+   * （对比已删除的 `userMessageDraftRestored` 的「清空后写回」）。
+   */
+  type: 'userMessageRejected';
+  submitId: string;
+  /** 拒绝原因（`deployable === false` 时是 Core 给的 `reason`；取消时为空串） */
+  reason: string;
 } | {
   type: 'setSkills';
   /** Skill 列表 */
@@ -772,9 +785,14 @@ export interface SaveLlmConfigProvider {
   defaultModel?: string;
 }
 
-export type WebviewToHostMessage = {
-  /** 用户发出消息：宿主翻译成 `UiEvent.userMessageSubmitted`（排队 / 回显策略在宿主） */
-  type: 'sendMessage';
+/**
+ * 一条用户消息的载荷（`sendMessage` 与 `submitMessage` 共用）。
+ *
+ * 单列出来是因为它有两个上行入口、载荷逐字段一致：`sendMessage` 是**已受理消息**的上行
+ * （宿主重投排队项、部署成功后继续原提交），`submitMessage` 是**用户按下发送**的上行
+ * （specs/059 FR-001 的两段式的第一段）。字段写成一份，两者不会漂移。
+ */
+export interface SendMessagePayload {
   sessionId: string;
   content: string;
   images?: WebviewImagePayload[];
@@ -793,10 +811,52 @@ export type WebviewToHostMessage = {
    * 该会话的文件存储归属（specs/045 FR-001）。
    *
    * 必选：部署闸门（specs/051 FR-003）只在 Overlay 归属上生效，而 `setConversationStorage`
-   * 与 `sendMessage` 是两条独立的上行，到达顺序取决于渲染时序——用先后顺序推归属会让闸门
+   * 与消息上行是两条独立的上行，到达顺序取决于渲染时序——用先后顺序推归属会让闸门
    * 时灵时不灵。归属随消息一起带，判据就不依赖任何跨消息状态。
    */
   storage: 'workspace' | 'isolated';
+}
+
+export type WebviewToHostMessage = (
+  {
+    /**
+     * 已受理的用户消息上行：宿主翻译成 `UiEvent.userMessageSubmitted`（排队 / 回显策略在宿主）。
+     *
+     * 用户按下发送不走这条（走 `submitMessage`）——两条的区别是**谁已经点过头**：
+     * 这条的发送方（宿主重投、部署成功后继续）已在受理阶段拿到了裁决，不再需要判据。
+     */
+    type: 'sendMessage';
+  } & SendMessagePayload
+) | (
+  {
+    /**
+     * **提交请求**（specs/059 FR-001）：用户按下发送时上行的第一条消息，携带载荷快照与
+     * 一个 webview 生成的 `submitId`。
+     *
+     * 宿主对它做三态裁决（可发送 / 需要部署 / 拒绝），结果以 `userMessageAccepted` 或
+     * `userMessageRejected` 按 `submitId` 回包。**裁决之前 webview 不消费任何载体**
+     * ——不清输入框、不建会话、不写列表与命令历史，因此取消不需要回填。
+     *
+     * 载荷与 `sendMessage` 完全同一份（`SendMessagePayload`），受理之后宿主走的正是
+     * 同一条 `handleUserMessage`。
+     */
+    type: 'submitMessage';
+    /** webview 生成的提交标识；宿主原样回带进裁决消息 */
+    submitId: string;
+  } & SendMessagePayload
+) | {
+  /**
+   * 对话切换锁的登记（specs/059 FR-007）：webview 在部署确认框打开、或一次提交还没拿到
+   * 裁决时上报 `locked: true`，收尾时上报 `false`。
+   *
+   * 为什么要上报而不是让宿主自己查：闸门实例在 `WebviewMessageHandler`（按视图一份语义），
+   * Electron 主进程拿不到；而「哪个视图锁着」是视图级事实，主进程按 `sender` 过滤才不会
+   * 误伤同一标签页之外正常的对话切换。
+   */
+  type: 'conversationSwitchLockChanged';
+  locked: boolean;
+  /** 锁的原因（日志与诊断用；不渲染给用户） */
+  reason: string;
 } | {
   /**
    * 失败 once 通知上的「重试」（specs/036 FR-003）：宿主翻译成

@@ -108,6 +108,9 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
     mountProxyExpectedMethod: null,
     // 部署脚本回推给对话框的安装落点 / 目标主机 / 零密码命令
     mountProxyFacts: { installPath: '/usr/libexec/mount-proxy', targetHost: 'this-host', manualCommand: '' },
+    // 对话切换锁（specs/059 FR-007）：webview 上报的锁事实，用例断言发送前 / 确认框期间的值
+    conversationSwitchLocked: false,
+    conversationSwitchLockReason: '',
     // ── 自动获取模型（specs/060）──
     // 阶段一回包的模型列表与已知协议（用例可改写；缺省两个模型、都未设协议）
     fetchModelResults: ['probe-model', 'probe-model-pro'],
@@ -340,6 +343,16 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
       installPath: state.mountProxyFacts.installPath,
       targetHost: state.mountProxyFacts.targetHost,
     });
+
+    // 部署成功后**按原载荷继续**那次提交（specs/059 FR-005）：真实宿主在
+    // continueBlockedAction 里把快照原样交给已受理消息的上行；假宿主等同处理——
+    // 剥掉 submitId、换成 sendMessage 走进同一条引擎链路，用户不需要再按一次发送。
+    const blocked = blockedMessage;
+    blockedMessage = null;
+    if (blocked !== null) {
+      const { submitId: _submitId, type: _type, ...payload } = blocked.wire;
+      send({ type: 'sendMessage', ...payload });
+    }
   }
 
   // —— 自动应答：覆盖 webview 启动序列的全部请求 ——
@@ -389,11 +402,12 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
         });
         break;
       case 'cancelMountProxyDeploy':
-        // 真实宿主的 gate.cancel() 会推 cancelled 让界面收起，并把被拦消息回填输入框
-        // （FR-003 的 AC-9）。
+        // 真实宿主的 gate.cancel() 推 cancelled 让界面收起，并按 submitId 回 rejected 作废
+        // 这次提交（specs/059 FR-003）。**不回填**：载体从未被消费（已删除
+        // userMessageDraftRestored），所以假宿主也不发那条。
         deployCancelled = true;
         if (blockedMessage !== null) {
-          send({ type: 'userMessageDraftRestored', sessionId: blockedMessage.sessionId, content: blockedMessage.content });
+          send({ type: 'userMessageRejected', submitId: blockedMessage.submitId, reason: '' });
           blockedMessage = null;
         }
         send({
@@ -586,21 +600,30 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
         // 勾选后补发的归属（specs/045 FR-001）：只改 Core 侧的归属，闸门判据取自
         // sendMessage 自带的 storage（跨消息先后顺序不可靠）
         break;
-      case 'sendMessage':
-        // specs/051 FR-003：真实宿主的部署闸门在这里拦下消息。假宿主复现同一判据——
-        // 归属是 isolated、能力不可用且可部署时，**不上行**，先推 confirm 等用户确认
-        // （用例断言的正是「上行消息里没有 sendMessage」）。
+      case 'submitMessage':
+        // specs/059 FR-001 / FR-002：真实宿主对提���请求做三态裁决，裁决前不消费载体。
+        // 假宿主复现同一判据与同一回执形态：
+        //   - 能力不可用且不可部署 → 回 rejected（带 Core 的 reason）；
+        //   - 能力不可用且可部署 → 拦进部署状态机（不回受理，提交保持挂起）；
+        //   - 其余（含非 isolated 归属）→ 回 accepted，webview 消费载体后上行 sendMessage。
         if (
           state.mountProxyCapabilities !== null &&
           !state.mountProxyCapabilities.isolatedWorkView &&
-          state.mountProxyCapabilities.deployable &&
-          // 归属取自消息本身（specs/051 FR-003）：setConversationStorage 与 sendMessage
-          // 是两条独立上行，先后取决于渲染时序
+          // 归属取自消息本身（specs/051 FR-003）：跨消息先后顺序不可靠
           msg.storage === 'isolated'
         ) {
-          // 闸门拦下：这条消息不进 sent（= 不进 Core），FR-003 的 AC-7
-          window.__fakeHostGateBlocked = true;
-          blockedMessage = { sessionId: msg.sessionId, content: msg.content };
+          if (!state.mountProxyCapabilities.deployable) {
+            send({
+              type: 'userMessageRejected',
+              submitId: msg.submitId,
+              reason: state.mountProxyCapabilities.reason,
+            });
+            break;
+          }
+          // 闸门拦下：不回受理回执，webview 因此不消费载体、不上行已受理消息
+          // （FR-003 的 AC-7 断言的是 sent 里没有 sendMessage）。
+          // 载荷快照原样留着（specs/059 FR-005）：部署成功后按它继续
+          blockedMessage = { submitId: msg.submitId, wire: msg };
           send({
             type: 'mountProxyDeployState',
             phase: 'confirm',
@@ -611,6 +634,18 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
           });
           break;
         }
+        send({ type: 'userMessageAccepted', submitId: msg.submitId, sessionId: msg.sessionId });
+        break;
+      case 'conversationSwitchLockChanged':
+        // specs/059 FR-007：锁登记在真实宿主的主进程；假宿主只记下已上报的事实，
+        // 用例断言的正是「确认框打开 / 提交未决期间上报了 locked: true」
+        state.conversationSwitchLocked = msg.locked;
+        state.conversationSwitchLockReason = msg.reason;
+        break;
+      case 'sendMessage':
+        // 已受理消息的上行（specs/059 FR-001）：用户按下发送走 submitMessage，这条只来自
+        // 受理之后的消费（webview 拿到 accepted 后上行）与排队项重投。部署检测已在提交
+        // 裁决里做过，这里不再判据——假宿主照旧走引擎。
         if (active.has(msg.sessionId) && state.queueWhileBusy) {
           // 引擎忙碌：真实链路由 core 排队，宿主回 queuedMessage 横幅
           send({ type: 'queuedMessage', sessionId: msg.sessionId, content: msg.content, uuid: 'q-' + Date.now() });
@@ -680,13 +715,11 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
 
   window.vscode = {
     postMessage(message) {
-      // sent 记录的是**真正到达宿主、会进入 Core** 的上行消息（specs/051 FR-003：
-      // E2E 断言的是「上行消息里没有 sendMessage」，而不是「前端没有调用」）。
-      // 监听器把消息拦下（部署闸门）时置 gateBlocked，这条就不进 sent。
-      const event = new CustomEvent('towhost', { detail: message });
-      window.dispatchEvent(event);
-      if (!window.__fakeHostGateBlocked) sent.push(message);
-      window.__fakeHostGateBlocked = false;
+      // sent 记录 webview 的全部上行消息。部署闸门的判据不在这里过滤：submitMessage
+      // 本来就是「请宿主裁决」的那一条（它必须到达宿主，specs/059 FR-001）；被拦下时宿主
+      // 不回受理回执，因此 sendMessage 不会出现——那正是 e2e 断言的事实。
+      sent.push(message);
+      window.dispatchEvent(new CustomEvent('towhost', { detail: message }));
     },
   };
 
@@ -862,6 +895,19 @@ export class FakeHostDriver {
       (list) => { (window as any).__fakeHost.state.abortRuntimeStates = list; },
       states,
     );
+  }
+
+  /**
+   * 读宿主侧状态快照（只读）：用例断言「webview 上报了哪些事实」时用。
+   *
+   * 目前只暴露对话切换锁（specs/059 FR-007）——锁登记在真实宿主的主进程，webview 侧
+   * 看不出来，因此必须读这里才能断言「确认框打开时锁已上报」。
+   */
+  async state(): Promise<{ conversationSwitchLocked: boolean; conversationSwitchLockReason: string }> {
+    return this.page.evaluate(() => ({
+      conversationSwitchLocked: !!(window as any).__fakeHost.state.conversationSwitchLocked,
+      conversationSwitchLockReason: String((window as any).__fakeHost.state.conversationSwitchLockReason ?? ''),
+    }));
   }
 
   /**

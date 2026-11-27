@@ -63,8 +63,20 @@ last_reviewed: 2026-11-16
 webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进入管线。该处理器是用户消息的
 唯一处理路径。
 
-- 协议中用户消息的类型是 `sendMessage`；`queueMessage` 不作为独立类型存在。
+- 协议中**用户按下发送**的类型是 `submitMessage`（提交请求）；`queueMessage` 不作为独立类型存在。
 - 处理器不区分「新消息」与「排队消息」：是否排队由引擎的忙碌状态决定，不由消息类型决定。
+
+**两段式：提交请求 → 受理后消费。** 用户按下发送上行的第一条消息是 `submitMessage`（载荷快照
++ webview 生成的 `submitId`），宿主对它做三态裁决：可发送 → 回 `userMessageAccepted`；
+需要部署挂载代理 → 弹确认框（提交保持挂起）；不可部署 → 回 `userMessageRejected`（带 Core 的
+`reason`）。**裁决到达之前 webview 不消费任何载体**——不清输入框、不建会话 id、不写对话列表与
+命令历史、不登记排队项、不画用户气泡。因此取消部署不需要回填通道：发送前是什么样，取消后
+还是什么样。
+
+受理之后 webview 消费载体并把同一条载荷以 `sendMessage` 上行——`sendMessage` 是**已受理消息**
+的上行类型，另外两个发送方是宿主重投排队项与部署成功后的按原载荷继续。部署检测只在
+`submitMessage` 的裁决里做一次；`handleUserMessage` 收到已受理消息时只做一次静默复核，
+判据不通过就丢弃并点名原因（那条消息已经没有载体可弹框了）。
 
 处理器只做「宿主侧」的事，然后发 `UiEvent.userMessageSubmitted`：
 
@@ -79,7 +91,7 @@ webview 的用户消息经宿主 `WebviewMessageHandler` 的一个处理器进�
 
 - 引擎创建不预置用户消息：`initialMessages` 为空，首条消息与后续消息同路径。
 - 发送区 UI 不改变唯一入口：主按钮恒为立即发送；「空闲发送」（下拉项）在 webview 本地
-  挂起，触发时仍以 `sendMessage` 进入本管线（FR-003）。
+  挂起，触发时以 `submitMessage` 进入本管线（FR-003）；载体（横幅上的挂起项）留到受理之后才清。
 - 查询开始 / 结束状态由 core 在消费循环里发（`queryBegin` / `queryEnd`，见
   [docs/hosts/webview-ui.md 第 7 节](../hosts/webview-ui.md#7-查询计数querybegin--queryend-去重)）。
 - 无工作目录的会话不进入管线：webview 显示引导，不发送消息。
@@ -147,7 +159,7 @@ abort 标记、不打断正在运行的查询。「编辑」在清除排队项�
 **兜底回投**：`queryEnd` 到达时，webview 对仍登记的排队项做一次回投：
 
 - 用户主动中止的会话：回填输入框，等待用户确认；
-- 其它：作为 `sendMessage` 重新提交。
+- 其它：作为 `submitMessage` 重新提交（重新走一遍裁决，与用户按发送同一入口）。
 
 已消费 / 已执行的消息在 `queryEnd` 之前清除了排队项，因此回投只作用于真正未被消费的消息
 （入队失败 / 引擎缺失）。**例外**：非用户创建的会话（FR-008）收尾即关闭——`queryEnd`
@@ -157,9 +169,9 @@ abort 标记、不打断正在运行的查询。「编辑」在清除排队项�
 
 **空闲挂起（webview 本地）**：发送区下拉的「空闲发送」把提交时机推迟到会话完全空闲：
 
-- 挂起项不上送宿主：`sendMessage` wire 类型与载荷、`onQueuedMessage` 登记口径都不变，
-  挂起事实由 webview 持有；横幅按当前会话派生展示，标签「空闲后发送」与忙碌排队的
-  「等待中」区分等待条件。
+- 挂起项不上送宿主：挂起事实由 webview 持有；横幅按当前会话派生展示，标签「空闲后发送」与忙碌排队的
+  「等待中」区分等待条件。触发时以 `submitMessage` 进入管线，**挂起项留到受理之后才清**——
+  取消部署时它必须还在横幅上（那一份就是这次提交的载体）。
 - 触发以 core 推送的会话运行时快照为准：该会话显式 `idle === true`（无进行中查询 /
   等待用户输入 / 压缩 / 后台任务 / 子代理）才按立即发送语义提交；快照缺失不触发
   （不过度 fallback）。提交走本节顶端登记的同一入口，此刻若会话又忙碌则落入既有忙碌
@@ -299,7 +311,7 @@ Agent 驱动，用户输入按「运行中开放、收尾即关闭」界定：
 
 | 项 | 规格 |
 | --- | --- |
-| 用户消息类型 | 用户消息在协议中只有一个类型（`sendMessage`） |
+| 用户消息类型 | 用户按下发送只有一个类型（`submitMessage`）；`sendMessage` 是已受理消息的上行类型 |
 | 环境查询请求 | webview → host 的请求类型（`requestSkills` / `requestSessionRuntimeStates`）按同一约定声明 |
 | 会话运行时状态推送 | `pushSessionRuntimeStates` 是模块内实现细节；对外入口是消息分发表 |
 | 活动指示动效 | 运行中 = 蓝色流水（渐变背景滚动）；等待用户 = 黄色呼吸（明暗脉动，不滚动）。webview 对话列表与 Electron 标题栏用同一套语义；等待用户态以单一动画表达。未读完成（Electron：用户看不到时完成的任务）= 绿色呼吸一次后常亮，直到该对话被打开；回窗聚焦时正被看着的对话视为已读、不挂灯（状态机见 [docs/hosts/host-matrix.md](../hosts/host-matrix.md)「未读完成呼吸」） |

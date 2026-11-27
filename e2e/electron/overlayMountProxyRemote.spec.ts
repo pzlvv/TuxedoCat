@@ -9,13 +9,13 @@ import type { MockLlm, RecordedRequest } from '../helpers/mockLlmServer';
 import type { SerializedWorkspaceRef } from '../../src/host/workspaceState';
 import {
   CONFIG_DIR_NAME,
-  CORE_BINARY_NAME,
   CORE_DEPLOY_PREFIX,
   CORE_MOUNT_PROXY_DIR,
   CORE_MOUNT_PROXY_NAME,
   LOG_FILE_NAME,
 } from '../../src/config/project';
 import { requireSudoPasswordEnvironment } from '../helpers/testEnvironment';
+import { coreProcessPattern, requireLocalCoreFingerprint } from '../helpers/remoteCoreProcess';
 import { resolveMachineName } from '../../src/host/workspaceIdentity';
 import { hostname as osHostname } from 'node:os';
 
@@ -78,28 +78,30 @@ const REMOTE_DEPLOY_DIR = `~/.local/share/${CORE_DEPLOY_PREFIX}`;
 /** 远端运行目录（daemon 状态文件） */
 const REMOTE_RUN_DIR = `~/${CONFIG_DIR_NAME}/run`;
 /** pgrep / pkill 模式首字符加 []，不匹配执行它的远端 shell 自身 */
-const CORE_PROCESS_PATTERN = `[${CORE_BINARY_NAME[0]}]${CORE_BINARY_NAME.slice(1)}`;
 const PROXY_PROCESS_PATTERN = `[${CORE_MOUNT_PROXY_NAME[0]}]${CORE_MOUNT_PROXY_NAME.slice(1)}`;
+
+/**
+ * 本指纹的 Core 进程模式。
+ *
+ * 按**部署槽位的构建指纹**收敛而不是只按二进制名：远端是共享机器，同一账号下可能并存
+ * 多个槽位的 Core（`e2e/helpers/remoteCoreProcess.ts` 记了后果——别人的 Core 被算成
+ * 自己的残留、清场时误杀别人的 daemon）。代理装在全机统一的系统路径上，没有按指纹分
+ * 槽位，因此仍是名字口径。
+ */
+function corePattern(): string {
+  return coreProcessPattern(requireLocalCoreFingerprint());
+}
 
 /**
  * 本机构建的 Core 指纹（远端槽位名就是它）。
  *
  * 远端 daemon 状态文件名形如 `core-daemon-<fingerprint>.json`，指纹由本机 Core 产物内容
  * 算出（`dist/resources/core/<arch>-<platform>/fingerprint`），因此收尾时按本机指纹拼出
- * 文件名而不是猜一个。产物缺失返回 null（产物缺失本身已由 playwright 配置在加载期拦下）。
+ * 文件名而不是猜一个。产物缺失即抛错（playwright 配置在加载期已拦过一道，这里是兜底：
+ * 静默降级成按二进制名匹配正是本文件要消除的口径）。
  */
-function localCoreFingerprint(): string | null {
-  try {
-    return fs.readFileSync(
-      path.join(
-        process.cwd().replace(/[\\/]e2e$/, ''),
-        'dist', 'resources', 'core', 'x64-linux', 'fingerprint',
-      ),
-      'utf8',
-    ).trim();
-  } catch {
-    return null;
-  }
+function localCoreFingerprint(): string {
+  return requireLocalCoreFingerprint();
 }
 
 function sshConnect(): Client {
@@ -169,19 +171,17 @@ function shQuote(value: string): string {
  * 握手会挂在那儿，表现为「等待活动聊天视图超时（候选 0 个）」。
  */
 async function resetRemoteDaemon(): Promise<void> {
-  await sshExec(`pkill -u "$(id -u)" -f '${CORE_PROCESS_PATTERN}' || true`).catch(() => undefined);
+  await sshExec(`pkill -u "$(id -u)" -f '${corePattern()}' || true`).catch(() => undefined);
   // 等进程真的消失而不是等固定时长：pkill 只负责发信号，SIGTERM 到进程真正退出之间有
   // 间隔（Core 还要收尾写盘），负载高时 1s 不够——半死的 daemon 会让下一条用例建链挂住
   // （e2e/README.md 已知坑 11）。
   await pollRemote(
-    async () => (await remoteProcesses(CORE_PROCESS_PATTERN)).length === 0,
+    async () => (await remoteProcesses(corePattern())).length === 0,
     15_000,
     '清场：残留 Core / daemon 全部退出',
   ).catch(() => undefined);
   const fingerprint = localCoreFingerprint();
-  if (fingerprint) {
-    await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
-  }
+  await sshExec(`rm -f ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`).catch(() => undefined);
 }
 
 let remoteHome = '';
@@ -465,7 +465,7 @@ async function processRows(patterns: string[]): Promise<ProcessRow[]> {
  * 已消失时同样算「本会话代理已退」：没有父进程能给代理收尾了。
  */
 async function sessionProxyGoneFor(corePid: string): Promise<boolean> {
-  const rows = await processRows([CORE_PROCESS_PATTERN, PROXY_PROCESS_PATTERN]);
+  const rows = await processRows([corePattern(), PROXY_PROCESS_PATTERN]);
   if (!rows.some((row) => row.pid === corePid)) return true;
   const children = new Map<string, ProcessRow[]>();
   for (const row of rows) {
@@ -596,7 +596,7 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
   expect(before.deployable, 'Linux 远端且内核有 overlayfs，装代理能解决').toBe(true);
 
   // 部署前 Core pid：部署后必须不变（FR-008 不再重启 Core）
-  const corePidBefore = (await remoteProcesses(CORE_PROCESS_PATTERN))
+  const corePidBefore = (await remoteProcesses(corePattern()))
     .find((p) => p.cmd.includes(' stdio'))?.pid;
   expect(corePidBefore, '应能读到远端 workspace Core 的 pid').toBeTruthy();
 
@@ -626,13 +626,12 @@ test('FR-009 远端未装机时确认框点名真实主机，部署后能力 rea
     .toBe('ready');  expect((await readCapabilities(chatPage)).isolatedWorkView).toBe(true);
 
   // FR-008：Core pid 未变（部署不重启 Core）
-  const corePidAfter = (await remoteProcesses(CORE_PROCESS_PATTERN))
+  const corePidAfter = (await remoteProcesses(corePattern()))
     .find((p) => p.cmd.includes(' stdio'))?.pid;
   expect(corePidAfter, '部署成功后不得重启 Core').toBe(corePidBefore);
 
   // FR-009 / AC-34：代理随 Core 上传到远端指纹槽位（与 Core 二进制同目录）
   const fingerprint = localCoreFingerprint();
-  expect(fingerprint, '本机应有 Core 指纹产物（npm run build:core:linux-x64）').toBeTruthy();
   const slot = await sshExec(`ls ${REMOTE_DEPLOY_DIR}/${fingerprint}/ 2>&1`);
   expect(slot.stdout, `远端槽位应含代理产物（${slot.stderr}）`).toContain(CORE_MOUNT_PROXY_NAME);
   // 安装形态（AC-15：root:root + 04755）
@@ -647,7 +646,7 @@ test('FR-009 已安装时能力 ready、Core pid 不变、帧通道正常', asyn
   expect(stat, '安装形态必须是 root:root 04755（AC-15）').toMatch(/^root root 4755$/);
 
   const chatPage = await launchWithRemoteWorkspace();
-  const pidBefore = (await remoteProcesses(CORE_PROCESS_PATTERN))
+  const pidBefore = (await remoteProcesses(corePattern()))
     .find((p) => p.cmd.includes(' stdio'))?.pid;
   expect(pidBefore, '应能读到 workspace Core 的 pid').toBeTruthy();
 
@@ -656,7 +655,7 @@ test('FR-009 已安装时能力 ready、Core pid 不变、帧通道正常', asyn
   // AC-29 / FR-008：装完后重查能力即 ready，不要求重启 Core
   expect(capabilities.mountProxy).toBe('ready');
   expect(capabilities.isolatedWorkView).toBe(true);
-  const pidAfter = (await remoteProcesses(CORE_PROCESS_PATTERN))
+  const pidAfter = (await remoteProcesses(corePattern()))
     .find((p) => p.cmd.includes(' stdio'))?.pid;
   expect(pidAfter, '重查能力不得重启 Core（daemon 观察到的 pid 不变）').toBe(pidBefore);
 
@@ -1005,7 +1004,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   // 判据按本会话收敛：关应用前记下 workspace Core 的 pid，关后断言「该 pid 及其后代里
   // 没有代理」。不能数全机代理——每个隔离会话一个代理，别的会话（含同轮上一条用例的
   // 收尾、以及本机自测时开发机自己的会话）都算进去就永远不为 0。
-  const corePid = (await remoteProcesses(CORE_PROCESS_PATTERN))
+  const corePid = (await remoteProcesses(corePattern()))
     .find((p) => p.cmd.includes(' stdio'))?.pid;
   expect(corePid, '应能读到 workspace Core 的 pid').toBeTruthy();
   await app!.close();
@@ -1707,7 +1706,7 @@ test.describe('privileged', () => {
     // 整段按**本会话 Core** 收敛：先等该 Core 名下出现代理（`sessionProxyGoneFor` 取反），
     // 再沿 ppid 串出它的后代树。不能数全机代理——别的会话的代理会让「至少两个」与
     // 「Core 被 SIGKILL 后 1 秒内清零」都失去意义。
-    const corePid = (await remoteProcesses(CORE_PROCESS_PATTERN))
+    const corePid = (await remoteProcesses(corePattern()))
       .find((p) => p.cmd.includes(' stdio'))?.pid;
     expect(corePid, '应能读到 Core pid').toBeTruthy();
     await pollRemote(
@@ -1744,7 +1743,7 @@ test.describe('privileged', () => {
 
   test('AC-27 Core 自身不在任何命名空间里：uid_map 覆盖整个 id 范围而非单 id 映射', async () => {
     await launchWithRemoteWorkspace();
-    const corePid = (await remoteProcesses(CORE_PROCESS_PATTERN))
+    const corePid = (await remoteProcesses(corePattern()))
       .find((p) => p.cmd.includes(' stdio'))?.pid;
     expect(corePid, '应能读到 Core pid').toBeTruthy();
 

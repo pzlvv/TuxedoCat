@@ -5,7 +5,7 @@ import { Dropdown } from 'antd';
 import InputArea, { InputAreaRef } from './InputArea';
 import MessagesView from './MessagesView';
 import 'antd/dist/reset.css';
-import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry } from './types';
+import type { Message, QueuedMessagePayload, UserChoiceRequest, SessionState, SessionRuntimeState, Theme, AgentMode, ThinkingMode, SettingsDefaults, LlmConfigPanelPayload, ApplyDefaultsPrompt, IdleSuspendedMessage, TodoEntry, PendingSubmit } from './types';
 import type { HostToWebviewWire } from '../host/webviewMessages';
 import { createSessionState, SessionStatesStore } from './sessionState';
 
@@ -496,6 +496,14 @@ const App = () => {
   // 会话运行状态版本号：core 推来 sessionRuntimeStates 时递增，
   // 强制 App 重渲染，使对话列表的流水灯（running-bar）与 abort 按钮即时变化。
   const [sessionIdleVersion, setSessionIdleVersion] = useState(0);
+  /**
+   * 未决提交（specs/059 FR-004）：已上行、还没拿到裁决的那一次。
+   *
+   * ref 是唯一写入点（协议往返不参与渲染），`pendingSubmitVersion` 递增驱动派生出的
+   * 只读态（输入区禁用）与「锁住对话切换」的重算——与 `idleSuspendedRef` 同一手法。
+   */
+  const pendingSubmitRef = useRef<PendingSubmit | null>(null);
+  const [pendingSubmitVersion, setPendingSubmitVersion] = useState(0);
   // 未读完成的会话（「任务完成」绿色呼吸；sessionId → 推送到达时刻）。
   // 主进程推全量集合快照（幂等）：列表项呼吸一次后保持常亮，直到该对话成为当前
   // 对话（主进程清除并重推）。只有 Electron 宿主发这条消息，其它宿主集合恒为空。
@@ -609,6 +617,18 @@ const App = () => {
     }
   }, [conversationTree.roots.length]);
 
+  /**
+   * 提交裁决收尾的转发口（specs/059 FR-003 / FR-004）。
+   *
+   * `useMessageHandler` 要**先于** `useAppHandlers` 装配（前者消费后者提供的 props），而
+   * 两个收尾来自后者——直接引用变量名会在装配期读到未初始化的绑定（TDZ）。用稳定的转接
+   * 对象断掉这个先后依赖：装配期只拿到「调用时转发」的闭包，真正的调用发生在用户动作之后。
+   */
+  const submitSettlementRef = useRef<{
+    commit: ((submitId: string) => void) | null;
+    reject: ((submitId: string) => void) | null;
+  }>({ commit: null, reject: null });
+
   const handlerProps = useMemo(() => ({
     setMessages, setShowThinkingAnimation, setAnimationMode, setHasActiveQuery,
     setHasCompactArchive, setCompactArchiveView, setCompactExpandDepth,
@@ -638,6 +658,9 @@ const App = () => {
     currentSessionIdRef, sessionStates, sessionRuntimeStatesRef, userChoiceRequestRef, userChoiceInputRef,
     savedMainInputRef, queuedMessageRef, abortedSessionsRef, mcpServersBySessionRef, cursorPositionRef, choiceCursorPositionRef,
     newChatSessionRef,
+    // 提交裁决收尾经稳定的转接对象（见下方 submitSettlementRef 的说明）
+    commitSubmit: (submitId: string) => submitSettlementRef.current.commit?.(submitId),
+    rejectSubmit: (submitId: string) => submitSettlementRef.current.reject?.(submitId),
     mainInputRef, choiceInputRef, messagesContainerRef, userScrolledAwayRef,
     streamRafRef, toolStatusRafRef, pendingStreamRef, pendingToolStatusRef,
     bufferedToolStatusRef, conversationLoadingRef, isDeletingRef, listLoadedOnceRef,
@@ -677,6 +700,8 @@ const App = () => {
     isDeletingRef, listLoadedOnceRef, setCurrentSessionIdRef, inputAreaRef,
     COMMAND_HISTORY_MAX, _appMountTime,
     idleSuspendedRef, setIdleSuspendedVersion, sessionRuntimeStatesRef, sessionIdleVersion,
+    // 未决提交（specs/059 FR-004）：ref 是唯一写入点，version 只用来驱动重算
+    pendingSubmitRef, setPendingSubmitVersion,
     // 发送消息时随载荷带上归属（specs/051 FR-003 的闸门判据来源）。
     // ref 对象本身恒定，不进依赖数组（它不在 useMemo 的依赖里也能用）。
     workViewStorageRef,
@@ -697,7 +722,13 @@ const App = () => {
     handleCompress, handleUserChoiceResponse, handleUserChoiceSubmit,
     handleAnswersSubmit, handleUserChoiceCancel, handleChoiceResponse, handleToggleFileHidden,
     toggleSubSession: _toggleSubSession,
+    commitSubmit, rejectSubmit,
   } = useAppHandlers(appHandlerProps as any);
+
+  // 把两个裁决收尾交给 `useMessageHandler` 的转发口（渲染期间赋值即可：它只在下行消息
+  // 到达时读，而那一定晚于本帧装配完成）
+  submitSettlementRef.current.commit = commitSubmit;
+  submitSettlementRef.current.reject = rejectSubmit;
 
   // 打开设置（LLM 配置）页面：先向扩展请求当前配置值，
   // 扩展回传 showLLMConfig 后由 useMessageHandler 填充配置面板并打开
@@ -740,6 +771,49 @@ const App = () => {
   }, [userChoiceRequest, showThinkingAnimation, animationMode, hasActiveQuery, agentMode, thinkingMode, webSearch, contextLength, modelRef, currentFile, selectedLines]);
 
   /**
+   * 对话切换是否被锁住（specs/059 FR-007）。
+   *
+   * 两个来源合成一个判据，视图内所有切换入口（会话跳转 / 新建 / 子代理展开）都只看它：
+   * - **部署确认框开着**：状态由宿主的 `mountProxyDeployState` 投影而来（`null` = 没有）；
+   * - **提交还没拿到裁决**：webview 自己持有的未决提交（ref + 版本号驱动重算）。
+   *
+   * 两处都是「一次具体的用户动作在进行」，不是会话状态；判据放这里是为了不给每个入口
+   * 单独加开关——新增入口只要走 navigateToSession 就自动落在锁内。
+   *
+   * 派生出的版本号同时上报给宿主（`pendingSubmitVersion` 的 effect），Electron 主进程
+   * 据此拦住视图之外的标签页与原生侧栏。
+   */
+  const conversationSwitchLocked = useMemo(
+    () => mountProxyDeployState !== null || pendingSubmitRef.current !== null,
+    // 两个事实都要进依赖：对话框状态是 state，未决提交是 ref（靠版本号驱动重算）
+    [mountProxyDeployState, pendingSubmitVersion],
+  );
+
+  /**
+   * 把锁的事实上报给宿主（specs/059 FR-007）。
+   *
+   * 视图内的入口靠 `conversationSwitchLocked` 已经拦住；Electron 的标签页与原生侧栏在
+   * 视图之外，遮罩盖不住，必须由主进程按 `sender` 记下「这个视图锁着」再拦。
+   * VS Code 侧是空实现（单视图，入口全在被遮罩的视图内）。
+   *
+   * 只在 `locked` / `reason` 任一变化时上报：值没变就再发一次会让主进程的日志与集合无谓
+   * 抖动。`reason` 必须进依赖——提交未决先上锁、确认框随后打开时 `locked` 恒为 true，
+   * 只看 `locked` 会把原因永远停在「提交未决」。
+   */
+  const reportedLockRef = useRef<{ locked: boolean; reason: string } | null>(null);
+  useEffect(() => {
+    const reason = mountProxyDeployState !== null ? 'mount-proxy-dialog' : 'submit-pending';
+    const reported = reportedLockRef.current;
+    if (reported !== null && reported.locked === conversationSwitchLocked && reported.reason === reason) return;
+    reportedLockRef.current = { locked: conversationSwitchLocked, reason };
+    postMessage({
+      type: 'conversationSwitchLockChanged',
+      locked: conversationSwitchLocked,
+      reason,
+    });
+  }, [conversationSwitchLocked, mountProxyDeployState]);
+
+  /**
    * **会话跳转的唯一 UI 入口**（对话列表 / 对话树 / 子代理 From 链接 / 返回父会话按钮
    * 全部收敛到这里；不允许任何入口直接调 webviewEnv.navigateToConversation）。
    *
@@ -750,6 +824,10 @@ const App = () => {
    * 4. 发送导航消息（VS Code 插件 / Electron 都走 postMessage，由宿主决定打开方式）。
    */
   const navigateToSession = useCallback((sessionId: string, targetWorkspaceId: string | null = null) => {
+    // 锁期间切换对话一律不生效（specs/059 FR-007）：部署确认框开着、或一次提交还没拿到
+    // 裁决时，切走会让「发送时的会话」已经不在前台——弹框与取消都无从落到正确的载体上。
+    // 判据集中在 conversationSwitchLocked，不给每个入口单独加开关。
+    if (conversationSwitchLocked) return;
     // 当前若是"新建但还没发消息"的对话，先把草稿暂存，供下次"新建"恢复
     stashNewChatDraft();
     // 多视图：由宿主另开一个会话视图来加载目标会话，本视图不参与加载。
@@ -765,7 +843,7 @@ const App = () => {
     setMessages([]);
     setQueuedMessage(null);
     navigateToConversation(sessionId, targetWorkspaceId);
-  }, [stashNewChatDraft, hostInfo.conversationView, beginConversationLoad]);
+  }, [stashNewChatDraft, hostInfo.conversationView, beginConversationLoad, conversationSwitchLocked]);
 
   /**
    * 新建对话（顶部"+"按钮）。
@@ -780,6 +858,9 @@ const App = () => {
    * 自按钮 onClick 内联约 90 行抽出，行为不变。
    */
   const handleNewConversation = useCallback(() => {
+    // 锁期间新建对话同样不生效（specs/059 FR-007）：与 navigateToSession 同一判据，
+    // 只是这条路径在多视图宿主下会另开视图，所以也在这里拦一次。
+    if (conversationSwitchLocked) return;
     // 多视图宿主：新对话是另一个视图，本视图不参与新建——只把请求交给宿主
     // （宿主复用「未发送的新对话」视图，保住那边的草稿）。与 navigateToSession 同一分工：
     // 本视图不改自己的会话状态，否则切回本视图会看到空消息或永远转圈的 loading。
@@ -1654,6 +1735,7 @@ onClick={handleNewConversation}
               isProviderConfigured={providerConfigured}
               creator={creator}
               sessionEnded={sessionEnded}
+              submitPending={pendingSubmitVersion >= 0 && pendingSubmitRef.current !== null}
               subAgentRole={subAgentRole}
               workMode={workMode}
             />

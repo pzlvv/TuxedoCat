@@ -43,7 +43,7 @@ status: 已修
 
 - 文档里的产品配置目录一律写占位符 `.<configDir>`（与同文件第 11 / 14 条已知坑、以及
   `docs/` 全部规格同口径），Core 二进制名同样不写实：清场命令按
-  `src/config/project.ts` 取值（该文件已有 `CORE_PROCESS_PATTERN` 先例）。
+  `src/config/project.ts` 取值（该文件已有 `coreProcessPattern` 先例）。
 - 测试机专属的 SSH 账号名不作为反引号标识符出现在入库文档：改为指向
   `e2e/environments.json` 的 `ssh.sudoPasswordRequired.user` 字段说明来源，
   读者按字段取真实值，文档本身不含账号字面量。

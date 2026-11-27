@@ -65,6 +65,7 @@ webview 不持有任何配置默认值；事实尚未到达时，界面给出明
 | 账户余额 | `balanceUpdate` | 不渲染余额 | `src/webview/InputArea.tsx` |
 | 对话列表 | `conversationsData` | 列表显示加载中 | `src/webview/App.tsx` |
 | 会话运行时状态 | `sessionRuntimeStates` | 流水灯按未运行渲染 | `src/webview/App.tsx` |
+| 本次提交的裁决 | `userMessageAccepted` / `userMessageRejected`（按 `submitId` 回执） | 提交未决：输入区只读、对话切换入口不生效 | `src/webview/hooks/useAppHandlers.ts` |
 | 设置面板载荷 | `showLLMConfig` | 不打开面板（见第 6 节） | `src/host/WebViewUI.ts` |
 | 各模型的限值与协议 | 随面板载荷的 `providers[].modelConfigs` | 不打开面板 | `src/host/settingsRead.ts` |
 
