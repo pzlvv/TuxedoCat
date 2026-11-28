@@ -809,6 +809,11 @@ body.sidebar-resizing { cursor: col-resize; }
   .doc-status-a { color: #15803d; }
   .doc-status-m { color: #92620f; }
   .doc-status-r { color: #6d28d9; }
+  /* 增删行数徽标同降一档：深色档的 #4ade80 / #f87171 是给深底提亮用的，
+     落在浅灰侧栏上会发白刺眼；浅色改走 green-700 / red-700，与 .doc-status-a
+     同一色系，`+N` 与 `A` 读起来是一件事。 */
+  .doc-plus { color: #15803d; }
+  .doc-minus { color: #b91c1c; }
   .doc-rename-old, .doc-rename-arrow { color: #71717a; }
 
   .file-hint { color: #9ca3af; }
