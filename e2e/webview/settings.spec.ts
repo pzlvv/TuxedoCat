@@ -45,10 +45,64 @@ test('US-23 修改服务商地址与模型并保存，宿主收到 saveLLMConfig
   const saved = await host.waitForSent('saveLLMConfig', 15_000);
   expect(saved.providers).toBeTruthy();
   const provider = saved.providers[0];
-  // key 随新地址主机名推导
-  expect(provider.key).toBe('beta.local');
+  // key 随新地址的主机与端口推导（端口是服务商身份的一部分）
+  expect(provider.key).toBe('beta.local:6006');
   expect(provider.baseURL).toBe('http://beta.local:6006/v1');
   expect(provider.models).toContain('mock-model-v2');
+});
+
+test('US-23 同一主机不同端口是两个服务商，不判重复地址', async () => {
+  const { page, host } = handle;
+  await openSettings(page);
+
+  // 本地推理服务：同一条回环地址上的两个端口（Ollama + LM Studio 并排）
+  await page.getByPlaceholder('请输入 API 服务地址').fill('http://127.0.0.1:11434/v1');
+  await page.getByText('+ 新增').click();
+  await page.getByPlaceholder('请输入 API 服务地址').fill('http://127.0.0.1:11435/v1');
+  await page.locator('input[placeholder="sk-"]').fill('sk-second');
+  await page.getByRole('button', { name: '添加模型' }).click();
+  await page.locator('input[placeholder="model-id"]').nth(0).fill('second-port-model');
+
+  // 判据是「主机 + 端口」：端口不同就不是重复地址
+  await expect(page.getByText('该服务地址已存在，请勿重复添加')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  expect(saved.providers.map((p: any) => p.key)).toEqual(['127.0.0.1:11434', '127.0.0.1:11435']);
+});
+
+test('US-23 旧配置键不带端口：面板可正常保存，键按当前规则重建', async () => {
+  const { page, host } = handle;
+  // 历史 settings.json 的表键按旧规则只取主机名（baseURL 里带着端口）
+  await host.send({
+    type: 'showLLMConfig',
+    providers: [{
+      key: 'legacy.local',
+      baseURL: 'http://legacy.local:7001/v1',
+      apiKey: 'sk-legacy',
+      models: ['legacy-model'],
+      defaultModel: 'legacy-model',
+      modelConfigs: { 'legacy-model': { apiType: 'OpenAI', context: 200000, output: 8000 } },
+    }],
+    activeProvider: 'legacy.local',
+    thinkingEffort: 'high',
+    defaultAgentMode: 'risk',
+    webSearch: false,
+    language: 'zh',
+    fontSize: 'medium',
+    mcpServers: [],
+  });
+  await expect(page.locator('h1', { hasText: '设置' })).toBeVisible();
+
+  // 只做一处改动（不碰地址）：saveProviders 为真，载荷按当前规则重建键
+  await page.locator('input[placeholder="model-id"]').first().fill('legacy-model-renamed');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+
+  // 旧键与推导键对不上时保存会被「没有可用的服务商」拦下——这里必须发得出消息
+  const saved = await host.waitForSent('saveLLMConfig', 15_000);
+  expect(saved.providers.map((p: any) => p.key)).toEqual(['legacy.local:7001']);
+  expect(saved.activeProvider).toBe('legacy.local:7001');
+  await expect(page.getByText('请至少使用一个服务商')).toHaveCount(0);
 });
 
 test('US-23 新增模型行与新增服务商', async () => {

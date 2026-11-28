@@ -11,7 +11,8 @@
 /**
  * DeepSeek 官方服务地址。
  *
- * 三重身份：设置面板「新增服务商」的预置地址、余额查询目标、服务商识别用的 hostname 基准。
+ * 三重身份：设置面板「新增服务商」的预置地址、余额查询目标、DeepSeek Key 查找用的
+ * hostname 基准（按域名匹配，与含端口的服务商身份是两回事）。
  * 三者必须是同一个值，因此只在这里定义（`core/llm/config.ts` 只做转出）。
  */
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';

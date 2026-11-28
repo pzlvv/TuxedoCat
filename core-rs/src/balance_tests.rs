@@ -83,6 +83,39 @@ fn finds_the_deepseek_provider_by_hostname() {
 }
 
 #[test]
+fn base_url_hostname_keeps_the_port_out_of_the_match() {
+    // 服务商身份（provider key）含端口，DeepSeek Key 的查找只认域名：
+    // 官方域名挂在非默认端口上仍然是「那一家 DeepSeek」
+    assert_eq!(
+        base_url_hostname(&json!("https://api.deepseek.com:8443/v1")),
+        "api.deepseek.com"
+    );
+}
+
+#[test]
+fn finds_the_deepseek_provider_whose_key_carries_a_port() {
+    let sandbox = Sandbox::new("balance-port-bearing-key");
+    sandbox.write_settings(json!({
+        "llm": {
+            "activeProvider": "gateway",
+            "providers": {
+                // 新口径的 key：主机 + 端口
+                "gateway": { "baseURL": "https://opencode.ai/v1", "apiKey": "gateway-key" },
+                "api.deepseek.com:8443": {
+                    "baseURL": "https://api.deepseek.com:8443/v1",
+                    "apiKey": "deepseek-on-port",
+                },
+            },
+        },
+    }));
+    // 两条匹配通道（域名 / key 相等）都不因端口而失配
+    assert_eq!(
+        deepseek_provider_api_key(),
+        Some("deepseek-on-port".to_string())
+    );
+}
+
+#[test]
 fn finds_the_deepseek_provider_by_key_name() {
     let sandbox = Sandbox::new("balance-by-key");
     sandbox.write_settings(json!({

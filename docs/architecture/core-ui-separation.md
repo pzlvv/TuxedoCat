@@ -228,7 +228,23 @@ Core 的日志出口在 Core 侧。UI 需要展示日志时经 `CoreEvent` 接�
   可编辑的，`context: 12.5` 这类误输入不能变成「Core 收不到快照」——serde 的校验粒度是整份
   快照，一个字段类型不符就整体失败、`coreReady` 一次都不发）。
 - `provider.baseURL` **允许为空串**：快照原样携带 provider 表，是否可用由消费方各自判定
-  （调 LLM 要求非空；余额查询按 provider key / hostname 匹配，允许没有 baseURL）。
+  （调 LLM 要求非空；DeepSeek Key 查找允许没有 baseURL，见下面两条）。
+- **provider key 是服务商身份**：表键与 `llm.activeProvider`、会话 `meta.json` 的
+  `provider` 字段用的是同一个值，推导规则只有一处
+  （`src/shared/utils/providerKey.ts`）——取 baseURL 的**主机与显式端口**，去掉路径与查询串：
+  `https://opencode.ai/zen/go` → `opencode.ai`，`http://127.0.0.1:11434/v1` →
+  `127.0.0.1:11434`。端口是身份的一部分：**同一主机不同端口是两个服务商**（同一台机器上
+  并排放 Ollama 与 LM Studio 是两次独立配置，不是重复地址）。协议默认端口（http 80 /
+  https 443）由 URL 解析归一化后省略，`https://a.example:443` 与 `https://a.example`
+  是同一个键。路径不参与，因此同一网关的 `/v1` 与 `/anthropic` 仍是一家。
+  设置面板的重复地址校验、写盘建键、tab 标记与保存载荷都按这个身份判定
+  （[docs/features/user-stories/sessions-and-llm.md US-23](../features/user-stories/sessions-and-llm.md#us-23-管理服务商与模型)）。
+  历史配置里按旧规则（只取主机名）写入的键不做迁移：面板打开时把「当前使用的服务商」
+  归一到当前口径，下一次保存 provider 表时整表按当前规则重建，同一条目的
+  `modelConfigs` 按 baseURL 找回后保留。
+- **服务商身份与「DeepSeek 官方域名匹配」是两个口径**：余额与 Web Search 取
+  `api.deepseek.com` 那家服务商的 Key 时按**域名**判定（不看端口），
+  [docs/features/web-search.md 第 3 节](../features/web-search.md#3-行为规格)。
 - 快照**不含** `uiLanguage`、`uiFontSize` 与 `highlightLanguages`：这三个字段只有 UI 消费
   （第 4.8、4.10 节）。
 - 快照**不含** endpoint 与凭证：那是 Connection 的配置，不是 Core 的

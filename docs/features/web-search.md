@@ -63,7 +63,7 @@ Key 取配置快照里 baseURL host 为 `api.deepseek.com` 的
 | 工具定义 | `WebSearch` / `WebFetch` 在内置工具表（Skill 之前），并发安全（只读网络请求），权限只读放行 | `core-rs/src/tools.rs`、`core-rs/src/permission.rs` |
 | 工具注入 | 组装工具清单时按生效联网搜索值过滤（false 剔除两工具，MCP 工具不受影响） | `core-rs/src/engine.rs`（`run_query_loop`） |
 | 执行 | 校验 → Key 解析 → 请求 → 拼装；参数错误与未配置不发请求 | `core-rs/src/web_search.rs` |
-| Key 解析 | baseURL host = `api.deepseek.com`（或 provider key 恰为该域名），与 active provider 无关 | `core-rs/src/balance.rs::deepseek_provider_api_key` |
+| Key 解析 | baseURL host = `api.deepseek.com`（或 provider key 恰为该域名），与 active provider 无关；按**域名**判定，端口不参与（服务商身份含端口，见 [docs/architecture/core-ui-separation.md 第 4.3 节](../architecture/core-ui-separation.md#43-快照字段)） | `core-rs/src/balance.rs::deepseek_provider_api_key` |
 | 卡片 | 工具名 → 组件映射 `WebFetch` 复用 WebSearch 卡；标题用真实工具名 | `src/webview/MessagesView.tsx`、`src/webview/tools/WebSearch.tsx` |
 | 设置 | 复选框不再按默认模型协议置灰 | `src/webview/LLMConfigPanel.tsx` |
 

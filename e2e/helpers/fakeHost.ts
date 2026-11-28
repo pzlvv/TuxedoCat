@@ -566,11 +566,13 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
         send({ type: 'conversationSpaceCleared', dirName: msg.dirName, removedFiles: 3, removedBytes: 456 });
         break;
       case 'requestLLMConfig':
-        // provider key 必须与 baseURL 主机名一致（面板按此推导，不一致会判定「未选择服务商」）
+        // provider key 必须与 baseURL 的主机 + 端口一致（面板按此推导身份，不一致会判定
+        // 「未选择服务商」）；与 settingsRead 取 settings.json 表键的口径同源。
+        // 旧口径键（只取主机名）的路径由 settings.spec.ts 专门覆盖
         send({
           type: 'showLLMConfig',
           providers: [{
-            key: 'alpha.local',
+            key: 'alpha.local:9',
             baseURL: 'http://alpha.local:9/v1',
             apiKey: 'sk-test',
             models: ['mock-model'],
@@ -578,7 +580,7 @@ export function fakeHostInit(hostInfo: FakeHostInfo, init: FakeHostInitOptions =
             // 与真实载荷同口径：settingsRead 回传的是已解析值（context/output 恒有数字）
             modelConfigs: { 'mock-model': { apiType: 'OpenAI', context: 1024000, output: 128000 } },
           }],
-          activeProvider: 'alpha.local',
+          activeProvider: 'alpha.local:9',
           thinkingEffort: 'high',
           defaultAgentMode: 'risk',
           webSearch: false,
