@@ -1,11 +1,12 @@
 # ADR-0021：`sed` 读 / 改文件改为工具结果提醒，不再被 `restricted` 闸门拒绝
 
-- 状态：已采纳
+- 状态：被取代（提醒载体由 [ADR-0022](0022-sed-reminder-as-silent-message.md) 取代；
+  「`sed` 不再被 `restricted` 闸门拒绝」的决策仍生效）
 - 日期：2026-11
 - 取代：[ADR-0016](0016-bash-restricted-gate.md) 的 `sed` 分支
 - 规格：[docs/features/background-bash.md](../features/background-bash.md)
   （[FR-005](../features/background-bash.md#fr-005restricted-闸门sleep) /
-  [FR-009](../features/background-bash.md#fr-009sed-读--改文件的结果提醒)）
+  [FR-009](../features/background-bash.md#fr-009sed-读--改文件的-reminder-消息)）
 
 ## 背景（Context）
 

@@ -27,7 +27,8 @@
 | [0018](0018-resident-mount-proxy.md) | 命名空间由常驻代理持有，Core 自身不进命名空间 | 已采纳 |
 | [0019](0019-ssh-auth-chain.md) | SSH 接入的认证链（私钥优先、口令按需） | 已采纳 |
 | [0020](0020-spec-only-review-gate.md) | spec 是唯一评审面，plan / tasks / 实施 / 收敛一轮做完 | 已采纳 |
-| [0021](0021-bash-sed-reminder-instead-of-gate.md) | `sed` 读 / 改文件改为工具结果提醒，不再被 `restricted` 闸门拒绝 | 已采纳 |
+| [0021](0021-bash-sed-reminder-instead-of-gate.md) | `sed` 读 / 改文件改为工具结果提醒，不再被 `restricted` 闸门拒绝 | 被取代（提醒载体由 [0022](0022-sed-reminder-as-silent-message.md) 取代） |
+| [0022](0022-sed-reminder-as-silent-message.md) | `sed` 的 Reminder 作为独立 silent 消息补发，不混在 Bash 工具结果里 | 已采纳 |
 
 新决策取下一个递增编号；`src/test/docsLint.test.ts` 校验编号连续且唯一、状态取值合法、
 被取代指向的文件存在。

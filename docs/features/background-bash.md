@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-27
+last_reviewed: 2026-11-29
 ---
 
 # 规格：Bash 后台任务
@@ -10,8 +10,8 @@ last_reviewed: 2026-11-27
 暂停后由谁接续）、**后台任务提醒**（FR-003 / FR-004——查询结束兜底提醒与周期性进度
 提醒的调度与文案）、**`restricted` 闸门**（FR-005 ～ FR-007——缺省为真时拒绝 `sleep`
 轮询，说明该字段的默认值，并给出误拦截的逃生口）、**读文件口径**（FR-008 提示词里的
-`Read` / `Grep` / `Glob` 优先规则与 FR-009 的 `sed` 结果提醒——把 `sed` 当读 / 改文件器
-用时，在工具结果里追加改用 `Read` / `Edit` 的提醒）。后台任务的注册 /
+`Read` / `Grep` / `Glob` 优先规则与 FR-009 的 `sed` Reminder——把 `sed` 当读 / 改文件器
+用时，在工具结果之后补一条 silent 消息引导改用 `Read` / `Edit`）。后台任务的注册 /
 完成通知 / 中止不在本规格内；运行时事实（`backgroundRunning`）的归属见
 [docs/core/session-runtime.md](../core/session-runtime.md)。
 
@@ -52,8 +52,9 @@ last_reviewed: 2026-11-27
   - **AC-22**（FR-007）：GIVEN 模型判断是误拦截 WHEN 把原命令带上 `restricted: false` 重跑 THEN 闸门不再拦（回到既有权限路径）
   - **AC-23**（FR-008）：GIVEN 系统提示词的 Bash 段 WHEN 检索全文 THEN 含「用 `Read` 代替 `cat` / `sed` 看文件内容」的规则与两条对照（`cat a.txt` → `Read` 的 `file_path`；`sed -n '1,40p' f` → `Read` 的 `offset` / `limit`），保留「内容要流进另一条命令时照常用 `cat` / `sed`」的例外，并含 `**Prefer the Grep and Glob tools**` 块（单个搜索用 `Grep` / `Glob`，结果要喂给另一条命令时才用 Bash `rg` / `fd`）
   - **AC-24**（FR-008）：GIVEN `restricted: true` WHEN 命令是 `cat a.txt`、`cat > f <<'EOF' … EOF` THEN 都不被闸门拦下（`cat` 不是拦截判据，只受提示词规则引导）
-  - **AC-25**（FR-009）：GIVEN 命令去掉所有 `cd` 段后只剩 `sed`（含 `sed -i` 写形态）WHEN 命令执行完成 THEN 工具结果末尾追加一条 `[reminder]`，点名用 `Read` 读文件、`Edit` 改文件，并保留「内容要流进另一条命令时照常用 `sed`」的例外
-  - **AC-26**（FR-009）：GIVEN 命令是 `sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、`git diff | sed -n '1,20p'`、`/usr/bin/sed -n 1p f` WHEN 执行完成 THEN 结果不追加本条提醒，命令与结果都与不加提醒时逐字相同
+  - **AC-25**（FR-009）：GIVEN 命令去掉所有 `cd` 段后只剩 `sed`（含 `sed -i` 写形态）WHEN 命令执行成功 THEN 工具结果之后补发一条 `silent` / `origin=agent` 的 Reminder 消息（`<Reminder>` 包装），点名用 `Read` 读文件、`Edit` 改文件，并保留「内容要流进另一条命令时照常用 `sed`」的例外；该消息进上下文与落盘，UI 消息流与回放不展示
+  - **AC-26**（FR-009）：GIVEN 命令是 `sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、`git diff | sed -n '1,20p'`、`/usr/bin/sed -n 1p f` WHEN 执行完成 THEN 不注入本条提醒，命令与结果都与不加提醒时逐字相同
+  - **AC-27**（FR-009）：GIVEN 命中判据的 `sed` 命令 WHEN 非零退出或被中断 THEN 结果状态是 error 且不注入提醒，工具结果里也不出现提醒文本
 
 ## 2. 功能需求
 
@@ -179,7 +180,7 @@ Bash 的每次调用在执行前过一道闸门：`restricted` 参数（布尔�
 注入通知并接续消费循环，模型不必自己轮询。`restricted: false` 时这条限制不生效，这是
 唯一的开关。闸门只覆盖 `sleep` 一类：`cat` 是只读命令、还有 `cat > f <<EOF` 这类写形态，
 「优先用 `Read` / `Grep` 代替 `cat` / `sed` / `rg` 看内容」是系统提示词的规则（FR-008）；
-`sed` 读 / 改文件走工具结果里的提醒（FR-009），不产生工具失败
+`sed` 读 / 改文件走结果之后补发的 Reminder 消息（FR-009），不产生工具失败
 （[US-78](user-stories/tools.md#us-78-读文件优先用-read-工具)）。
 
 判定口径：
@@ -245,23 +246,30 @@ schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属�
 
 `cat` 不进闸门判据（FR-005 只管 `sleep`）：`cat` 是只读命令、在只读
 白名单里，而且 `cat > f <<'EOF'` 这类写形态同样依赖它。因此这条规则只约束模型的选择，
-不产生工具失败；`sed` 读 / 改文件由工具结果里的提醒兜底（FR-009），两者口径不重叠。
+不产生工具失败；`sed` 读 / 改文件由结果之后补发的 Reminder 消息兜底（FR-009），两者口径不重叠。
 
-### FR-009：`sed` 读 / 改文件的结果提醒
+### FR-009：`sed` 读 / 改文件的 Reminder 消息
 
 去掉所有 `cd` 段后只剩 `sed` 的命令（`sed -n '1,40p' f`、`cd src && sed -n 1p a.ts`、
 `sed -i 's/a/b/' f`）**照常执行**：它是有用的文本加工手段，失败会挡住正当用法。
-执行完成后在 Bash 工具结果末尾追加一条提醒（`BASH_SED_READ_REMINDER`），点名读文件用
+执行完成后补发一条独立的 Reminder 消息（正文 `BASH_SED_READ_REMINDER`），点名读文件用
 `Read`（行号、`offset` / `limit` 窗口、xlsx / 图片分支）、改文件用 `Edit`，并保留
 「内容要流进另一条命令时照常用 `sed`」的例外。
 
-判据与闸门同源（`tools.rs` 的 `is_cd_sed_only_command`，共用 `gate_segments`）：去掉
-命令名为 `cd` 的段后，剩余段非空且全部是 `sed` 才追加；有别的段（`sed -n 1p f | head`、
-`rg x src | sed 's/a/b/'`、`git diff | sed -n '1,20p'`）就是有上下游的文本加工，不追加。
-生成函数只有一处（`tools.rs` 的 `with_sed_read_reminder`），`run_in_background`、前台本地
-执行、隔离视图的代理代执行与自动转后台四条返回路径共用它——同一事实只写一处。
+提醒**不混在工具结果里**：Bash 的 tool_result 只有命令自己的输出。提醒是一条 `silent` /
+`origin=agent` 的 user 消息，形态由 `engine.rs` 的 `build_reminder_message` 给出（与其它
+reminder 同一份构造、同一 `<Reminder>` 包装），经工具结果的 `newMessages` 通道在该批
+tool_result 之后落盘 + 进上下文——模型读得到，UI 消息流与回放不展示。
 
-提醒只影响工具结果文本，不改变执行、权限判定与 `restricted` 的取值语义：
+判据与闸门同源（`tools.rs` 的 `is_cd_sed_only_command`，共用 `gate_segments`）：去掉
+命令名为 `cd` 的段后，剩余段非空且全部是 `sed` 才注入；有别的段（`sed -n 1p f | head`、
+`rg x src | sed 's/a/b/'`、`git diff | sed -n '1,20p'`）就是有上下游的文本加工，不注入。
+挂载点只有一处（`tools.rs` 的 `with_sed_read_reminder`），`run_in_background`、前台本地
+执行、隔离视图的代理代执行与自动转后台四条**成功**返回路径共用它——同一事实只写一处。
+命令失败（非零退出 / 中断）时不注入：`CommandFailed` 没有消息通道，不为一条提醒扩它的
+载荷，而失败结果本身已经告诉模型这条写法没拿到可用内容。
+
+提醒只在上下文里多出一条消息，不改变执行、权限判定与 `restricted` 的取值语义：
 `sed` 不在只读白名单，`manual` 询问、`risk` / `auto` 放行。
 
 ## 3. 行为规格
@@ -278,7 +286,7 @@ schema 不复述（最小披露口径，与 `detach` 同款）。`default` 属�
 | 暂停信号 | `tools.rs` 的 `LoopPauseSignal`（`paused` + `source_task`）挂在 `SessionState.pause_loop` |
 | `restricted` 闸门 | `permission.rs` 的 `base_check` Bash 分支（只读判定之前 deny）；纯函数 `tools.rs` 的 `has_sleep_command`（共用 `gate_segments`），文案 `BASH_RESTRICTED_SLEEP_MESSAGE` |
 | 读文件 / 搜索口径（FR-008） | `core-rs/src/prompt.rs` 的 `TOOL_DETAILS_BEFORE_TRANSFER` Bash 段 `**Prefer the Read tool**` / `**Prefer the Grep and Glob tools**` 块；对照表 `core-rs/fixtures/systemPrompt.json` |
-| `sed` 读 / 改文件提醒（FR-009） | `tools.rs` 的 `with_sed_read_reminder`（判据 `is_cd_sed_only_command`），文案 `BASH_SED_READ_REMINDER` |
+| `sed` 读 / 改文件 Reminder（FR-009） | `tools.rs` 的 `with_sed_read_reminder`（判据 `is_cd_sed_only_command`）挂成 `SuccessWithMessages`，消息形态 `engine.rs` 的 `build_reminder_message`，正文 `BASH_SED_READ_REMINDER`；注入通道同 Skill 正文（`engine.rs` 批末 `new_messages` 落盘） |
 | 兜底抑制 | 暂停出口消费 `source_task` → `ReminderEntry.fallback_reminded` |
 | 消费点 | `core-rs/src/engine.rs` 的 `run_query_loop`（工具批收尾、下一轮请求前） |
 
@@ -379,5 +387,5 @@ Read 工具），见 [user-stories/tools.md](user-stories/tools.md#us-76-后台�
 | FR-006 | `core-rs/src/tools.rs` 的 `BASH_RESTRICTED_FIELD`；`core-rs/src/prompt.rs` 的 `TOOL_DETAILS_BEFORE_TRANSFER` Bash 段 | `core-rs/src/prompt_tests.rs` 的 `system_prompt_static_text_matches_the_shared_table`；`core-rs/src/tools_tests.rs` 的 `schema_parity_tests`；对照表 `core-rs/fixtures/toolSchema.json` / `systemPrompt.json` | 自动 |
 | FR-007 | `core-rs/src/tools.rs` 的 `BASH_RESTRICTED_SLEEP_MESSAGE` 末行 | `core-rs/src/permission_tests.rs` 的 `restricted_messages_name_the_escape_hatch` / `restricted_false_lifts_the_sleep_gate_only` | 自动 |
 | FR-008 | `core-rs/src/prompt.rs` 的 `TOOL_DETAILS_BEFORE_TRANSFER` Bash 段 `**Prefer the Read tool**` / `**Prefer the Grep and Glob tools**` 块 | `core-rs/src/prompt_tests.rs` 的 `tool_details_prefer_read_over_cat_and_sed` / `tool_details_prefer_grep_and_glob_tools` / `system_prompt_static_text_matches_the_shared_table`；对照表 `core-rs/fixtures/systemPrompt.json`（`cat` 不进闸门的口径由 `permission_tests` 的既有 `restricted_*` 放行用例覆盖） | 自动 |
-| FR-009 | `core-rs/src/tools.rs` 的 `with_sed_read_reminder`（判据 `is_cd_sed_only_command`），文案 `BASH_SED_READ_REMINDER` | `core-rs/src/tools_tests.rs` 的 `sed_read_reminder_needs_cd_and_sed_only` / `sed_read_command_runs_and_carries_the_read_reminder`；`core-rs/src/permission_tests.rs` 的 `sed_read_commands_follow_the_existing_permission_path` | 自动 |
+| FR-009 | `core-rs/src/tools.rs` 的 `with_sed_read_reminder`（判据 `is_cd_sed_only_command`），消息正文 `BASH_SED_READ_REMINDER` | `core-rs/src/tools_tests.rs` 的 `sed_read_reminder_needs_cd_and_sed_only` / `sed_read_command_runs_and_carries_the_read_reminder`；`core-rs/src/engine_tests.rs` 的 `sed_read_command_injects_a_silent_reminder_after_the_tool_result`；`core-rs/src/permission_tests.rs` 的 `sed_read_commands_follow_the_existing_permission_path` | 自动 |
 | 输出解码（第 3.3 节） | `core-rs/src/text_decode.rs`；`core-rs/src/tools.rs` 的 `read_pipe` / `run_bash`；`core-rs/src/bash_task.rs` 的 `handle_finish` / `read_output_tail` | `core-rs/src/text_decode_tests.rs`（码页判定与增量不劈字）；`core-rs/src/tools_tests.rs` 的 `bash_decodes_gbk_output_to_readable_chinese` / `bash_decodes_utf8_output_unchanged` / `bash_does_not_split_multibyte_chars_across_pipe_chunks` | 自动 |

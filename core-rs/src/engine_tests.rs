@@ -2217,6 +2217,77 @@ fn full_turn_with_a_tool_call_emits_events_and_persists_messages() {
     );
 }
 
+/// 命中「`cd` + `sed` 读 / 改文件」判据的 Bash 轮次：提醒不进 tool_result，而是紧跟
+/// 该批工具结果落一条 silent 消息（`docs/features/background-bash.md` FR-009）——
+/// 模型读得到，UI 消息流与回放看不到。
+#[test]
+fn sed_read_command_injects_a_silent_reminder_after_the_tool_result() {
+    let sandbox = Sandbox::new("engine-sed-read-reminder");
+    std::fs::write(sandbox.workspace.join("note.txt"), "alpha\nbeta\n").expect("write fixture");
+    let llm = FakeLlm::start(|index, _| {
+        if index == 0 {
+            openai_tool_sse(
+                "call_1",
+                "Bash",
+                r#"{"command":"sed -n 1p note.txt", "description": "read with sed"}"#,
+            )
+        } else {
+            openai_text_sse(&["完成"])
+        }
+    });
+    prepare(&sandbox, &llm.base_url, "auto");
+    let workspace = sandbox.workspace.to_string_lossy().to_string();
+    history::create_conversation("s1", &workspace, json!({ "sessionId": "s1", "title": "" }))
+        .unwrap();
+
+    let harness = EngineHarness::allow_all();
+    submit(&harness, "s1", "看一眼", "u-1");
+    assert!(
+        harness.wait_query_end(),
+        "轮次未结束: {:?}",
+        harness.sink.event_types()
+    );
+
+    // 工具结果只有命令输出，不带提醒
+    let result = harness.sink.event_of("toolResult").expect("toolResult");
+    let output = result["output"].as_str().unwrap_or_default();
+    assert!(output.contains("alpha"), "命令照常执行：{output}");
+    assert!(
+        !output.contains("Reminder") && !output.contains("[reminder]"),
+        "提醒不该混在工具结果里：{output}"
+    );
+
+    // 落盘顺序：用户消息 → assistant(tool_use) → tool_result → silent reminder →
+    // assistant(文本)
+    let messages = history::load_messages("s1", &workspace);
+    assert_eq!(messages.len(), 5, "got {messages:?}");
+    let reminder = &messages[3];
+    assert_eq!(reminder["type"], json!("user"));
+    assert_eq!(reminder["silent"], json!(true), "reminder 必须是 silent");
+    assert_eq!(
+        reminder["origin"],
+        json!("agent"),
+        "reminder 是系统自动消息"
+    );
+    assert_eq!(
+        reminder["message"]["content"],
+        json!(crate::tools::BASH_SED_READ_REMINDER)
+    );
+
+    // silent 消息不向 UI 回显（只刷 `conversationListChanged`）
+    for message_event in harness.sink.events_of("message") {
+        assert!(
+            !message_event.to_string().contains("Reminder"),
+            "silent reminder 不该发 message 事件：{message_event}"
+        );
+    }
+    assert_eq!(
+        history::load_metadata("s1", &workspace).unwrap()["messageCount"],
+        5,
+        "reminder 计入 messageCount"
+    );
+}
+
 /// 未预建会话文件时，第一条用户消息负责创建 `meta.json` + `.jsonl`，
 /// 并用首条用户消息生成标题（`conversationStarted` 不再预先建档）。
 #[test]
