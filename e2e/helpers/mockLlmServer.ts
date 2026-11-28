@@ -117,6 +117,13 @@ async function openReverseTunnel(
       username: ssh.user,
       password: ssh.password,
       readyTimeout: 20_000,
+      // 隧道是长连接：孤儿期（任务 sleep）里长时间没有流量。连接若静默死亡而没有
+      // keepalive，远端监听就成了黑洞——Core 终轮连得上却永远等不到响应，一头撞进
+      // 300s 首字节超时（core-rs/src/llm.rs 的 DEFAULT_FIRST_BYTE_TIMEOUT_MS，远大于
+      // 用例窗口）。keepalive 让死亡尽快被检出、远端监听随之撤掉，Core 终轮拿到
+      // connection refused 后按网络错误重试收敛，用例在窗口内自愈。
+      keepaliveInterval: 15_000,
+      keepaliveCountMax: 3,
     });
   });
   // 每条反向连接都短接到本机 mock；长连接（SSE）靠 pipe 双向透传
