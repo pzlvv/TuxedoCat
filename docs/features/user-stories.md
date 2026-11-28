@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-27
+last_reviewed: 2026-11-29
 ---
 
 # <product-name> 用户故事（US）
@@ -124,9 +124,11 @@ US-66 的双实例争用——双实例场景依赖两个宿主进程（electron
 e2e 用例；US-76 的 `restricted` 闸门——判定只看命令文本（分隔符、换行、引号、
 纯注释段、heredoc 正文屏蔽），由 core-rs 单测（`tools_tests` 的
 `restricted_gate_rejects_sleep_anywhere` 与 `permission_tests` 的 `restricted_*` 用例）
-锁定三档模式一致与放行范围；US-78 的「优先用 `Read` 读文件」是提示词规则与工具结果提醒
+锁定三档模式一致与放行范围；US-78 的「优先用 `Read` 读文件」是提示词规则与结果之后补发的
+silent Reminder 消息
 （`cat` / `sed` 都不进闸门），由 `tools_tests` 的
-`sed_read_command_runs_and_carries_the_read_reminder`、`permission_tests` 的 `sed_read_*`
+`sed_read_command_runs_and_carries_the_read_reminder`、`engine_tests` 的
+`sed_read_command_injects_a_silent_reminder_after_the_tool_result`、`permission_tests` 的 `sed_read_*`
 与 `prompt_tests` 的 `tool_details_prefer_read_over_cat_and_sed` /
 `tool_details_prefer_grep_and_glob_tools`、`systemPrompt.json` 对照表锁定；e2e 车道
 不为纯文本判定新增用例）；US-77 的工具 shell PATH 前置与远端部署——端到端验证要真实

@@ -1,6 +1,6 @@
 ---
 owner: pzlvv
-last_reviewed: 2026-11-27
+last_reviewed: 2026-11-29
 ---
 
 # 用户故事分册：工具与技能
@@ -119,13 +119,14 @@ last_reviewed: 2026-11-27
 验收标准：
 
 1. 去掉所有 `cd` 段后只剩 `sed`（读形态 `-n` 与写形态 `-i` 一视同仁）的命令照常执行，
-   工具结果末尾追加一条提醒，点名用 `Read` 读文件、`Edit` 改文件；`restricted` 的取值与
+   工具结果之后补发一条 Reminder 消息（模型可见、界面不展示），点名用 `Read` 读文件、
+   `Edit` 改文件；提醒不混在工具结果文本里，命令失败时也不补发；`restricted` 的取值与
    这条判定无关。闸门同样不覆盖 `cat`：它是只读命令，还有 `cat > f <<EOF` 这类写形态。
 2. 系统提示词的 Bash 段写明「用 `Read` 代替 `cat` / `sed` 看文件内容」并给出两条对照
    （`cat a.txt` → `Read` 的 `file_path`；`sed -n '1,40p' f` → `Read` 的
    `offset` / `limit`），同时保留例外：内容要流进另一条命令（管道 / 重定向）时照常用
    `cat` / `sed`。
-3. 有上下游的文本加工照常执行且不追加提醒：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
+3. 有上下游的文本加工照常执行且不补发提醒：`sed -n 1p f | head`、`rg x src | sed 's/a/b/'`、
    `git diff | sed -n '1,20p'`；`sed` 不在只读白名单，权限按既有口径判定
    （`manual` 询问、`risk` / `auto` 放行）。
 

@@ -819,8 +819,8 @@ fn sed_read_reminder_needs_cd_and_sed_only() {
     }
 }
 
-/// 命中判据的 `sed` 命令**照常执行**，结果末尾追加一条改用 `Read` / `Edit` 的提醒
-/// （FR-009）；未命中时不追加。
+/// 命中判据的 `sed` 命令**照常执行**，提醒不混在工具结果里，而是在结果之后补发一条
+/// silent 消息（FR-009）；未命中判据、以及命令失败（非零退出）时都不注入。
 #[test]
 fn sed_read_command_runs_and_carries_the_read_reminder() {
     let sandbox = Sandbox::new("tools-bash-sed-reminder");
@@ -836,14 +836,33 @@ fn sed_read_command_runs_and_carries_the_read_reminder() {
     assert!(!hit.is_error(), "sed 不再被闸门拒绝：{hit_text}");
     assert!(hit_text.contains("beta"), "命令照常执行：{hit_text}");
     assert!(
-        hit_text.contains(crate::tools::BASH_SED_READ_REMINDER),
-        "结果末尾应带改用 Read / Edit 的提醒：{hit_text}"
-    );
-    assert!(
-        hit_text.contains("use the `Read` tool"),
-        "提醒要点名 Read：{hit_text}"
+        !hit_text.contains("Reminder") && !hit_text.contains("[reminder]"),
+        "提醒不该出现在工具结果文本里：{hit_text}"
     );
 
+    let injected = hit.new_messages();
+    assert_eq!(injected.len(), 1, "命中判据应补发一条 reminder 消息");
+    assert_eq!(injected[0]["type"], json!("user"));
+    assert_eq!(injected[0]["silent"], json!(true), "reminder 必须是 silent");
+    assert_eq!(
+        injected[0]["origin"],
+        json!("agent"),
+        "reminder 是系统自动消息"
+    );
+    let content = injected[0]["message"]["content"]
+        .as_str()
+        .expect("reminder 正文是字符串");
+    assert_eq!(content, crate::tools::BASH_SED_READ_REMINDER);
+    assert!(
+        content.starts_with("<Reminder>") && content.trim_end().ends_with("</Reminder>"),
+        "reminder 用 <Reminder> 包装（压缩按它判系统提醒）：{content}"
+    );
+    assert!(
+        content.contains("use the `Read` tool"),
+        "提醒要点名 Read：{content}"
+    );
+
+    // 有上下游的文本加工：命令照常执行，既不加提醒也不注入消息
     let miss = execute(
         "Bash",
         &json!({ "command": "sed -n 2p note.txt | head -1", "description": "pipeline with sed" }),
@@ -851,10 +870,32 @@ fn sed_read_command_runs_and_carries_the_read_reminder() {
     );
     let miss_text = text(&miss);
     assert!(
-        !miss_text.contains("[reminder]"),
-        "有上下游的文本加工不追加提醒：{miss_text}"
+        miss.new_messages().is_empty(),
+        "有上下游的文本加工不注入提醒：{miss_text}"
+    );
+    assert!(
+        !miss_text.contains("Reminder"),
+        "工具结果里不该出现提醒：{miss_text}"
     );
     assert!(miss_text.contains("beta"), "命令照常执行：{miss_text}");
+
+    // 命令失败（非零退出）：结果状态是 error，不挂 reminder——失败本身已经把「这条写法
+    // 没拿到可用内容」告诉模型
+    let failed = execute(
+        "Bash",
+        &json!({ "command": "sed -n 1p missing-note.txt", "description": "read a missing file" }),
+        &context(&sandbox),
+    );
+    assert!(
+        failed.exit_code() != 0,
+        "缺失文件应非零退出：{}",
+        text(&failed)
+    );
+    assert!(
+        failed.new_messages().is_empty(),
+        "失败结果不注入提醒：{}",
+        text(&failed)
+    );
 }
 
 #[test]

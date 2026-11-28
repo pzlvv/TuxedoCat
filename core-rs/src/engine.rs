@@ -4571,7 +4571,10 @@ fn run_turn(
 /// Reminder 消息（对齐 `QueryEngine.flushReminder` 的 `reminderMsg`）：
 /// `silent` / `origin=agent` 的 user 消息。会落盘进 `<sid>.jsonl` 并计入
 /// `messageCount`（由 `persist_reminder` 负责），模型可见，UI 消息流与回放不展示。
-fn build_reminder_message(content: &str) -> Value {
+///
+/// 工具自己产出的 reminder（Bash 的 `sed` 读 / 改文件提醒，经 `newMessages` 注入）也用
+/// 本函数构造，reminder 的形态只有一份。
+pub(crate) fn build_reminder_message(content: &str) -> Value {
     json!({
         "type": "user",
         "message": { "role": "user", "content": content },

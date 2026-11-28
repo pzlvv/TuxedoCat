@@ -554,11 +554,12 @@ pub enum ToolOutcome {
     /// `error`、`exit_code` -1、block `is_canceled: true`，文案与 `RunTools`
     /// 批取消逐字一致（不加 `Error executing` 前缀）。
     Canceled(String),
-    /// 成功，且工具额外产出了要注入对话的消息（当前只有 Skill 的 prompt 注入）。
+    /// 成功，且工具额外产出了要注入对话的消息（Skill 的技能正文、`Agent` 跨工作区派发
+    /// 的 Transfer reminder、Bash 命中「`cd` + `sed` 读 / 改文件」时的 Reminder）。
     ///
     /// `toolResult.newMessages` 会在该工具的 tool_result
-    /// 消息**之后**逐条 yield 进对话（`{ type: 'user', ..., isMeta: true }`），
-    /// 使后续 LLM 调用能读到技能正文。
+    /// 消息**之后**逐条 yield 进对话（`{ type: 'user', ... }`，UI 侧靠 `isMeta` /
+    /// `silent` 标记不展示），使后续 LLM 调用能读到它。
     SuccessWithMessages {
         text: String,
         new_messages: Vec<Value>,
@@ -697,16 +698,18 @@ pub(crate) const BASH_RESTRICTED_SLEEP_MESSAGE: &str = "Bash: do not use `sleep`
 poll on a condition (e.g. until the output exists) or simply stop and wait: you are notified when the background task completes and the turn continues.\n\
 - If you are certain this is a false positive, re-run the same command with restricted: false.";
 
-/// 「`cd` + `sed` 读 / 改文件」的工具结果提醒
+/// 「`cd` + `sed` 读 / 改文件」的 Reminder 正文
 /// （`docs/features/background-bash.md` 第 2 节 FR-009，逐字锁定、不插值）。
 ///
 /// 这条写法**不再被闸门拒绝**，命令照常执行——提醒只引导模型改用 `Read` / `Edit`
 /// （读文件的结构化入口），并保留「内容要流进另一条命令时照常用 `sed`」的例外。
+/// 正文是 `<Reminder>` 包装的独立消息（不是工具结果的一部分）：`compact.rs` 的
+/// `is_reminder_text` 按这个标记把它算作系统提醒，压缩时不当成用户输入。
 pub(crate) const BASH_SED_READ_REMINDER: &str =
-    "[reminder] The command reads or edits a file with `sed` — \
+    "<Reminder>\nThe command reads or edits a file with `sed` — \
 use the `Read` tool instead: it returns line numbers, an `offset` / `limit` window, and handles \
 xlsx / image files; use `Edit` for changes. Keep `sed` when the text must flow into another \
-command (pipes, redirection).";
+command (pipes, redirection).\n</Reminder>";
 
 /// 工具定义（Anthropic 风格：`name` / `description` / `input_schema`）
 pub fn definitions() -> Vec<Value> {
@@ -1466,22 +1469,36 @@ pub(crate) fn has_sleep_command(command: &str) -> bool {
         .any(|segment| extract_command_name(segment) == "sleep")
 }
 
-/// 把「`cd` + `sed` 读 / 改文件」的提醒追加到 Bash 工具结果末尾（FR-009）。
+/// 把「`cd` + `sed` 读 / 改文件」的提醒挂到 Bash 工具结果上（FR-009）。
 ///
-/// 命中判据与旧闸门同口径（`is_cd_sed_only_command`），但命令**照常执行**：提醒只引导
-/// 模型改用 `Read` / `Edit` 这类结构化入口。未命中时原样返回，不改变既有结果。
-fn with_sed_read_reminder(command: &str, content: String) -> String {
+/// 命中判据与旧闸门同口径（`is_cd_sed_only_command`），但命令**照常执行**。提醒**不混进
+/// tool_result 文本**——它经 `SuccessWithMessages` 在该批工具结果之后补发成一条 silent
+/// 消息（与 Skill 正文、`Agent` 的 Transfer reminder 同一注入通道），工具结果保持命令
+/// 自己的输出。消息形态由 `engine.rs` 的 `build_reminder_message` 构造，reminder 的形态
+/// 只有一份。
+///
+/// 只在成功返回上挂：`CommandFailed` 没有消息通道（不为一条提醒扩它的载荷），而命令失败
+/// 时结果本身已经告诉模型这条写法没拿到可用内容。
+fn with_sed_read_reminder(command: &str, outcome: ToolOutcome) -> ToolOutcome {
     if !is_cd_sed_only_command(command) {
-        return content;
+        return outcome;
     }
-    format!("{content}\n{BASH_SED_READ_REMINDER}")
+    match outcome {
+        ToolOutcome::Success(text) => ToolOutcome::SuccessWithMessages {
+            text,
+            new_messages: vec![crate::engine::build_reminder_message(
+                BASH_SED_READ_REMINDER,
+            )],
+        },
+        other => other,
+    }
 }
 
-/// 命令是否是「去掉所有 `cd` 段后只剩 `sed`」（工具结果提醒的判据，FR-009）。
+/// 命令是否是「去掉所有 `cd` 段后只剩 `sed`」（Reminder 消息的判据，FR-009）。
 ///
 /// 这类写法把 `sed` 当文件读取器用，读文件的入口是 `Read` 工具。读形态（`-n`）与写形态
 /// （`-i`）一视同仁；只要还有别的段（管道上下游、其它命令）就不算「只剩 sed」——
-/// 那是有上下游的文本加工，不追加提醒。
+/// 那是有上下游的文本加工，不注入提醒。
 pub(crate) fn is_cd_sed_only_command(command: &str) -> bool {
     let mut saw_sed = false;
     for segment in gate_segments(command) {
@@ -1963,10 +1980,10 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             ctx.background.clone(),
             view,
         ) {
-            Ok(task_id) => ToolOutcome::Success(with_sed_read_reminder(
+            Ok(task_id) => with_sed_read_reminder(
                 &command,
-                background_result_text(&task_id, "", "", false, None),
-            )),
+                ToolOutcome::Success(background_result_text(&task_id, "", "", false, None)),
+            ),
             // spawn / 打开输出文件失败时 stdout 为空、退出码 1，
             // 错误文本走普通拼接路径（`Result.ts` 会再补一行 `Exit code: 1`）。
             Err(error) => ToolOutcome::CommandFailed {
@@ -2206,7 +2223,6 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
     if cancelled {
         content.push_str("\nCommand was interrupted");
     }
-    content = with_sed_read_reminder(&command, content);
     // 非零退出 / 中断：UI 状态为 error（但 tool_result 不带 is_error）。
     // 会话中止：退出码 130。
     //
@@ -2218,7 +2234,7 @@ fn run_bash(input: &Value, ctx: &ToolContext) -> ToolOutcome {
             exit_code: if cancelled { 130 } else { status },
         }
     } else {
-        ToolOutcome::Success(content)
+        with_sed_read_reminder(&command, ToolOutcome::Success(content))
     }
 }
 
@@ -2319,14 +2335,13 @@ fn run_bash_through_proxy(
 Command was interrupted",
                 );
             }
-            content = with_sed_read_reminder(command, content);
             if status != 0 || cancelled {
                 ToolOutcome::CommandFailed {
                     text: content,
                     exit_code: if cancelled { 130 } else { status },
                 }
             } else {
-                ToolOutcome::Success(content)
+                with_sed_read_reminder(command, ToolOutcome::Success(content))
             }
         }
         Err(error) => ToolOutcome::Error(format!("Bash: {error}")),
@@ -2458,10 +2473,16 @@ fn auto_background_command(
         ""
     };
 
-    ToolOutcome::Success(with_sed_read_reminder(
+    with_sed_read_reminder(
         command,
-        background_result_text(&task_id, &stdout, reminder, true, Some(elapsed)),
-    ))
+        ToolOutcome::Success(background_result_text(
+            &task_id,
+            &stdout,
+            reminder,
+            true,
+            Some(elapsed),
+        )),
+    )
 }
 
 /// JS `stdout || ''` + `if (stderr) output += (output ? '\n' : '') + stderr`
