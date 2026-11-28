@@ -1039,7 +1039,11 @@ fn convert_tool_result_content(raw: &Value) -> Value {
     }
 }
 
-/// 内部消息 → Chat Completions 消息（逐分支对齐 `OpenAiApi.convertMessagesToChatCompletions`）。
+/// 内部消息 → Chat Completions 消息。
+///
+/// `docs/core/llm-request-payload.md` 第 3 节是这个转换的 as-built 基线：thinking block
+/// 以非空 `reasoning_content` 回传（思考模式 + 工具调用的续轮必需），纯 tool_calls 轮次的
+/// `content` 恒为空串而不是 `null`（部分网关拒收 null）。
 pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for message in messages {
@@ -1121,6 +1125,7 @@ pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
                 };
                 let mut text_parts: Vec<String> = Vec::new();
                 let mut tool_calls: Vec<Value> = Vec::new();
+                let mut reasoning_parts: Vec<String> = Vec::new();
                 for block in blocks {
                     if !block.is_object() {
                         continue;
@@ -1131,8 +1136,18 @@ pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
                                 text_parts.push(value.to_string());
                             }
                         }
-                        // thinking block 不回传（多个 Chat Completions 服务商拒绝 reasoning_content）
-                        "thinking" => {}
+                        // thinking block 按非空文本回传成 `reasoning_content`：思考模式下的
+                        // 续轮（尤其带 tool_calls 的那一轮）若丢掉推理文本，DeepSeek / Moonshot
+                        // 这类服务商会回 400（`reasoning_content in the thinking mode must be
+                        // passed back to the API`）。空思考（`ensure_thinking_blocks` 补的占位）
+                        // 不产生该字段——没有推理可回放时多发一个空串只会招惹严格校验的网关。
+                        "thinking" => {
+                            if let Some(value) = block.get("thinking").and_then(Value::as_str) {
+                                if !value.is_empty() {
+                                    reasoning_parts.push(value.to_string());
+                                }
+                            }
+                        }
                         "tool_use" => {
                             // 逐字对齐 JS：`id: block.id || block.call_id`。
                             // `||` 返回第一个真值；两者都缺（`undefined`）时
@@ -1165,20 +1180,27 @@ pub fn to_chat_messages(messages: &[Value]) -> Vec<Value> {
                         _ => {}
                     }
                 }
-                if !tool_calls.is_empty() {
-                    let content_value = if text_parts.is_empty() {
-                        Value::Null
-                    } else {
-                        Value::String(text_parts.join(""))
-                    };
-                    out.push(json!({
-                        "role": "assistant",
-                        "content": content_value,
-                        "tool_calls": Value::Array(tool_calls),
-                    }));
-                } else if !text_parts.is_empty() {
-                    out.push(json!({ "role": "assistant", "content": text_parts.join("") }));
+                // 没有正文也没有工具调用的轮次不成条（沿用既有口径）：纯 thinking 轮次
+                // 既没有回答内容，也没有需要配对的 tool_calls，服务商不会为它校验
+                // `reasoning_content`，丢掉它反而让相邻的同角色消息合并成一条连贯的上下文。
+                if tool_calls.is_empty() && text_parts.is_empty() {
+                    continue;
                 }
+                let mut converted = Map::new();
+                converted.insert("role".to_string(), json!("assistant"));
+                // 空文本写空串而不是 `null`：部分网关（dsh 的实测记录同此口径）对
+                // `content: null` 直接 400，空串是「没有正文」的通用表示。
+                converted.insert("content".to_string(), json!(text_parts.join("")));
+                if !reasoning_parts.is_empty() {
+                    converted.insert(
+                        "reasoning_content".to_string(),
+                        json!(reasoning_parts.join("")),
+                    );
+                }
+                if !tool_calls.is_empty() {
+                    converted.insert("tool_calls".to_string(), Value::Array(tool_calls));
+                }
+                out.push(Value::Object(converted));
             }
             // 其它 role（system / developer 等）原样透传；缺 role 的裸消息在 JS 里
             // `{ role: undefined, content }` 序列化后同样只剩 content（此处逐字复刻）。
