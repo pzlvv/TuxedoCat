@@ -320,9 +320,10 @@ async function deployProxyViaUi(chatPage: Awaited<ReturnType<AppHandle['chatPage
 /**
  * 勾选「隔离工作视图」。
  *
- * 「勾选框可见」本身就是能力已到达的判据，不需要额外查一次：入口的渲染条件就是
- * `isolatedWorkView || deployable`（`src/webview/MessagesView.tsx` 的 `showWorkViewOption`，
- * specs/051 FR-002），两者都不成立时整块不渲染。因此等可见就够了。
+ * 只保证「勾选动作本身」成立：入口的渲染判据是 `isolatedWorkView || deployable`
+ * （`src/webview/MessagesView.tsx` 的 `showWorkViewOption`，specs/051 FR-002），
+ * 所以**可见不等于能力已到达**——`deployable` 为真恰恰表示代理还没就位。代理已装好的
+ * 用例要连 `waitForOverlayReady` 一起用。
  *
  * 早先这里额外轮询 `requestStorageCapabilities` 等 `deployable`，反而制造了竞态：
  * 它每轮都发一条能力请求并装一个 `setStorageCapabilities` 监听器，会和随后的
@@ -334,6 +335,40 @@ async function checkWorkViewOption(
 ): Promise<void> {
   await expect(chatPage.locator('input[data-work-view-option]')).toBeVisible({ timeout: 60_000 });
   await chatPage.locator('input[data-work-view-option]').check();
+}
+
+/**
+ * 确认能力此刻是 `mountProxy: 'ready'`，再让用例发消息。
+ *
+ * 代理已装好的用例，前置事实是「此刻能建 Overlay 视图」，不是「勾选框可见」：入口的
+ * 渲染判据是 `isolatedWorkView || deployable`，可见也可能是 `deployable` 那一支。停在
+ * 那个状态发消息，宿主按 FR-003 判 `needsDeploy`、把消息拦在部署确认框前——消息不进
+ * Core，后面所有「等工具结果」的断言只剩超时，读到的只有空串。
+ *
+ * 能力探测每查一次就真挂一次 overlay（`core-rs/src/mount_proxy/linux.rs` 的
+ * `probe_capabilities`），负载下会瞬时失败一回、把 `mountProxy` 报成 `absent` 并给出
+ * 原因，下一查即恢复。所以**重读几次**就够，不设长预算——本车道每条用例只有 60s，
+ * 长等待会把预算吃在「等前置」上，反而让被测判据被 test timeout 提前掐掉。
+ * 连续几次都不可用时立刻带着 Core 给的原因抛错，不再空等后面的判据超时。
+ *
+ * 只在**前置已装好**的用例里调用：首装（FR-009 / 审计行）与「代理不可用」（FR-010）
+ * 两条用例的 ready 恰恰不该到达。
+ */
+async function waitForOverlayReady(
+  chatPage: Awaited<ReturnType<AppHandle['chatPage']>>,
+  attempts = 3,
+  intervalMs = 250,
+): Promise<void> {
+  let last = '（尚未查询）';
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const capabilities = await readCapabilities(chatPage);
+    last =
+      `mountProxy=${capabilities.mountProxy} deployable=${capabilities.deployable}`
+      + ` reason=${capabilities.reason}`;
+    if (capabilities.mountProxy === 'ready') return;
+    if (attempt < attempts) await chatPage.waitForTimeout(intervalMs);
+  }
+  throw new Error(`能力连续 ${attempts} 次查询都没落到 ready：${last}`);
 }
 
 /**
@@ -547,6 +582,52 @@ function toolResultMatching(requests: RecordedRequest[], needle: string): string
   return lastToolResult(requests[requests.length - 1]);
 }
 
+/**
+ * 「等工具结果回投」超时时把现场摊开。
+ *
+ * 同一个空串（`Received string: ""`）至少有三种完全不同的成因，光看超时读不出来：
+ *
+ * 1. 消息没进 Core——宿主闸门判 `needsDeploy` 拦在确认框前，或拒绝回执已发；
+ * 2. 消息进了 Core、模型也回了工具调用，但轮次在工具执行前失败（远端到 mock 的反向
+ *    隧道抖动等）；
+ * 3. 工具执行了，但结果没带目标文件名（判据本身匹配不上）。
+ *
+ * 三者要改的地方完全不同，所以失败信息必须能直接分辨：请求条数与每条的角色序列、
+ * 确认框在不在屏、能力快照各报一行。
+ */
+async function describeToolResultStall(
+  chatPage: Awaited<ReturnType<AppHandle['chatPage']>>,
+  needle: string,
+): Promise<string> {
+  const requests = mockLlm?.requests ?? [];
+  const shapes = requests.map((request) =>
+    request.body.messages.map((message) => message.role).join('>'),
+  );
+  const dialogCount = await chatPage.locator('[data-mount-proxy-dialog="confirm"]').count();
+  // 未决提交期间输入区按 `submitPending` 只读（`src/webview/inputAreaState.ts` 的
+  // `resolveInputDisabledReason`）。它只读而模型请求为零，就是「裁决一次都没回来」——
+  // `specs/defects/submit-verdict-lost-on-gate-error.md` 那条缺陷的指纹，不需要落盘证据。
+  const inputDisabled = await chatPage.locator('textarea.input-textarea').isDisabled();
+  const lines = [
+    requests.length > 0
+      ? `模型请求 ${requests.length} 条：${shapes.join(' | ')}`
+      : '模型请求 0 条：消息没有到 Core（闸门拦下 / 未受理）',
+    `含 ${needle} 的工具结果：${toolResultMatching(requests, needle) || '（无）'}`,
+    `部署确认框：${dialogCount > 0 ? '在屏（消息被闸门拦在确认框前）' : '不在屏'}`,
+    `输入区：${inputDisabled ? '只读（提交未决，裁决没回来）' : '可编辑'}`,
+  ];
+  try {
+    const capabilities = await readCapabilities(chatPage);
+    lines.push(
+      `能力快照：mountProxy=${capabilities.mountProxy} deployable=${capabilities.deployable}`
+        + ` reason=${capabilities.reason}`,
+    );
+  } catch (error) {
+    lines.push(`能力快照：读取失败（${String(error)}）`);
+  }
+  return lines.join('\n');
+}
+
 // ─────────────────────── 普通段：远端安装与隔离 ───────────────────────
 
 /** 取远端 Core 的文件存储能力（经宿主转发，与 webview 拿到的是同一份事实） */
@@ -691,6 +772,7 @@ test('FR-007 连续工具调用不因工具线程收尾而丢代理', async () =
 
   const chatPage = await launchWithRemoteWorkspace();
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
 
   // 四步覆盖三条不同通道：spawn（Bash）、readFile（Read）、spawn（Bash）、
   // spawn + 相对路径（Bash 的 cwd 语义）。第二条的 Read 是缺陷首发点。
@@ -770,6 +852,7 @@ test('FR-002/FR-003 资源管理器在视图未建立时按需挂载，树与变
   // 落到默认应答上，断言就在等一个不会出现的终答。
   mockLlm!.setHandler(() => ({ kind: 'text', text: 'EXPLORER-BASELINE-DONE' }));
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
   await chatPage.fill('textarea.input-textarea', '先不调工具');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('EXPLORER-BASELINE-DONE').first()).toBeVisible({ timeout: 45_000 });
@@ -869,6 +952,7 @@ test('Overlay 对话：Write 的风车必须收起，且工具卡片上屏期间
 
   const chatPage = await launchWithRemoteWorkspace();
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
 
   // 采样「thinking 可见 / 有无 running 风车」：只要两者同时为假，界面上就没有任何
   // 进行中的指示。空窗按一次提问的完整生命周期取，逐帧记录。
@@ -972,6 +1056,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
     };
   });
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
   await chatPage.fill('textarea.input-textarea', '在隔离视图里写文件');
   await chatPage.press('textarea.input-textarea', 'Enter');
   // 轮次边界等**工具结果回投到下一轮请求**，不等 `OVERLAY-WRITE-DONE` 上屏：
@@ -981,9 +1066,21 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   // 这里等的事实是「某次模型请求的末条消息是含目标文件的工具结果」，它由 Core 发出的
   // HTTP 请求定义，不经 UI、不依赖渲染时序。文本是否上屏不是本用例要判的事实
   // （AC-31 判的是「视图内写成功、真实磁盘没变」，落在下面两条断言上）。
-  await expect
-    .poll(() => toolResultMatching(mockLlm!.requests, targetName), { timeout: 45_000 })
-    .toContain(targetName);
+  //
+  // 超时要能读出**断在哪一环**：run 46128737230 这条判据红在 45s 后只读到空串，而空串
+  // 至少有三种互不相同的成因（见 `describeToolResultStall`），当时的产物里没有任何一处
+  // 能分辨——请求形态、确认框、输入区只读态与能力快照一并摊进失败信息。
+  try {
+    await expect
+      .poll(() => toolResultMatching(mockLlm!.requests, targetName), { timeout: 45_000 })
+      .toContain(targetName);
+  } catch (error) {
+    throw new Error(
+      `45s 内没等到含 ${targetName} 的工具结果回投。\n`
+        + `${await describeToolResultStall(chatPage, targetName)}\n\n`
+        + `${(error as Error).message}`,
+    );
+  }
 
   // AC-31：写进了叠加视图，真实磁盘没变。
   //
@@ -992,7 +1089,7 @@ test('AC-31 隔离会话的 Write 不落真实磁盘，会话关闭后 mountinfo
   // 前者——Write 每次都报错，而磁盘确实没变，只看磁盘这条会绿。
   const toolResult = toolResultMatching(mockLlm!.requests, targetName);
   expect(toolResult, `Write 必须成功且不回 error：${toolResult}`).not.toMatch(
-    /error|不可用|failed/i,
+    /\berror\b|不可用|failed/i,
   );
   expect(toolResult, 'Write 结果应包含成功写出的内容或路径').toContain(targetName);
   expect((await sshExec(`test -e ${shQuote(realPath)} && echo yes || echo no`)).stdout.trim()).toBe(
@@ -1047,6 +1144,7 @@ test('Overlay 会话：Write 新建的文件必须能被 Edit 继续修改', asy
 
   const chatPage = await launchWithRemoteWorkspace();
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
 
   // 三步：Write 新建 → Edit 同一文件 → Read 读回。Read 是「改动真的落在视图里」的凭据：
   // 只看 Edit 的成功文案会漏掉「Edit 写了另一份内容」这类假绿。
@@ -1128,6 +1226,7 @@ test('Overlay 会话：Edit 卡片链接打开的是视图内容而不是真实�
     };
   });
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
   await chatPage.fill('textarea.input-textarea', '写一个文件然后点卡片链接');
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('CARD-LINK-DONE').first()).toBeVisible({ timeout: 45_000 });
@@ -1248,6 +1347,7 @@ test('US-60 FR-009 Overlay 会话的 Transfer 按视图取放：视图内的文�
   });
 
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
   await chatPage.fill('textarea.input-textarea', firstTurnPrompt);
   await chatPage.press('textarea.input-textarea', 'Enter');
   await expect(chatPage.getByText('OVERLAY-TRANSFER-DONE').first()).toBeVisible({ timeout: 50_000 });
@@ -1360,6 +1460,7 @@ test('FR-006 隔离会话里 gcc 编译运行 main.c，产物只在叠加视图�
 
   // 勾上 Overlay 建隔离会话
   await checkWorkViewOption(chatPage);
+  await waitForOverlayReady(chatPage);
 
   // 一条命令完成编译 + 运行：`&&` 保证编译失败时不会跑旧产物；先删掉可能残留的产物，
   // 避免「读了上一次成功的产物」这种假绿。
@@ -1697,6 +1798,7 @@ test.describe('privileged', () => {
     // （`docs/core/mount-proxy.md` 第 5 节「按需拉起」）。只让勾选框可见就轮到下一步，
     // 代理永远不会出现——本用例曾因此恒在「代理进程出现」上超时。
     await checkWorkViewOption(chatPage);
+    await waitForOverlayReady(chatPage);
     await chatPage.fill('textarea.input-textarea', '拉起代理');
     await chatPage.press('textarea.input-textarea', 'Enter');
     await expect(chatPage.getByText('RECYCLE-PROBE-DONE').first()).toBeVisible({ timeout: 45_000 });
