@@ -751,14 +751,7 @@ export class WebviewMessageHandler {
       }));
       // FR-008：装完**不自己判 ready**，交给 Core 重查能力。按被拦消息的会话问：
       // 部署目标是该会话所属的 Core，重查的必须是同一台机器的能力。
-      const blocked = gate.peekBlocked();
-      const capabilities = await requestStorageCapabilities({ sessionId: blockedSessionId(blocked) });
-      if (!capabilities.isolatedWorkView) {
-        gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
-        return;
-      }
-      gate.succeed();
-      await this.continueBlockedAction(gate.takeBlocked());
+      await this.finishDeployAndContinue(gate);
       return;
     }
     if (outcome.kind === 'needsCredential') {
@@ -766,6 +759,51 @@ export class WebviewMessageHandler {
       return;
     }
     gate.fail(outcome.failure);
+  }
+
+  /**
+   * 部署就位后的统一收尾（FR-008）：重查能力 → 成功则按原载荷继续，失败则回落闸门。
+   *
+   * 两条部署通道（免密 / 凭据、手动命令轮询）共用这一处，判据只有一份。重查本身也会失败
+   * （Connection 已关、Core 应答出错）：那时**同时**要收两件事——闸门进失败态给用户看，
+   * 以及给被拦的提交回一条拒绝回执，否则 webview 的未决提交永远挂起、输入区一直只读
+   * （`specs/defects/submit-verdict-lost-on-gate-error.md`）。回执与闸门失败用同一份原因。
+   */
+  private async finishDeployAndContinue(gate: MountProxyGate): Promise<void> {
+    let capabilities: Awaited<ReturnType<typeof requestStorageCapabilities>>;
+    try {
+      capabilities = await requestStorageCapabilities({
+        sessionId: blockedSessionId(gate.peekBlocked()),
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.log(`[WebviewMessageHandler] 部署后重查能力失败：${reason}`);
+      gate.fail(reason);
+      this.rejectBlockedSubmit(gate, reason);
+      return;
+    }
+    if (!capabilities.isolatedWorkView) {
+      const reason = capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用';
+      gate.fail(reason);
+      this.rejectBlockedSubmit(gate, reason);
+      return;
+    }
+    gate.succeed();
+    await this.continueBlockedAction(gate.takeBlocked());
+  }
+
+  /**
+   * 给闸门里被拦的**消息类**提交回一条拒绝回执。
+   *
+   * 只处理 `kind === 'message'`：打开对话的入口没有提交回执可发（`specs/059` 的边界节），
+   * 闸门的失败态已经足够让它停在原位置。回执按 `submitId` 作废那一次提交，载体从未被
+   * 消费，因此 webview 侧什么都不用回填。
+   */
+  private rejectBlockedSubmit(gate: MountProxyGate, reason: string): void {
+    const blocked = gate.peekBlocked();
+    if (blocked && blocked.kind === 'message') {
+      this.replySubmitRejected(blocked.submitId, reason);
+    }
   }
 
   /**
@@ -807,16 +845,8 @@ export class WebviewMessageHandler {
     const poll = async (): Promise<void> => {
       if (this.mountProxyGate !== gate) return; // 期间被取消 / 换了一轮部署
       if (await target.isInstalled()) {
-        // 同 applyDeployOutcome：按被拦消息的会话问，问的是部署目标那台 Core
-        const capabilities = await requestStorageCapabilities({
-          sessionId: blockedSessionId(gate.peekBlocked()),
-        });
-        if (!capabilities.isolatedWorkView) {
-          gate.fail(capabilities.reason.length > 0 ? capabilities.reason : '安装完成，但能力仍不可用');
-          return;
-        }
-        gate.succeed();
-        await this.continueBlockedAction(gate.takeBlocked());
+        // 与 applyDeployOutcome 同一收尾：重查能力 → 成功则继续、失败则闸门 + 拒绝回执
+        await this.finishDeployAndContinue(gate);
         return;
       }
       // 每 2 秒看一眼；用户在别的终端里跑命令，宿主没有完成事件可订阅
@@ -902,6 +932,13 @@ export class WebviewMessageHandler {
    * 提交请求的处理入口（specs/059 FR-001 / FR-002）：三态裁决，不消费任何载体。
    *
    * 裁决用判别联合而不是两个布尔：三种结论互斥，分派点必须穷尽（铁律 4.2）。
+   *
+   * **一次提交必然拿到裁决**：三态之外没有第四种结局。裁决链路上的失败（能力查询抛错、
+   * 部署目标解析不出）收敛成 `userMessageRejected` + 日志，不冒泡到统一兜底——那样
+   * webview 的未决提交永远收不到收尾，输入区按「一次只有一条」一直只读，用户点了发送
+   * 既没有回复也再输不进去（`specs/defects/submit-verdict-lost-on-gate-error.md`）。
+   * `specs/059` 的边界节两处都要求「报错、不默认放行、输入区原样」：拒绝回执正是那个
+   * 收尾，放行（`userMessageAccepted`）则绝不允许。
    */
   private async handleSubmitMessage(submit: SubmitMessage): Promise<void> {
     const payload = toSendMessagePayload(submit);
@@ -923,17 +960,27 @@ export class WebviewMessageHandler {
     // 首条消息也可能抢在它前面）。
     this.ensureSessionWorkspace(sessionId);
 
-    const verdict = await this.mountProxyVerdict(sessionId, payload.storage);
-    if (verdict.kind === 'reject') {
-      this.replySubmitRejected(submit.submitId, verdict.reason);
-      return;
+    try {
+      const verdict = await this.mountProxyVerdict(sessionId, payload.storage);
+      if (verdict.kind === 'reject') {
+        this.replySubmitRejected(submit.submitId, verdict.reason);
+        return;
+      }
+      if (verdict.kind === 'needsDeploy') {
+        await this.blockMessageForMountProxyAsync(submit);
+        return;
+      }
+      // 可发送：先回执受理，由 webview 消费载体后走已受理消息的上行（`sendMessage`）
+      this.replySubmitAccepted(submit.submitId, sessionId);
+    } catch (error) {
+      // 裁决链路失败：回拒绝回执让 webview 收尾（载体从未被消费），原因点名失败点。
+      // 日志与回执同源：诊断信息不因改走回执而丢，排障时两边对得上。
+      const reason = error instanceof Error ? error.message : String(error);
+      this.log(
+        `[WebviewMessageHandler] 提交裁决失败（session=${sessionId}）：${reason}`,
+      );
+      this.replySubmitRejected(submit.submitId, reason);
     }
-    if (verdict.kind === 'needsDeploy') {
-      await this.blockMessageForMountProxyAsync(submit);
-      return;
-    }
-    // 可发送：先回执受理，由 webview 消费载体后走已受理消息的上行（`sendMessage`）
-    this.replySubmitAccepted(submit.submitId, sessionId);
   }
 
   /** 受理回执（specs/059 FR-004）：webview 据此消费载体并上行 */
