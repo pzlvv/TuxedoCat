@@ -37,7 +37,7 @@ export interface McpServerInfo {
  * 模型名与 provider 分开存放，不拼接。
  */
 export interface ProviderModels {
-  /** provider key（baseURL 的 hostname） */
+  /** provider key（baseURL 的主机与端口） */
   key: string;
   /** 该 provider 的模型列表 */
   models: string[];

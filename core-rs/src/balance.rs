@@ -49,8 +49,12 @@ pub fn set_base_url_for_test(base_url: Option<&str>) {
         .unwrap_or_else(|err| err.into_inner()) = base_url.map(|value| value.to_string());
 }
 
-/// 取 baseURL 的 hostname（小写）；解析失败或为空返回空串
-/// （对齐 `baseUrlHostname`，用 `reqwest::Url` 而不是手写解析）。
+/// 取 baseURL 的 hostname（小写，不含端口）；解析失败或为空返回空串。
+///
+/// DeepSeek Key 的查找按**域名**判定：provider key 现在含端口
+/// （`docs/architecture/core-ui-separation.md` 第 4.3 节），这里刻意不跟着含——
+/// 目标是「官方域名那一家」，端口不参与（含端口身份的推导在 TS 侧
+/// `src/shared/utils/providerKey.ts`，Core 不参与服务商身份推导）。
 fn base_url_hostname(base_url: &Value) -> String {
     let Some(raw) = base_url.as_str() else {
         return String::new();

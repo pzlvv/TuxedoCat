@@ -58,6 +58,31 @@ const UI_LANGUAGES = new Set(['auto', 'zh', 'en']);
 const UI_FONT_SIZES = new Set(['medium', 'large', 'xlarge']);
 
 /**
+ * 取 provider 的既有磁盘条目（用于保留用户手填的 `modelConfigs` 限值）。
+ *
+ * 先按当前口径的 key 精确取；取不到时按 **baseURL** 找同源条目——磁盘上可能还是
+ * 旧口径（只取主机名、不含端口）的键，只按 key 找必然落空，用户手填的
+ * context/output 就会被内置注册表的解析值覆盖掉。同一 baseURL 就是同一家服务商，
+ * 键的口径变化不该丢配置（`docs/architecture/core-ui-separation.md` 第 4.3 节）。
+ */
+function findStoredProvider(
+  providers: Record<string, any> | undefined,
+  key: string,
+  baseURL: string,
+): Record<string, any> | undefined {
+  if (!providers) return undefined;
+  const exact = providers[key];
+  if (exact && typeof exact === 'object') return exact;
+  for (const value of Object.values(providers) as Record<string, any>[]) {
+    if (value && typeof value === 'object' && typeof value.baseURL === 'string'
+      && value.baseURL.trim() === baseURL) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 把设置面板的一次保存并入 `settings.json` 的内存对象。
  *
  * 直接改传入的 `cfg`（与 `SettingsJsonMutator` 的约定一致）。四段处理：
@@ -140,7 +165,7 @@ export function applyLlmConfigSave(cfg: Record<string, any>, payload: LlmConfigS
       // modelConfigs：保留已有 context/output/apiType/multimodal，缺失的 context/output
       // 从内置注册表匹配补齐；apiType 来自面板（手动选择或自动探测结果），
       // multimodal 来自面板 checkbox，context 另有一级「本次探测值」（取到就覆盖）
-      const oldProvider = cfg.llm.providers?.[key];
+      const oldProvider = findStoredProvider(cfg.llm.providers, key, providerBaseURL);
       const oldModelConfigs: Record<string, ModelTokenLimits> = oldProvider?.modelConfigs
         && typeof oldProvider.modelConfigs === 'object'
         ? oldProvider.modelConfigs

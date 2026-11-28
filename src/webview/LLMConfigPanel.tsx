@@ -321,7 +321,13 @@ const buildModelDrafts = (
   return drafts;
 };
 
-/** 根据 baseURL 计算 provider key（如 https://opencode.ai/zen/go -> opencode.ai） */
+/**
+ * 根据 baseURL 计算 provider key（如 https://opencode.ai/zen/go -> opencode.ai、
+ * http://127.0.0.1:11434/v1 -> 127.0.0.1:11434）。
+ *
+ * 端口是身份的一部分：同一主机不同端口是两个服务商
+ * （`docs/architecture/core-ui-separation.md` 第 4.3 节）。
+ */
 const providerKeyOf = (baseURL: string): string => {
   const trimmed = baseURL.trim();
   return trimmed ? providerKeyFromBaseURL(trimmed) : '';
@@ -453,7 +459,20 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
       defaultModel: '',
     }];
   });
-  const [activeProviderKey, setActiveProviderKey] = useState<string>(initialActiveProvider);
+  /**
+   * 「当前使用的服务商」在面板内的统一身份：按 baseURL 现算的 provider key。
+   *
+   * `initialActiveProvider` 是 `settings.json` 的表键，历史版本按「只取主机名」写入
+   * （如 `127.0.0.1`，而 baseURL 是 `http://127.0.0.1:11434/v1`）。面板内一律用推导值
+   * 表征身份（保存载荷、tab 标记、判重都是），所以初始值也归一到推导口径：否则旧键
+   * 与载荷里的新键对不上，保存会被判成「没有可用的服务商」而拦下。
+   * 磁盘上的键不改写——下一次保存 provider 表时按当前规则自然重建。
+   */
+  const initialActiveKey = (() => {
+    const stored = initialProviders.find((p) => p.key === initialActiveProvider);
+    return stored ? providerKeyOf(stored.baseURL) : initialActiveProvider;
+  })();
+  const [activeProviderKey, setActiveProviderKey] = useState<string>(initialActiveKey);
   /** 用户点击「使用此 Provider」后暂存的 key，点击保存时才真正写入 settings.json */
   const [pendingUseProviderKey, setPendingUseProviderKey] = useState<string | null>(() => {
     // 首次配置也是“新增”场景：只有一个服务商且尚未有默认服务商时，默认选中它
@@ -588,10 +607,12 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
           || m.outputText !== initModels[idx].outputText)
         || p.defaultModel !== init.defaultModel;
     });
+  // 默认服务商的比较用归一后的 `initialActiveKey`：拿磁盘旧键比会把「只是键的口径变了」
+  // 判成未保存修改，面板一打开就显示脏。
   const isDirty =
     providersChanged ||
-    activeProviderKey !== initialActiveProvider ||
-    (pendingUseProviderKey !== null && pendingUseProviderKey !== initialActiveProvider) ||
+    activeProviderKey !== initialActiveKey ||
+    (pendingUseProviderKey !== null && pendingUseProviderKey !== initialActiveKey) ||
     webSearch !== initialWebSearch ||
     thinkingEffort !== initialThinkingEffort ||
     defaultAgentMode !== initialDefaultAgentMode ||
@@ -674,7 +695,9 @@ const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({
     const provider = providers.find((p) => p.id === providerId);
     const model = provider?.models[index];
     if (!provider || !model) return;
-    const resolved = initialProviders.find((p) => p.key === providerKeyOf(provider.baseURL))?.modelConfigs?.[model.name.trim()];
+    // 按草稿身份（= 载荷里的表键，新建草稿是随机 id 必然落空）回取解析值：
+    // 服务商身份现在含端口，用推导键去比磁盘键会把旧口径的配置读不到
+    const resolved = initialProviders.find((p) => p.key === provider.id)?.modelConfigs?.[model.name.trim()];
     const resolvedContext = resolved?.context != null ? String(resolved.context) : '';
     const resolvedOutput = resolved?.output != null ? String(resolved.output) : '';
     setModelSettings({

@@ -113,3 +113,11 @@
   「口令浮层」并列成选项；面板增加可选私钥路径，指定时优先于默认私钥顺序。验收判据：
   passphrase 只用于解密私钥、不进 argv / 环境变量 / 日志，解密失败回到来源选择；
   指定私钥路径后认证链以它为第一来源；`sshIdentity` 单测覆盖两种来源的优先级。
+
+- **provider key 推导口径缺 docs↔code 守卫**：服务商身份（baseURL 的主机 + 显式端口）
+  现在写在 [docs/architecture/core-ui-separation.md 第 4.3 节](docs/architecture/core-ui-separation.md#43-快照字段)
+  与 `src/shared/utils/providerKey.ts` 两处，规则被面板判重、`settings.json` 建键、
+  会话 `meta.json` 的 provider 字段三方消费；文档改了或代码改了，`docsLint` 都不会红
+  （现有单测只锁代码侧）。方向：docsLint 加一组对照，把文档里列举的示例（含
+  「同主机不同端口两个键」「默认端口省略」两条边界）与 `providerKeyFromBaseURL` 的实际
+  取值逐项比对。验收判据：改推导规则不同步改文档示例时 `npm run test:unit -- docs-lint` 红。

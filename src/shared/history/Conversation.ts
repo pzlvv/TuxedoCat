@@ -47,7 +47,7 @@ export interface ConversationContext {
   /** 当前对话使用的模型名称 */
   model?: string;
   /**
-   * 当前对话使用的模型所属 provider key（baseURL 的 hostname）。
+   * 当前对话使用的模型所属 provider key（baseURL 的主机与端口）。
    * 模型 + provider 一起才能完整表征一个模型（同名模型可能属于不同 provider）。
    */
   provider?: string;

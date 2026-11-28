@@ -184,7 +184,7 @@ runTests('hostSettings', async () => {
     check('同值不重写 webSearch', cfg.llm.webSearch === true);
   }
 
-  // provider 保存：按 baseURL 的 hostname 建键、trim、去重、补 modelConfigs
+  // provider 保存：按 baseURL 的主机与端口建键、trim、去重、补 modelConfigs
   {
     const cfg: Record<string, any> = {
       llm: {
@@ -209,8 +209,8 @@ runTests('hostSettings', async () => {
         { baseURL: 'https://skipped.example', models: ['m'] },
       ],
     });
-    check('provider 键取 baseURL 的 hostname', !!cfg.llm.providers['api.deepseek.com']);
-    check('provider 条目按 hostname 建键', !!cfg.llm.providers['openrouter.ai']);
+    check('provider 键取 baseURL 的主机', !!cfg.llm.providers['api.deepseek.com']);
+    check('provider 条目去掉路径建键', !!cfg.llm.providers['openrouter.ai']);
     check('缺 apiKey 的 provider 被跳过', !cfg.llm.providers['skipped.example']);
     check('baseURL / apiKey 被 trim', cfg.llm.providers['api.deepseek.com'].apiKey === 'sk-new');
     check(
@@ -228,6 +228,56 @@ runTests('hostSettings', async () => {
     );
     check('defaultModel 被 trim 后写入', cfg.llm.providers['openrouter.ai'].defaultModel === 'a/one');
     check('activeProvider 取面板选择', cfg.llm.activeProvider === 'openrouter.ai');
+  }
+
+  // 同主机不同端口 = 两个服务商：键不冲突、条目不互相覆盖
+  {
+    const cfg: Record<string, any> = { llm: { providers: {} } };
+    applyLlmConfigSave(cfg, {
+      saveProviders: true,
+      activeProvider: '127.0.0.1:11435',
+      providers: [
+        { baseURL: 'http://127.0.0.1:11434/v1', apiKey: 'sk-a', models: ['qwen2:7b'] },
+        { baseURL: 'http://127.0.0.1:11435/v1', apiKey: 'sk-b', models: ['llama3:8b'] },
+      ],
+    });
+    check(
+      '同主机不同端口各建一键',
+      !!cfg.llm.providers['127.0.0.1:11434'] && !!cfg.llm.providers['127.0.0.1:11435'],
+    );
+    check(
+      '两条 provider 的模型列表都保住（不按主机合并覆盖）',
+      cfg.llm.providers['127.0.0.1:11434'].models[0] === 'qwen2:7b'
+        && cfg.llm.providers['127.0.0.1:11435'].models[0] === 'llama3:8b',
+    );
+    check('activeProvider 落在选中的那个端口', cfg.llm.activeProvider === '127.0.0.1:11435');
+  }
+
+  // 磁盘上还是旧口径的键（只取主机名）：换键时用户手填的限值必须跟着走
+  {
+    const cfg: Record<string, any> = {
+      llm: {
+        providers: {
+          '127.0.0.1': {
+            baseURL: 'http://127.0.0.1:11434/v1',
+            apiKey: 'sk-a',
+            models: ['qwen2:7b'],
+            modelConfigs: { 'qwen2:7b': { context: 32768, output: 4096 } },
+          },
+        },
+      },
+    };
+    applyLlmConfigSave(cfg, {
+      saveProviders: true,
+      activeProvider: '127.0.0.1:11434',
+      providers: [{ baseURL: 'http://127.0.0.1:11434/v1', apiKey: 'sk-a', models: ['qwen2:7b'] }],
+    });
+    check('旧口径键按当前规则重建', !!cfg.llm.providers['127.0.0.1:11434']);
+    check(
+      '换键不丢用户手填的 context/output',
+      cfg.llm.providers['127.0.0.1:11434'].modelConfigs['qwen2:7b'].context === 32768
+        && cfg.llm.providers['127.0.0.1:11434'].modelConfigs['qwen2:7b'].output === 4096,
+    );
   }
 
   // activeProvider 指向不存在的 provider：回落第一个

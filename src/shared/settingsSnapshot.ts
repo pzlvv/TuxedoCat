@@ -56,7 +56,8 @@ export interface SettingsSnapshotProvider {
    * 服务地址。
    *
    * 允许为空串：快照原样携带 provider 表，是否可用由消费方各自判定
-   * （调 LLM 要求非空；余额查询只按 key / hostname 匹配）。
+   * （调 LLM 要求非空；余额查询按 **域名**匹配 DeepSeek 官方那一家，端口不参与，
+   * 与含端口的服务商身份是两个口径）。
    */
   baseURL: string;
   /** API Key；未配置时为空串 */

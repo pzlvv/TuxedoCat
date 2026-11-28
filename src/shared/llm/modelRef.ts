@@ -11,7 +11,7 @@
  *   （例如 settings.json 里配了 provider 但还没填模型列表）。
  */
 export interface ModelRef {
-  /** provider key（baseURL 的 hostname），必须非空 */
+  /** provider key（baseURL 的主机与端口），必须非空 */
   provider: string;
   /** 模型名；空串表示该 provider 尚未指定模型 */
   model: string;
