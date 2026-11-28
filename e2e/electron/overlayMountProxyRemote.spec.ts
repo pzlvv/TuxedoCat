@@ -607,14 +607,25 @@ async function describeToolResultStall(
   // 未决提交期间输入区按 `submitPending` 只读（`src/webview/inputAreaState.ts` 的
   // `resolveInputDisabledReason`）。它只读而模型请求为零，就是「裁决一次都没回来」——
   // `specs/defects/submit-verdict-lost-on-gate-error.md` 那条缺陷的指纹，不需要落盘证据。
-  const inputDisabled = await chatPage.locator('textarea.input-textarea').isDisabled();
+  // 诊断本身不能再抛错盖掉原失败：元素不在就照实说「读不到」。
+  let inputState = '读不到输入框';
+  try {
+    const input = chatPage.locator('textarea.input-textarea');
+    inputState = (await input.count()) === 0
+      ? '读不到输入框'
+      : (await input.isDisabled())
+        ? '只读（提交未决，裁决没回来）'
+        : '可编辑';
+  } catch (error) {
+    inputState = `读取失败（${String(error)}）`;
+  }
   const lines = [
     requests.length > 0
       ? `模型请求 ${requests.length} 条：${shapes.join(' | ')}`
       : '模型请求 0 条：消息没有到 Core（闸门拦下 / 未受理）',
     `含 ${needle} 的工具结果：${toolResultMatching(requests, needle) || '（无）'}`,
     `部署确认框：${dialogCount > 0 ? '在屏（消息被闸门拦在确认框前）' : '不在屏'}`,
-    `输入区：${inputDisabled ? '只读（提交未决，裁决没回来）' : '可编辑'}`,
+    `输入区：${inputState}`,
   ];
   try {
     const capabilities = await readCapabilities(chatPage);
