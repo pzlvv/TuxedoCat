@@ -518,4 +518,18 @@ e2e/
     因此四条 ssh 车道统一经 `e2e/helpers/remoteCoreProcess.ts` 取模式：`pgrep` / `pkill`
     的模式里带本机构建指纹（部署槽位名就是它），只命中自己这轮部署的进程；指纹产物缺失
     直接抛错而不是退回名字口径。口径由 `src/test/e2eRemoteCoreProcess.test.ts` 锁定。
+24. **「Overlay 入口可见」不等于「能力已就绪」**：`overlayMountProxyRemote.spec.ts` 的前置
+    不能拿「勾选框可见」当能力到达——入口的渲染条件是 `isolatedWorkView || deployable`
+    （[specs/051 FR-002](../specs/051-overlay-root-mount-proxy/spec.md)），而 `deployable`
+    正是「代理还没就位」那一支。停在这个状态发消息，宿主按 FR-003 判 `needsDeploy`、把消息
+    拦在部署确认框前，消息不进 Core，后面所有「等工具结果」的断言只剩超时、读到的只有空串
+    （run `46128737230` 的 AC-31 即红在这条断言上，而同轮 17 条邻居全绿；那次只有空串，
+    成因无法归到具体一环，因此这一条只消除「前置形态」这一种可能，不宣称已定位那次红）。
+    代理已装好的用例因此先连 `waitForOverlayReady`：`mountProxy` 每查一次都真挂一次 overlay
+    （`core-rs/src/mount_proxy/linux.rs` 的 `probe_capabilities`），负载下会瞬时失败一回把它
+    报成 `absent`、下一查即恢复，所以重读 3 次就够——本车道每条用例只有 60s，长等待会把预算
+    吃在「等前置」上；连续不可用则立刻带着 `reason` 抛错。同一个空串有**三种**成因（消息被
+    闸门拦下 / 轮次在工具执行前失败 / 结果里没有目标文件名），AC-31 的超时信息因此摊开请求
+    形态、确认框、输入区只读态与能力快照（`describeToolResultStall`），不再只报空串。
+    首装（FR-009 / 审计行）与「代理不可用」（FR-010）两条用例的 ready 不该到达，不接这一步。
 
