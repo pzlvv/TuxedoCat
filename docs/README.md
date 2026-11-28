@@ -80,6 +80,7 @@ US↔e2e 映射、specs/ 结构与闸门、缺陷规格、主题规格 frontmatt
 | `docs/core/core-remote.md` | Core 远程服务：`start` / `kill`、状态文件、远端目录选择与 SSH 接入 |
 | `docs/core/client-connection.md` | 连接模型：宿主级 `Client` 与每工作区 `Connection` |
 | `docs/core/session-runtime.md` | 会话运行时状态：Core 为唯一 owner，`sessionRuntimeChanged` 全量推送 |
+| `docs/core/llm-request-payload.md` | LLM 请求载荷：三条协议的消息组装、思考回传口径、Chat Completions 的 assistant 形态与不参与请求的字段 |
 
 ### 宿主与 UI（docs/hosts/）
 

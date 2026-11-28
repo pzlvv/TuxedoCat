@@ -485,8 +485,9 @@ fn chat_messages_convert_tool_use_and_thinking() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0]["role"], "assistant");
     assert_eq!(out[0]["content"], "我来查一下");
-    // thinking block 不回传（部分 Chat Completions 服务商拒绝 reasoning_content）
-    assert!(out[0].get("reasoning_content").is_none());
+    // thinking 以非空文本回传成 reasoning_content：思考模式下的续轮（尤其带 tool_calls
+    // 的那一轮）丢掉推理文本会被 DeepSeek / Moonshot 回 400
+    assert_eq!(out[0]["reasoning_content"], "先看看");
     let call = &out[0]["tool_calls"][0];
     assert_eq!(call["id"], "call_9");
     assert_eq!(call["type"], "function");
@@ -495,6 +496,50 @@ fn chat_messages_convert_tool_use_and_thinking() {
     let arguments: Value =
         serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
     assert_eq!(arguments["command"], "ls");
+}
+
+#[test]
+fn chat_messages_replay_reasoning_content_only_when_non_empty() {
+    // 多个 thinking block 按出现顺序拼接（与 dsh 的 `join('')` 同一口径）
+    let out = to_chat_messages(&[json!({ "role": "assistant", "content": [
+        { "type": "thinking", "thinking": "第一段" },
+        { "type": "thinking", "thinking": "第二段" },
+        { "type": "text", "text": "好" }
+    ] })]);
+    assert_eq!(out[0]["reasoning_content"], "第一段第二段");
+    assert_eq!(out[0]["content"], "好");
+
+    // 空思考（`ensure_thinking_blocks` 补的占位）不产生该字段
+    let empty = to_chat_messages(&[json!({ "role": "assistant", "content": [
+        { "type": "thinking", "thinking": "" },
+        { "type": "text", "text": "好" }
+    ] })]);
+    assert!(empty[0].get("reasoning_content").is_none(), "got {empty:?}");
+
+    // 只有推理没有正文的轮次不成条（没有 tool_calls 就没有配对要求）
+    assert!(to_chat_messages(&[json!({ "role": "assistant", "content": [
+        { "type": "thinking", "thinking": "只想不说" }
+    ] })])
+    .is_empty());
+}
+
+#[test]
+fn chat_messages_tool_use_only_sends_empty_content_not_null() {
+    // 纯 tool_calls 轮次的 content 是空串：部分网关拒收 `content: null`
+    let out = to_chat_messages(&[json!({ "role": "assistant", "content": [
+        { "type": "tool_use", "id": "call_1", "name": "Bash", "input": {} }
+    ] })]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["content"], "");
+    assert!(out[0]["content"].is_string(), "content 必须是字符串");
+
+    // 有推理时同样写空串，并把推理带上
+    let with_thinking = to_chat_messages(&[json!({ "role": "assistant", "content": [
+        { "type": "thinking", "thinking": "想一下" },
+        { "type": "tool_use", "id": "call_1", "name": "Bash", "input": {} }
+    ] })]);
+    assert_eq!(with_thinking[0]["content"], "");
+    assert_eq!(with_thinking[0]["reasoning_content"], "想一下");
 }
 
 #[test]
@@ -1386,10 +1431,9 @@ fn api_error_message_matches_the_format() {
     );
 }
 
-/// 两侧共用 `core-rs/fixtures/chatCompletion.json`：
-/// - `src/test/chatCompletionParity.test.ts` 断言「对照表 == `convertMessagesToChatCompletions` 的真实输出」；
-/// - 这里断言「`to_chat_messages` == 对照表」（含空串透传、纯文本合并、tool_result 压平、
-///   assistant tool_calls 的 `content: null`、其它 role 透传等 TS 分支）。
+/// 共用 `core-rs/fixtures/chatCompletion.json`：这里断言「`to_chat_messages` == 对照表」
+/// （含空串透传、纯文本合并、tool_result 压平、assistant tool_calls 的空串 content、
+/// thinking 回传成 `reasoning_content`、其它 role 透传等分支）。
 mod chat_completion_parity_tests {
     use super::*;
 
