@@ -88,6 +88,15 @@ function requireTask(grant: SubAgentGrant): number {
  * CI 上因此两次误报（一次报「同一毫秒先后无法观测」、一次读成 `[6, 5]`）。
  * 这里按「先后未知但不违规」处理——只在**看到反序证据**（后发起者的授予时刻严格更早）
  * 时才报破坏，那是产品语义确实被违反的形态。
+ *
+ * **毫秒差还可能被线程调度翻过来**（`specs/defects/
+ * us49-fifo-grant-observed-through-thread-scheduling.md`）：产品的授予顺序由
+ * `hand_off_reservation` 按 `waiters` 顺序敲定（正确），但毫秒是**在后台线程里**
+ * 取的（`on_grant` → `create_sub_agent` → `generate_sub_session_id`），两个排队者
+ * 连续放行时后唤醒者完全可能先跑到那一行。因此「严格更早」只在差值足够大时才可信。
+ * 本函数本身不设阈值——阈值取决于机器，写死会把慢机变成常红；余量由用例侧拉开各
+ * 排队者的执行时长来保证（`subagentConcurrency.spec.ts` 给任务 5 更长的 `delayMs`）。
+ * 保留判定语义，让真出现反序证据时仍然报红。
  */
 export function queuedGrantViolations(
   grants: readonly SubAgentGrant[],

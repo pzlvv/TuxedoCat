@@ -31,6 +31,12 @@ import { CONFIG_DIR_NAME } from '../../src/config/project';
  * 若干段没有顺序依赖的链路，CI 上因此概率性读到 `[6, 5]`。排队顺序改读子会话 id 里的
  * `now_millis()` 前缀（`sub_<millis>_<suffix>`，即授予预留后建会话的时刻），
  * 判定在 `helpers/subagentGrantOrder.ts`，由 `src/test/subagentGrantOrder.test.ts` 锁定。
+ *
+ * **那个毫秒仍有两个排队者挤在一起时被线程调度翻转的余量问题**（specs/defects/
+ * us49-fifo-grant-observed-through-thread-scheduling.md）：`on_grant` 在独立后台线程
+ * 里跑，两个排队者连续放行时后唤醒者可能先执行到取毫秒那行。判据本身保留（阈值写死
+ * 会把慢机变成常红），余量由本文件拉开排队者的执行时长保证——见下面 handler 里
+ * 任务 5 的 `delayMs`。
  */
 
 let mockLlm: MockLlm;
@@ -114,11 +120,24 @@ test('US-49 并发上限 4：直取 + 跨轮排队均受限，排队者按发起
       if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
         return { kind: 'text', text: '子代理任务完成。' };
       }
+      // **排队者的先后必须拉开足够的毫秒余量**（specs/defects/
+      // us49-fifo-grant-observed-through-thread-scheduling.md）：两个排队者的槽位
+      // 授予时刻由「前一个排队者跑完」触发，观测用的是 `now_millis()`。若 5 与 6
+      // 的耗时相同，两次授予会挤在毫秒级窗口里，而它们各自在**独立后台线程**里取
+      // 那个毫秒（`on_grant` → `create_sub_agent` → `generate_sub_session_id`），
+      // 线程调度顺序无保证 —— 后入队者先被调度就会读到更小的毫秒，判据误报
+      // 「FIFO 破坏」（run `46099953366` 的 `e2e-electron` 车道实证：128 passed /
+      // 1 failed，产品侧 `hand_off_reservation` 的授予顺序正确）。
+      //
+      // 给任务 5 一段显著更长的执行时间：它占住槽位的整段时长就是 6 的等待窗口，
+      // 于是 5 的授予时刻必然早于 6 上百毫秒量级，远超线程调度抖动。
+      // 首轮直取的 1–4 保持短延迟（只需占住槽位让并发窗口可观测）。
+      const task = Number(subTask[1]);
       return {
         kind: 'tool',
         name: 'Reply',
-        args: { message: `并发任务${subTask[1]}完成` },
-        delayMs: 900,
+        args: { message: `并发任务${task}完成` },
+        delayMs: task === 5 ? 2_500 : 900,
       };
     }
     if (text === '并发派活' || JSON.stringify(req.body.messages).includes('并发派活')) {
