@@ -25,15 +25,19 @@ let fakeCore: {
   capabilities: StorageCapabilities;
   capabilitiesAsked: string[];
   submitted: Array<{ type: string } & Record<string, unknown>>;
+  /** 非空时能力查询抛这个错（模拟路由不到 Connection / Core 应答失败） */
+  capabilitiesError: string | null;
 } | null = null;
 
 function makeFakeCore(options: {
   capabilities: StorageCapabilities;
+  capabilitiesError?: string;
 }): void {
   fakeCore = {
     capabilities: options.capabilities,
     capabilitiesAsked: [],
     submitted: [],
+    capabilitiesError: options.capabilitiesError ?? null,
   };
 }
 
@@ -43,6 +47,9 @@ function installFakeBus(): void {
       if (fakeCore === null) throw new Error('fake core not configured');
       if (request.type === 'storageCapabilitiesRequested') {
         fakeCore.capabilitiesAsked.push(request.sessionId ?? '');
+        if (fakeCore.capabilitiesError !== null) {
+          throw new Error(fakeCore.capabilitiesError);
+        }
         return fakeCore.capabilities;
       }
       if (request.type === 'conversationLoadRequested') {
@@ -314,15 +321,50 @@ runTests('userMessageSubmitAck', async () => {
     });
 
     await handler.handleWebviewMessage(SUBMIT('s8'), { sender: null });
-    // 部署「成功」但重查能力仍不可用：applyDeployOutcome 里那一段也就是 gate.fail
-    const gate = (handler as unknown as { mountProxyGate: { fail(reason: string): void } | null });
-    gate.mountProxyGate!.fail('安装完成，但能力仍不可用');
+    // 部署「成功」但重查能力仍不可用：走真实收尾（finishDeployAndContinue），不是手搓 fail
+    fakeCore!.capabilities = NOT_DEPLOYABLE;
+    const gate = (handler as unknown as {
+      mountProxyGate: unknown;
+      finishDeployAndContinue(gate: unknown): Promise<void>;
+    });
+    await gate.finishDeployAndContinue(gate.mountProxyGate);
 
     check('AC-13 失败态留在界面上', broadcasts.some(
       (m) => m.type === 'mountProxyDeployState' && m.phase === 'failed',
     ));
     check('AC-13 Core 未收到该消息', submittedCount() === 0);
     check('AC-13 没有额外的静默重放', logs.every((l) => !l.includes('userMessageSubmitted')));
+    // 缺陷形态：失败只落闸门、不回执 → webview 未决提交永久挂起
+    // （specs/defects/submit-verdict-lost-on-gate-error.md）
+    check(
+      'RT-3 部署后能力仍不可用时也必须有裁决（拒绝回执）',
+      rejected(broadcasts, 'sub_1') !== undefined,
+    );
+    check('RT-3 失败不误发受理', !accepted(broadcasts, 'sub_1'));
+  });
+
+  // ---------- RT-4：部署后重查能力抛错时同样必须有裁决 ----------
+  await step(async () => {
+    makeFakeCore({ capabilities: DEPLOYABLE });
+    const { handler, broadcasts, logs } = makeHandler({
+      sessionStorageOf: () => 'isolated',
+      resolveMountProxyTarget: async () => ({ host: null } as never),
+    });
+
+    await handler.handleWebviewMessage(SUBMIT('s13', '重查会失败'), { sender: null });
+    fakeCore!.capabilitiesError = 'No Connection can serve request(storageCapabilitiesRequested).';
+    const gate = (handler as unknown as {
+      mountProxyGate: unknown;
+      finishDeployAndContinue(gate: unknown): Promise<void>;
+    });
+    await gate.finishDeployAndContinue(gate.mountProxyGate);
+
+    check('RT-4 重查抛错也必须有裁决（拒绝回执）', rejected(broadcasts, 'sub_1') !== undefined);
+    check('RT-4 失败态同样留在界面上', broadcasts.some(
+      (m) => m.type === 'mountProxyDeployState' && m.phase === 'failed',
+    ));
+    check('RT-4 Core 未收到该消息', submittedCount() === 0);
+    check('RT-4 失败仍记日志', logs.some((l) => l.includes('部署后重查能力失败')));
   });
 
   // ---------- 边界：已受理消息在能力不可用时被静默丢弃 ----------
@@ -358,6 +400,65 @@ runTests('userMessageSubmitAck', async () => {
     check('边界 重投遇到需要部署时丢弃', submittedCount() === 0);
     check('边界 重投不弹确认框', !broadcasts.some((m) => m.type === 'mountProxyDeployState'));
     check('边界 重投记了丢弃原因', logs.some((l) => l.includes('需要部署挂载代理')));
+  });
+
+  // ---------- RT-1：能力查询抛错时必须有裁决，不留悬空的未决提交 ----------
+  //
+  // 缺陷形态（specs/defects/submit-verdict-lost-on-gate-error.md）：能力查询失败让异常冒泡
+  // 到统一兜底，`handleSubmitMessage` 既没回 `userMessageAccepted` 也没回
+  // `userMessageRejected`，webview 的 `pendingSubmitRef` 永远挂着、输入区一直只读。
+  // specs/059 的边界节要求「判据向上失败（报错），不默认放行；输入区原样」——收尾就是拒绝回执。
+  await step(async () => {
+    makeFakeCore({
+      capabilities: READY,
+      capabilitiesError: 'No Connection can serve request(storageCapabilitiesRequested).',
+    });
+    const { handler, broadcasts, logs } = makeHandler({ sessionStorageOf: () => 'isolated' });
+
+    await handler.handleWebviewMessage(SUBMIT('s11', '能力查询会失败'), { sender: null });
+
+    const reject = rejected(broadcasts, 'sub_1');
+    check(
+      'RT-1 能力查询失败也必须有裁决（拒绝回执）',
+      reject !== undefined,
+    );
+    check(
+      'RT-1 拒绝原因点名能力查询失败',
+      typeof reject?.reason === 'string'
+        && String(reject.reason).includes('storageCapabilitiesRequested'),
+    );
+    check('RT-1 失败不放行（Core 未收到该消息）', submittedCount() === 0);
+    check('RT-1 失败不误发受理', !accepted(broadcasts, 'sub_1'));
+    check(
+      'RT-1 失败仍记日志（诊断信息不因改走回执而丢）',
+      logs.some((l) => l.includes('storageCapabilitiesRequested')),
+    );
+  });
+
+  // ---------- RT-2：部署目标解析不出时同样必须有裁决 ----------
+  //
+  // 同一缺陷的另一条入口：能力说 needsDeploy，宿主却解析不出部署目标，原实现直接 throw。
+  await step(async () => {
+    makeFakeCore({ capabilities: DEPLOYABLE });
+    const { handler, broadcasts, logs } = makeHandler({
+      sessionStorageOf: () => 'isolated',
+      resolveMountProxyTarget: async () => null,
+    });
+
+    await handler.handleWebviewMessage(SUBMIT('s12', '解析不出部署目标'), { sender: null });
+
+    const reject = rejected(broadcasts, 'sub_1');
+    check('RT-2 部署目标解析失败也必须有裁决（拒绝回执）', reject !== undefined);
+    check(
+      'RT-2 拒绝原因点名解析不出部署目标',
+      typeof reject?.reason === 'string' && String(reject.reason).includes('解析不出部署目标'),
+    );
+    check('RT-2 不弹确认框', !broadcasts.some((m) => m.type === 'mountProxyDeployState'));
+    check('RT-2 Core 未收到该消息', submittedCount() === 0);
+    check(
+      'RT-2 失败仍记日志',
+      logs.some((l) => l.includes('解析不出部署目标')),
+    );
   });
 
   // ---------- AC-16 / AC-20 的宿主侧：锁上报原样分发给宿主 ----------
