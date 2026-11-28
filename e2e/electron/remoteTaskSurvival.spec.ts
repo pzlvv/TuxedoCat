@@ -112,12 +112,22 @@ test.beforeEach(async () => {
   // 等进程真的消失而不是等固定时长：pkill 只负责发信号，SIGTERM 到进程退出之间还有收尾
   // （Core 写盘），负载高时 1s 不够——半死的 daemon 会让下一条用例建链挂住
   //（e2e/README.md 已知坑 11）。本组用例的断言基数是「远端还剩几个 Core」，基线本身
-  // 必须是真的零。
-  await pollRemote(
+  // 必须是真的零。SIGTERM 等不干净就升级 SIGKILL 再等；清场是前置条件，最终仍不干净
+  // 直接抛错（不吞）——带着残留进程进用例，只会把「基数不为零」伪装成产品断言失败，
+  // 让 AC-4 这类「远端没有 stdio Core」的判据替上一条用例的收尾背锅。
+  const settled = await pollRemote(
     async () => (await remoteCoreProcesses()).length === 0,
     15_000,
     '清场：残留 Core / daemon 全部退出',
-  ).catch(() => undefined);
+  ).then(() => true, () => false);
+  if (!settled) {
+    await sshExec(`pkill -9 -u "$(id -u)" -f '${corePattern()}' || true`).catch(() => undefined);
+    await pollRemote(
+      async () => (await remoteCoreProcesses()).length === 0,
+      10_000,
+      '清场（SIGKILL 升级后）：残留 Core / daemon 全部退出',
+    );
+  }
   await sshExec(
     `rm -rf ${REMOTE_RUN_DIR}/core-daemon-${fingerprint}.json`
       + ` && cd ~/${CONFIG_DIR_NAME}/conversations 2>/dev/null && rm -rf *tuxedo-e2e-survival* ; true`,
@@ -161,6 +171,40 @@ async function pollRemote(
 /** 本机携带产物的指纹（与远端部署槽位同名） */
 function localFingerprint(): string {
   return requireLocalCoreFingerprint();
+}
+
+/**
+ * 「等孤儿 Core 收尾」超时时把现场摊开（与 overlayMountProxyRemote 的
+ * `describeToolResultStall` 同口径）。同一个「stdio 仍活着」至少有三种互不相同的成因，
+ * 光看超时与进程列表读不出来（run 45885611474 的 AC-4 即如此）：
+ *
+ * 1. 任务没跑完——Bash sleep 还没到点（工具没起 / 进程树残留）；
+ * 2. 任务跑完但终轮 LLM 往返卡住——远端到 mock 的反向隧道抖动，终轮请求没到 mock，
+ *    Core 保持 running（首字节超时 300s 远大于本用例窗口，见 core-rs/src/llm.rs）；
+ * 3. 任务与终答都完成（Core 已 idle）但 daemon 没收尾——忙闲旗标或清扫循环问题。
+ *
+ * 模型请求条数与角色序列分辨 1/2（终轮是否到达 mock）；daemon 日志末段（Core stderr +
+ * daemon 决策）分辨 2/3。诊断本身不能再抛错盖掉原失败：读不到就照实说。
+ */
+async function describeOrphanStall(mockLlm: MockLlm): Promise<string> {
+  const requests = mockLlm.requests;
+  const shapes = requests.map((request) =>
+    request.body.messages.map((message) => message.role).join('>'),
+  );
+  const lines = [
+    requests.length > 0
+      ? `模型请求 ${requests.length} 条：${shapes.join(' | ')}`
+      : '模型请求 0 条：终轮没有到达 mock（隧道抖动 / Core 卡在工具执行）',
+  ];
+  try {
+    const { stdout } = await sshExec(
+      `tail -n 60 ~/${CONFIG_DIR_NAME}/logs/core-daemon-${localFingerprint()}.log 2>/dev/null || true`,
+    );
+    lines.push(`daemon 日志（末 60 行）：\n${stdout.trim() || '（空）'}`);
+  } catch (error) {
+    lines.push(`daemon 日志：读取失败（${String(error)}）`);
+  }
+  return lines.join('\n');
 }
 
 let app: AppHandle | null = null;
@@ -225,6 +269,22 @@ async function waitForSidebarQuiet(sb: import('@playwright/test').Page, quietMs 
 function armSleepTaskHandler(mockLlm: MockLlm): void {
   mockLlm.setHandler((req) => {
     if (req.body.messages[req.body.messages.length - 1]?.role === 'tool') {
+      return { kind: 'text', text: 'SURVIVAL-DONE' };
+    }
+    // 长任务只起一次：按「助手自己那条 tool_use 是否已进历史」判（与
+    // subagentConcurrency 的 issued 同口径，不数轮次、不依赖通知文案）。
+    //
+    // 为什么不能对任意非 tool 轮次都回 sleep：前台 Bash 死线 = max(60s, sleep 总和)
+    // = 90s，与 sleep 90 本身几乎相等（printf 先跑，shell 比死线晚几毫秒退出），
+    // 30ms 的收尾轮询偶尔落在「死线已过、shell 未退」的窗口里——按产品口径超时
+    // **不杀进程、转入后台继续跑**（core-rs/src/tools.rs 的 auto_background_command）。
+    // 后台任务跑完经 enqueue_bash_notification 注入一条 origin=bash 的用户消息、
+    // 拉起新一轮，这一轮最后一条不是 tool；若仍回 sleep 90 就再起一个 90s 任务，
+    // 孤儿忙期叠到约 210s，撞穿 AC-4 的 180s 收尾窗口（run 45885611474，本机 WAN
+    // 远端可复现：daemon 日志出现两条 Bash resolve_permission）。通知轮给终答收尾，
+    // 孤儿在首个任务完成后照常转 idle 被收尾——产品行为不变，只是不再脚本无限长任务。
+    const issued = JSON.stringify(req.body.messages).includes('sleep 90');
+    if (issued) {
       return { kind: 'text', text: 'SURVIVAL-DONE' };
     }
     return {
@@ -406,11 +466,19 @@ test('US-65 离场完成：孤儿期跑完、daemon 空退，重开后亮绿色�
   // 未读完成记进 meta.json；随后孤儿转 idle，满 30s 宽限被 daemon 收尾。
   // 窗口 = sleep 90s + 30s 宽限 + 远端抖动余量。最坏路径 120s，留 60s（50%）余量：
   // 原先 260s 是对着 sleep 180 定的，最坏路径 210s 只剩 50s（24%），CI 上因此偶发超时
-  await pollRemote(
-    async () => !(await remoteCoreProcesses()).some((p) => p.cmd.includes(' stdio')),
-    180_000,
-    '孤儿 Core 在任务完成 + 30s 空闲宽限后收尾',
-  );
+  //
+  // 超时要能读出断在哪一环：run 45885611474 这条判据红时残留只有本指纹的 daemon + stdio，
+  // 进程列表分辨不了「任务没跑完 / 终轮卡住 / daemon 没收尾」——请求形态与 daemon 日志
+  // 末段一并摊进失败信息（`describeOrphanStall`，与 AC-31 的 describeToolResultStall 同口径）。
+  try {
+    await pollRemote(
+      async () => !(await remoteCoreProcesses()).some((p) => p.cmd.includes(' stdio')),
+      180_000,
+      '孤儿 Core 在任务完成 + 30s 空闲宽限后收尾',
+    );
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\n${await describeOrphanStall(mockLlm)}`);
+  }
 
   // 关闭应用（断开最后一条控制链路），daemon 无连接且无孤儿 → 空退并清状态文件：
   // 重开拉起的是全新 Core，绿灯证据只剩 meta.json（缺陷报告的场景）

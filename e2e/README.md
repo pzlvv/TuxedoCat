@@ -532,4 +532,17 @@ e2e/
     闸门拦下 / 轮次在工具执行前失败 / 结果里没有目标文件名），AC-31 的超时信息因此摊开请求
     形态、确认框、输入区只读态与能力快照（`describeToolResultStall`），不再只报空串。
     首装（FR-009 / 审计行）与「代理不可用」（FR-010）两条用例的 ready 不该到达，不接这一步。
+25. **长任务脚本不能对「任意非 tool 轮次」都回 sleep——前台超时转后台会再拉起一轮**：
+    `remoteTaskSurvival.spec.ts` 的 `sleep 90` 前台死线 = `max(60s, sleep 总和)` = 90s
+    （`core-rs/src/tools.rs` 的 `default_bash_timeout_ms`），与 sleep 本身几乎相等：`printf`
+    先跑，shell 比死线晚几毫秒退出，30ms 的收尾轮询偶尔落在「死线已过、shell 未退」的窗口里。
+    产品口径此时**不杀进程、把命令转入后台继续跑**（`auto_background_command`，前台超时不杀），
+    后台任务跑完经 `enqueue_bash_notification`（`core-rs/src/engine.rs`，origin=bash）注入一条
+    用户消息、拉起新一轮——这一轮最后一条不是 tool。旧脚本对任意非 tool 轮次都回 `sleep 90`，
+    于是通知轮再起一个 90s 任务，孤儿忙期叠到约 210s，撞穿 AC-4 的 180s 收尾窗口
+    （run `45885611474`；本机 WAN 远端可复现，daemon 日志出现两条 Bash `resolve_permission`）。
+    这是概率性的：sleep 先于死线自然收尾时不转后台、无通知轮，用例就绿。修法是把长任务收敛成
+    「只起一次」——按助手自己那条 tool_use 是否已进历史判（`issued`，与已知坑 18 同口径），
+    通知轮给终答收尾。产品行为不变，变的只是脚本不再无限起长任务。AC-4 的超时信息也因此摊开
+    模型请求形态与 daemon 日志末段（`describeOrphanStall`），不再只报进程列表。
 
